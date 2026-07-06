@@ -1,0 +1,13 @@
+{
+  "name": "operator",
+  "owner": { "name": "betmoar" },
+  "description": "Chief-operator plugin for Claude Code — charter, evidence ledger, and Stop-hook completion gate.",
+  "plugins": [
+    {
+      "name": "operator",
+      "source": "./operator",
+      "description": "Materializes an operating charter (solo + orchestrated modes), an append-only evidence ledger, and a Stop-hook completion gate into a project via /operator:start.",
+      "category": "orchestration"
+    }
+  ]
+}
