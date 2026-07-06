@@ -19,6 +19,10 @@ Deviations from the plan: one greppable line each below, format
 | B1/T3 | all script tests GREEN; jq path + python3 fallback + fail-open all proven | `bash tests/test-scripts.sh` → `== summary: 23 passed, 0 failed ==`; `runner exit=0` (Case 5 = jq-absent python3 fallback exit 2/0 + no-parser fail-open exit 0 + warning) | PASS |
 | B1/T3 | scripts syntactically clean | `bash -n` ok on all 3 + runner; `shellcheck …` → `shellcheck-exit=0` (zero findings) | PASS |
 | B1/T4 | hooks.json parses; plugin validate clean | `jq . operator/hooks/hooks.json` → `PARSE OK exit=0`; `claude plugin validate ./operator --strict` → `✔ Validation passed` | PASS |
+| B2/T5 | charter ≤150 lines | `wc -l operator/templates/OPERATOR.md` → `132` | PASS |
+| B2/T5 | every rule line carries a citation tag | `grep -oE '\[D:…\|\[DOC:…' \| wc -l` → `43` tags across 20 distinct refs; forbidden-content grep clean (only hit is BAR-block `budget (time/cost/iteration)`, spec §4, not O7 telemetry) | PASS |
+| B2/T5 | section order fixed | `grep -n '^## '` → ROLE→SOLO→ORCHESTRATED→ENGAGEMENT CONTRACT→EVIDENCE GATE→HANDOFF→RECOVERY→PRECEDENCE | PASS |
+| B2/T5 | 5 tags resolve to evidence/spec | CHART-def→CHARTER:165; roadmap-s1→roadmap:32; CHART-recover→CHARTER:207/218; GATES-g4→GATES:55/65; spec-D4→spec:144/125 | PASS |
 
 ## Deviations
 
