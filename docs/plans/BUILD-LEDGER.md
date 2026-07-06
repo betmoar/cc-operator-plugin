@@ -15,6 +15,7 @@ Deviations from the plan: one greppable line each below, format
 | B0/T0 | `claude plugin validate ./operator --strict` exits 0 | `✔ Validation passed` / `exit=0` | PASS |
 | B0/T0 | marketplace manifest validates | `Validating marketplace manifest: …/.claude-plugin/marketplace.json` → `✔ Validation passed` / `exit=0` | PASS |
 | B0/T1 | VERDICTS header column set byte-matches GATES.md | `diff <(head -2 …/VERDICTS-header.md \| tail -1) <(grep -m1 '^\| Gate' inputs/evidence/GATES.md)` → `exit=0` (empty diff) | PASS |
+| B1/T2 | RED demonstrated: tests fail because scripts absent | `bash tests/test-scripts.sh` → `MISSING: ops-init.sh / ops-verdict.sh / ops-stop-hook.sh`; `== summary: 3 passed, 20 failed ==`; `runner exit=1` (3 pass vacuously — empty-evidence refusal satisfied by absence) | PASS (RED) |
 
 ## Deviations
 
