@@ -16,6 +16,10 @@ INIT="$SCRIPTS/ops-init.sh"
 VERDICT="$SCRIPTS/ops-verdict.sh"
 HOOK="$SCRIPTS/ops-stop-hook.sh"
 
+# Absolute bash so a restricted PATH (case 5) governs only the hook's INTERNAL
+# command lookups (jq/python3), not the launch of bash itself.
+BASH_ABS="$(command -v bash)"
+
 PASS=0
 FAIL=0
 pass() { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
@@ -34,9 +38,11 @@ run_hook() { # run_hook <fixture> <cwd> [restricted-PATH]
   local json; json="$(sed "s|<tmp>|$cwd|" "$FIXTURES/$fixture")"
   local errf; errf="$(mktemp)"
   if [ -n "$rpath" ]; then
-    printf '%s' "$json" | env -i PATH="$rpath" bash "$HOOK" 2>"$errf"
+    # Restrict only the hook's PATH (its jq/python3 lookups); bash launched by
+    # absolute path so PATH loss can't stop the hook from running at all.
+    printf '%s' "$json" | PATH="$rpath" "$BASH_ABS" "$HOOK" 2>"$errf"
   else
-    printf '%s' "$json" | bash "$HOOK" 2>"$errf"
+    printf '%s' "$json" | "$BASH_ABS" "$HOOK" 2>"$errf"
   fi
   HRC=$?
   HERR="$(cat "$errf")"; rm -f "$errf"
@@ -75,7 +81,7 @@ mkdir -p "$P/.operator/pending"; : > "$P/.operator/pending/T-1"
 VRC=$?
 ROW='| T-1 | tests pass | 42 passed, 0 failed | PASS |'
 if [ -f "$P/.operator/VERDICTS.md" ]; then
-  N="$(grep -Fxc "$ROW" "$P/.operator/VERDICTS.md" 2>/dev/null || echo 0)"
+  N="$(grep -Fxc "$ROW" "$P/.operator/VERDICTS.md" 2>/dev/null)"
 else N=0; fi
 check "verdict exits 0 on valid args" "$([ "$VRC" -eq 0 ] && echo 0 || echo 1)"
 check "exactly one conformant row appended" "$([ "$N" = "1" ] && echo 0 || echo 1)"
@@ -85,7 +91,7 @@ check "sentinel pending/T-1 removed" "$([ ! -e "$P/.operator/pending/T-1" ] && e
 ( cd "$P" && bash "$VERDICT" T-2 "crit" "" PASS >/dev/null 2>&1 )
 ERC=$?
 if [ -f "$P/.operator/VERDICTS.md" ]; then
-  N2="$(grep -Fc '| T-2 |' "$P/.operator/VERDICTS.md" 2>/dev/null || echo 0)"
+  N2="$(grep -Fc '| T-2 |' "$P/.operator/VERDICTS.md" 2>/dev/null)"
 else N2=0; fi
 check "empty-evidence verdict exits non-zero" "$([ "$ERC" -ne 0 ] && echo 0 || echo 1)"
 check "empty-evidence appends no row" "$([ "$N2" = "0" ] && echo 0 || echo 1)"
@@ -99,8 +105,8 @@ mkdir -p "$P/.operator/pending"; : > "$P/.operator/pending/T-3"
 ( cd "$P" && bash "$VERDICT" T-3 --defer "blocked on upstream fix" >/dev/null 2>&1 )
 DRC=$?
 if [ -f "$P/.operator/DECISIONS.md" ]; then
-  DN="$(grep -c 'DEFERRED-VERDICT' "$P/.operator/DECISIONS.md" 2>/dev/null || echo 0)"
-  DI="$(grep -c '| T-3 |.*DEFERRED-VERDICT' "$P/.operator/DECISIONS.md" 2>/dev/null || echo 0)"
+  DN="$(grep -c 'DEFERRED-VERDICT' "$P/.operator/DECISIONS.md" 2>/dev/null)"
+  DI="$(grep -c '| T-3 |.*DEFERRED-VERDICT' "$P/.operator/DECISIONS.md" 2>/dev/null)"
 else DN=0; DI=0; fi
 check "defer exits 0" "$([ "$DRC" -eq 0 ] && echo 0 || echo 1)"
 check "defer writes a DEFERRED-VERDICT line" "$([ "$DN" -ge 1 ] && echo 0 || echo 1)"
@@ -134,10 +140,12 @@ rm -rf "$P"
 
 ########################################################################
 echo "-- Case 5: jq-absent fallback (python3), then neither (fail-open)"
-# Build a restricted PATH holding only python3 (+ its real dir), no jq.
-PYBIN="$(command -v python3 || true)"
+# Build a restricted PATH holding only python3, no jq. Resolve the REAL
+# interpreter (sys.executable) — a pyenv/asdf `python3` on PATH is a shim that
+# won't run standalone under a minimal PATH; its real binary will.
+PYBIN="$(python3 -c 'import sys; print(sys.executable)' 2>/dev/null || true)"
 BINP="$(newproj)"
-if [ -n "$PYBIN" ]; then ln -s "$PYBIN" "$BINP/python3"; fi
+if [ -n "$PYBIN" ] && [ -x "$PYBIN" ]; then ln -s "$PYBIN" "$BINP/python3"; fi
 PATH_NOJQ="$BINP"           # python3 present, jq absent
 PATH_NONE="$(newproj)"      # empty dir: neither jq nor python3
 
