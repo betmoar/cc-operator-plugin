@@ -23,6 +23,9 @@ Deviations from the plan: one greppable line each below, format
 | B2/T5 | every rule line carries a citation tag | `grep -oE '\[D:…\|\[DOC:…' \| wc -l` → `43` tags across 20 distinct refs; forbidden-content grep clean (only hit is BAR-block `budget (time/cost/iteration)`, spec §4, not O7 telemetry) | PASS |
 | B2/T5 | section order fixed | `grep -n '^## '` → ROLE→SOLO→ORCHESTRATED→ENGAGEMENT CONTRACT→EVIDENCE GATE→HANDOFF→RECOVERY→PRECEDENCE | PASS |
 | B2/T5 | 5 tags resolve to evidence/spec | CHART-def→CHARTER:165; roadmap-s1→roadmap:32; CHART-recover→CHARTER:207/218; GATES-g4→GATES:55/65; spec-D4→spec:144/125 | PASS |
+| B3/T6 | commands: descriptions <1024; pointer discipline | `start.md` desc=168ch, `handoff.md` desc=129ch; charter-rule-restatement grep → `0` each | PASS |
+| B3/T7 | agents: NEEDS_CONTEXT present; no build naming; frontmatter valid | `grep -L NEEDS_CONTEXT operator/agents/*.md` → EMPTY; `grep -rcE 'unknowns-harness\|F1…'` → all zero; model=opus×2/sonnet×1, tools present each | PASS |
+| B3/T8 | skill thin: ≤35 lines; trigger-only description | `wc -l …/SKILL.md` → `18`; description = "Use when the user asks to…" (no workflow summary); full `claude plugin validate ./operator --strict` → `✔ Validation passed` | PASS |
 
 ## Deviations
 
