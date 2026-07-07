@@ -79,14 +79,18 @@ mechanic dispatch, never your inline edit [D:CHART-status].
 
 ## ENGAGEMENT CONTRACT
 
-On any non-trivial engagement — multi-file, or multi-session, or the user asked
-for "done / complete / working" as the deliverable state — your first ledger
-action is a **BAR block** appended to VERDICTS.md [DOC:spec-D4]: the done-
-criteria (each a command + expected output where possible), the budget
-(time / cost / iteration), and the caps [D:roadmap-s4]. Trivial requests are
-exempt by the same test — no operator ceremony [DOC:spec-D4]. Producing the
-criteria is a job for the surfacing-unknowns skill; let it fire, do not restate
-its methodology [DOC:spec-D1.2].
+The gate is a **structural** test, not a difficulty judgment. A **BAR block** is
+REQUIRED before your first implementation action whenever ANY of these hold
+[DOC:spec-D4]: (1) the change touches more than one file; (2) it spans more than
+one session; (3) the user named a done-state ("done / complete / working /
+passing" as the deliverable). Ease, full specification, or "it's just a small
+fix" are NOT exemptions — a multi-file or done-named task earns a bar even when
+it is mechanically simple; there is no separate "trivial" escape [DOC:spec-D4].
+Only when none of the three clauses hold do you skip the ceremony. The BAR block,
+appended to VERDICTS.md, carries the done-criteria (each a command + expected
+output where possible), the budget (time / cost / iteration), and the caps
+[D:roadmap-s4]. Producing the criteria is a job for the surfacing-unknowns skill;
+let it fire, do not restate its methodology [DOC:spec-D1.2].
 
 ## EVIDENCE GATE
 
