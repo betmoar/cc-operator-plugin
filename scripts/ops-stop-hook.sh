@@ -80,7 +80,7 @@ done
 shopt -u nullglob
 
 if [ -n "$pending" ]; then
-  echo "operator: pending verdict(s): $pending — run operator/scripts/ops-verdict.sh <id> <criterion> <evidence> <PASS|FAIL>, or --defer \"<reason>\"" >&2
+  echo "operator: pending verdict(s): $pending — run scripts/ops-verdict.sh <id> <criterion> <evidence> <PASS|FAIL>, or --defer \"<reason>\"" >&2
   exit 2
 fi
 

@@ -17,7 +17,7 @@ set -u
 # --- locate this plugin (operator) and the harness skill ---------------------
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"       # tests/pilot
 OP_REPO="$(cd "$SELF_DIR/../.." && pwd)"                         # operator repo root
-OP_PLUGIN="$OP_REPO/operator"                                   # the plugin dir
+OP_PLUGIN="$OP_REPO"                                             # plugin lives at repo root (flattened)
 # harness skill: sibling checkout by default; override with $HARNESS_DIR
 HARNESS_DIR="${HARNESS_DIR:-$(cd "$OP_REPO/.." && pwd)/cc-harness-plugin/unknowns-harness}"
 
@@ -81,7 +81,7 @@ mkdir -p "$DIR"
 say "== scratch repo: $DIR =="
 ( cd "$DIR" && git init -q && git commit -q --allow-empty -m "init pilot scratch repo" ) && ok "git initialized"
 
-# Materialize the operator charter the way /operator:start does, using the
+# Materialize the operator charter the way /cc-operator:start does, using the
 # plugin's own scripts so the pilot exercises the real artifact.
 ( cd "$DIR" && bash "$OP_PLUGIN/scripts/ops-init.sh" >/dev/null ) && ok ".operator/ ledgers created"
 cp "$OP_PLUGIN/templates/OPERATOR.md" "$DIR/OPERATOR.md" && ok "OPERATOR.md materialized"

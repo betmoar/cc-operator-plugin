@@ -15,7 +15,7 @@ set -u
 # Resolve the operator charter to enumerate its rules/tags. Prefer the committed
 # template in this repo; the pilot charters are copies of it.
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CHARTER="$(cd "$SELF_DIR/../.." && pwd)/operator/templates/OPERATOR.md"
+CHARTER="$(cd "$SELF_DIR/../.." && pwd)/templates/OPERATOR.md"
 
 hr() { printf -- '---- %s\n' "$*"; }
 echo "== Phase-4 aggregation across $# run(s) =="
@@ -74,7 +74,7 @@ hr "4. prune done-condition reminders"
 cat <<'EOF'
   - Delete only INERT rules (exercised-nowhere AND not a silent invariant).
   - Admit new rules only against a logged incident, one per incident class.
-  - Charter must stay <=150 lines: `wc -l operator/templates/OPERATOR.md`.
+  - Charter must stay <=150 lines: `wc -l templates/OPERATOR.md`.
   - Re-run the B2 citation-tag gate after editing (every rule line keeps a tag).
   - The prune commit body must carry per-rule keep/delete evidence (spec §8).
 EOF

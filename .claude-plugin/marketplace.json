@@ -1,13 +1,16 @@
 {
-  "name": "operator",
-  "owner": { "name": "betmoar" },
-  "description": "Chief-operator plugin for Claude Code — charter, evidence ledger, and Stop-hook completion gate.",
+  "name": "cc-operator-plugin",
+  "owner": {
+    "name": "betmoar"
+  },
+  "metadata": {
+    "description": "Marketplace for the cc-operator plugin. The plugin lives at the repo root; this file exists so `/plugin marketplace add` works on a checkout or the GitHub repo."
+  },
   "plugins": [
     {
-      "name": "operator",
-      "source": "./operator",
-      "description": "Materializes an operating charter (solo + orchestrated modes), an append-only evidence ledger, and a Stop-hook completion gate into a project via /operator:start.",
-      "category": "orchestration"
+      "name": "cc-operator",
+      "source": "./",
+      "description": "Chief-operator charter, append-only evidence ledger, and Stop-hook completion gate — materialized into a project via /cc-operator:start."
     }
   ]
 }

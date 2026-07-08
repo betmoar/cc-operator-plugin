@@ -9,7 +9,7 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(dirname "$SCRIPT_DIR")"
-SCRIPTS="$REPO/operator/scripts"
+SCRIPTS="$REPO/scripts"
 FIXTURES="$SCRIPT_DIR/fixtures"
 
 INIT="$SCRIPTS/ops-init.sh"

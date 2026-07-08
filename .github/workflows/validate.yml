@@ -1,0 +1,18 @@
+name: validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate plugin contracts
+        run: python3 scripts/validate_plugin.py
+      - name: Run Python tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Run shell script tests
+        run: bash tests/test-scripts.sh

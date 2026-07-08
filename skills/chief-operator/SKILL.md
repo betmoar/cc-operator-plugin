@@ -7,7 +7,7 @@ This skill is a front door, not the charter. Nothing load-bearing lives here —
 skill activation is unreliable, so the authority is a materialized file, not
 this trigger.
 
-To operate a session, run `/operator:start`. It initializes the `.operator/`
+To operate a session, run `/cc-operator:start`. It initializes the `.operator/`
 ledgers and copies the charter into the project as `OPERATOR.md`.
 
 The charter defines two modes: **solo** (the default — you implement directly,
