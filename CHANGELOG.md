@@ -9,10 +9,15 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-08
+
 ### Changed
-- Flattened the plugin to the repo root (`source: "./"`) and renamed it
-  `operator` → `cc-operator` to match the cc-unknowns shipping standard.
-  Commands are now `/cc-operator:start` and `/cc-operator:handoff`.
+- **BREAKING** — Flattened the plugin to the repo root (`source: "./"`) and
+  renamed it `operator` → `cc-operator` to match the cc-unknowns shipping
+  standard. The command namespace moved with it: `/operator:start` and
+  `/operator:handoff` are now `/cc-operator:start` and `/cc-operator:handoff`.
+  Anyone who installed 0.1.0 must remove the old marketplace/plugin entry and
+  reinstall under the new name; the old command names no longer resolve.
 
 ### Added
 - `scripts/validate_plugin.py`: contract linter beyond schema — manifest/
