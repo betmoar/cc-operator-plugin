@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""Release gate: a v<x.y.z> tag must match plugin.json and CHANGELOG.md.
+
+Run by .github/workflows/release.yml on tag push; also runnable locally
+before pushing a tag:
+
+    python3 scripts/release_gate.py v0.1.0 [--root DIR] [--notes-out FILE]
+
+The three-way coupling this enforces (see CLAUDE.md's release row):
+
+    tag v<x.y.z>  ==  plugin.json "version"  ==  newest CHANGELOG heading
+
+validate_plugin's check_changelog already enforces the
+version==newest-heading half on every PR; this gate re-checks it at release
+time and adds the tag itself. With --notes-out, the tag version's CHANGELOG
+section is written to FILE for use as the GitHub release body — so release
+notes are the changelog, not a hand-written duplicate.
+"""
+import argparse
+import json
+import pathlib
+import re
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from validate_plugin import CHANGELOG_HEADING_RE  # single source of truth
+
+TAG_RE = re.compile(r"^v(\d+\.\d+\.\d+)$")
+
+
+def extract_section(changelog_text, version):
+    """Return the CHANGELOG body between '## [version]' and the next
+    '## [' heading or the trailing link-reference block."""
+    start = re.search(rf"^## \[{re.escape(version)}\][^\n]*\n",
+                      changelog_text, re.MULTILINE)
+    if not start:
+        return ""
+    rest = changelog_text[start.end():]
+    stop = re.search(r"^## \[|^\[", rest, re.MULTILINE)
+    return (rest[:stop.start()] if stop else rest).strip()
+
+
+def gate(root, tag):
+    """Return (problems, notes); empty problems means the tag may ship."""
+    root = pathlib.Path(root)
+    problems, notes = [], ""
+    m = TAG_RE.match(tag)
+    if not m:
+        return [f"tag {tag!r} is not v<x.y.z> — retag, e.g. v0.1.0"], notes
+    ver = m.group(1)
+
+    plugin_path = root / ".claude-plugin" / "plugin.json"
+    try:
+        version = json.loads(
+            plugin_path.read_text(encoding="utf-8")).get("version")
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        problems.append(f"plugin.json unreadable: {e}")
+        version = None
+    if version is not None and version != ver:
+        problems.append(
+            f"tag {tag} does not match plugin.json version {version!r} — "
+            f"bump plugin.json (and CHANGELOG) before tagging, or fix the tag")
+
+    changelog_path = root / "CHANGELOG.md"
+    if not changelog_path.is_file():
+        problems.append("CHANGELOG.md: missing")
+        return problems, notes
+    text = changelog_path.read_text(encoding="utf-8")
+    headings = CHANGELOG_HEADING_RE.findall(text)
+    newest = headings[0] if headings else None
+    if newest != ver:
+        problems.append(
+            f"newest CHANGELOG heading is '[{newest}]' but the tag is {tag} — "
+            f"the '## [{ver}]' entry must be the first heading below "
+            f"[Unreleased]")
+    else:
+        notes = extract_section(text, ver)
+        if not notes:
+            problems.append(
+                f"CHANGELOG section for [{ver}] is empty — write the release "
+                f"notes there; they become the GitHub release body")
+    return problems, notes
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(
+        description="Gate a release tag against plugin.json and CHANGELOG.md.")
+    p.add_argument("tag", help="the git tag, e.g. v0.1.0")
+    p.add_argument("--root",
+                   default=str(pathlib.Path(__file__).resolve().parent.parent),
+                   help="repo root (default: this script's repo)")
+    p.add_argument("--notes-out",
+                   help="write the tag version's CHANGELOG section here")
+    a = p.parse_args(argv)
+
+    problems, notes = gate(a.root, a.tag)
+    for prob in problems:
+        print(f"FAIL: {prob}", file=sys.stderr)
+    if problems:
+        print(f"\nrelease gate: {len(problems)} problem(s); not shipping.",
+              file=sys.stderr)
+        return 1
+    if a.notes_out:
+        pathlib.Path(a.notes_out).write_text(notes + "\n", encoding="utf-8")
+    print(f"release gate OK: {a.tag} == plugin.json == newest CHANGELOG heading")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
