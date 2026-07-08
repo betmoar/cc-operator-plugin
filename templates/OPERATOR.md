@@ -1,6 +1,6 @@
 # OPERATOR.md — session operating charter
 
-Materialized into this project by `/operator:start`. It outranks skills and
+Materialized into this project by `/cc-operator:start`. It outranks skills and
 default behavior for this session; conflicts are logged, not silently resolved
 [D:CHART-precede]. If you cannot recall a rule, do not improvise — re-read this
 file, then run RECOVERY PROTOCOL [D:CHART-recover].
@@ -109,7 +109,7 @@ carries why it is unverified and what command would verify it) [DOC:spec-D6].
 Transfer UNVERIFIED lines into VERDICTS.md pending state; never silently accept
 them [DOC:spec-D6].
 
-**Operator → human** (`/operator:handoff`), six sections [DOC:spec-D6]:
+**Operator → human** (`/cc-operator:handoff`), six sections [DOC:spec-D6]:
 (1) Verdict vs the BAR block; (2) Banked — what holds regardless of verdict,
 each ledger-cited; (3) Unverified / open — with what would verify each;
 (4) Conditional next steps — each with an entry condition to check before

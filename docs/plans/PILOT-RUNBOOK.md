@@ -71,7 +71,7 @@ Fable did" claim in the spec is hypothesis until this phase.
 
 ```bash
 # Creates ~/operator-pilot-1 (or --dir <path>), installs both plugins,
-# runs /operator:start's script steps, prints the exact next actions.
+# runs /cc-operator:start's script steps, prints the exact next actions.
 bash tests/pilot/pilot-setup.sh --phase 1 --dir ~/operator-pilot-1
 ```
 
