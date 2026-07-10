@@ -1,8 +1,8 @@
 # Contributing to cc-operator
 
-The plugin is deliberately small — a charter, three scripts, two commands, three
-agents, a thin skill. Most contributions are edits to the charter prose or the
-evidence-gate scripts, not new machinery.
+The plugin is deliberately small — a charter, four gate scripts, two commands,
+five agents, a thin skill. Most contributions are edits to the charter prose or
+the evidence-gate scripts, not new machinery.
 
 ## Repository layout
 
@@ -22,8 +22,9 @@ tests/                            # bash + stdlib Python suites
 ```
 
 See [`CLAUDE.md`](CLAUDE.md) for the maintainer handoff: the load-bearing
-couplings and the landmines. Anything under `docs/` is provenance (spec, build
-plan, ledger, pilot findings) — read-only history, not runtime.
+couplings and the landmines. `docs/spec/` holds the design spec — read-only
+rationale, not runtime; build and pilot history lives in the git history
+(tree ≤ v0.2.0).
 
 ## Dev setup
 

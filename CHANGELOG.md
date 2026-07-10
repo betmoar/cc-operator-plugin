@@ -9,6 +9,42 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-10
+
+### Changed
+- **BREAKING** — The charter and the Stop-hook block message now name the
+  verdict CLI at `.operator/bin/ops-verdict.sh`, and `ops-init.sh` installs
+  the gate CLIs (`ops-verdict.sh`, new `ops-task.sh`) into `.operator/bin/`,
+  refreshing them on every run. Previously both named `scripts/ops-verdict.sh`
+  — a path that resolves only inside this repo, so in any target project the
+  operator was blocked from stopping and pointed at a nonexistent command.
+  Re-run `/cc-operator:start` in existing projects to install the CLIs; for
+  un-migrated projects the hook falls back to the plugin's absolute path.
+- **BREAKING** — Agents re-tiered to model aliases with per-tier `effort`
+  pins: `claude-opus-4-8` → `opus` (author/reviewer, effort medium),
+  `claude-sonnet-4-6` → `sonnet` (mechanic, effort low). Pinned IDs hard-error
+  when a version is retired; aliases track the recommended version.
+- `op-reviewer` hardened with `disallowedTools: Write, Edit, NotebookEdit`.
+
+### Added
+- `agents/op-scout.md` — haiku recon tier (read-only search/lookup), so
+  reconnaissance stops burning operator context or opus dispatches.
+- `agents/op-verifier.md` — fresh-context adversarial verifier (opus):
+  re-runs DONE MEANS itself, returns CONFIRMED/REFUTED, never fixes.
+- `scripts/ops-task.sh` — one-command auditable sentinel opener; the charter's
+  EVIDENCE GATE names it.
+- Validator checks: the charter must reference the project-resolvable
+  `.operator/bin/ops-verdict.sh` path; agent `model:` must be a tier alias
+  (`opus`/`sonnet`/`haiku`); `ops-task.sh` joins the `bash -n` set.
+- Shellcheck step in both CI workflows (scripts + bash test suite are clean).
+
+### Removed
+- Dev provenance from the shipped tree — `docs/plans/` (build plan, ledger,
+  pilot runbook/findings, handoff), `inputs/` (the prior project's evidence
+  bundle), and `tests/pilot/` (scoring scripts CI never ran). `plugin install`
+  clones the repo, so the tree is now exactly what ships. History remains in
+  git (tree ≤ v0.2.0); the design spec stays at `docs/spec/`.
+
 ## [0.2.0] - 2026-07-08
 
 ### Changed
