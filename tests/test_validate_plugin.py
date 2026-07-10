@@ -16,7 +16,10 @@ import validate_plugin as vp  # noqa: E402
 
 
 GOOD_CHARTER = "# OPERATOR.md\n\n" + "\n".join(
-    f"## {sec}\n\nrule [D:tag-{i}] body.\n"
+    f"## {sec}\n\nrule [D:tag-{i}] body"
+    + (" — run `.operator/bin/ops-verdict.sh` [DOC:spec-D4]."
+       if sec == "EVIDENCE GATE" else ".")
+    + "\n"
     for i, sec in enumerate(vp.CHARTER_SECTION_ORDER)
 )
 
@@ -59,7 +62,7 @@ def make_good_tree(root):
             "command": 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-stop-hook.sh"',
         }]}]}
     }))
-    for s in ("ops-init.sh", "ops-verdict.sh", "ops-stop-hook.sh"):
+    for s in ("ops-init.sh", "ops-verdict.sh", "ops-task.sh", "ops-stop-hook.sh"):
         write(root / "scripts" / s, "#!/usr/bin/env bash\nset -eu\necho ok\n")
 
 
@@ -139,6 +142,12 @@ class ValidatorTest(unittest.TestCase):
         write(self.dir / "templates" / "OPERATOR.md", bad)
         self.assertFires("no citation tag")
 
+    def test_charter_missing_project_cli_path(self):
+        write(self.dir / "templates" / "OPERATOR.md",
+              GOOD_CHARTER.replace(".operator/bin/ops-verdict.sh",
+                                   "scripts/ops-verdict.sh"))
+        self.assertFires(".operator/bin/ops-verdict.sh")
+
     # --- 5. ledger schema ---
     def test_verdicts_header_wrong(self):
         write(self.dir / "templates" / "VERDICTS-header.md",
@@ -178,6 +187,10 @@ class ValidatorTest(unittest.TestCase):
     def test_script_missing(self):
         (self.dir / "scripts" / "ops-verdict.sh").unlink()
         self.assertFires("scripts/ops-verdict.sh: missing")
+
+    def test_ops_task_missing(self):
+        (self.dir / "scripts" / "ops-task.sh").unlink()
+        self.assertFires("scripts/ops-task.sh: missing")
 
 
 if __name__ == "__main__":

@@ -17,7 +17,10 @@ when violated:
      <= 150 lines, its section headings appear in the fixed order, and every
      rule line carries a citation tag — operationalized as: at least as many
      `[D:...]`/`[DOC:...]` tags as `## ` section headings, and no ``## `` section
-     body entirely tag-free. (The build's B2 gate, kept executable.)
+     body entirely tag-free. (The build's B2 gate, kept executable.) It must
+     reference the verdict CLI by its project-resolvable path
+     `.operator/bin/ops-verdict.sh` (the copy ops-init.sh installs) — a bare
+     `scripts/...` path only resolves inside this repo.
   5. The ledger header templates match the proven schema byte-for-byte on the
      load-bearing line: VERDICTS-header.md's table header is exactly
      `| Gate | Criterion | Evidence | PASS/FAIL |` (grep habits + tooling
@@ -28,7 +31,7 @@ when violated:
      `F1..F13` naming.
   7. hooks/hooks.json parses and registers a Stop hook whose command points at
      scripts/ops-stop-hook.sh via ${CLAUDE_PLUGIN_ROOT}.
-  8. The three scripts exist and are syntactically valid bash (`bash -n`).
+  8. The four gate scripts exist and are syntactically valid bash (`bash -n`).
 
 Run from anywhere: python3 scripts/validate_plugin.py [repo-root]
 Exit 0 = all contracts hold; exit 1 = failures listed on stderr.
@@ -130,7 +133,15 @@ def check_charter(root, problems):
             f"templates/OPERATOR.md: section order {headings} != "
             f"expected {CHARTER_SECTION_ORDER}")
 
-    tags = TAG_RE.findall("\n".join(lines))
+    text = "\n".join(lines)
+    if ".operator/bin/ops-verdict.sh" not in text:
+        problems.append(
+            "templates/OPERATOR.md: does not reference "
+            "'.operator/bin/ops-verdict.sh' — the charter must name the "
+            "project-installed CLI path (a scripts/ path does not resolve in "
+            "a target project)")
+
+    tags = TAG_RE.findall(text)
     if len(tags) < len([h for h in headings]):
         problems.append(
             f"templates/OPERATOR.md: only {len(tags)} citation tags for "
@@ -207,7 +218,7 @@ def check_hook(root, problems):
 
 
 def check_scripts(root, problems):
-    for name in ("ops-init.sh", "ops-verdict.sh", "ops-stop-hook.sh"):
+    for name in ("ops-init.sh", "ops-verdict.sh", "ops-task.sh", "ops-stop-hook.sh"):
         p = root / "scripts" / name
         if not p.is_file():
             problems.append(f"scripts/{name}: missing")
