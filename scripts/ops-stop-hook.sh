@@ -85,7 +85,12 @@ if [ -n "$pending" ]; then
   # plugin copy, absolute) for projects scaffolded by an older ops-init.
   verdict_cmd=".operator/bin/ops-verdict.sh"
   if [ ! -f "$opdir/bin/ops-verdict.sh" ]; then
-    verdict_cmd="$(cd "${BASH_SOURCE[0]%/*}" && pwd)/ops-verdict.sh"
+    case "${BASH_SOURCE[0]}" in
+      */*) script_dir="${BASH_SOURCE[0]%/*}" ;;
+      *)   script_dir="." ;;                    # invoked bare: script is in cwd
+    esac
+    script_dir="$(cd "$script_dir" 2>/dev/null && pwd || true)"
+    [ -n "$script_dir" ] && verdict_cmd="$script_dir/ops-verdict.sh"
   fi
   echo "operator: pending verdict(s): $pending — run $verdict_cmd <id> <criterion> <evidence> <PASS|FAIL>, or --defer \"<reason>\"" >&2
   exit 2

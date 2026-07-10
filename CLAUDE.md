@@ -53,6 +53,13 @@ and the maintainer's local `.archive/dev/` (untracked).
   stripped PATH, it bricks the session. It must fail *open* (exit 0 + warning)
   when neither `jq` nor `python3` is present. `tests/test-scripts.sh` case 5
   proves this — keep it.
+- **`ops-verdict.sh` refuses malformed cells; it never sanitizes.** A `|` or
+  newline inside a cell breaks the one-line 4-cell row schema (the declared
+  grep contract), and a task-id containing `/` once let `clear_sentinel`'s
+  `rm -f` delete files *outside* `.operator/` (path traversal — a real bug,
+  found and fixed 2026-07-10). Both are refused at the single writer with
+  exit 2; `tests/test-scripts.sh` case 7 locks this. Do not "helpfully"
+  escape or strip instead — a rewritten cell is no longer evidence.
 - **`.operator/` and `OPERATOR.md` keep their names** even though the plugin is
   `cc-operator`. They are the ledger namespace and the charter filename, not the
   command namespace. Renaming them churns the scripts, tests, hook, and charter

@@ -199,5 +199,34 @@ check "no bin/: block message falls back to plugin-root absolute path" "$(printf
 rm -rf "$P"
 
 ########################################################################
+echo "-- Case 7: ledger cell hygiene — refuse, never corrupt (single-writer schema)"
+# INVARIANT: a VERDICTS row is exactly one line of exactly 4 pipe-delimited
+# cells; the single writer refuses anything that would break that schema.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+ROWS_BEFORE="$(wc -l < "$P/.operator/VERDICTS.md")"
+: > "$P/.operator/pending/T-P"
+( cd "$P" && bash "$VERDICT" T-P "crit" "out: 3 | 0 failed" PASS >/dev/null 2>&1 ); PRC=$?
+check "pipe in evidence → refused (exit != 0)" "$([ "$PRC" -ne 0 ] && echo 0 || echo 1)"
+check "pipe in evidence → no row, sentinel intact" "$([ "$(wc -l < "$P/.operator/VERDICTS.md")" = "$ROWS_BEFORE" ] && [ -e "$P/.operator/pending/T-P" ] && echo 0 || echo 1)"
+( cd "$P" && bash "$VERDICT" T-P "crit" "$(printf 'l1\nl2')" PASS >/dev/null 2>&1 ); NRC=$?
+check "newline in evidence → refused" "$([ "$NRC" -ne 0 ] && echo 0 || echo 1)"
+( cd "$P" && bash "$VERDICT" T-P "crit" "evidence" MAYBE >/dev/null 2>&1 ); MRC=$?
+check "verdict MAYBE → refused (PASS|FAIL only)" "$([ "$MRC" -ne 0 ] && echo 0 || echo 1)"
+# INVARIANT: task-id is a bare filename — never a path (clear_sentinel rm -f
+# must not be able to reach outside .operator/pending/).
+echo victim > "$P/victim.txt"
+( cd "$P" && bash "$VERDICT" "../../victim.txt" "crit" "evidence" PASS >/dev/null 2>&1 ); XRC=$?
+check "traversal task-id → refused" "$([ "$XRC" -ne 0 ] && echo 0 || echo 1)"
+check "traversal task-id → victim file survives" "$([ -f "$P/victim.txt" ] && echo 0 || echo 1)"
+( cd "$P" && bash "$TASK" "a|b" >/dev/null 2>&1 ); TRC2=$?
+check "ops-task refuses '|' in task-id" "$([ "$TRC2" -ne 0 ] && echo 0 || echo 1)"
+( cd "$P" && bash "$VERDICT" T-P --defer "$(printf 'blocked\nfake | row')" >/dev/null 2>&1 ); DRC2=$?
+check "newline/pipe in defer reason → refused" "$([ "$DRC2" -ne 0 ] && echo 0 || echo 1)"
+# clean inputs still pass end-to-end after the hygiene guards
+( cd "$P" && bash "$VERDICT" T-P "crit" "42 passed, 0 failed" PASS >/dev/null 2>&1 ); CRC=$?
+check "clean row still accepted after guards" "$([ "$CRC" -eq 0 ] && [ ! -e "$P/.operator/pending/T-P" ] && echo 0 || echo 1)"
+rm -rf "$P"
+
+########################################################################
 echo "== summary: $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]

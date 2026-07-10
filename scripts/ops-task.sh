@@ -12,8 +12,10 @@ die() { echo "ops-task: $1" >&2; exit 2; }
 
 ID="${1:-}"
 [ -n "$ID" ] || die "missing task-id (usage: ops-task.sh <task-id>)"
+NL="$(printf '\nx')"; NL="${NL%x}"
 case "$ID" in
   */* | . | ..) die "task-id must be a bare name (no '/', '.', '..')" ;;
+  *"|"* | *"$NL"*) die "task-id must not contain '|' or newlines — it becomes a ledger cell" ;;
 esac
 [ -d "$OPDIR" ] || die "no $OPDIR/ in cwd — run ops-init.sh first"
 

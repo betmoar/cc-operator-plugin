@@ -38,6 +38,21 @@ single source of truth; bump it in the same commit as the changelog entry.
   (`opus`/`sonnet`/`haiku`); `ops-task.sh` joins the `bash -n` set.
 - Shellcheck step in both CI workflows (scripts + bash test suite are clean).
 
+### Fixed
+- `ops-verdict.sh` path traversal: a task-id containing `/` (e.g.
+  `../../victim`) reached `clear_sentinel`'s `rm -f` and deleted files outside
+  `.operator/`. Task-ids are now refused unless they are bare names.
+- Ledger cell hygiene at the single writer: `|` or newlines in the task-id,
+  criterion, evidence, or defer reason silently broke the one-line 4-cell row
+  schema (and allowed fake-row injection into DECISIONS.md). All are now
+  refused with exit 2 — refuse, never sanitize. The verdict argument is
+  locked to exactly `PASS` or `FAIL` (previously any non-empty string was
+  recorded). `tests/test-scripts.sh` case 7 locks all of this.
+- Stop-hook fallback message no longer emits a `cd` error and a garbage
+  `/ops-verdict.sh` path when the hook is invoked without a directory prefix.
+- `/cc-operator:start` step 2 now instructs Read+Write for materializing the
+  charter — `cp` was never in the command's allowed tools.
+
 ### Removed
 - Dev provenance from the shipped tree — `docs/plans/` (build plan, ledger,
   pilot runbook/findings, handoff), `inputs/` (the prior project's evidence
