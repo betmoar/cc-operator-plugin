@@ -16,7 +16,10 @@ import validate_plugin as vp  # noqa: E402
 
 
 GOOD_CHARTER = "# OPERATOR.md\n\n" + "\n".join(
-    f"## {sec}\n\nrule [D:tag-{i}] body.\n"
+    f"## {sec}\n\nrule [D:tag-{i}] body"
+    + (" — run `.operator/bin/ops-verdict.sh` [DOC:spec-D4]."
+       if sec == "EVIDENCE GATE" else ".")
+    + "\n"
     for i, sec in enumerate(vp.CHARTER_SECTION_ORDER)
 )
 
@@ -39,9 +42,9 @@ def make_good_tree(root):
     write(root / "templates" / "OPERATOR.md", GOOD_CHARTER)
     write(root / "templates" / "VERDICTS-header.md",
           "# Verdicts\n" + vp.VERDICTS_HEADER + "\n|---|---|---|---|\n")
-    for name, model in (("op-author", "claude-opus-4-8"),
-                        ("op-mechanic", "claude-sonnet-4-6"),
-                        ("op-reviewer", "claude-opus-4-8")):
+    for name, model in (("op-author", "opus"),
+                        ("op-mechanic", "sonnet"),
+                        ("op-reviewer", "opus")):
         tools = ("Read, Grep, Glob, Bash" if name == "op-reviewer"
                  else "Read, Write, Edit, Grep, Glob, Bash")
         write(root / "agents" / f"{name}.md", textwrap.dedent(f"""\
@@ -59,7 +62,7 @@ def make_good_tree(root):
             "command": 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-stop-hook.sh"',
         }]}]}
     }))
-    for s in ("ops-init.sh", "ops-verdict.sh", "ops-stop-hook.sh"):
+    for s in ("ops-init.sh", "ops-verdict.sh", "ops-task.sh", "ops-stop-hook.sh"):
         write(root / "scripts" / s, "#!/usr/bin/env bash\nset -eu\necho ok\n")
 
 
@@ -139,6 +142,12 @@ class ValidatorTest(unittest.TestCase):
         write(self.dir / "templates" / "OPERATOR.md", bad)
         self.assertFires("no citation tag")
 
+    def test_charter_missing_project_cli_path(self):
+        write(self.dir / "templates" / "OPERATOR.md",
+              GOOD_CHARTER.replace(".operator/bin/ops-verdict.sh",
+                                   "scripts/ops-verdict.sh"))
+        self.assertFires(".operator/bin/ops-verdict.sh")
+
     # --- 5. ledger schema ---
     def test_verdicts_header_wrong(self):
         write(self.dir / "templates" / "VERDICTS-header.md",
@@ -148,8 +157,13 @@ class ValidatorTest(unittest.TestCase):
     # --- 6. agents ---
     def test_agent_missing_model(self):
         p = self.dir / "agents" / "op-author.md"
-        write(p, p.read_text().replace("model: claude-opus-4-8\n", ""))
+        write(p, p.read_text().replace("model: opus\n", ""))
         self.assertFires("missing 'model:'")
+
+    def test_agent_pinned_model_id(self):
+        p = self.dir / "agents" / "op-mechanic.md"
+        write(p, p.read_text().replace("model: sonnet", "model: claude-sonnet-4-6"))
+        self.assertFires("pinned ID")
 
     def test_agent_missing_needs_context(self):
         p = self.dir / "agents" / "op-mechanic.md"
@@ -178,6 +192,10 @@ class ValidatorTest(unittest.TestCase):
     def test_script_missing(self):
         (self.dir / "scripts" / "ops-verdict.sh").unlink()
         self.assertFires("scripts/ops-verdict.sh: missing")
+
+    def test_ops_task_missing(self):
+        (self.dir / "scripts" / "ops-task.sh").unlink()
+        self.assertFires("scripts/ops-task.sh: missing")
 
 
 if __name__ == "__main__":

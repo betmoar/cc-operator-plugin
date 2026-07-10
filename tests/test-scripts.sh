@@ -15,6 +15,7 @@ FIXTURES="$SCRIPT_DIR/fixtures"
 INIT="$SCRIPTS/ops-init.sh"
 VERDICT="$SCRIPTS/ops-verdict.sh"
 HOOK="$SCRIPTS/ops-stop-hook.sh"
+TASK="$SCRIPTS/ops-task.sh"
 
 # Absolute bash so a restricted PATH (case 5) governs only the hook's INTERNAL
 # command lookups (jq/python3), not the launch of bash itself.
@@ -50,7 +51,7 @@ run_hook() { # run_hook <fixture> <cwd> [restricted-PATH]
 
 echo "== T2 test runner =="
 echo "scripts under test: $SCRIPTS"
-for s in "$INIT" "$VERDICT" "$HOOK"; do
+for s in "$INIT" "$VERDICT" "$HOOK" "$TASK"; do
   [ -f "$s" ] && echo "  present: ${s##*/}" || echo "  MISSING: ${s##*/} (expected to fail in RED)"
 done
 
@@ -61,7 +62,6 @@ check "init creates .operator/VERDICTS.md" "$([ -f "$P/.operator/VERDICTS.md" ] 
 check "init creates .operator/DECISIONS.md" "$([ -f "$P/.operator/DECISIONS.md" ] && echo 0 || echo 1)"
 check "init creates .operator/pending/ dir" "$([ -d "$P/.operator/pending" ] && echo 0 || echo 1)"
 if [ -f "$P/.operator/VERDICTS.md" ]; then
-  BEFORE="$(cat "$P/.operator/VERDICTS.md")"
   # mutate to prove no-clobber: a second init must NOT overwrite existing content
   printf '| T-X | seeded | seeded | PASS |\n' >> "$P/.operator/VERDICTS.md"
   SEEDED="$(cat "$P/.operator/VERDICTS.md")"
@@ -165,6 +165,67 @@ run_hook stop-basic.json "$P" "$PATH_NONE"
 check "no parser: fail-open exit 0" "$([ "$HRC" -eq 0 ] && echo 0 || echo 1)"
 check "no parser: prints a stderr warning" "$(printf '%s' "$HERR" | grep -qi 'warn' && echo 0 || echo 1)"
 rm -rf "$P" "$BINP" "$PATH_NONE"
+
+########################################################################
+echo "-- Case 6: project-installed gate CLIs (.operator/bin) + ops-task opener"
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+check "init installs .operator/bin/ops-verdict.sh (executable)" "$([ -x "$P/.operator/bin/ops-verdict.sh" ] && echo 0 || echo 1)"
+check "init installs .operator/bin/ops-task.sh (executable)" "$([ -x "$P/.operator/bin/ops-task.sh" ] && echo 0 || echo 1)"
+# re-run refreshes the bin copies (the upgrade path) — unlike the ledgers,
+# which are never clobbered
+printf '#!/usr/bin/env bash\necho stale\n' > "$P/.operator/bin/ops-verdict.sh"
+( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+check "second init refreshes bin copy to plugin version" "$(cmp -s "$P/.operator/bin/ops-verdict.sh" "$VERDICT" && echo 0 || echo 1)"
+# ops-task opens the sentinel; the installed CLIs work from the project cwd
+( cd "$P" && ./.operator/bin/ops-task.sh T-6 >/dev/null 2>&1 ); TRC=$?
+check "ops-task exits 0 and drops sentinel" "$([ "$TRC" -eq 0 ] && [ -e "$P/.operator/pending/T-6" ] && echo 0 || echo 1)"
+run_hook stop-basic.json "$P"
+check "hook blocks (exit 2) on ops-task-opened sentinel" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+check "block message names .operator/bin/ops-verdict.sh" "$(printf '%s' "$HERR" | grep -q '\.operator/bin/ops-verdict\.sh' && echo 0 || echo 1)"
+( cd "$P" && ./.operator/bin/ops-verdict.sh T-6 "crit" "output" PASS >/dev/null 2>&1 )
+check "installed verdict CLI appends row + clears sentinel" "$(grep -Fq '| T-6 | crit | output | PASS |' "$P/.operator/VERDICTS.md" && [ ! -e "$P/.operator/pending/T-6" ] && echo 0 || echo 1)"
+# ops-task refusals: no id; no .operator/
+( cd "$P" && ./.operator/bin/ops-task.sh >/dev/null 2>&1 ); NRC=$?
+check "ops-task refuses a missing task-id" "$([ "$NRC" -ne 0 ] && echo 0 || echo 1)"
+Q="$(newproj)"
+( cd "$Q" && bash "$TASK" T-1 >/dev/null 2>&1 ); QRC=$?
+check "ops-task refuses without .operator/" "$([ "$QRC" -ne 0 ] && echo 0 || echo 1)"
+rm -rf "$Q"
+# pre-0.3 project (no bin/): block message falls back to the plugin's absolute copy
+rm -rf "$P/.operator/bin"
+: > "$P/.operator/pending/T-8"
+run_hook stop-basic.json "$P"
+check "no bin/: block message falls back to plugin-root absolute path" "$(printf '%s' "$HERR" | grep -q "$SCRIPTS/ops-verdict.sh" && echo 0 || echo 1)"
+rm -rf "$P"
+
+########################################################################
+echo "-- Case 7: ledger cell hygiene — refuse, never corrupt (single-writer schema)"
+# INVARIANT: a VERDICTS row is exactly one line of exactly 4 pipe-delimited
+# cells; the single writer refuses anything that would break that schema.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+ROWS_BEFORE="$(wc -l < "$P/.operator/VERDICTS.md")"
+: > "$P/.operator/pending/T-P"
+( cd "$P" && bash "$VERDICT" T-P "crit" "out: 3 | 0 failed" PASS >/dev/null 2>&1 ); PRC=$?
+check "pipe in evidence → refused (exit != 0)" "$([ "$PRC" -ne 0 ] && echo 0 || echo 1)"
+check "pipe in evidence → no row, sentinel intact" "$([ "$(wc -l < "$P/.operator/VERDICTS.md")" = "$ROWS_BEFORE" ] && [ -e "$P/.operator/pending/T-P" ] && echo 0 || echo 1)"
+( cd "$P" && bash "$VERDICT" T-P "crit" "$(printf 'l1\nl2')" PASS >/dev/null 2>&1 ); NRC=$?
+check "newline in evidence → refused" "$([ "$NRC" -ne 0 ] && echo 0 || echo 1)"
+( cd "$P" && bash "$VERDICT" T-P "crit" "evidence" MAYBE >/dev/null 2>&1 ); MRC=$?
+check "verdict MAYBE → refused (PASS|FAIL only)" "$([ "$MRC" -ne 0 ] && echo 0 || echo 1)"
+# INVARIANT: task-id is a bare filename — never a path (clear_sentinel rm -f
+# must not be able to reach outside .operator/pending/).
+echo victim > "$P/victim.txt"
+( cd "$P" && bash "$VERDICT" "../../victim.txt" "crit" "evidence" PASS >/dev/null 2>&1 ); XRC=$?
+check "traversal task-id → refused" "$([ "$XRC" -ne 0 ] && echo 0 || echo 1)"
+check "traversal task-id → victim file survives" "$([ -f "$P/victim.txt" ] && echo 0 || echo 1)"
+( cd "$P" && bash "$TASK" "a|b" >/dev/null 2>&1 ); TRC2=$?
+check "ops-task refuses '|' in task-id" "$([ "$TRC2" -ne 0 ] && echo 0 || echo 1)"
+( cd "$P" && bash "$VERDICT" T-P --defer "$(printf 'blocked\nfake | row')" >/dev/null 2>&1 ); DRC2=$?
+check "newline/pipe in defer reason → refused" "$([ "$DRC2" -ne 0 ] && echo 0 || echo 1)"
+# clean inputs still pass end-to-end after the hygiene guards
+( cd "$P" && bash "$VERDICT" T-P "crit" "42 passed, 0 failed" PASS >/dev/null 2>&1 ); CRC=$?
+check "clean row still accepted after guards" "$([ "$CRC" -eq 0 ] && [ ! -e "$P/.operator/pending/T-P" ] && echo 0 || echo 1)"
+rm -rf "$P"
 
 ########################################################################
 echo "== summary: $PASS passed, $FAIL failed =="

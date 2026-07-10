@@ -80,7 +80,19 @@ done
 shopt -u nullglob
 
 if [ -n "$pending" ]; then
-  echo "operator: pending verdict(s): $pending — run scripts/ops-verdict.sh <id> <criterion> <evidence> <PASS|FAIL>, or --defer \"<reason>\"" >&2
+  # Name a path that resolves from the project cwd: ops-init installs the
+  # verdict CLI at .operator/bin/. Fall back to this hook's own sibling (the
+  # plugin copy, absolute) for projects scaffolded by an older ops-init.
+  verdict_cmd=".operator/bin/ops-verdict.sh"
+  if [ ! -f "$opdir/bin/ops-verdict.sh" ]; then
+    case "${BASH_SOURCE[0]}" in
+      */*) script_dir="${BASH_SOURCE[0]%/*}" ;;
+      *)   script_dir="." ;;                    # invoked bare: script is in cwd
+    esac
+    script_dir="$(cd "$script_dir" 2>/dev/null && pwd)" || script_dir=""
+    if [ -n "$script_dir" ]; then verdict_cmd="$script_dir/ops-verdict.sh"; fi
+  fi
+  echo "operator: pending verdict(s): $pending — run $verdict_cmd <id> <criterion> <evidence> <PASS|FAIL>, or --defer \"<reason>\"" >&2
   exit 2
 fi
 

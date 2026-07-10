@@ -96,13 +96,13 @@ let it fire, do not restate its methodology [DOC:spec-D1.2].
 
 A row without evidence is FAIL by definition; assertions are not evidence —
 command output, diffs, and reviewer verdict lines are [D:CHART-def]. Opening a
-tracked task drops a sentinel `.operator/pending/<task-id>` [DOC:spec-D4].
-`scripts/ops-verdict.sh <id> <criterion> <evidence> <PASS|FAIL>` appends the row
-and clears that sentinel — it is the single writer to VERDICTS.md [DOC:spec-D4].
-The Stop hook blocks session end while any sentinel is pending [DOC:spec-D4]. A
-legitimately blocked task ends honestly via
-`ops-verdict.sh <id> --defer "<reason>"`, which writes a DEFERRED-VERDICT line
-to DECISIONS.md and clears the sentinel [DOC:spec-D4].
+tracked task drops a sentinel: run `.operator/bin/ops-task.sh <task-id>`
+[DOC:spec-D4]. `.operator/bin/ops-verdict.sh <id> <criterion> <evidence>
+<PASS|FAIL>` appends the row and clears that sentinel — it is the single writer
+to VERDICTS.md [DOC:spec-D4]. The Stop hook blocks session end while any
+sentinel is pending [DOC:spec-D4]. A legitimately blocked task ends honestly
+via `.operator/bin/ops-verdict.sh <id> --defer "<reason>"`, which writes a
+DEFERRED-VERDICT line to DECISIONS.md and clears the sentinel [DOC:spec-D4].
 
 ## HANDOFF
 

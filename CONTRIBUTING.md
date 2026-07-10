@@ -1,8 +1,8 @@
 # Contributing to cc-operator
 
-The plugin is deliberately small — a charter, three scripts, two commands, three
-agents, a thin skill. Most contributions are edits to the charter prose or the
-evidence-gate scripts, not new machinery.
+The plugin is deliberately small — a charter, four gate scripts, two commands,
+five agents, a thin skill. Most contributions are edits to the charter prose or
+the evidence-gate scripts, not new machinery.
 
 ## Repository layout
 
@@ -12,7 +12,7 @@ evidence-gate scripts, not new machinery.
 templates/OPERATOR.md             # the charter — <=150 lines, every rule line citation-tagged
 templates/{VERDICTS,DECISIONS}-header.md   # ledger schemas — byte-identical to the proven originals
 commands/{start,handoff}.md       # slash commands (trigger-only frontmatter descriptions)
-agents/*.md                       # tier-pinned delegation trio
+agents/*.md                       # tier-aliased delegation roles (author/mechanic/reviewer/scout/verifier)
 skills/chief-operator/SKILL.md    # thin router (front door only — nothing load-bearing)
 scripts/ops-*.sh                  # the evidence-gate mechanism
 scripts/validate_plugin.py        # contract linter — run before every PR
@@ -22,8 +22,9 @@ tests/                            # bash + stdlib Python suites
 ```
 
 See [`CLAUDE.md`](CLAUDE.md) for the maintainer handoff: the load-bearing
-couplings and the landmines. Anything under `docs/` is provenance (spec, build
-plan, ledger, pilot findings) — read-only history, not runtime.
+couplings and the landmines. `docs/spec/` holds the design spec — read-only
+rationale, not runtime; build and pilot history lives in the git history
+(tree ≤ v0.2.0).
 
 ## Dev setup
 
@@ -48,7 +49,9 @@ After editing a component, `/reload-plugins` so changes take effect.
   downstream tooling depend on it; changing a column is a breaking change.
 - **Agents stay project-agnostic** (a `name`/`model`/`tools` frontmatter, a
   NEEDS_CONTEXT clause, no `unknowns-harness`/`F1..F13` build naming) and keep
-  their tier intent (opus ×2 for author/reviewer, sonnet for mechanic).
+  their tier intent via **aliases only** — opus for author/reviewer/verifier,
+  sonnet for mechanic, haiku for scout. Never a pinned model ID: pinned IDs
+  hard-error when a version is retired; the validator rejects them.
 - **`ops-verdict.sh` is the single writer to `VERDICTS.md`.** Append-only holds
   by construction because the append and the sentinel-clear are one action —
   never add a second writer.
@@ -70,9 +73,10 @@ After editing a component, `/reload-plugins` so changes take effect.
 - If the change is user-visible, bump the version in
   [`.claude-plugin/plugin.json`](.claude-plugin/plugin.json) — the single source
   of truth — following [SemVer](https://semver.org/).
-- Validate before opening a PR (CI runs the same three commands):
+- Validate before opening a PR (CI runs the same four commands):
 
   ```
+  shellcheck scripts/*.sh tests/test-scripts.sh
   python3 scripts/validate_plugin.py
   python3 -m unittest discover -s tests
   bash tests/test-scripts.sh

@@ -17,18 +17,23 @@ when violated:
      <= 150 lines, its section headings appear in the fixed order, and every
      rule line carries a citation tag — operationalized as: at least as many
      `[D:...]`/`[DOC:...]` tags as `## ` section headings, and no ``## `` section
-     body entirely tag-free. (The build's B2 gate, kept executable.)
+     body entirely tag-free. (The build's B2 gate, kept executable.) It must
+     reference the verdict CLI by its project-resolvable path
+     `.operator/bin/ops-verdict.sh` (the copy ops-init.sh installs) — a bare
+     `scripts/...` path only resolves inside this repo.
   5. The ledger header templates match the proven schema byte-for-byte on the
      load-bearing line: VERDICTS-header.md's table header is exactly
      `| Gate | Criterion | Evidence | PASS/FAIL |` (grep habits + tooling
      transfer depend on it).
   6. Every agent in agents/ has valid frontmatter with a `name`, a `model`, and
      a `tools` line, and mentions NEEDS_CONTEXT (the refuse-don't-invent
-     contract). No agent references the build-specific `unknowns-harness` /
-     `F1..F13` naming.
+     contract). The model must be a tier alias (opus/sonnet/haiku), never a
+     pinned ID — pinned IDs hard-error when a version is retired; aliases
+     track the recommended version. No agent references the build-specific
+     `unknowns-harness` / `F1..F13` naming.
   7. hooks/hooks.json parses and registers a Stop hook whose command points at
      scripts/ops-stop-hook.sh via ${CLAUDE_PLUGIN_ROOT}.
-  8. The three scripts exist and are syntactically valid bash (`bash -n`).
+  8. The four gate scripts exist and are syntactically valid bash (`bash -n`).
 
 Run from anywhere: python3 scripts/validate_plugin.py [repo-root]
 Exit 0 = all contracts hold; exit 1 = failures listed on stderr.
@@ -56,6 +61,7 @@ CHARTER_SECTION_ORDER = [
     "PRECEDENCE",
 ]
 VERDICTS_HEADER = "| Gate | Criterion | Evidence | PASS/FAIL |"
+AGENT_MODEL_ALIASES = ("opus", "sonnet", "haiku")
 
 
 def load_json(path, problems):
@@ -130,7 +136,15 @@ def check_charter(root, problems):
             f"templates/OPERATOR.md: section order {headings} != "
             f"expected {CHARTER_SECTION_ORDER}")
 
-    tags = TAG_RE.findall("\n".join(lines))
+    text = "\n".join(lines)
+    if ".operator/bin/ops-verdict.sh" not in text:
+        problems.append(
+            "templates/OPERATOR.md: does not reference "
+            "'.operator/bin/ops-verdict.sh' — the charter must name the "
+            "project-installed CLI path (a scripts/ path does not resolve in "
+            "a target project)")
+
+    tags = TAG_RE.findall(text)
     if len(tags) < len([h for h in headings]):
         problems.append(
             f"templates/OPERATOR.md: only {len(tags)} citation tags for "
@@ -176,6 +190,12 @@ def check_agents(root, problems):
         for key in ("name", "model", "tools"):
             if not re.search(rf"^{key}:\s*\S", front, re.MULTILINE):
                 problems.append(f"agents/{f.name}: frontmatter missing '{key}:'")
+        m = re.search(r"^model:\s*(\S+)\s*$", front, re.MULTILINE)
+        if m and m.group(1) not in AGENT_MODEL_ALIASES:
+            problems.append(
+                f"agents/{f.name}: model {m.group(1)!r} is a pinned ID — use "
+                f"a tier alias {AGENT_MODEL_ALIASES} (pinned IDs hard-error "
+                f"when the version is retired)")
         if "NEEDS_CONTEXT" not in text:
             problems.append(
                 f"agents/{f.name}: no NEEDS_CONTEXT (refuse-don't-invent "
@@ -207,7 +227,7 @@ def check_hook(root, problems):
 
 
 def check_scripts(root, problems):
-    for name in ("ops-init.sh", "ops-verdict.sh", "ops-stop-hook.sh"):
+    for name in ("ops-init.sh", "ops-verdict.sh", "ops-task.sh", "ops-stop-hook.sh"):
         p = root / "scripts" / name
         if not p.is_file():
             problems.append(f"scripts/{name}: missing")

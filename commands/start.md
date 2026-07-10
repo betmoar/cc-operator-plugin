@@ -18,9 +18,11 @@ copied verbatim.
    This creates `.operator/VERDICTS.md`, `.operator/DECISIONS.md`, and
    `.operator/pending/` in the project root.
 
-2. **Materialize the charter.** Copy `${CLAUDE_PLUGIN_ROOT}/templates/OPERATOR.md`
-   into the project root as `OPERATOR.md` (overwrite any prior copy — it is a
-   generated artifact, not hand-edited).
+2. **Materialize the charter.** Read
+   `${CLAUDE_PLUGIN_ROOT}/templates/OPERATOR.md` and Write its content
+   verbatim to `OPERATOR.md` in the project root (overwrite any prior copy —
+   it is a generated artifact, not hand-edited). Use the Read and Write tools;
+   `cp` is not in this command's allowed tools.
 
 3. **Point CLAUDE.md at it** (default), or **inline it** (`--inline`):
 
