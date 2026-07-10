@@ -89,8 +89,8 @@ if [ -n "$pending" ]; then
       */*) script_dir="${BASH_SOURCE[0]%/*}" ;;
       *)   script_dir="." ;;                    # invoked bare: script is in cwd
     esac
-    script_dir="$(cd "$script_dir" 2>/dev/null && pwd || true)"
-    [ -n "$script_dir" ] && verdict_cmd="$script_dir/ops-verdict.sh"
+    script_dir="$(cd "$script_dir" 2>/dev/null && pwd)" || script_dir=""
+    if [ -n "$script_dir" ]; then verdict_cmd="$script_dir/ops-verdict.sh"; fi
   fi
   echo "operator: pending verdict(s): $pending — run $verdict_cmd <id> <criterion> <evidence> <PASS|FAIL>, or --defer \"<reason>\"" >&2
   exit 2
