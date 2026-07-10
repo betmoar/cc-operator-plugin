@@ -27,8 +27,10 @@ when violated:
      transfer depend on it).
   6. Every agent in agents/ has valid frontmatter with a `name`, a `model`, and
      a `tools` line, and mentions NEEDS_CONTEXT (the refuse-don't-invent
-     contract). No agent references the build-specific `unknowns-harness` /
-     `F1..F13` naming.
+     contract). The model must be a tier alias (opus/sonnet/haiku), never a
+     pinned ID — pinned IDs hard-error when a version is retired; aliases
+     track the recommended version. No agent references the build-specific
+     `unknowns-harness` / `F1..F13` naming.
   7. hooks/hooks.json parses and registers a Stop hook whose command points at
      scripts/ops-stop-hook.sh via ${CLAUDE_PLUGIN_ROOT}.
   8. The four gate scripts exist and are syntactically valid bash (`bash -n`).
@@ -59,6 +61,7 @@ CHARTER_SECTION_ORDER = [
     "PRECEDENCE",
 ]
 VERDICTS_HEADER = "| Gate | Criterion | Evidence | PASS/FAIL |"
+AGENT_MODEL_ALIASES = ("opus", "sonnet", "haiku")
 
 
 def load_json(path, problems):
@@ -187,6 +190,12 @@ def check_agents(root, problems):
         for key in ("name", "model", "tools"):
             if not re.search(rf"^{key}:\s*\S", front, re.MULTILINE):
                 problems.append(f"agents/{f.name}: frontmatter missing '{key}:'")
+        m = re.search(r"^model:\s*(\S+)\s*$", front, re.MULTILINE)
+        if m and m.group(1) not in AGENT_MODEL_ALIASES:
+            problems.append(
+                f"agents/{f.name}: model {m.group(1)!r} is a pinned ID — use "
+                f"a tier alias {AGENT_MODEL_ALIASES} (pinned IDs hard-error "
+                f"when the version is retired)")
         if "NEEDS_CONTEXT" not in text:
             problems.append(
                 f"agents/{f.name}: no NEEDS_CONTEXT (refuse-don't-invent "

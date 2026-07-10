@@ -42,9 +42,9 @@ def make_good_tree(root):
     write(root / "templates" / "OPERATOR.md", GOOD_CHARTER)
     write(root / "templates" / "VERDICTS-header.md",
           "# Verdicts\n" + vp.VERDICTS_HEADER + "\n|---|---|---|---|\n")
-    for name, model in (("op-author", "claude-opus-4-8"),
-                        ("op-mechanic", "claude-sonnet-4-6"),
-                        ("op-reviewer", "claude-opus-4-8")):
+    for name, model in (("op-author", "opus"),
+                        ("op-mechanic", "sonnet"),
+                        ("op-reviewer", "opus")):
         tools = ("Read, Grep, Glob, Bash" if name == "op-reviewer"
                  else "Read, Write, Edit, Grep, Glob, Bash")
         write(root / "agents" / f"{name}.md", textwrap.dedent(f"""\
@@ -157,8 +157,13 @@ class ValidatorTest(unittest.TestCase):
     # --- 6. agents ---
     def test_agent_missing_model(self):
         p = self.dir / "agents" / "op-author.md"
-        write(p, p.read_text().replace("model: claude-opus-4-8\n", ""))
+        write(p, p.read_text().replace("model: opus\n", ""))
         self.assertFires("missing 'model:'")
+
+    def test_agent_pinned_model_id(self):
+        p = self.dir / "agents" / "op-mechanic.md"
+        write(p, p.read_text().replace("model: sonnet", "model: claude-sonnet-4-6"))
+        self.assertFires("pinned ID")
 
     def test_agent_missing_needs_context(self):
         p = self.dir / "agents" / "op-mechanic.md"

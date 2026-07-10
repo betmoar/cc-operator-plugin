@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Shellcheck gate scripts
+        run: shellcheck scripts/*.sh tests/test-scripts.sh
       - name: Validate plugin contracts
         run: python3 scripts/validate_plugin.py
       - name: Run Python tests
