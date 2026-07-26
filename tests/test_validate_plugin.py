@@ -15,10 +15,12 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import validate_plugin as vp  # noqa: E402
 
 
+_CLI_SENTENCE = " — run " + ", ".join(
+    f"`.operator/bin/{c}`" for c in vp.CHARTER_REQUIRED_CLIS) + " [DOC:spec-D4]."
+
 GOOD_CHARTER = "# OPERATOR.md\n\n" + "\n".join(
     f"## {sec}\n\nrule [D:tag-{i}] body"
-    + (" — run `.operator/bin/ops-verdict.sh` [DOC:spec-D4]."
-       if sec == "EVIDENCE GATE" else ".")
+    + (_CLI_SENTENCE if sec == "EVIDENCE GATE" else ".")
     + "\n"
     for i, sec in enumerate(vp.CHARTER_SECTION_ORDER)
 )
@@ -57,12 +59,19 @@ def make_good_tree(root):
             Body. End with NEEDS_CONTEXT when underspecified.
             """))
     write(root / "hooks" / "hooks.json", json.dumps({
-        "hooks": {"Stop": [{"hooks": [{
-            "type": "command",
-            "command": 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-stop-hook.sh"',
-        }]}]}
+        "hooks": {
+            "Stop": [{"hooks": [{
+                "type": "command",
+                "command": 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-stop-hook.sh"',
+            }]}],
+            "SessionStart": [{"matcher": "startup", "hooks": [{
+                "type": "command",
+                "command": 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-sessionstart-hook.sh"',
+            }]}],
+        }
     }))
-    for s in ("ops-init.sh", "ops-verdict.sh", "ops-task.sh", "ops-stop-hook.sh"):
+    for s in ("ops-init.sh", "ops-verdict.sh", "ops-task.sh", "ops-adopt.sh",
+              "ops-stop-hook.sh", "ops-sessionstart-hook.sh"):
         write(root / "scripts" / s, "#!/usr/bin/env bash\nset -eu\necho ok\n")
 
 
@@ -148,6 +157,14 @@ class ValidatorTest(unittest.TestCase):
                                    "scripts/ops-verdict.sh"))
         self.assertFires(".operator/bin/ops-verdict.sh")
 
+    def test_charter_missing_adopt_cli_path(self):
+        # Every CLI ops-init installs must be reachable from the charter —
+        # ops-adopt.sh is the /clear recovery path and was the one most likely
+        # to be shipped without a charter reference.
+        write(self.dir / "templates" / "OPERATOR.md",
+              GOOD_CHARTER.replace(".operator/bin/ops-adopt.sh", "ops-adopt.sh"))
+        self.assertFires(".operator/bin/ops-adopt.sh")
+
     # --- 5. ledger schema ---
     def test_verdicts_header_wrong(self):
         write(self.dir / "templates" / "VERDICTS-header.md",
@@ -183,6 +200,23 @@ class ValidatorTest(unittest.TestCase):
         write(p, json.dumps(d))
         self.assertFires("ops-stop-hook.sh")
 
+    def test_sessionstart_hook_missing(self):
+        # Without it the agent never learns its session id, so every sentinel
+        # is opened unowned and blocks every concurrent session.
+        p = self.dir / "hooks" / "hooks.json"
+        d = json.loads(p.read_text())
+        del d["hooks"]["SessionStart"]
+        write(p, json.dumps(d))
+        self.assertFires("no SessionStart hook command found")
+
+    def test_sessionstart_hook_not_plugin_root(self):
+        p = self.dir / "hooks" / "hooks.json"
+        d = json.loads(p.read_text())
+        d["hooks"]["SessionStart"][0]["hooks"][0]["command"] = \
+            "bash scripts/ops-sessionstart-hook.sh"
+        write(p, json.dumps(d))
+        self.assertFires("SessionStart command should use")
+
     # --- 8. scripts ---
     def test_script_syntax_error(self):
         write(self.dir / "scripts" / "ops-init.sh",
@@ -196,6 +230,14 @@ class ValidatorTest(unittest.TestCase):
     def test_ops_task_missing(self):
         (self.dir / "scripts" / "ops-task.sh").unlink()
         self.assertFires("scripts/ops-task.sh: missing")
+
+    def test_ops_adopt_missing(self):
+        (self.dir / "scripts" / "ops-adopt.sh").unlink()
+        self.assertFires("scripts/ops-adopt.sh: missing")
+
+    def test_ops_sessionstart_hook_missing(self):
+        (self.dir / "scripts" / "ops-sessionstart-hook.sh").unlink()
+        self.assertFires("scripts/ops-sessionstart-hook.sh: missing")
 
 
 if __name__ == "__main__":

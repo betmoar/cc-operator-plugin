@@ -16,6 +16,8 @@ INIT="$SCRIPTS/ops-init.sh"
 VERDICT="$SCRIPTS/ops-verdict.sh"
 HOOK="$SCRIPTS/ops-stop-hook.sh"
 TASK="$SCRIPTS/ops-task.sh"
+ADOPT="$SCRIPTS/ops-adopt.sh"
+SSHOOK="$SCRIPTS/ops-sessionstart-hook.sh"
 
 # Absolute bash so a restricted PATH (case 5) governs only the hook's INTERNAL
 # command lookups (jq/python3), not the launch of bash itself.
@@ -51,7 +53,7 @@ run_hook() { # run_hook <fixture> <cwd> [restricted-PATH]
 
 echo "== T2 test runner =="
 echo "scripts under test: $SCRIPTS"
-for s in "$INIT" "$VERDICT" "$HOOK" "$TASK"; do
+for s in "$INIT" "$VERDICT" "$HOOK" "$TASK" "$ADOPT" "$SSHOOK"; do
   [ -f "$s" ] && echo "  present: ${s##*/}" || echo "  MISSING: ${s##*/} (expected to fail in RED)"
 done
 
@@ -171,6 +173,7 @@ echo "-- Case 6: project-installed gate CLIs (.operator/bin) + ops-task opener"
 P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
 check "init installs .operator/bin/ops-verdict.sh (executable)" "$([ -x "$P/.operator/bin/ops-verdict.sh" ] && echo 0 || echo 1)"
 check "init installs .operator/bin/ops-task.sh (executable)" "$([ -x "$P/.operator/bin/ops-task.sh" ] && echo 0 || echo 1)"
+check "init installs .operator/bin/ops-adopt.sh (executable)" "$([ -x "$P/.operator/bin/ops-adopt.sh" ] && echo 0 || echo 1)"
 # re-run refreshes the bin copies (the upgrade path) — unlike the ledgers,
 # which are never clobbered
 printf '#!/usr/bin/env bash\necho stale\n' > "$P/.operator/bin/ops-verdict.sh"
@@ -225,6 +228,175 @@ check "newline/pipe in defer reason → refused" "$([ "$DRC2" -ne 0 ] && echo 0 
 # clean inputs still pass end-to-end after the hygiene guards
 ( cd "$P" && bash "$VERDICT" T-P "crit" "42 passed, 0 failed" PASS >/dev/null 2>&1 ); CRC=$?
 check "clean row still accepted after guards" "$([ "$CRC" -eq 0 ] && [ ! -e "$P/.operator/pending/T-P" ] && echo 0 || echo 1)"
+rm -rf "$P"
+
+########################################################################
+echo "-- Case 8: sentinel ownership — block your own, report the other session's"
+# INVARIANT (spec §4.1 criteria 1+3): a session's Stop gate answers only for the
+# tasks it owns. The field failure was the inverse: session A was trapped by
+# session B's task, and its only escapes both disarmed B's gate.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+( cd "$P" && bash "$TASK" T-A --owner SESS-A >/dev/null 2>&1 )
+check "sentinel stamps its owner" "$(grep -q '^session_id: SESS-A$' "$P/.operator/pending/T-A" && echo 0 || echo 1)"
+# 8a: the owning session is blocked
+run_hook stop-session-a.json "$P"
+check "owner's Stop → exit 2 on its own task" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+check "owner's block message names T-A" "$(printf '%s' "$HERR" | grep -q 'T-A' && echo 0 || echo 1)"
+# 8b: the bystander session is NOT blocked, but is told
+run_hook stop-session-b.json "$P"
+check "foreign session's Stop → exit 0 (not trapped)" "$([ "$HRC" -eq 0 ] && echo 0 || echo 1)"
+check "foreign session is told, not blocked" "$(printf '%s' "$HERR" | grep -q 'owned by another session' && echo 0 || echo 1)"
+# 8c: mixed — block, and name ONLY the caller's own task
+( cd "$P" && bash "$TASK" T-B --owner SESS-B >/dev/null 2>&1 )
+run_hook stop-session-a.json "$P"
+check "mixed pending → owner still blocked (exit 2)" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+BLOCKLINE="$(printf '%s' "$HERR" | grep 'pending verdict(s):' || true)"
+check "block line names T-A only, never T-B" "$(printf '%s' "$BLOCKLINE" | grep -q 'T-A' && ! printf '%s' "$BLOCKLINE" | grep -q 'T-B' && echo 0 || echo 1)"
+# 8d: SessionStart hook injects the id (the only channel that carries it)
+SSOUT="$(sed "s|<tmp>|$P|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+check "sessionstart hook emits additionalContext with the id" "$(printf '%s' "$SSOUT" | grep -q 'additionalContext' && printf '%s' "$SSOUT" | grep -q 'SESS-A' && echo 0 || echo 1)"
+# outside an operator project it must stay completely silent
+Q="$(newproj)"
+SSQ="$(sed "s|<tmp>|$Q|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"; SSQRC=$?
+check "sessionstart hook silent outside operator projects" "$([ "$SSQRC" -eq 0 ] && [ -z "$SSQ" ] && echo 0 || echo 1)"
+rm -rf "$Q" "$P"
+
+########################################################################
+echo "-- Case 9: migration safety — an unowned sentinel blocks EVERY session"
+# INVARIANT (spec §4.1 criterion 2): unowned fails CLOSED. Pre-0.4 sentinels are
+# empty files; they must keep gating, or upgrading the plugin would silently
+# disarm every in-flight task. Deliberately the opposite default from case 5's
+# fail-open — a broken plugin must not brick a session, but an unowned sentinel
+# is a real open task.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+: > "$P/.operator/pending/T-OLD"          # exactly the pre-0.4 format
+run_hook stop-session-a.json "$P"
+check "pre-0.4 empty sentinel blocks session A" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+run_hook stop-session-b.json "$P"
+check "pre-0.4 empty sentinel blocks session B too" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+run_hook stop-basic.json "$P"
+check "payload without session_id → pre-0.4 behavior (exit 2)" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+# an owned sentinel + a payload carrying no session_id also blocks (fail closed)
+rm -f "$P/.operator/pending/T-OLD"
+( cd "$P" && bash "$TASK" T-A --owner SESS-A >/dev/null 2>&1 )
+run_hook stop-basic.json "$P"
+check "no session_id in payload → owned sentinel still blocks" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+# ops-task without --owner produces an unowned sentinel and says so
+rm -f "$P/.operator/pending/T-A"
+TOUT="$( cd "$P" && bash "$TASK" T-N 2>&1 )"
+check "ops-task without --owner warns it is unowned" "$(printf '%s' "$TOUT" | grep -qi 'UNOWNED' && echo 0 || echo 1)"
+run_hook stop-session-b.json "$P"
+check "unowned sentinel from ops-task blocks a foreign session" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+rm -rf "$P"
+
+########################################################################
+echo "-- Case 10: writer ownership gate + ops-adopt"
+# INVARIANT (spec §4.1 criterion 3): B never gains the ability to close A's row.
+# Closing a row you did not perform is the exact failure the evidence gate
+# exists to prevent — so the writer refuses it, it is not merely discouraged.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+( cd "$P" && bash "$TASK" T-A --owner SESS-A >/dev/null 2>&1 )
+ROWS_BEFORE="$(wc -l < "$P/.operator/VERDICTS.md")"
+( cd "$P" && bash "$VERDICT" T-A "crit" "evidence" PASS --owner SESS-B >/dev/null 2>&1 ); XRC=$?
+check "foreign --owner → verdict refused" "$([ "$XRC" -ne 0 ] && echo 0 || echo 1)"
+check "foreign --owner → no row, sentinel intact" "$([ "$(wc -l < "$P/.operator/VERDICTS.md")" = "$ROWS_BEFORE" ] && [ -e "$P/.operator/pending/T-A" ] && echo 0 || echo 1)"
+( cd "$P" && bash "$VERDICT" T-A --defer "not mine" --owner SESS-B >/dev/null 2>&1 ); DXRC=$?
+check "foreign --owner → --defer also refused" "$([ "$DXRC" -ne 0 ] && [ -e "$P/.operator/pending/T-A" ] && echo 0 || echo 1)"
+# the owner itself closes fine
+( cd "$P" && bash "$VERDICT" T-A "crit" "evidence" PASS --owner SESS-A >/dev/null 2>&1 ); ORC=$?
+check "matching --owner → verdict accepted" "$([ "$ORC" -eq 0 ] && [ ! -e "$P/.operator/pending/T-A" ] && echo 0 || echo 1)"
+# missing --owner warns but proceeds (a /clear'd session must still close its work)
+( cd "$P" && bash "$TASK" T-W --owner SESS-A >/dev/null 2>&1 )
+WOUT="$( cd "$P" && bash "$VERDICT" T-W "crit" "evidence" PASS 2>&1 )"; WRC=$?
+check "missing --owner → warns but proceeds" "$([ "$WRC" -eq 0 ] && printf '%s' "$WOUT" | grep -qi 'warning' && echo 0 || echo 1)"
+# adopt: the /clear recovery path
+( cd "$P" && bash "$TASK" T-C --owner SESS-A >/dev/null 2>&1 )
+( cd "$P" && bash "$ADOPT" --owner SESS-B T-C >/dev/null 2>&1 ); ARC=$?
+check "ops-adopt exits 0 and re-stamps the owner" "$([ "$ARC" -eq 0 ] && grep -q '^session_id: SESS-B$' "$P/.operator/pending/T-C" && echo 0 || echo 1)"
+check "ops-adopt preserves opened_at" "$(grep -q '^opened_at: ' "$P/.operator/pending/T-C" && echo 0 || echo 1)"
+run_hook stop-session-b.json "$P"
+check "after adopt, the new owner is blocked" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+( cd "$P" && bash "$VERDICT" T-C "crit" "evidence" PASS --owner SESS-B >/dev/null 2>&1 ); CRC=$?
+check "after adopt, the new owner can close" "$([ "$CRC" -eq 0 ] && echo 0 || echo 1)"
+# adopt guards: traversal / pipe / bulk / unknown id
+echo victim > "$P/victim.txt"
+( cd "$P" && bash "$ADOPT" --owner SESS-B "../../victim.txt" >/dev/null 2>&1 ); TVRC=$?
+check "ops-adopt refuses a traversal task-id" "$([ "$TVRC" -ne 0 ] && [ -f "$P/victim.txt" ] && echo 0 || echo 1)"
+( cd "$P" && bash "$ADOPT" --owner "a|b" T-C >/dev/null 2>&1 ); PVRC=$?
+check "ops-adopt refuses '|' in --owner" "$([ "$PVRC" -ne 0 ] && echo 0 || echo 1)"
+( cd "$P" && bash "$ADOPT" --owner SESS-B >/dev/null 2>&1 ); BLRC=$?
+check "ops-adopt refuses a bulk adopt (no ids)" "$([ "$BLRC" -ne 0 ] && echo 0 || echo 1)"
+( cd "$P" && bash "$ADOPT" --owner SESS-B T-NOPE >/dev/null 2>&1 ); NORC=$?
+check "ops-adopt refuses an id with no open sentinel" "$([ "$NORC" -ne 0 ] && echo 0 || echo 1)"
+( cd "$P" && bash "$TASK" T-T --owner "a/b" >/dev/null 2>&1 ); OTRC=$?
+check "ops-task refuses '/' in --owner" "$([ "$OTRC" -ne 0 ] && echo 0 || echo 1)"
+# re-opening an open task never silently takes it over
+( cd "$P" && bash "$TASK" T-R --owner SESS-A >/dev/null 2>&1 )
+( cd "$P" && bash "$TASK" T-R --owner SESS-B >/dev/null 2>&1 )
+check "re-open does not steal ownership" "$(grep -q '^session_id: SESS-A$' "$P/.operator/pending/T-R" && echo 0 || echo 1)"
+rm -rf "$P"
+
+########################################################################
+echo "-- Case 11: concurrent appends never interleave; --reconcile repairs a merge"
+# INVARIANT (spec §4.3 criterion 4): the file header claims append+clear is one
+# atomic action. Before 0.4 that was a property of printf's buffer size, not a
+# guarantee. Drive it: two shells racing, then assert the schema held for EVERY
+# line — an interleaved write shows up as a row that fails the 4-cell match.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+N=50
+racer() { # racer <tag>
+  local tag="$1" i
+  for i in $(seq 1 "$N"); do
+    ( cd "$P" && bash "$VERDICT" "T-$tag-$i" "criterion $tag $i" "evidence $tag $i" PASS >/dev/null 2>&1 )
+  done
+}
+racer A & RA=$!
+racer B & RB=$!
+wait "$RA" "$RB"
+TOTAL=$((N * 2))
+GOOD="$(grep -cE '^\| T-[AB]-[0-9]+ \| criterion [AB] [0-9]+ \| evidence [AB] [0-9]+ \| PASS \|$' "$P/.operator/VERDICTS.md" || true)"
+ANYROW="$(grep -cE '^\| T-' "$P/.operator/VERDICTS.md" || true)"
+check "concurrent: all $TOTAL rows present" "$([ "$ANYROW" = "$TOTAL" ] && echo 0 || echo 1)"
+check "concurrent: every row matches the 4-cell schema (zero interleaving)" "$([ "$GOOD" = "$TOTAL" ] && echo 0 || echo 1)"
+check "concurrent: lock dir released" "$([ ! -d "$P/.operator/.lock" ] && echo 0 || echo 1)"
+# fragments mirror every row, so a mangled VERDICTS.md merge is recoverable
+FRAG="$(cat "$P"/.operator/verdicts.d/*.md 2>/dev/null | grep -cE '^\| T-' || true)"
+check "concurrent: fragments hold all $TOTAL rows" "$([ "$FRAG" = "$TOTAL" ] && echo 0 || echo 1)"
+# simulate a botched merge: half the rows lost
+grep -vE '^\| T-A-' "$P/.operator/VERDICTS.md" > "$P/v.tmp" && mv "$P/v.tmp" "$P/.operator/VERDICTS.md"
+LOST="$(grep -cE '^\| T-' "$P/.operator/VERDICTS.md" || true)"
+check "merge simulation: rows actually lost" "$([ "$LOST" = "$N" ] && echo 0 || echo 1)"
+( cd "$P" && bash "$VERDICT" --reconcile >/dev/null 2>&1 ); RRC=$?
+RESTORED="$(grep -cE '^\| T-' "$P/.operator/VERDICTS.md" || true)"
+check "--reconcile exits 0 and restores every row" "$([ "$RRC" -eq 0 ] && [ "$RESTORED" = "$TOTAL" ] && echo 0 || echo 1)"
+( cd "$P" && bash "$VERDICT" --reconcile >/dev/null 2>&1 )
+AGAIN="$(grep -cE '^\| T-' "$P/.operator/VERDICTS.md" || true)"
+check "--reconcile is idempotent (no duplicate rows)" "$([ "$AGAIN" = "$TOTAL" ] && echo 0 || echo 1)"
+# --reconcile must REPAIR, never regenerate: hand-written BAR blocks survive
+printf '\n### BAR: hand-written block\n- criterion: must survive reconcile\n' >> "$P/.operator/VERDICTS.md"
+( cd "$P" && bash "$VERDICT" --reconcile >/dev/null 2>&1 )
+check "--reconcile preserves hand-written BAR blocks" "$(grep -q 'BAR: hand-written block' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
+check "init writes .operator/.gitattributes (merge=union)" "$(grep -q 'VERDICTS.md merge=union' "$P/.operator/.gitattributes" && echo 0 || echo 1)"
+# The schema assertions above are NOT discriminating on their own: a short
+# printf usually lands atomically on a local FS even unlocked (that is the
+# spec's point — it is a buffer-size property, not a guarantee). So prove the
+# lock is genuinely held: take it by hand, and assert a writer waits for it.
+( cd "$P" && bash "$TASK" T-LOCK --owner SESS-A >/dev/null 2>&1 )
+mkdir "$P/.operator/.lock"
+( cd "$P" && bash "$VERDICT" T-LOCK "crit" "locked-out" PASS >/dev/null 2>&1 ) &
+LOCKPID=$!
+sleep 1
+check "held lock blocks a concurrent writer" "$(! grep -q 'locked-out' "$P/.operator/VERDICTS.md" && [ -e "$P/.operator/pending/T-LOCK" ] && echo 0 || echo 1)"
+rmdir "$P/.operator/.lock"
+wait "$LOCKPID" 2>/dev/null || true
+check "releasing the lock lets the waiter through" "$(grep -q 'locked-out' "$P/.operator/VERDICTS.md" && [ ! -e "$P/.operator/pending/T-LOCK" ] && echo 0 || echo 1)"
+# A stale lock must never cost a real verdict: after the spin budget the writer
+# proceeds with a warning rather than failing.
+( cd "$P" && bash "$TASK" T-STALE --owner SESS-A >/dev/null 2>&1 )
+mkdir "$P/.operator/.lock"
+SOUT="$( cd "$P" && bash "$VERDICT" T-STALE "crit" "stale-lock" PASS 2>&1 )"; SRC=$?
+rmdir "$P/.operator/.lock" 2>/dev/null || true
+check "stale lock → proceeds with a warning, verdict not lost" "$([ "$SRC" -eq 0 ] && printf '%s' "$SOUT" | grep -qi 'warning' && grep -q 'stale-lock' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
 rm -rf "$P"
 
 ########################################################################

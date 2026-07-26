@@ -1,6 +1,7 @@
 # Design note — cc-operator: concurrent sessions share one sentinel namespace
 
-**Status:** proposal, unimplemented. **Against:** cc-operator 0.3.0.
+**Status:** **implemented in 0.4.0** (§4.1–4.4; see the deltas noted inline).
+**Written against:** cc-operator 0.3.0 — line numbers below are that source.
 **Origin:** observed in the field 2026-07-25, two Claude Code sessions in one working tree of
 `layerprocgen-babylon`. Every claim below was verified against the installed 0.3.0 source in the
 session that hit it; line numbers are that source.
@@ -122,6 +123,13 @@ cannot self-identify.** Three workable options:
 **Recommendation: A**, with B's `cwd` stamped as a secondary discriminator so a worktree split alone
 already helps. C is a trap — it reintroduces the singleton-slot problem this note is about.
 
+> **Implemented (0.4.0): A. One correction to B's role.** `cwd` cannot discriminate: the hook only
+> ever enumerates `$cwd/.operator/pending/` using the cwd from its *own* payload, so a stamped cwd
+> always equals the payload cwd and the comparison is a tautology. It is stamped anyway — as
+> forensics, which is exactly how the field collision was diagnosed — but `session_id` is the only
+> real key. Shipped as `scripts/ops-sessionstart-hook.sh` + a `--owner` flag on `ops-task.sh`,
+> `ops-verdict.sh`, and the new `ops-adopt.sh`.
+
 ### 4.3 Lock the ledger writes
 
 Wrap the append in `flock` where available, degrading gracefully:
@@ -138,6 +146,11 @@ macOS ships no `flock(1)` by default, so the fallback matters; `mkdir`-based loc
 alternative if you want it unconditional. Cheap either way, and it makes the header comment's
 atomicity claim true.
 
+> **Implemented (0.4.0): the unconditional `mkdir` variant.** `command -v flock` exits 1 on the
+> maintainer's macOS, so the `flock` branch would be dead code on half the target platforms and the
+> two platforms would take different code paths — the worse outcome. A lock held >5s is treated as
+> stale and the writer proceeds with a warning: a stale lock must never cost a real verdict.
+
 ### 4.4 Ledger divergence across branches — open design question
 
 Not solved by 4.1–4.3, and the one that needs your judgment: two branches, two appended ledgers,
@@ -146,6 +159,19 @@ concatenated on demand), an explicit single-owner lock (one session may write, o
 accepting hand-merges as the documented cost of concurrency. Worth deciding before recommending
 worktrees to users, because worktrees make concurrent sessions *easier* and therefore this *more
 frequent*.
+
+> **Implemented (0.4.0): fragments, as a repair path rather than the ledger of record.**
+> `VERDICTS.md` stays the single grep-compatible file every consumer depends on; each row is *also*
+> mirrored to `.operator/verdicts.d/<owner>.md`. Fragments merge cleanly across branches, and
+> `ops-verdict.sh --reconcile` appends back any row missing from `VERDICTS.md` — so a bad merge is
+> recoverable from any resolution. `.operator/.gitattributes` marks both ledgers `merge=union` to
+> avoid most conflicts up front.
+>
+> `--reconcile` **repairs, never regenerates.** `VERDICTS.md` also carries hand-appended BAR blocks
+> (charter § ENGAGEMENT CONTRACT); a rebuild-from-fragments would destroy them. Locked by a test.
+>
+> `DECISIONS.md` deliberately gets the lock and `merge=union` but **no** fragments — it is a log,
+> not the evidence of record.
 
 ## 5. Suggested acceptance criteria
 
@@ -158,6 +184,17 @@ frequent*.
    schema).
 5. `stop_hook_active` loop guard (`ops-stop-hook.sh:69`) and the no-parser fail-open (`:34`) behave
    exactly as today — neither path regresses.
+
+> **Status of §5 (0.4.0):** all five criteria are executable in
+> `tests/test-scripts.sh` — criteria 1+3 as case 8, criterion 2 as case 9, the writer-side half of
+> criterion 3 as case 10, criterion 4 as case 11, criterion 5 as cases 4/5 re-run unchanged.
+> Case 11 adds an assertion this note did not ask for and that the loop-drive alone does not
+> provide: the 4-cell schema check passes on the *unlocked* code too (a short `printf` usually
+> lands atomically on a local FS — the note says as much), so the test also takes the lock by hand
+> and asserts a writer waits for it.
+>
+> One thing CI still cannot prove: that a real SessionStart payload carries `cwd` and that
+> `additionalContext` reaches the model. Verified live, not in CI.
 
 ## 6. Companion note
 
@@ -175,3 +212,8 @@ This note deliberately does not touch the charter document (`OPERATOR.md`) — t
 single-writer rule is *correct*, it simply is not mechanically enforced across sessions. 4.3 makes
 the mechanism match the stated contract; 4.1 makes the gate match the charter's intent that a
 session is accountable for **its own** criteria.
+
+> **Amended in 0.4.0.** The charter's *rules* are unchanged, as intended — but its *CLI surface*
+> had to change, because a rule the operator cannot execute is not enforced: EVIDENCE GATE now
+> shows `--owner` on the task/verdict commands, and RECOVERY PROTOCOL gains an adopt step (a
+> session id rotates on `/clear`, which is precisely when RECOVERY runs). 141/150 lines.

@@ -32,8 +32,13 @@ when violated:
      track the recommended version. No agent references the build-specific
      `unknowns-harness` / `F1..F13` naming.
   7. hooks/hooks.json parses and registers a Stop hook whose command points at
-     scripts/ops-stop-hook.sh via ${CLAUDE_PLUGIN_ROOT}.
-  8. The four gate scripts exist and are syntactically valid bash (`bash -n`).
+     scripts/ops-stop-hook.sh, and a SessionStart hook pointing at
+     scripts/ops-sessionstart-hook.sh — both via ${CLAUDE_PLUGIN_ROOT}. The
+     SessionStart hook is load-bearing, not cosmetic: it is the only channel
+     through which the agent learns its own session id (CLAUDE_SESSION_ID is
+     not set in the Bash tool environment), and without that id every sentinel
+     is opened unowned and blocks every concurrent session.
+  8. The gate scripts exist and are syntactically valid bash (`bash -n`).
 
 Run from anywhere: python3 scripts/validate_plugin.py [repo-root]
 Exit 0 = all contracts hold; exit 1 = failures listed on stderr.
@@ -61,6 +66,9 @@ CHARTER_SECTION_ORDER = [
     "PRECEDENCE",
 ]
 VERDICTS_HEADER = "| Gate | Criterion | Evidence | PASS/FAIL |"
+# The .operator/bin install set (ops-init.sh) — every one must be named in the
+# charter by its project-relative path.
+CHARTER_REQUIRED_CLIS = ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh")
 AGENT_MODEL_ALIASES = ("opus", "sonnet", "haiku")
 
 
@@ -137,12 +145,16 @@ def check_charter(root, problems):
             f"expected {CHARTER_SECTION_ORDER}")
 
     text = "\n".join(lines)
-    if ".operator/bin/ops-verdict.sh" not in text:
-        problems.append(
-            "templates/OPERATOR.md: does not reference "
-            "'.operator/bin/ops-verdict.sh' — the charter must name the "
-            "project-installed CLI path (a scripts/ path does not resolve in "
-            "a target project)")
+    # Every CLI ops-init installs into .operator/bin must be reachable from the
+    # charter — that project-relative path is the only one that resolves in a
+    # target project (the model's shell has no ${CLAUDE_PLUGIN_ROOT}).
+    for cli in CHARTER_REQUIRED_CLIS:
+        if f".operator/bin/{cli}" not in text:
+            problems.append(
+                f"templates/OPERATOR.md: does not reference "
+                f"'.operator/bin/{cli}' — the charter must name every "
+                f"project-installed CLI path (a scripts/ path does not "
+                f"resolve in a target project)")
 
     tags = TAG_RE.findall(text)
     if len(tags) < len([h for h in headings]):
@@ -211,23 +223,27 @@ def check_hook(root, problems):
     hook = load_json(hp, problems)
     if hook is None:
         return
-    try:
-        stop = hook["hooks"]["Stop"]
-        cmd = stop[0]["hooks"][0]["command"]
-    except (KeyError, IndexError, TypeError):
-        problems.append("hooks/hooks.json: no Stop hook command found")
-        return
-    if "ops-stop-hook.sh" not in cmd:
-        problems.append(
-            f"hooks/hooks.json: Stop command does not point at "
-            f"ops-stop-hook.sh (got {cmd!r})")
-    if "${CLAUDE_PLUGIN_ROOT}" not in cmd:
-        problems.append(
-            "hooks/hooks.json: Stop command should use ${CLAUDE_PLUGIN_ROOT}")
+    for event, script in (("Stop", "ops-stop-hook.sh"),
+                          ("SessionStart", "ops-sessionstart-hook.sh")):
+        try:
+            cmd = hook["hooks"][event][0]["hooks"][0]["command"]
+        except (KeyError, IndexError, TypeError):
+            problems.append(f"hooks/hooks.json: no {event} hook command found")
+            continue
+        if script not in cmd:
+            problems.append(
+                f"hooks/hooks.json: {event} command does not point at "
+                f"{script} (got {cmd!r})")
+        if "${CLAUDE_PLUGIN_ROOT}" not in cmd:
+            problems.append(
+                f"hooks/hooks.json: {event} command should use "
+                "${CLAUDE_PLUGIN_ROOT}")
 
 
 def check_scripts(root, problems):
-    for name in ("ops-init.sh", "ops-verdict.sh", "ops-task.sh", "ops-stop-hook.sh"):
+    for name in ("ops-init.sh", "ops-verdict.sh", "ops-task.sh",
+                 "ops-adopt.sh", "ops-stop-hook.sh",
+                 "ops-sessionstart-hook.sh"):
         p = root / "scripts" / name
         if not p.is_file():
             problems.append(f"scripts/{name}: missing")

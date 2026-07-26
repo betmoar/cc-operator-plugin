@@ -15,8 +15,9 @@ copied verbatim.
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-init.sh"
    ```
 
-   This creates `.operator/VERDICTS.md`, `.operator/DECISIONS.md`, and
-   `.operator/pending/` in the project root.
+   This creates `.operator/VERDICTS.md`, `.operator/DECISIONS.md`,
+   `.operator/pending/`, `.operator/verdicts.d/`, and `.operator/.gitattributes`
+   in the project root, and installs the gate CLIs into `.operator/bin/`.
 
 2. **Materialize the charter.** Read
    `${CLAUDE_PLUGIN_ROOT}/templates/OPERATOR.md` and Write its content

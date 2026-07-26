@@ -1,24 +1,73 @@
 #!/usr/bin/env bash
 # ops-task.sh — open a tracked task: drop the sentinel .operator/pending/<id>.
 # The Stop hook blocks session end until ops-verdict.sh clears the sentinel
-# (verdict row or --defer). Idempotent: re-opening an open id is a no-op.
+# (verdict row or --defer). Idempotent: re-opening an open id is a no-op —
+# including its ownership, so re-opening can never be a silent takeover.
 #
-# Usage: run from the project root (cwd):  ops-task.sh <task-id>
+# The sentinel body stamps who opened it, so the Stop hook can block only the
+# OWNING session and merely report everyone else's open tasks:
+#
+#   session_id: <id>     omitted when unknown → unowned → blocks every session
+#   cwd: <path>          forensics only (the hook enumerates by payload cwd)
+#   opened_at: <ISO8601>
+#
+# The agent learns its session id from the SessionStart hook's injected context;
+# CLAUDE_SESSION_ID is NOT set in the Bash tool environment.
+#
+# Usage: run from the project root (cwd):  ops-task.sh <task-id> [--owner <sid>]
 set -eu
 
 OPDIR=".operator"
 
 die() { echo "ops-task: $1" >&2; exit 2; }
 
-ID="${1:-}"
-[ -n "$ID" ] || die "missing task-id (usage: ops-task.sh <task-id>)"
 NL="$(printf '\nx')"; NL="${NL%x}"
-case "$ID" in
-  */* | . | ..) die "task-id must be a bare name (no '/', '.', '..')" ;;
-  *"|"* | *"$NL"*) die "task-id must not contain '|' or newlines — it becomes a ledger cell" ;;
-esac
+
+# A bare name: it is a filename (sentinel, and downstream a fragment file), so
+# a '/' would let a later rm -f reach outside .operator/ — the 2026-07-10
+# traversal bug. '|' and newlines would break the one-line 4-cell ledger schema.
+check_bare_name() { # check_bare_name <label> <value>
+  case "$2" in
+    */* | . | ..) die "$1 must be a bare name (no '/', '.', '..')" ;;
+    *"|"* | *"$NL"*) die "$1 must not contain '|' or newlines" ;;
+  esac
+}
+
+ID=""
+OWNER=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --owner)
+      [ $# -ge 2 ] || die "--owner requires a session id"
+      OWNER="$2"; shift 2 ;;
+    --owner=*) OWNER="${1#--owner=}"; shift ;;
+    -*) die "unknown option '$1' (usage: ops-task.sh <task-id> [--owner <sid>])" ;;
+    *)
+      [ -z "$ID" ] || die "unexpected extra argument '$1'"
+      ID="$1"; shift ;;
+  esac
+done
+
+[ -n "$ID" ] || die "missing task-id (usage: ops-task.sh <task-id> [--owner <sid>])"
+check_bare_name "task-id" "$ID"
+if [ -n "$OWNER" ]; then check_bare_name "owner" "$OWNER"; fi
 [ -d "$OPDIR" ] || die "no $OPDIR/ in cwd — run ops-init.sh first"
 
 mkdir -p "$OPDIR/pending"
-: > "$OPDIR/pending/$ID"
-echo "opened $ID (sentinel $OPDIR/pending/$ID — cleared only by ops-verdict.sh)"
+
+if [ -e "$OPDIR/pending/$ID" ]; then
+  echo "already open: $ID (ownership unchanged — use ops-adopt.sh to re-stamp)"
+  exit 0
+fi
+
+{
+  if [ -n "$OWNER" ]; then printf 'session_id: %s\n' "$OWNER"; fi
+  printf 'cwd: %s\n' "$PWD"
+  printf 'opened_at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+} > "$OPDIR/pending/$ID"
+
+if [ -n "$OWNER" ]; then
+  echo "opened $ID owned by $OWNER (sentinel $OPDIR/pending/$ID — cleared only by ops-verdict.sh)"
+else
+  echo "opened $ID UNOWNED — blocks every session's Stop; pass --owner <sid> to scope it"
+fi

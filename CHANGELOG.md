@@ -9,6 +9,64 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-27
+
+Concurrent sessions in one working tree no longer trap each other. Field report
+and design: `docs/spec/concurrent-sessions.md`.
+
+### Changed
+- **BREAKING (behavioral)** — Task sentinels now carry an owner
+  (`session_id` / `cwd` / `opened_at`); previously they were empty files. The
+  Stop hook blocks only on sentinels owned by **that** session and reports
+  other sessions' as informational. Previously any session's open task blocked
+  every session in the tree, and the only escapes — closing the row or
+  `--defer`ring it — both wrote evidence the session had not captured and
+  silently disarmed the other session's completion gate.
+  A sentinel with **no** owner still blocks every session, so pre-0.4 sentinels
+  and any `ops-task.sh` call without `--owner` keep gating exactly as before.
+- `ops-task.sh` and `ops-verdict.sh` accept `--owner <session-id>`.
+  `ops-verdict.sh` **refuses** (exit 2, no row, sentinel intact) when `--owner`
+  contradicts the sentinel's owner; a missing `--owner` warns and proceeds, so
+  a session whose id rotated can still close its own work.
+- `ops-verdict.sh` appends under a `mkdir`-based lock (`flock(1)` is absent on
+  macOS), making the file header's atomicity claim true rather than a property
+  of `printf`'s buffer size. A lock held >5s is treated as stale: the writer
+  proceeds with a warning, because a stale lock must never cost a real verdict.
+- Re-opening an already-open task is still a no-op, now explicitly **including
+  its ownership** — re-open can never be a silent takeover.
+
+### Added
+- `scripts/ops-sessionstart-hook.sh` + a `SessionStart` hook registration — the
+  only channel by which the agent can learn its own session id
+  (`CLAUDE_SESSION_ID` is not set in the Bash tool environment). Silent outside
+  operator projects and when no JSON parser is present.
+- `scripts/ops-adopt.sh` (installed to `.operator/bin/`) — re-stamps named
+  sentinels to a new session id. A session id rotates on `/clear`, so without
+  this a session's own tasks would degrade to "foreign" and stop gating it. The
+  charter's RECOVERY PROTOCOL now ends with adoption. Explicit ids only: there
+  is deliberately no bulk adopt.
+- Per-session row fragments at `.operator/verdicts.d/<owner>.md`, plus
+  `ops-verdict.sh --reconcile`, which restores to `VERDICTS.md` any row present
+  in a fragment but missing from it (idempotent). Two branches append to two
+  different files and merge cleanly; a mangled `VERDICTS.md` merge can be
+  resolved any way at all and then repaired. It repairs, never regenerates —
+  hand-written BAR blocks survive.
+- `ops-init.sh` writes `.operator/.gitattributes` marking the ledgers
+  `merge=union`, and creates `verdicts.d/`. Scoped to `.operator/` so the host
+  repo's root `.gitattributes` is never touched.
+- Test cases 8–11 in `tests/test-scripts.sh` covering the spec's five
+  acceptance criteria: the ownership partition, pre-0.4 migration safety, the
+  writer's ownership refusal and adoption, 2×50 concurrent appends with a
+  full-schema assertion, genuine lock mutual-exclusion, and reconcile.
+- Validator: the SessionStart hook must be registered via
+  `${CLAUDE_PLUGIN_ROOT}`, and every CLI in the `.operator/bin` install set must
+  be named in the charter by its project-relative path.
+
+### Known limitation
+- `DECISIONS.md` gets the lock and `merge=union` but no fragments. It is a log,
+  not the evidence of record; the fragment machinery exists to make verdict rows
+  unloseable.
+
 ## [0.3.0] - 2026-07-10
 
 ### Changed

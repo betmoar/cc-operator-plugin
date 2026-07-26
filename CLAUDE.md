@@ -14,13 +14,24 @@ and the maintainer's local `.archive/dev/` (untracked).
   section order and a citation tag on every rule line; `scripts/validate_plugin.py`
   enforces all three. When you edit it, re-run the validator — the cap is a hard
   gate, not a target.
-- **The evidence gate is four scripts that must agree**: `ops-init.sh` scaffolds
-  `.operator/` and installs `ops-verdict.sh` + `ops-task.sh` into
-  `.operator/bin/` (refreshed on every run — the upgrade path), `ops-task.sh`
-  opens a task by dropping the sentinel, `ops-verdict.sh` is the *single
-  writer* to `VERDICTS.md`, and `ops-stop-hook.sh` blocks Stop while
-  `.operator/pending/` is non-empty. The sentinel filename `<id>` is the shared
-  key; change the convention in one place and you break the gate.
+- **The evidence gate is six scripts that must agree**: `ops-init.sh` scaffolds
+  `.operator/` and installs `ops-verdict.sh` + `ops-task.sh` + `ops-adopt.sh`
+  into `.operator/bin/` (refreshed on every run — the upgrade path),
+  `ops-task.sh` opens a task by dropping the sentinel, `ops-verdict.sh` is the
+  *single writer* to `VERDICTS.md`, `ops-adopt.sh` re-stamps sentinel ownership,
+  `ops-stop-hook.sh` blocks Stop while a sentinel *this session owns* is
+  pending, and `ops-sessionstart-hook.sh` injects the session id the whole
+  ownership mechanism keys on. The sentinel filename `<id>` is the shared key;
+  change the convention in one place and you break the gate.
+- **Sentinel ownership is what makes the gate concurrency-safe** (0.4.0, spec
+  `docs/spec/concurrent-sessions.md`). A sentinel stamps `session_id:`;
+  `ops-stop-hook.sh` blocks on *mine + unowned* and merely reports *foreign*.
+  Unowned fails **closed** — that is what keeps pre-0.4 empty sentinels gating,
+  and it is deliberately the opposite default from the no-parser fail-open in
+  the same file. Both are right: an unparseable payload is a plugin failure, an
+  unowned sentinel is a real open task. `CLAUDE_SESSION_ID` is **not** in the
+  Bash tool env — only hooks get `session_id` — so the SessionStart hook is
+  load-bearing, not a convenience.
 - **The charter references the gate CLIs at `.operator/bin/...`** — the copies
   `ops-init.sh` installs into the target project, because the model's shell has
   no `${CLAUDE_PLUGIN_ROOT}` and a `scripts/` path resolves only inside this
@@ -37,8 +48,10 @@ and the maintainer's local `.archive/dev/` (untracked).
 | the plugin name in `plugin.json` | update `marketplace.json` name, the `/cc-operator:` command refs in `OPERATOR.md` + `SKILL.md`, `README`, and `validate_plugin.PLUGIN_NAME` |
 | `templates/VERDICTS-header.md`'s table header | update `validate_plugin.VERDICTS_HEADER` and know you are breaking every existing ledger's grep-compatibility |
 | a charter section heading or its order | update `validate_plugin.CHARTER_SECTION_ORDER` |
-| the sentinel/pending convention in any `ops-*.sh` | update the other three scripts, `tests/test-scripts.sh`, and the EVIDENCE GATE prose in `OPERATOR.md` |
-| the `.operator/bin` install set in `ops-init.sh` | update the charter's EVIDENCE GATE paths, the stop-hook fallback message, `tests/test-scripts.sh` case 6, and validator check 4 |
+| the sentinel/pending convention in any `ops-*.sh` | update the other scripts, `tests/test-scripts.sh`, and the EVIDENCE GATE prose in `OPERATOR.md` |
+| the `.operator/bin` install set in `ops-init.sh` | update the charter's EVIDENCE GATE paths, the stop-hook fallback message, `tests/test-scripts.sh` case 6, and `validate_plugin.CHARTER_REQUIRED_CLIS` + `check_scripts` |
+| the sentinel body format (`session_id:` line) | update `ops-task.sh`, `ops-adopt.sh`, both parsers (`ops-verdict.sh:sentinel_owner`, `ops-stop-hook.sh:sentinel_owner` — the latter **must** stay builtin-only), and `tests/test-scripts.sh` cases 8–10 |
+| the fragment/lock scheme in `ops-verdict.sh` | update `ops-init.sh` (`verdicts.d/`, `.gitattributes`), the README evidence-gate section, and `tests/test-scripts.sh` case 11 |
 | `plugin.json` `version` | add the matching `## [x.y.z]` as the newest heading in `CHANGELOG.md`, same commit (the release gate fails otherwise) |
 | the Stop-hook command in `hooks.json` | keep `ops-stop-hook.sh` + `${CLAUDE_PLUGIN_ROOT}` (validator check 7) |
 | an agent's model/tools/NEEDS_CONTEXT | keep it project-agnostic — no `unknowns-harness`/`F1..F13` — and keep `model:` a tier alias (`opus`/`sonnet`/`haiku`), never a pinned ID (validator check 6) |
@@ -69,10 +82,16 @@ and the maintainer's local `.archive/dev/` (untracked).
   relative script paths (in `tests/`) assume root; `${CLAUDE_PLUGIN_ROOT}`
   paths are layout-independent and were unaffected.
 - **CI cannot run the live-session tests.** `tests/test-scripts.sh` exercises the
-  hook at fixture level (JSON on stdin). The *live* behavior — the hook firing on
-  a real turn-end, `SubagentStop` non-interference — was proven manually
-  (2026-07-07, build ledger in git history ≤ v0.2.0), not in CI. A green CI is
-  necessary, not sufficient, for the gate; re-verify live after changing the hook.
+  hooks at fixture level (JSON on stdin). The *live* behavior — the Stop hook
+  firing on a real turn-end, `SubagentStop` non-interference, and (0.4.0) that a
+  real **SessionStart payload carries `cwd`** and its `additionalContext`
+  actually reaches the model — was proven manually, not in CI. A green CI is
+  necessary, not sufficient, for the gate; re-verify live after changing a hook.
+- **A concurrency test that only asserts the output schema proves nothing.**
+  A short `printf` usually lands atomically on a local FS *without* any lock, so
+  "100 well-formed rows" passes on the unlocked code too. `tests/test-scripts.sh`
+  case 11 therefore also takes the lock dir by hand and asserts a writer waits —
+  that is the assertion that would fail if the lock were removed. Keep it.
 
 ## Provenance
 
