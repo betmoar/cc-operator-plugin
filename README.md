@@ -89,7 +89,12 @@ the charter instructs the operator to pass it as `--owner`.
 marks the ledgers `merge=union`. If `VERDICTS.md` still comes out of a merge
 wrong, resolve it any way at all and run `--reconcile` — every row is restored
 from the fragments. It repairs, never regenerates: hand-written BAR blocks in
-`VERDICTS.md` survive untouched.
+`VERDICTS.md` survive untouched, and any fragment line that does not match the
+4-cell `PASS`/`FAIL` schema is skipped and reported rather than copied in.
+
+Task ids and session ids are filenames, so they must be bare names: no `/`, no
+leading `.` (a dotfile sentinel would be invisible to the Stop hook's glob), no
+`|` or newlines (they would break the ledger's one-line row schema).
 
 ## Repository layout
 

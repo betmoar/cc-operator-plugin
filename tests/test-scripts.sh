@@ -400,5 +400,58 @@ check "stale lock → proceeds with a warning, verdict not lost" "$([ "$SRC" -eq
 rm -rf "$P"
 
 ########################################################################
+echo "-- Case 12: name guards agree across all three CLIs; reconcile validates"
+# INVARIANT: a sentinel the Stop hook cannot SEE is worse than no sentinel — it
+# is an open task that never blocks. The hook enumerates pending/ with a plain
+# glob, which does not match dotfiles, so a leading dot must be refused at every
+# entry point. All three CLIs must agree: a guard enforced in one place only is
+# the shape of the 2026-07-10 traversal bug.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+# the underlying fact this guard exists for
+DOTDIR="$(newproj)"; : > "$DOTDIR/.hidden"; : > "$DOTDIR/visible"
+# shellcheck disable=SC2034  # the loop var is unused on purpose: we count matches
+shopt -s nullglob; GLOBN=0; for _f in "$DOTDIR"/*; do GLOBN=$((GLOBN+1)); done; shopt -u nullglob
+check "premise: a plain glob does NOT see dotfiles" "$([ "$GLOBN" = "1" ] && echo 0 || echo 1)"
+rm -rf "$DOTDIR"
+( cd "$P" && bash "$TASK" ".hidden" --owner SESS-A >/dev/null 2>&1 ); T1=$?
+check "ops-task refuses a dot-prefixed task-id" "$([ "$T1" -ne 0 ] && echo 0 || echo 1)"
+( cd "$P" && bash "$VERDICT" ".hidden" crit ev PASS --owner SESS-A >/dev/null 2>&1 ); T2=$?
+check "ops-verdict refuses a dot-prefixed task-id" "$([ "$T2" -ne 0 ] && echo 0 || echo 1)"
+# NOTE: ops-adopt would also exit non-zero here for the unrelated reason "no
+# such open task", so assert on the MESSAGE, not just the exit code — otherwise
+# this passes against a build with no dot guard at all.
+ADOUT="$( cd "$P" && bash "$ADOPT" --owner SESS-A ".hidden" 2>&1 )"; T3=$?
+check "ops-adopt refuses a dot-prefixed task-id (by name, not by absence)" "$([ "$T3" -ne 0 ] && printf '%s' "$ADOUT" | grep -q "start with '\.'" && echo 0 || echo 1)"
+check "no dotfile sentinel was created" "$([ ! -e "$P/.operator/pending/.hidden" ] && echo 0 || echo 1)"
+# a dot-prefixed --owner would produce an invisible fragment file, same class
+( cd "$P" && bash "$TASK" T-DOT --owner ".sneaky" >/dev/null 2>&1 ); T4=$?
+check "ops-task refuses a dot-prefixed --owner" "$([ "$T4" -ne 0 ] && echo 0 || echo 1)"
+# '.' and '..' stay refused — the leading-dot rule must SUBSUME the traversal
+# guard, not replace it
+echo victim > "$P/victim.txt"
+( cd "$P" && bash "$VERDICT" ".." crit ev PASS >/dev/null 2>&1 ); DDRC=$?
+check "'..' still refused (traversal guard intact)" "$([ "$DDRC" -ne 0 ] && [ -f "$P/victim.txt" ] && echo 0 || echo 1)"
+# duplicate --owner is refused, never silently last-wins: a repeated flag means
+# the caller is confused about ownership, the one thing this must not guess
+( cd "$P" && bash "$TASK" T-DUP --owner SESS-A --owner SESS-B >/dev/null 2>&1 ); DUPRC=$?
+check "ops-task refuses a repeated --owner" "$([ "$DUPRC" -ne 0 ] && [ ! -e "$P/.operator/pending/T-DUP" ] && echo 0 || echo 1)"
+# same trap as above: assert the reason, not merely a non-zero exit
+ADOUT2="$( cd "$P" && bash "$ADOPT" --owner SESS-A --owner SESS-B T-X 2>&1 )"; ADRC=$?
+check "ops-adopt refuses a repeated --owner (by reason)" "$([ "$ADRC" -ne 0 ] && printf '%s' "$ADOUT2" | grep -q 'more than once' && echo 0 || echo 1)"
+# --reconcile is a WRITE to the ledger of record: it must enforce the same
+# 4-cell schema as the direct writer. A fragment is an ordinary file that a
+# merge or hand-edit can corrupt.
+( cd "$P" && bash "$TASK" T-OK --owner SESS-A >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" T-OK "crit" "evidence" PASS --owner SESS-A >/dev/null 2>&1 )
+printf 'not a valid row\n| broken | only | three |\n| T-INJ | c | e | MAYBE |\n' >> "$P/.operator/verdicts.d/SESS-A.md"
+RB="$(wc -l < "$P/.operator/VERDICTS.md")"
+ROUT="$( cd "$P" && bash "$VERDICT" --reconcile 2>&1 )"; RRC2=$?
+check "--reconcile exits 0 despite corrupt fragment lines" "$([ "$RRC2" -eq 0 ] && echo 0 || echo 1)"
+check "--reconcile refuses non-conformant lines (ledger unchanged)" "$([ "$(wc -l < "$P/.operator/VERDICTS.md")" = "$RB" ] && echo 0 || echo 1)"
+check "--reconcile reports what it skipped" "$(printf '%s' "$ROUT" | grep -qi 'non-conformant' && echo 0 || echo 1)"
+check "--reconcile did not inject the MAYBE verdict" "$(! grep -q 'T-INJ' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
+rm -rf "$P"
+
+########################################################################
 echo "== summary: $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]

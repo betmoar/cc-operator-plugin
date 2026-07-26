@@ -26,9 +26,15 @@ NL="$(printf '\nx')"; NL="${NL%x}"
 # A bare name: it is a filename (sentinel, and downstream a fragment file), so
 # a '/' would let a later rm -f reach outside .operator/ — the 2026-07-10
 # traversal bug. '|' and newlines would break the one-line 4-cell ledger schema.
+# A LEADING DOT is refused because the Stop hook enumerates pending/ with a
+# plain glob, which does not match dotfiles: `.hidden` would be a sentinel the
+# gate cannot see — an open task that silently never blocks. Keep this rule
+# identical in ops-verdict.sh and ops-adopt.sh (tests/test-scripts.sh case 12
+# asserts all three agree).
 check_bare_name() { # check_bare_name <label> <value>
   case "$2" in
-    */* | . | ..) die "$1 must be a bare name (no '/', '.', '..')" ;;
+    */*) die "$1 must be a bare name (no '/')" ;;
+    .*) die "$1 must not start with '.' — a dotfile sentinel is invisible to the Stop hook's glob" ;;
     *"|"* | *"$NL"*) die "$1 must not contain '|' or newlines" ;;
   esac
 }
@@ -37,10 +43,16 @@ ID=""
 OWNER=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    # Refuse a repeated --owner rather than silently taking the last: a
+    # duplicated flag means the caller is confused about ownership, which is
+    # the one thing this mechanism must not guess at.
     --owner)
       [ $# -ge 2 ] || die "--owner requires a session id"
+      [ -z "$OWNER" ] || die "--owner given more than once"
       OWNER="$2"; shift 2 ;;
-    --owner=*) OWNER="${1#--owner=}"; shift ;;
+    --owner=*)
+      [ -z "$OWNER" ] || die "--owner given more than once"
+      OWNER="${1#--owner=}"; shift ;;
     -*) die "unknown option '$1' (usage: ops-task.sh <task-id> [--owner <sid>])" ;;
     *)
       [ -z "$ID" ] || die "unexpected extra argument '$1'"

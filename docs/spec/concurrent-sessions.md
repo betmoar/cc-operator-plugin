@@ -169,6 +169,10 @@ frequent*.
 >
 > `--reconcile` **repairs, never regenerates.** `VERDICTS.md` also carries hand-appended BAR blocks
 > (charter § ENGAGEMENT CONTRACT); a rebuild-from-fragments would destroy them. Locked by a test.
+> It also **validates**: a fragment is an ordinary file that a merge or a hand-edit can corrupt, so
+> reconcile enforces the same 4-cell `PASS|FAIL` schema the direct writer does and skips (loudly)
+> anything that fails it. Without that, `--reconcile` would be a hole straight through the single
+> writer's cell hygiene — found in review before release, not in the field.
 >
 > `DECISIONS.md` deliberately gets the lock and `merge=union` but **no** fragments — it is a log,
 > not the evidence of record.
@@ -195,6 +199,14 @@ frequent*.
 >
 > One thing CI still cannot prove: that a real SessionStart payload carries `cwd` and that
 > `additionalContext` reaches the model. Verified live, not in CI.
+>
+> **Criterion 3 is enforced on the writer, not absolutely.** "B never gained the ability to close X"
+> holds for `ops-verdict.sh`, which refuses a foreign `--owner`. It does *not* hold through
+> `ops-adopt.sh`: B can adopt X and then close it. That door is required — after a `/clear` a
+> session's id has rotated and its own tasks look foreign, which is exactly what adoption is for,
+> and nothing distinguishes "my orphan" from "someone else's live task" without a liveness signal
+> the plugin does not have. Requiring explicit ids (no bulk adopt) makes the takeover deliberate
+> and auditable rather than accidental. Documented limitation, not an oversight.
 
 ## 6. Companion note
 

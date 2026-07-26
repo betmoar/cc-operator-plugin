@@ -19,9 +19,12 @@ die() { echo "ops-adopt: $1" >&2; exit 2; }
 
 NL="$(printf '\nx')"; NL="${NL%x}"
 
+# Keep identical to ops-task.sh / ops-verdict.sh — see the note there on why a
+# leading dot is refused (invisible to the Stop hook's glob).
 check_bare_name() { # check_bare_name <label> <value>
   case "$2" in
-    */* | . | ..) die "$1 must be a bare name (no '/', '.', '..')" ;;
+    */*) die "$1 must be a bare name (no '/')" ;;
+    .*) die "$1 must not start with '.' — a dotfile sentinel is invisible to the Stop hook's glob" ;;
     *"|"* | *"$NL"*) die "$1 must not contain '|' or newlines" ;;
   esac
 }
@@ -32,8 +35,11 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --owner)
       [ $# -ge 2 ] || die "--owner requires a session id"
+      [ -z "$OWNER" ] || die "--owner given more than once"
       OWNER="$2"; shift 2 ;;
-    --owner=*) OWNER="${1#--owner=}"; shift ;;
+    --owner=*)
+      [ -z "$OWNER" ] || die "--owner given more than once"
+      OWNER="${1#--owner=}"; shift ;;
     -*) die "unknown option '$1' (usage: ops-adopt.sh --owner <sid> <task-id>...)" ;;
     *) IDS+=("$1"); shift ;;
   esac

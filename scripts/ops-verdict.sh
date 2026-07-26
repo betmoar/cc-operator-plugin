@@ -48,10 +48,13 @@ check_cell() { # check_cell <label> <value>
 
 # A bare name: it is also a filename (sentinel + fragment file), so a '/' would
 # let clear_sentinel's rm -f reach outside .operator/ (the 2026-07-10 traversal
-# bug).
+# bug). A leading dot is refused because the Stop hook enumerates pending/ with
+# a plain glob, which skips dotfiles — a `.hidden` sentinel would be an open
+# task the gate cannot see. Keep identical to ops-task.sh / ops-adopt.sh.
 check_bare_name() { # check_bare_name <label> <value>
   case "$2" in
-    */* | . | ..) die "$1 must be a bare name (no '/', '.', '..')" ;;
+    */*) die "$1 must be a bare name (no '/')" ;;
+    .*) die "$1 must not start with '.' — a dotfile sentinel is invisible to the Stop hook's glob" ;;
   esac
   check_cell "$1" "$2"
 }
@@ -96,11 +99,21 @@ if [ "${1:-}" = "--reconcile" ]; then
   [ -f "$VERDICTS" ] || die "missing $VERDICTS — run ops-init.sh first"
   lock_acquire
   added=0
+  skipped=0
   if [ -d "$FRAGDIR" ]; then
     for frag in "$FRAGDIR"/*.md; do
       [ -f "$frag" ] || continue
       while IFS= read -r row || [ -n "$row" ]; do
         [ -n "$row" ] || continue
+        # Reconcile is a WRITE to the ledger of record, so it enforces the same
+        # 4-cell schema the direct path does. A fragment is an ordinary file
+        # that a merge or a hand-edit can corrupt; without this, --reconcile
+        # would be a hole straight through the single writer's cell hygiene.
+        case "$row" in
+          '| '*' | '*' | '*' | PASS |' | '| '*' | '*' | '*' | FAIL |') ;;
+          *) echo "ops-verdict: skipping non-conformant line in ${frag##*/}: $row" >&2
+             skipped=$((skipped+1)); continue ;;
+        esac
         if ! grep -Fxq -- "$row" "$VERDICTS"; then
           printf '%s\n' "$row" >> "$VERDICTS"
           added=$((added+1))
@@ -109,7 +122,11 @@ if [ "${1:-}" = "--reconcile" ]; then
     done
   fi
   lock_release
-  echo "reconciled: $added row(s) restored to $VERDICTS from $FRAGDIR/"
+  if [ "$skipped" -gt 0 ]; then
+    echo "reconciled: $added row(s) restored to $VERDICTS from $FRAGDIR/ ($skipped non-conformant line(s) skipped — see stderr)"
+  else
+    echo "reconciled: $added row(s) restored to $VERDICTS from $FRAGDIR/"
+  fi
   exit 0
 fi
 
@@ -121,8 +138,11 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --owner)
       [ $# -ge 2 ] || die "--owner requires a session id"
+      [ -z "$OWNER" ] || die "--owner given more than once"
       OWNER="$2"; shift 2 ;;
-    --owner=*) OWNER="${1#--owner=}"; shift ;;
+    --owner=*)
+      [ -z "$OWNER" ] || die "--owner given more than once"
+      OWNER="${1#--owner=}"; shift ;;
     *) POS+=("$1"); shift ;;
   esac
 done

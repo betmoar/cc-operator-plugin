@@ -87,6 +87,19 @@ and the maintainer's local `.archive/dev/` (untracked).
   real **SessionStart payload carries `cwd`** and its `additionalContext`
   actually reaches the model — was proven manually, not in CI. A green CI is
   necessary, not sufficient, for the gate; re-verify live after changing a hook.
+- **A sentinel the Stop hook cannot SEE is worse than no sentinel.** The hook
+  enumerates `pending/` with a plain glob, which does not match dotfiles — so a
+  `.hidden` task-id created an open task that never blocked (found in review of
+  0.4.0, before release). Every name that becomes a filename is refused a
+  leading dot in *all three* CLIs; the rule subsumes the older `.`/`..`
+  traversal guard. `tests/test-scripts.sh` case 12 asserts the glob premise
+  itself, not just the guard, so the reason cannot rot. If you ever switch the
+  hook to `dotglob` or `find`, this rule is what you are trading away.
+- **`--reconcile` is a write to the ledger of record, so it validates.** It
+  originally copied fragment lines verbatim, which routed around the single
+  writer's cell hygiene entirely — a merge-corrupted fragment could inject a
+  non-conformant row. Any future path that appends to `VERDICTS.md` must
+  enforce the 4-cell schema too, or it reopens the same hole.
 - **A concurrency test that only asserts the output schema proves nothing.**
   A short `printf` usually lands atomically on a local FS *without* any lock, so
   "100 well-formed rows" passes on the unlocked code too. `tests/test-scripts.sh`

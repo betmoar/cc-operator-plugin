@@ -62,10 +62,33 @@ and design: `docs/spec/concurrent-sessions.md`.
   `${CLAUDE_PLUGIN_ROOT}`, and every CLI in the `.operator/bin` install set must
   be named in the charter by its project-relative path.
 
-### Known limitation
+### Fixed (found in review of this branch, before release)
+- **A dot-prefixed task-id silently defeated the gate.** `.hidden` passed the
+  bare-name guard, but the Stop hook enumerates `pending/` with a plain glob,
+  which does not match dotfiles — so the sentinel existed and the gate could
+  never see it. All three CLIs now refuse a leading dot; the rule subsumes the
+  existing `.`/`..` traversal guard. Case 12 asserts the glob premise itself,
+  so the reason the rule exists cannot rot.
+- **`--reconcile` bypassed the single writer's cell hygiene.** It copied
+  fragment lines into `VERDICTS.md` verbatim, so a merge-corrupted or
+  hand-edited fragment could inject a non-conformant row into the ledger every
+  consumer greps. It now enforces the same 4-cell `PASS|FAIL` schema, skips
+  what fails it, and reports the count.
+- A repeated `--owner` silently took the last value. All three CLIs now refuse
+  it: a duplicated flag means the caller is confused about ownership, which is
+  the one thing this mechanism must not guess at.
+
+### Known limitations
 - `DECISIONS.md` gets the lock and `merge=union` but no fragments. It is a log,
   not the evidence of record; the fragment machinery exists to make verdict rows
   unloseable.
+- `ops-adopt.sh` will adopt a task owned by another *live* session, not only an
+  orphan of your own. Adopt-then-close therefore reaches the outcome that
+  `ops-verdict.sh`'s `--owner` refusal blocks directly. Requiring explicit ids
+  (no bulk adopt) makes this deliberate and auditable rather than accidental,
+  but it is not prevented — a session cannot distinguish "my task from before
+  the /clear" from "someone else's active task" without a liveness signal the
+  plugin does not have.
 
 ## [0.3.0] - 2026-07-10
 
