@@ -711,5 +711,104 @@ check "one-huge-line sentinel is unowned → still BLOCKS" "$([ "$HRC" -eq 2 ] &
 rm -rf "$P"
 
 ########################################################################
+echo "-- Case 17: the gate applies from anywhere inside the project [F01]"
+# INVARIANT: a session cannot escape the gate by being somewhere else in its own
+# project. ops-task.sh refuses to open a task anywhere but the directory holding
+# .operator/, so a task can ONLY be armed at the root — but the Stop hook used to
+# resolve "$cwd/.operator" with no upward walk, so a payload cwd one directory
+# deeper found nothing and allowed the stop with tasks still open. Two components
+# disagreeing about where the project is, failing OPEN. (Audit F01, P0.)
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+( cd "$P" && bash "$TASK" T-ROOT --owner SESS-A >/dev/null 2>&1 )
+mkdir -p "$P/src/deep/nested"
+for sub in "" "/src" "/src/deep" "/src/deep/nested"; do
+  json="$(sed "s|<tmp>|$P$sub|" "$FIXTURES/stop-session-a.json")"
+  errf="$(mktemp)"; printf '%s' "$json" | "$BASH_ABS" "$HOOK" 2>"$errf"; rc=$?
+  rm -f "$errf"
+  check "gate blocks from cwd=<root>${sub:-/} (no escape by cd)" "$([ "$rc" -eq 2 ] && echo 0 || echo 1)"
+done
+# ...but the walk must NOT escape the project: a sibling directory outside it,
+# and a parent above it, must stay no-op (exit 0) rather than adopting some
+# unrelated ancestor's ledger.
+OUTSIDE="$(newproj)"
+json="$(sed "s|<tmp>|$OUTSIDE|" "$FIXTURES/stop-session-a.json")"
+printf '%s' "$json" | "$BASH_ABS" "$HOOK" >/dev/null 2>&1; orc=$?
+check "unrelated directory is still a no-op (walk does not over-reach)" "$([ "$orc" -eq 0 ] && echo 0 || echo 1)"
+rm -rf "$OUTSIDE"
+# a .git boundary halts the walk: a nested repo must not inherit the outer ledger
+mkdir -p "$P/vendor/inner/.git"
+json="$(sed "s|<tmp>|$P/vendor/inner|" "$FIXTURES/stop-session-a.json")"
+printf '%s' "$json" | "$BASH_ABS" "$HOOK" >/dev/null 2>&1; nrc=$?
+check "nested repo (.git boundary) does not inherit the outer ledger" "$([ "$nrc" -eq 0 ] && echo 0 || echo 1)"
+rm -rf "$P"
+
+########################################################################
+echo "-- Case 18: every sentinel/fragment reader is byte-bounded [F02/F03]"
+# INVARIANT: `read -r` is bounded by LINES, not bytes — one newline-less line is
+# a single "line" and gets slurped whole. The 0.4.0 fix applied `read -r -n 512`
+# to the Stop hook only; ops-verdict.sh, ops-adopt.sh and the --reconcile
+# fragment reader kept plain `read -r`. Measured on one 256MB line: hook 0.17s
+# vs verdict 13.51s, adopt 16.77s, reconcile 32.56s. (Audit F02, P2.)
+#
+# The 32.56s number is why this is not merely slow: --reconcile holds the lock
+# across that read, and the budget presuming a crashed holder is 30s — so a
+# concurrent writer RECLAIMED a live reconcile's lock and both entered the
+# critical section. (Audit F03, P1.) Bounding the read removes the trigger.
+#
+# Sized at 64MB: enough to separate bounded (<2s) from unbounded (seconds) without
+# putting a quarter-gig of writes in CI. Unlike the 32MB case above, this DOES
+# discriminate — verified against the pre-fix scripts.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+bigline() { # bigline <path>  — 64MB on a single line, no trailing newline
+  { i=0; while [ "$i" -lt 64 ]; do printf '%1048576s' '' | tr ' ' 'x'; i=$((i+1)); done; } > "$1"
+}
+( cd "$P" && bash "$TASK" T-HUGE --owner SESS-A >/dev/null 2>&1 )
+bigline "$P/.operator/pending/T-HUGE"
+S0=$(date +%s); ( cd "$P" && bash "$VERDICT" T-HUGE crit ev PASS --owner SESS-A >/dev/null 2>&1 ); S1=$(date +%s)
+check "ops-verdict reads a huge-line sentinel in bounded time (<3s)" "$([ "$((S1 - S0))" -lt 3 ] && echo 0 || echo 1)"
+( cd "$P" && bash "$TASK" T-HUGE2 --owner SESS-A >/dev/null 2>&1 )
+bigline "$P/.operator/pending/T-HUGE2"
+S0=$(date +%s); ( cd "$P" && bash "$ADOPT" --owner SESS-B T-HUGE2 >/dev/null 2>&1 ); S1=$(date +%s)
+check "ops-adopt reads a huge-line sentinel in bounded time (<3s)" "$([ "$((S1 - S0))" -lt 3 ] && echo 0 || echo 1)"
+bigline "$P/.operator/verdicts.d/huge.md"
+S0=$(date +%s); ( cd "$P" && bash "$VERDICT" --reconcile >/dev/null 2>&1 ); S1=$(date +%s)
+check "--reconcile reads a huge-line fragment in bounded time (<3s)" "$([ "$((S1 - S0))" -lt 3 ] && echo 0 || echo 1)"
+check "--reconcile did not admit the huge non-conformant line" "$(! grep -q 'xxxxxxxx' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
+rm -rf "$P"
+
+########################################################################
+echo "-- Case 19: adopt does not propagate CR into the operator's guidance [F04]"
+# A CRLF sentinel (core.autocrlf checkout, Windows editor, merge artifact) gets
+# its session_id regenerated clean by adopt, but cwd:/opened_at: were copied
+# through verbatim — and opened_at is echoed into the Stop hook's foreign-task
+# report, where a bare CR carriage-returns the terminal mid-line and visually
+# eats the operator's guidance. Gating is unaffected; this is presentation.
+# (Audit F04, P3.)
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+printf 'session_id: SESS-A\r\ncwd: /x\r\nopened_at: 2026-01-01T00:00:00Z\r\n' > "$P/.operator/pending/T-CRLF"
+( cd "$P" && bash "$ADOPT" --owner SESS-B T-CRLF >/dev/null 2>&1 )
+check "adopt strips CR from the rewritten sentinel" "$(! od -c "$P/.operator/pending/T-CRLF" | grep -q '\\r' && echo 0 || echo 1)"
+run_hook stop-session-b.json "$P"
+check "adopted CRLF sentinel still gates its new owner" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+errf="$(mktemp)"
+printf '%s' "$(sed "s|<tmp>|$P|" "$FIXTURES/stop-session-a.json")" | "$BASH_ABS" "$HOOK" 2>"$errf" >/dev/null
+check "no CR reaches the foreign-task report line" "$(! od -c "$errf" | grep -q '\\r' && echo 0 || echo 1)"
+rm -f "$errf"
+rm -rf "$P"
+
+########################################################################
+echo "-- Case 20: ops-init tells you where the ledger landed [F05]"
+# ops-init.sh scaffolds .operator/ anywhere, including a directory that is not a
+# repository — so a mis-aimed /cc-operator:start writes the evidence of record
+# somewhere nobody will merge or review, while reporting success. Warn, do not
+# hard-fail: a non-git project is unusual but legitimate. (Audit F05, P3.)
+Q="$(newproj)"
+IOUT="$( cd "$Q" && bash "$INIT" 2>&1 )"
+check "ops-init warns when the target is not a git repository" "$(printf '%s' "$IOUT" | grep -qi 'not a git repo' && echo 0 || echo 1)"
+check "ops-init still scaffolds (warn, never hard-fail)" "$([ -d "$Q/.operator/pending" ] && echo 0 || echo 1)"
+check "ops-init ignores its own lock ephemera" "$(grep -q '.lock' "$Q/.operator/.gitignore" 2>/dev/null && echo 0 || echo 1)"
+rm -rf "$Q"
+
+########################################################################
 echo "== summary: $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]

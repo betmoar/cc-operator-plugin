@@ -132,7 +132,20 @@ for ID in ${IDS+"${IDS[@]}"}; do
   PREV=""
   OPENED=""
   CWDLINE=""
-  while IFS= read -r line || [ -n "$line" ]; do
+  # `read -r -n 512` + a 20-line cap, matching every other reader: a plain
+  # `read -r` is bounded by LINES, not bytes, so one newline-less line is a
+  # single "line" and gets slurped whole — measured 16.77s on a 256MB sentinel.
+  # (Audit F02.)
+  #
+  # Trailing \r is stripped from the fields we COPY FORWARD. session_id is
+  # regenerated clean below, but cwd:/opened_at: were passed through verbatim,
+  # and opened_at is echoed into the Stop hook's foreign-task report — where a
+  # bare CR carriage-returns the terminal mid-line and eats the operator's
+  # guidance. A CRLF sentinel is an ordinary checkout artifact. (Audit F04.)
+  n=0
+  while IFS= read -r -n 512 line || [ -n "$line" ]; do
+    n=$((n+1)); [ "$n" -le 20 ] || break
+    line="${line%$'\r'}"
     case "$line" in
       "session_id: "*) PREV="${line#session_id: }" ;;
       "opened_at: "*)  OPENED="$line" ;;

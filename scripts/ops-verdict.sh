@@ -103,6 +103,10 @@ check_owner_name() { # check_owner_name <value>
 # then treat the marker as abandoned and clear it. Worst case after that is two
 # reclaimers racing — the milder, pre-existing failure — never a deadlock. An
 # unexpirable claim is a deadlock with extra steps.
+# A fragment holds one ~80-byte row per verdict. 8 MiB is ~100k verdicts — far
+# past any honest ledger, and past it the file is corruption, not evidence.
+# Bounding it keeps --reconcile's lock hold time bounded too. (Audit F02/F03.)
+FRAG_MAX_BYTES=8388608
 LOCK_SPINS=300        # × 0.1s = 30s before a held lock is presumed crashed
 RECLAIM_WAIT=50       # × 0.1s = 5s to let a LIVE reclaimer finish (it needs ms)
 LOCK_DEFERS_MAX=2     # short waits to grant before treating the claim as dead
@@ -156,10 +160,15 @@ lock_release() {
 # Sanitize at the parser, not at each call site: every consumer is then covered
 # by construction. A malformed owner degrades to "" = unowned, which fails
 # CLOSED (blocks everyone) — the safe direction.
+# `read -r -n 512`, not plain `read -r`: a line cap is not a byte cap, because one
+# newline-less line is a single "line" and gets slurped whole first. Measured on a
+# 256MB single-line sentinel: 13.51s here vs 0.17s in the byte-bounded Stop hook.
+# The owner is a short token by construction. (Audit F02 — the 0.4.0 fix reached
+# only the Stop hook; this reader and two others kept the unbounded form.)
 sentinel_owner() { # sentinel_owner <id> → stamped session_id ("" if none/invalid)
   local f="$OPDIR/pending/$1" line owner="" n=0
   [ -f "$f" ] || return 0
-  while IFS= read -r line || [ -n "$line" ]; do
+  while IFS= read -r -n 512 line || [ -n "$line" ]; do
     n=$((n+1)); [ "$n" -le 20 ] || break   # owner is line 1 by construction
     case "$line" in
       "session_id: "*) owner="${line#session_id: }"; break ;;
@@ -225,7 +234,28 @@ if [ "${1:-}" = "--reconcile" ]; then
   if [ -d "$FRAGDIR" ]; then
     for frag in "$FRAGDIR"/*.md; do
       [ -f "$frag" ] || continue
-      while IFS= read -r row || [ -n "$row" ]; do
+      # Reconcile cannot stop after N lines the way the sentinel parsers do —
+      # reading every row IS its job — so a per-read byte cap does not save it:
+      # a 64MB newline-less line still yields ~131k capped chunks and the loop
+      # walks all of them (measured 31.85s; draining them instead, 23.99s).
+      # Bash has no cheap "skip to next newline".
+      #
+      # So reject the FILE up front on size. A fragment is machine-written, one
+      # ~80-byte row per verdict; the cap below is orders of magnitude above any
+      # honest fragment, and anything past it is corruption (bad merge, stray
+      # binary, truncated write) whose every line would be skipped as
+      # non-conformant anyway. Refusing to open it is O(1) and loses nothing.
+      #
+      # This read happens INSIDE the lock (acquired above). Unbounded, a 256MB
+      # fragment took 32.56s against a 30s crash-presumption budget, so a
+      # concurrent writer reclaimed a LIVE reconcile's lock and both entered the
+      # critical section. (Audit F02/F03.)
+      fragsz="$(wc -c < "$frag" 2>/dev/null || echo 0)"
+      if [ "$fragsz" -gt "$FRAG_MAX_BYTES" ]; then
+        echo "ops-verdict: refusing fragment ${frag##*/} — ${fragsz} bytes exceeds ${FRAG_MAX_BYTES}; it is corrupt, not a ledger (repair or delete it)" >&2
+        skipped=$((skipped+1)); continue
+      fi
+      while IFS= read -r -n 512 row || [ -n "$row" ]; do
         [ -n "$row" ] || continue
         # Reconcile is a WRITE to the ledger of record, so it enforces the same
         # 4-cell schema the direct path does. A fragment is an ordinary file

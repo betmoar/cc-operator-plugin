@@ -88,8 +88,30 @@ if [ -z "$cwd" ]; then
   fi
   exit 0
 fi
-opdir="$cwd/.operator"
-[ -d "$opdir" ] || exit 0
+# Resolve the project by WALKING UP from the payload cwd to the nearest ancestor
+# holding .operator/ — the way git finds its own root.
+#
+# Why this is not just `"$cwd/.operator"`: ops-task.sh refuses to open a task
+# anywhere but the directory holding .operator/, so a task can only ever be armed
+# at the root. If the payload cwd is one directory deeper, an exact-match lookup
+# finds nothing, takes the no-op guard, and ALLOWS the stop with tasks still
+# open — the two components disagreeing about where the project is, and the
+# disagreement failing OPEN. That is the whole gate, silently off. (Audit F01.)
+#
+# The walk is bounded twice so it can never adopt an unrelated ancestor's ledger:
+# it stops at a .git boundary (a nested repo is its own project, not part of the
+# outer one) and at the filesystem root. `cd -P` resolves symlinks so a symlinked
+# worktree lands on its real path rather than walking a link chain.
+opdir=""
+walk="$(cd -P "$cwd" 2>/dev/null && pwd)" || walk=""
+while [ -n "$walk" ]; do
+  if [ -d "$walk/.operator" ]; then opdir="$walk/.operator"; break; fi
+  # a repository boundary ends the search: do not escape into the parent project
+  [ -e "$walk/.git" ] && break
+  [ "$walk" = "/" ] && break
+  walk="${walk%/*}"; [ -n "$walk" ] || walk="/"
+done
+[ -n "$opdir" ] || exit 0
 
 # --- read a sentinel's stamped owner (builtins only; no grep/sed) ------------
 # "" when the file has no usable session_id line — including a pre-0.4 empty

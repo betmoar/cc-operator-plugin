@@ -10,7 +10,37 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATES="$SCRIPT_DIR/../templates"
 OPDIR=".operator"
 
+# The ledger is the evidence of record, so where it lands matters. This script
+# will scaffold anywhere — including a home directory or a scratch dir reached by
+# a mis-aimed /cc-operator:start — and used to report success either way, writing
+# the evidence somewhere nobody will merge or review. Warn, never hard-fail: a
+# non-git project is unusual but legitimate. (Audit F05.)
+if command -v git >/dev/null 2>&1; then
+  TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -z "$TOPLEVEL" ]; then
+    echo "ops-init: warning — $PWD is not a git repository; the ledger will not be tracked or reviewable" >&2
+  elif [ "$TOPLEVEL" != "$PWD" ]; then
+    echo "ops-init: warning — scaffolding at $PWD, which is NOT the repository root ($TOPLEVEL)" >&2
+    echo "ops-init:           the Stop hook resolves the nearest .operator/ above its cwd, so a" >&2
+    echo "ops-init:           second ledger here will shadow the root one for anything beneath it" >&2
+  fi
+fi
+
 mkdir -p "$OPDIR/pending" "$OPDIR/verdicts.d"
+
+# Lock ephemera are transient mutual-exclusion markers, not evidence. Without
+# this they show up as untracked noise inside a tracked tree and can be committed
+# by an over-broad `git add`, at which point a checked-out stale lock makes every
+# writer pay the full crash-presumption budget. (Audit F05.)
+if [ ! -f "$OPDIR/.gitignore" ]; then
+  cat > "$OPDIR/.gitignore" <<'EOF'
+# Transient lock markers — never evidence, never committed.
+.lock/
+.lock.reclaim/
+.adopt.*
+EOF
+  echo "created $OPDIR/.gitignore (lock ephemera)"
+fi
 
 # Per-session verdict fragments (verdicts.d/<owner>.md) exist so two branches
 # append to two different files and git merges them cleanly. VERDICTS.md can
