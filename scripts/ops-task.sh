@@ -31,18 +31,27 @@ NL="$(printf '\nx')"; NL="${NL%x}"
 # gate cannot see — an open task that silently never blocks. Keep this rule
 # identical in ops-verdict.sh and ops-adopt.sh (tests/test-scripts.sh case 12
 # asserts all three agree).
-# Whitespace is refused for a specific reason: the Stop hook compares the
-# stamped owner byte-for-byte against the payload's session id, so an owner with
-# a stray space can never equal any real session — the sentinel is classified
-# FOREIGN forever, and foreign sentinels never block. That is a silently
-# disarmed gate, not a typo. (Found in review of 0.4.0: `--owner " SESS-A"` →
-# hook exits 0 with the task still open.)
 check_bare_name() { # check_bare_name <label> <value>
   case "$2" in
     */*) die "$1 must be a bare name (no '/')" ;;
     .*) die "$1 must not start with '.' — a dotfile sentinel is invisible to the Stop hook's glob" ;;
     *"|"* | *"$NL"*) die "$1 must not contain '|' or newlines" ;;
-    *[[:space:]]*) die "$1 must not contain whitespace — it would never match a real session id, leaving the task permanently unblockable" ;;
+  esac
+}
+
+# OWNERS additionally refuse whitespace, and TASK IDS deliberately do not.
+# The Stop hook compares the stamped owner byte-for-byte against the payload's
+# session id, so an owner with a stray space can never equal any real session:
+# the sentinel is FOREIGN forever and foreign sentinels never block — a silently
+# disarmed gate. That reasoning is about session ids and does not transfer to
+# task ids. Applying it to both wedged pre-0.4 tasks whose ids contain a space
+# (0.3.0 accepted them): the hook still blocked on the sentinel while every
+# closing path refused the id, so the session could never stop at all — the
+# exact trap this release removes. Keep the two guards separate.
+check_owner_name() { # check_owner_name <value>
+  check_bare_name "owner" "$1"
+  case "$1" in
+    *[[:space:]]*) die "owner must not contain whitespace — it could never match a real session id, leaving the task permanently unblockable" ;;
   esac
 }
 
@@ -69,7 +78,7 @@ done
 
 [ -n "$ID" ] || die "missing task-id (usage: ops-task.sh <task-id> [--owner <sid>])"
 check_bare_name "task-id" "$ID"
-if [ -n "$OWNER" ]; then check_bare_name "owner" "$OWNER"; fi
+if [ -n "$OWNER" ]; then check_owner_name "$OWNER"; fi
 [ -d "$OPDIR" ] || die "no $OPDIR/ in cwd — run ops-init.sh first"
 
 mkdir -p "$OPDIR/pending"

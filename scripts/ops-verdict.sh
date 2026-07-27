@@ -60,9 +60,19 @@ check_bare_name() { # check_bare_name <label> <value>
   case "$2" in
     */*) die "$1 must be a bare name (no '/')" ;;
     .*) die "$1 must not start with '.' — a dotfile sentinel is invisible to the Stop hook's glob" ;;
-    *[[:space:]]*) die "$1 must not contain whitespace — it would never match a real session id, leaving the task permanently unblockable" ;;
   esac
   check_cell "$1" "$2"
+}
+
+# Owners refuse whitespace; task ids deliberately do NOT — see the note in
+# ops-task.sh. Applying the owner rule to task ids wedged pre-0.4 tasks whose
+# ids contain a space: the hook blocked on the sentinel while every closing
+# path refused the id, so the session could never stop.
+check_owner_name() { # check_owner_name <value>
+  check_bare_name "owner" "$1"
+  case "$1" in
+    *[[:space:]]*) die "owner must not contain whitespace — it could never match a real session id, leaving the task permanently unblockable" ;;
+  esac
 }
 
 # --- lock: mkdir is atomic on every POSIX FS; flock(1) is absent on macOS -----
@@ -208,7 +218,7 @@ set -- ${POS+"${POS[@]}"}
 ID="${1:-}"
 [ -n "$ID" ] || die "missing task-id (usage: ops-verdict.sh <id> <criterion> <evidence> <PASS|FAIL> [--owner <sid>] | <id> --defer \"<reason>\" | --reconcile)"
 check_bare_name "task-id" "$ID"
-if [ -n "$OWNER" ]; then check_bare_name "owner" "$OWNER"; fi
+if [ -n "$OWNER" ]; then check_owner_name "$OWNER"; fi
 [ -d "$OPDIR" ] || die "no $OPDIR/ in cwd — run ops-init.sh first"
 
 # --- Ownership gate ----------------------------------------------------------

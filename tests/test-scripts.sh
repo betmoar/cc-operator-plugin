@@ -493,6 +493,24 @@ for o in " SESS-A" "SESS-A " "SE SS"; do
   ( cd "$P" && bash "$TASK" T-WS --owner "$o" >/dev/null 2>&1 ); WRC=$?
   check "ops-task refuses a whitespace --owner [$o]" "$([ "$WRC" -ne 0 ] && echo 0 || echo 1)"
 done
+( cd "$P" && bash "$ADOPT" --owner " X" T-WS >/dev/null 2>&1 ); AWRC=$?
+check "ops-adopt refuses a whitespace --owner" "$([ "$AWRC" -ne 0 ] && echo 0 || echo 1)"
+# ...but the whitespace rule is about OWNERS ONLY. It must NOT reach task ids:
+# 0.3.0 accepted `release candidate`, so applying the owner rule to ids wedged
+# such a task completely — the hook still blocked on the sentinel while every
+# closing path refused the id, leaving the session unable to stop at all. That
+# is the exact trap this release exists to remove. (Caught by Codex review.)
+rm -f "$P"/.operator/pending/*
+: > "$P/.operator/pending/release candidate"
+run_hook stop-session-a.json "$P"
+check "legacy spaced task-id still blocks (migration safety)" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+( cd "$P" && bash "$VERDICT" "release candidate" "crit" "ev" PASS >/dev/null 2>&1 ); LRC=$?
+check "legacy spaced task-id can be CLOSED (not wedged)" "$([ "$LRC" -eq 0 ] && [ ! -e "$P/.operator/pending/release candidate" ] && echo 0 || echo 1)"
+: > "$P/.operator/pending/legacy id 2"
+( cd "$P" && bash "$ADOPT" --owner SESS-A "legacy id 2" >/dev/null 2>&1 ); LARC=$?
+check "legacy spaced task-id can be ADOPTED" "$([ "$LARC" -eq 0 ] && echo 0 || echo 1)"
+( cd "$P" && bash "$VERDICT" "legacy id 2" --defer "blocked" --owner SESS-A >/dev/null 2>&1 ); LDRC=$?
+check "legacy spaced task-id can be DEFERRED" "$([ "$LDRC" -eq 0 ] && [ ! -e "$P/.operator/pending/legacy id 2" ] && echo 0 || echo 1)"
 rm -f "$P"/.operator/pending/*
 printf 'session_id:  SESS-A\ncwd: /x\n' > "$P/.operator/pending/T-WS2"
 run_hook stop-session-a.json "$P"

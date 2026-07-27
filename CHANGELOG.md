@@ -121,9 +121,16 @@ and design: `docs/spec/concurrent-sessions.md`.
   the stamped owner byte-for-byte against the payload's session id, so
   `--owner " SESS-A"` could never match any real session: the task was
   classified foreign forever, and foreign tasks never block. Reproduced (hook
-  exited 0 with the task still open). Whitespace is now refused at all three
-  CLIs and treated as unowned by both parsers, so a hand-written sentinel that
-  never passed through a CLI still fails closed.
+  exited 0 with the task still open). Whitespace is now refused for **owners**
+  at all three CLIs and treated as unowned by both parsers, so a hand-written
+  sentinel that never passed through a CLI still fails closed.
+  The whitespace rule applies to owners **only**. An interim version of this
+  fix applied it to task ids too, which wedged any pre-0.4 task whose id
+  contained a space (0.3.0 accepted `release candidate`): the hook still
+  blocked on the sentinel while every closing path — verdict, defer, adopt —
+  refused the id, so the session could never stop at all. That is precisely
+  the trap this release exists to remove. Task ids keep only the filename and
+  ledger-cell guards.
 - **A payload that failed to parse failed open in total silence.** `json_get`
   swallows parser errors, so a corrupt payload made every field read empty and
   was indistinguishable from "no cwd, not an operator project". It now warns —

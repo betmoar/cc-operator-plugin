@@ -112,6 +112,13 @@ and the maintainer's local `.archive/dev/` (untracked).
   review of 0.4.0). Hence: whitespace is refused at all three CLIs *and*
   mapped to unowned in both parsers. Any new owner-shaped field needs both
   halves — refusing at the CLI alone leaves hand-written sentinels unguarded.
+  **But that rule is about owners, not names in general.** `check_owner_name`
+  is deliberately separate from `check_bare_name`: an interim fix applied the
+  whitespace rule to task ids too, which wedged every pre-0.4 task whose id
+  held a space (0.3.0 accepted them) — the hook kept blocking while verdict,
+  defer, *and* adopt all refused the id, so the session could never stop. When
+  tightening a guard, ask which of the two things it is guarding; a rule
+  justified by "can never equal a session id" has no bearing on a task id.
 - **Anything the Stop hook reads must be bounded.** It fires on *every*
   session's Stop event, so an unbounded read is the same class of hazard as a
   missing binary: a 2 MB sentinel cost ~10s per turn-end tree-wide. The parse

@@ -27,7 +27,16 @@ check_bare_name() { # check_bare_name <label> <value>
     */*) die "$1 must be a bare name (no '/')" ;;
     .*) die "$1 must not start with '.' — a dotfile sentinel is invisible to the Stop hook's glob" ;;
     *"|"* | *"$NL"*) die "$1 must not contain '|' or newlines" ;;
-    *[[:space:]]*) die "$1 must not contain whitespace — it would never match a real session id, leaving the task permanently unblockable" ;;
+  esac
+}
+
+# Owners refuse whitespace; task ids deliberately do NOT — see ops-task.sh.
+# Adoption is a RECOVERY path: it must be able to name a legacy task id, or a
+# wedged pre-0.4 sentinel has no way out at all.
+check_owner_name() { # check_owner_name <value>
+  check_bare_name "owner" "$1"
+  case "$1" in
+    *[[:space:]]*) die "owner must not contain whitespace — it could never match a real session id, leaving the task permanently unblockable" ;;
   esac
 }
 
@@ -48,7 +57,7 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$OWNER" ] || die "missing --owner (usage: ops-adopt.sh --owner <sid> <task-id>...)"
-check_bare_name "owner" "$OWNER"
+check_owner_name "$OWNER"
 # ${IDS+"${IDS[@]}"} throughout: on macOS /bin/bash 3.2, "${EMPTY[@]}" under
 # `set -u` is an unbound-variable error, not an empty list. Same idiom as
 # ops-verdict.sh's POS array. Do not rely on the length check below to mask it.
