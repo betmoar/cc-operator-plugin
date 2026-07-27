@@ -810,5 +810,148 @@ check "ops-init ignores its own lock ephemera" "$(grep -q '.lock' "$Q/.operator/
 rm -rf "$Q"
 
 ########################################################################
+echo "-- Case 21: a crashed lock holder is identified, not inferred from time"
+# Reclamation used to infer "crashed" from elapsed time, which cannot tell a
+# slow holder from a dead one. That is the ROOT of F03: a --reconcile that ran
+# longer than the budget had its lock reclaimed by a concurrent writer and both
+# entered the critical section. F03 bounded the trigger (FRAG_MAX_BYTES); this
+# removes the inference. The lock now records host/uid/pid and asks the kernel.
+#
+# Liveness is only judged on OUR host for OUR uid — `kill -0` on another user's
+# process fails with EPERM and would mis-read a LIVE holder as dead, which is
+# the fail-open direction. Anything unjudgeable falls back to the old
+# time-based path, so pre-0.5 locks and network filesystems keep working.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+LK="$P/.operator/.lock"
+TMPD="$(newproj)"
+
+# A pid that is definitely dead: spawn, reap, reuse its number.
+sleep 0.1 & DEADPID=$!; wait "$DEADPID" 2>/dev/null || true
+
+# (a) A dead holder is reclaimed PROMPTLY. Under time-based inference every
+# writer behind a crashed one paid the full 30s budget; the kernel answers in
+# microseconds. The <10s bound is far looser than the real cost (~0.2s) and far
+# tighter than the 30s budget, so it discriminates without being flaky.
+( cd "$P" && bash "$TASK" T-DEAD --owner SESS-A >/dev/null 2>&1 )
+mkdir -p "$LK"; printf '%s %s %s\n' "${HOSTNAME:-nohost}" "${UID:-0}" "$DEADPID" > "$LK/holder"
+SEC0=$(date +%s)
+( cd "$P" && bash "$VERDICT" T-DEAD crit ev PASS --owner SESS-A >/dev/null 2>&1 )
+DRC=$?
+SEC1=$(date +%s)
+check "dead holder: writer succeeds" "$([ "$DRC" -eq 0 ] && echo 0 || echo 1)"
+check "dead holder: reclaimed promptly, not after the full budget (<10s)" "$([ "$((SEC1 - SEC0))" -lt 10 ] && echo 0 || echo 1)"
+check "dead holder: verdict actually recorded" "$(grep -Fq '| T-DEAD | crit | ev | PASS |' "$P/.operator/VERDICTS.md" && [ ! -e "$P/.operator/pending/T-DEAD" ] && echo 0 || echo 1)"
+check "dead holder: no lock or claim marker left behind" "$([ ! -d "$LK" ] && [ ! -d "$LK.reclaim" ] && echo 0 || echo 1)"
+
+# (b) A LIVE holder is never reclaimed, however far past the budget the waiter
+# goes. This is F03's root: the old code rmdir'd the live holder's lock and
+# created its own, so the holder's own release then removed the NEW holder's
+# lock and a third writer walked in. Exceeding the budget must degrade to the
+# milder failure — proceed unlocked — never to stealing a running writer's lock.
+# Slow by nature: it has to outlast a real 30s budget.
+( cd "$P" && bash "$TASK" T-LIVE --owner SESS-A >/dev/null 2>&1 )
+sleep 90 & LIVEPID=$!
+mkdir -p "$LK"; printf '%s %s %s\n' "${HOSTNAME:-nohost}" "${UID:-0}" "$LIVEPID" > "$LK/holder"
+( cd "$P" && bash "$VERDICT" T-LIVE crit ev PASS --owner SESS-A >/dev/null 2>&1 ) &
+LVWRITER=$!
+LVRC=1; waited=0
+while [ "$waited" -lt 70 ]; do
+  if ! kill -0 "$LVWRITER" 2>/dev/null; then wait "$LVWRITER" 2>/dev/null; LVRC=$?; break; fi
+  sleep 2; waited=$((waited + 2))
+done
+if kill -0 "$LVWRITER" 2>/dev/null; then kill -9 "$LVWRITER" 2>/dev/null; LVRC=99; fi
+check "live holder: waiter still completes (bounded, never hangs)" "$([ "$LVRC" -eq 0 ] && echo 0 || echo 1)"
+check "live holder: its lock was NOT removed out from under it" "$([ -d "$LK" ] && echo 0 || echo 1)"
+LVHOLD="$(cat "$LK/holder" 2>/dev/null || true)"
+LVOK=1; case "$LVHOLD" in *" $LIVEPID") LVOK=0 ;; esac
+check "live holder: still owns the lock record after the waiter gave up" "$LVOK"
+kill "$LIVEPID" 2>/dev/null || true; wait "$LIVEPID" 2>/dev/null || true
+# The stamp makes the lock dir non-empty, so it outlives a plain `rm -rf` of the
+# tree unless the stamp goes first — the same property assertion (f) relies on.
+rm -f "$LK/holder" "$LK.reclaim/holder" 2>/dev/null || true
+rm -rf "$LK" "$LK.reclaim"
+
+# (c) RECLAIM EXCLUSIVITY. Backlog #2 asked for a test that DISCRIMINATES here,
+# i.e. one that fails against the naive `rmdir + mkdir`. It was attempted and it
+# is NOT what this is; recording the negative result so the next maintainer does
+# not spend the same day on it:
+#
+#   Six approaches were measured against a deliberately naive copy (exclusive
+#   claim removed, re-verify removed) — cold-start racing, a ~1s critical
+#   section via --reconcile, killing a live holder while both waiters were
+#   already spinning, and 0.4s of fault injection inside the reclaim path.
+#   Every one read 0/N unsafe outcomes. The reason is arithmetic: the reclaim
+#   sequence is microseconds against a 0.1s spin interval, so P(collision) is
+#   ~1e-5 per trial. Black-box timing cannot reach it. Closing backlog #2 as
+#   specified would need the injection point INSIDE lock_acquire, shipped, which
+#   trades a real hazard for a test.
+#
+# What those attempts did surface is a stronger guarantee than the timing one,
+# and this is the assertion that now carries the weight: THE STAMP MAKES THE
+# LOCK DIRECTORY NON-EMPTY, AND `rmdir` REFUSES NON-EMPTY DIRECTORIES. A
+# reclaimer therefore cannot remove a lock a healthy process has stamped — it
+# must delete the stamp first, which it only does after judging the holder dead.
+# Deterministic, not probabilistic. Case (f) below asserts that property
+# directly; these three assert the end-to-end outcome around it.
+DISPLACED=0
+for _i in $(seq 1 25); do
+  rm -rf "$LK" "$LK.reclaim" "$P/.operator/pending"/*
+  ( cd "$P" && bash "$TASK" T-X1 --owner SESS-A >/dev/null 2>&1 )
+  ( cd "$P" && bash "$TASK" T-X2 --owner SESS-A >/dev/null 2>&1 )
+  sleep 0.1 & DP=$!; wait "$DP" 2>/dev/null || true
+  mkdir -p "$LK"; printf '%s %s %s\n' "${HOSTNAME:-nohost}" "${UID:-0}" "$DP" > "$LK/holder"
+  RCERR="$( { ( cd "$P" && bash "$VERDICT" T-X1 c e PASS --owner SESS-A >/dev/null ) & \
+              ( cd "$P" && bash "$VERDICT" T-X2 c e PASS --owner SESS-A >/dev/null ) & wait; } 2>&1 )"
+  case "$RCERR" in *"reclaimed while this process held it"*) DISPLACED=$((DISPLACED+1)) ;; esac
+done
+check "two simultaneous reclaimers: neither is displaced from the lock" "$([ "$DISPLACED" = "0" ] && echo 0 || echo 1)"
+check "two simultaneous reclaimers: both verdicts recorded" "$(grep -Fq '| T-X1 | c | e | PASS |' "$P/.operator/VERDICTS.md" && grep -Fq '| T-X2 | c | e | PASS |' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
+check "two simultaneous reclaimers: nothing left behind" "$([ ! -d "$LK" ] && [ ! -d "$LK.reclaim" ] && echo 0 || echo 1)"
+
+# (d) An unjudgeable holder record must fall back to the time-based path, never
+# be treated as dead — that is the fail-open direction. A pre-0.5 lock (no
+# holder file at all) is the migration case and must keep working.
+rm -rf "$LK" "$LK.reclaim"
+mkdir -p "$LK"; printf 'someoneelse.example 65534 %s\n' "$DEADPID" > "$LK/holder"
+( cd "$P" && bash "$TASK" T-FH --owner SESS-A >/dev/null 2>&1 )
+SEC0=$(date +%s)
+( cd "$P" && bash "$VERDICT" T-FH c e PASS --owner SESS-A >/dev/null 2>&1 ) &
+FHPID=$!
+sleep 3
+check "foreign-host holder is not judged dead (no instant reclaim)" "$([ -e "$P/.operator/pending/T-FH" ] && echo 0 || echo 1)"
+kill -9 "$FHPID" 2>/dev/null || true; wait "$FHPID" 2>/dev/null || true
+rm -rf "$LK" "$LK.reclaim"
+# (e) The two lock implementations must not drift. They contend on the same
+# .operator/.lock, so a divergence is not a style problem — it is two different
+# ideas of mutual exclusion. Compare the CODE of lock_acquire/lock_release with
+# the tool name in warnings normalized away; comments may differ, logic may not.
+# (f) The structural guarantee behind (c), asserted directly on the real
+# lock_acquire: a held lock is STAMPED, and a stamped directory cannot be
+# rmdir'd. This is what actually prevents a second reclaimer from stepping onto
+# a fresh lock, and unlike the timing race it is deterministic. It also fails
+# immediately if anyone "simplifies" the stamp away — which would silently
+# restore the 0.4.0 hazard while every timing assertion stayed green.
+cat > "$TMPD/probe.sh" <<'PROBE'
+set -eu
+OPDIR=".operator"; LOCKDIR="$OPDIR/.lock"
+eval "$(awk '/^# >>> LOCK BLOCK/,/^# <<< LOCK BLOCK/' "$1")"
+lock_acquire
+[ -s "$LOCKDIR/holder" ] || { echo "NO-STAMP"; exit 1; }
+if rmdir "$LOCKDIR" 2>/dev/null; then echo "RMDIR-SUCCEEDED"; exit 1; fi
+lock_release
+[ -d "$LOCKDIR" ] && { echo "NOT-RELEASED"; exit 1; }
+echo OK
+PROBE
+PROBEOUT="$( cd "$P" && bash "$TMPD/probe.sh" "$SCRIPTS/ops-verdict.sh" 2>&1 )"
+check "a held lock is stamped, and a stamped lock cannot be rmdir'd" "$([ "$PROBEOUT" = "OK" ] && echo 0 || echo 1)"
+
+awk '/^# >>> LOCK BLOCK/,/^# <<< LOCK BLOCK/' "$SCRIPTS/ops-verdict.sh" | sed 's/ops-verdict:/TOOL:/g' > "$TMPD/lkv"
+awk '/^# >>> LOCK BLOCK/,/^# <<< LOCK BLOCK/' "$SCRIPTS/ops-adopt.sh"   | sed 's/ops-adopt:/TOOL:/g'   > "$TMPD/lka"
+check "adopt and verdict carry identical lock logic (no drift)" "$([ -s "$TMPD/lkv" ] && cmp -s "$TMPD/lkv" "$TMPD/lka" && echo 0 || echo 1)"
+# Stamps first: a stamped lock dir is non-empty and survives `rm -rf` otherwise.
+rm -f "$P/.operator/.lock/holder" "$P/.operator/.lock.reclaim/holder" 2>/dev/null || true
+rm -rf "$P" "$TMPD"
+
+########################################################################
 echo "== summary: $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]

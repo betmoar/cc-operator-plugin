@@ -317,5 +317,64 @@ class ValidatorTest(unittest.TestCase):
         self.assertTrue(any("whitespace owners" in p for p in probs), probs)
 
 
+class LockParityTest(unittest.TestCase):
+    """The shared lock block must be identical in both writers.
+
+    The guardrail exists because "keep the two implementations identical" was
+    prose for the whole 0.4.0 cycle, and prose does not hold couplings — the
+    same lesson `check_reader_bounds` was written for.
+    """
+
+    BLOCK = (
+        "# >>> LOCK BLOCK\n"
+        "LOCK_SPINS=300\n"
+        "lock_acquire() {\n"
+        '  echo "TOOL: warning — reclaiming" >&2\n'
+        "}\n"
+        "# <<< LOCK BLOCK\n"
+    )
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        (self.dir / "scripts").mkdir(parents=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _write(self, verdict=None, adopt=None):
+        v = self.BLOCK.replace("TOOL:", "ops-verdict:") if verdict is None else verdict
+        a = self.BLOCK.replace("TOOL:", "ops-adopt:") if adopt is None else adopt
+        write(self.dir / "scripts" / "ops-verdict.sh", "#!/usr/bin/env bash\n" + v)
+        write(self.dir / "scripts" / "ops-adopt.sh", "#!/usr/bin/env bash\n" + a)
+
+    def problems(self):
+        probs = []
+        vp.check_lock_parity(self.dir, probs)
+        return probs
+
+    def test_identical_blocks_pass(self):
+        # The tool name in warnings is the ONE legitimate difference.
+        self._write()
+        self.assertEqual(self.problems(), [])
+
+    def test_drifted_logic_fires(self):
+        self._write(adopt=self.BLOCK.replace("TOOL:", "ops-adopt:")
+                    .replace("LOCK_SPINS=300", "LOCK_SPINS=100"))
+        probs = self.problems()
+        self.assertTrue(any("drifted" in p for p in probs), probs)
+        self.assertTrue(any("LOCK_SPINS" in p for p in probs), probs)
+
+    def test_missing_markers_fire(self):
+        self._write(adopt="lock_acquire() { :; }\n")
+        probs = self.problems()
+        self.assertTrue(any("LOCK BLOCK" in p for p in probs), probs)
+
+    def test_real_scripts_are_in_parity(self):
+        # Guards the shipped tree, not just a fixture.
+        probs = []
+        vp.check_lock_parity(ROOT, probs)
+        self.assertEqual(probs, [])
+
+
 if __name__ == "__main__":
     unittest.main()

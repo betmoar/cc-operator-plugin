@@ -75,23 +75,50 @@ Any new code that reads a sentinel, a fragment, or a ledger.
 
 ## Decision procedure: touching the lock
 
-`ops-verdict.sh` and `ops-adopt.sh` carry byte-identical lock implementations.
+`ops-verdict.sh` and `ops-adopt.sh` carry a byte-identical lock implementation,
+delimited by `# >>> LOCK BLOCK` / `# <<< LOCK BLOCK`.
 
-1. **Change both.** They contend on the same `.operator/.lock`. A divergence is
-   not a style problem; it is two different ideas of mutual exclusion.
+1. **Change both — the build now checks.** They contend on the same
+   `.operator/.lock`; a divergence is not a style problem, it is two different
+   ideas of mutual exclusion. `validate_plugin.check_lock_parity` compares the
+   marked block byte for byte (normalizing only the tool name in warnings), so
+   editing one file fails the build immediately rather than four minutes later
+   in the bash suite. Edit the block in one file and copy it verbatim.
 2. **Keep every wait bounded, and bound it to degrade to a *milder* failure.**
    An unexpirable claim is a deadlock with extra steps — the `.lock.reclaim`
    marker was first written with no expiry and wedged every later writer forever,
    worse than the stale lock it fixed.
 3. **Never lengthen the critical section without re-checking the budget.**
-   Reclamation infers "crashed" from elapsed time, so *anything* slow inside the
-   lock can get its own lock stolen. This has now happened twice, both times via
-   `--reconcile`. Before adding work under the lock, ask: what is the worst-case
-   wall-clock, and is it under `LOCK_SPINS`?
-4. **Time-based crash inference is the root weakness.** It cannot distinguish a
-   slow holder from a dead one. If you need a real fix rather than a bounded
-   trigger, write the holder's PID into the lock and check `kill -0` before
-   reclaiming. Deliberately not done yet — see the backlog.
+   A holder that outruns `LOCK_LIVE_SPINS` (60s) no longer loses its lock, but
+   its waiters do give up and proceed *unlocked* — the milder failure, still a
+   failure. Before adding work under the lock, ask: what is the worst-case
+   wall-clock? Slow `--reconcile` runs caused this twice.
+4. **Crash detection asks the kernel, not the clock** (0.5.0, was the root
+   weakness behind F03). The holder writes `host uid pid` to `.lock/holder`;
+   waiters `kill -0` it. Three outcomes, and all three matter:
+   - **dead** → reclaim at once (0.4.0 made every waiter behind a crashed
+     holder sit out the full 30s budget; measured 34s).
+   - **alive** → *never* reclaim, however long it runs. Wait, then proceed
+     unlocked. Stealing a running writer's lock is the bug this replaced.
+   - **unjudgeable** → fall back to the timed budget unchanged. Not a leftover:
+     `kill -0` across uids fails with EPERM, indistinguishable from "dead", so
+     judging a foreign uid would reclaim a LIVE lock. Only our own host+uid are
+     judgeable; a pre-0.5 stampless lock lands here too, which is the migration
+     path.
+5. **Do not remove the stamp to "simplify".** A stamped `.lock/` is non-empty,
+   and `rmdir` refuses non-empty directories — that is what actually stops a
+   second reclaimer from stepping onto a fresh lock, deterministically, where
+   the timing argument only makes it unlikely. The *"a held lock is stamped, and
+   a stamped lock cannot be rmdir'd"* case fails the moment the stamp goes.
+   (It also means a stamped lock survives `rm -rf`: delete `holder` first in
+   any teardown.)
+6. **Do not try to test the two-reclaimer race by timing.** Six approaches were
+   measured against a deliberately naive copy — cold-start racing, a ~1s
+   critical section, killing a live holder while both waiters spun, 0.4s of
+   injected delay inside the reclaim path — and all read 0/N. Microsecond
+   sequence, 0.1s spin: P(collision) ≈ 1e-5. Reaching it means shipping an
+   injection point inside `lock_acquire`, which trades a real hazard for a test.
+   Assert the structural property in step 5 instead.
 
 ---
 

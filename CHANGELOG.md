@@ -9,6 +9,45 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-27
+
+The ledger lock stops guessing. Crash detection now asks the kernel instead of
+inferring death from elapsed time — the root cause behind audit finding F03,
+where a `--reconcile` that ran past the budget had its lock reclaimed while it
+was still inside the critical section.
+
+### Changed
+- **Lock holders identify themselves.** `.operator/.lock/holder` records
+  `host uid pid`; waiters call `kill -0` and act on the answer:
+  - **dead** → reclaim immediately. Previously every waiter behind a crashed
+    holder paid the full 30s budget (measured: 34s).
+  - **alive** → never reclaimed, however long it runs. Past `LOCK_LIVE_SPINS`
+    (60s) the waiter proceeds *unlocked* — the milder failure. 0.4.0 instead
+    took the lock away from the running writer.
+  - **unjudgeable** → falls back to 0.4.0's timed budget unchanged. This covers
+    a foreign host or uid (`kill -0` across uids fails with EPERM, which is
+    indistinguishable from "dead", so judging it would reclaim a LIVE lock) and
+    a pre-0.5 stampless lock, which is the migration path.
+- The lock implementation shared by `ops-verdict.sh` and `ops-adopt.sh` is now
+  delimited by `# >>> LOCK BLOCK` / `# <<< LOCK BLOCK`.
+
+### Added
+- `validate_plugin.check_lock_parity` — fails the build when the two lock
+  implementations drift. "Keep them identical" had been prose since 0.4.0; this
+  is the same fix `check_reader_bounds` was for a missed byte bound.
+- Test case 21 (13 assertions): dead-holder reclaim, live-holder protection,
+  simultaneous reclaimers, foreign-host fallback, and a mutation-tested
+  assertion that a held lock is stamped and a stamped lock cannot be `rmdir`'d.
+
+### Notes
+- Backlog #2 ("a discriminating reclaim-exclusivity test") is closed as
+  **unreachable**, not deferred: six approaches measured against a deliberately
+  naive implementation all returned 0/N, because the reclaim sequence is
+  microseconds against a 0.1s spin (P ≈ 1e-5). The deterministic property that
+  actually closes the race — a stamped lock directory is non-empty, so `rmdir`
+  refuses it — is asserted directly instead. See `docs/PLAYBOOK.md`.
+- A stamped lock directory survives a plain `rm -rf`; remove `holder` first.
+
 ## [0.4.0] - 2026-07-27
 
 Concurrent sessions in one working tree no longer trap each other. Field report

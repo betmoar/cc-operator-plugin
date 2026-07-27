@@ -73,8 +73,9 @@ validator as evidence the gate works.
 
 | Risk | Why it remains | What would close it |
 |---|---|---|
-| Time-based crash inference in the lock | Cannot distinguish a slow holder from a dead one. F03 removed the trigger, not the mechanism. | Write the holder's PID into the lock; `kill -0` before reclaiming. Scoped, deliberately deferred. |
-| Lock exclusivity under reclaim is untested | Needs two writers timing out simultaneously; the suite says so in a `HONESTY NOTE`. | A slow-holder harness driving both past the budget. |
+| ~~Time-based crash inference in the lock~~ | **Closed 2026-07-27 (0.5.0).** The holder stamps `host uid pid`; waiters `kill -0`. Dead → immediate reclaim, alive → never reclaimed, unjudgeable → old timed path. | Done — case 21, `check_lock_parity`. |
+| A slow holder still loses *mutual exclusion* (not its lock) | Past `LOCK_LIVE_SPINS` (60s) waiters proceed unlocked rather than stealing the lock. Milder failure, still a failure. | Blocking indefinitely trades it for a hang; not obviously better. Revisit only with a real slow-holder report. |
+| The two-reclaimer race has no discriminating test | **Not deferred — measured as unreachable.** Six approaches vs. a naive copy all read 0/N; P(collision) ≈ 1e-5. | Nothing short of an injection point inside `lock_acquire`. The structural `rmdir`-refuses-non-empty assertion replaces it. |
 | `mkdir`/`O_EXCL` atomicity on network filesystems | The lock and sentinel creation both assume POSIX atomicity. Untested on NFS. | Test on an NFS mount, or document the platform constraint. |
 | bash 3.2 compatibility | The `${ARR+"${ARR[@]}"}` idiom is load-bearing on macOS; CI runs modern bash. | A CI matrix entry running `/bin/bash` 3.2. |
 | SessionStart `additionalContext` reaching the model | End-to-end, unverifiable in CI. Criterion 1 of the spec depends on it. | A live two-session check. |
@@ -82,10 +83,18 @@ validator as evidence the gate works.
 
 ## Backlog, prioritized
 
-1. **PID-based lock liveness** (P1-shaped) — removes the root of F03 rather than
-   its trigger. Both lock implementations must change together.
-2. **A discriminating reclaim-exclusivity test** — the highest-value missing
-   test; today's assertions are guards, and the suite admits it.
+~~1. **PID-based lock liveness**~~ — **done 2026-07-27 (0.5.0)**: holder stamps
+   `host uid pid`, waiters `kill -0`, both implementations changed together and
+   their parity is now enforced by `validate_plugin.check_lock_parity`. The
+   pre-fix behaviour was reproduced first (a live 30s holder told it was "a
+   crashed writer"; a dead holder costing a waiter 34s).
+
+~~2. **A discriminating reclaim-exclusivity test**~~ — **closed as unreachable,
+   not skipped.** Six approaches measured against a deliberately naive copy all
+   returned 0/N; the window is ~1e-5. Replaced by a deterministic assertion of
+   the property that actually closes the race (a stamped lock dir is non-empty,
+   so `rmdir` refuses it), which is mutation-tested: dropping the stamp fails it.
+
 3. **bash 3.2 in CI** — the compatibility contract is real, load-bearing, and
    currently validated only by whoever runs the suite on a Mac.
 4. **`capture_baseline.sh` does not detect this repo's suites** — it reported

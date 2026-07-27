@@ -23,32 +23,151 @@ die() { echo "ops-adopt: $1" >&2; exit 2; }
 # ownership and then clears the sentinel, so an adopt landing between those two
 # steps would let the former owner delete the new owner's sentinel. The lock is
 # what makes "validate ownership, then act on it" indivisible across both tools.
-# Same reclaim-on-timeout semantics as the writer — a stale lock must never make
-# a wedged task unrecoverable, since adoption IS the recovery path.
-# Reclaim is exclusive — see the long note in ops-verdict.sh. An unconditional
-# rmdir+mkdir lets a second waiter delete the first waiter's FRESH lock and
-# enter alongside it. Keep the two implementations identical.
-LOCK_SPINS=300        # × 0.1s = 30s before a held lock is presumed crashed
+# A stale lock must never make a wedged task unrecoverable, since adoption IS the
+# recovery path — hence the same degrade-never-hang discipline as the writer.
+# >>> LOCK BLOCK — byte-identical in ops-verdict.sh and ops-adopt.sh.
+# They contend on the same .operator/.lock, so a divergence here is not a style
+# problem; it is two different ideas of mutual exclusion. The "no drift" case in
+# tests/test-scripts.sh compares everything between these markers, with the tool
+# name in warnings normalized away. Edit both, or the build fails.
+#
+# mkdir is atomic on every POSIX FS; flock(1) is absent on macOS.
+#
+# A stale lock must never cost a real verdict, so a waiter degrades rather than
+# failing. But "stale" is a judgement, and how it is made is the whole design:
+#
+# 0.4.0 inferred it from ELAPSED TIME — hold the lock longer than the budget and
+# you were presumed crashed. That cannot distinguish a slow holder from a dead
+# one, and the difference is not academic: a --reconcile over a large ledger
+# genuinely ran past the budget, a concurrent writer reclaimed its lock, and both
+# sat inside the critical section (audit F03). F03 bounded the TRIGGER by
+# capping fragment size; it left the inference in place. Reproduced directly
+# before this change: a live writer holding the lock 30s got the message
+# "assuming a crashed writer and reclaiming it" while still running.
+#
+# So the holder now IDENTIFIES itself — host, uid, pid — and waiters ask the
+# kernel instead of the clock:
+#
+#   confirmed dead        → reclaim at once (0.4.0 made every waiter behind a
+#                           crashed holder pay the full 30s budget; measured 34s)
+#   confirmed alive       → NEVER reclaim, however long it runs. Wait a longer
+#                           budget, then proceed unlocked — the milder failure.
+#                           Stealing a running writer's lock is the failure this
+#                           whole block exists to prevent.
+#   cannot be judged      → fall back to the 0.4.0 time-based budget unchanged.
+#
+# The third case is load-bearing, not a leftover. `kill -0` against another
+# user's process fails with EPERM, which reads identically to "dead" — judging
+# it would reclaim a LIVE holder's lock, the fail-OPEN direction. Only our own
+# host and uid are judgeable. Everything else — a foreign host on a shared
+# filesystem, a pre-0.5 lock with no stamp at all (the migration case), a
+# garbled record — degrades to the behaviour that shipped, which is bounded and
+# already understood.
+#
+# Reclaim is itself a critical section, and identified death makes that sharper
+# rather than softer: two waiters now see the same dead holder in the same
+# instant and race, where before they arrived 30s apart by luck. An
+# unconditional `rmdir` + `mkdir` lets waiter B delete waiter A's FRESH lock and
+# enter beside it — two writers inside, neither over budget (found by Codex
+# review). The removal must itself be exclusive: claim the right to reclaim by
+# atomically creating a separate marker; only its winner may touch the lock.
+#
+# The claim marker must ITSELF expire. A first version deferred to it forever,
+# so a process killed between creating and removing it wedged every later writer
+# — strictly worse than the stale lock it fixed, which at least proceeded after
+# one budget (found by Codex review). Bounded deferral, then it is presumed
+# abandoned. An unexpirable claim is a deadlock with extra steps.
+LOCK_SPINS=300        # × 0.1s = 30s before an UNJUDGEABLE holder is presumed dead
+LOCK_LIVE_SPINS=600   # × 0.1s = 60s to wait on a CONFIRMED-LIVE holder, then go unlocked
 RECLAIM_WAIT=50       # × 0.1s = 5s to let a LIVE reclaimer finish (it needs ms)
 LOCK_DEFERS_MAX=2     # short waits to grant before treating the claim as dead
+
+LOCK_HELD=0
+LOCK_MINE=""
+LOCK_HOLDER_REC=""
+
+# host + uid + pid: the three facts needed to decide whether `kill -0` can answer
+# for this holder at all. Written INSIDE the lock we already hold, so it never
+# races — mkdir remains the only thing arbitrating entry.
+holder_stamp() { printf '%s %s %s' "${HOSTNAME:-nohost}" "${UID:-0}" "$$"; }
+
+# Read the holder stamp into LOCK_HOLDER_REC ("" when absent or unreadable).
+# Bounded at 128 chars: this runs on every spin of every waiter, and every reader
+# in this codebase is byte-bounded — a line cap is not a byte cap (see
+# docs/PLAYBOOK.md, "adding a reader of a file"). Assigns to a global instead of
+# printing so a contended waiter does not fork a subshell ten times a second.
+lock_holder_read() {
+  LOCK_HOLDER_REC=""
+  [ -f "$LOCKDIR/holder" ] || return 0
+  IFS= read -r -n 128 LOCK_HOLDER_REC < "$LOCKDIR/holder" 2>/dev/null || true
+  LOCK_HOLDER_REC="${LOCK_HOLDER_REC%$'\r'}"
+}
+
+# 0 = alive · 1 = confirmed dead · 2 = cannot judge (caller must fall back).
+holder_state() { # holder_state <record>
+  local rec="$1" host uid pid
+  [ -n "$rec" ] || return 2
+  host="${rec%% *}"; rec="${rec#* }"
+  uid="${rec%% *}"; pid="${rec##* }"
+  [ "$host" = "${HOSTNAME:-nohost}" ] || return 2
+  [ "$uid" = "${UID:-0}" ] || return 2
+  case "$pid" in ''|*[!0-9]*) return 2 ;; esac
+  kill -0 "$pid" 2>/dev/null && return 0
+  return 1
+}
+
 lock_acquire() {
-  local i=0 defers=0
+  local i=0 defers=0 state=2 rec0=""
   while ! mkdir "$LOCKDIR" 2>/dev/null; do
     i=$((i+1))
-    if [ "$i" -ge "$LOCK_SPINS" ]; then
+    lock_holder_read
+    # `holder_state` reports through its EXIT STATUS, and a nonzero status from a
+    # bare call trips `set -e` — the script exited 1 before doing any work. The
+    # `|| state=$?` idiom is what makes a status-reporting function safe here.
+    state=0; holder_state "$LOCK_HOLDER_REC" || state=$?
+
+    if [ "$state" -eq 0 ]; then
+      # Confirmed alive. Never reclaim — wait, then degrade to unlocked. This is
+      # the case 0.4.0 got wrong (audit F03).
+      if [ "$i" -ge "$LOCK_LIVE_SPINS" ]; then
+        echo "ops-adopt: warning — lock $LOCKDIR held by a LIVE process for >$((LOCK_LIVE_SPINS / 10))s; proceeding unlocked rather than stealing a running writer's lock" >&2
+        return 0
+      fi
+      sleep 0.1
+      continue
+    fi
+
+    if [ "$state" -eq 1 ] || [ "$i" -ge "$LOCK_SPINS" ]; then
       if mkdir "$LOCKDIR.reclaim" 2>/dev/null; then
-        echo "ops-adopt: warning — lock $LOCKDIR held >$((LOCK_SPINS / 10))s; assuming a crashed holder and reclaiming it" >&2
+        # Re-verify under the claim. Between judging the holder and acting on it,
+        # the lock may have been released and retaken by a healthy process;
+        # reclaiming then would delete a LIVE holder's lock through the back door.
+        rec0="$LOCK_HOLDER_REC"
+        lock_holder_read
+        if [ "$LOCK_HOLDER_REC" != "$rec0" ]; then
+          rmdir "$LOCKDIR.reclaim" 2>/dev/null || true
+          sleep 0.1
+          continue
+        fi
+        if [ "$state" -eq 1 ]; then
+          echo "ops-adopt: warning — lock $LOCKDIR was held by process ${LOCK_HOLDER_REC##* }, which is gone; reclaiming it" >&2
+        else
+          echo "ops-adopt: warning — lock $LOCKDIR held >$((LOCK_SPINS / 10))s and its holder cannot be identified; assuming a crashed writer and reclaiming it" >&2
+        fi
+        rm -f "$LOCKDIR/holder" 2>/dev/null || true
         rmdir "$LOCKDIR" 2>/dev/null || true
         if mkdir "$LOCKDIR" 2>/dev/null; then
           rmdir "$LOCKDIR.reclaim" 2>/dev/null || true
-          break
+          break                       # we now hold the lock
         fi
         rmdir "$LOCKDIR.reclaim" 2>/dev/null || true
         echo "ops-adopt: warning — could not reclaim $LOCKDIR; proceeding unlocked" >&2
         return 0
       fi
-      # Bounded deferral — an abandoned claim marker must never wedge adoption,
-      # which is the RECOVERY path. See the long note in ops-verdict.sh.
+      # Someone else holds the reclaim claim. A LIVE reclaimer needs only
+      # milliseconds, so grant it a SHORT wait — not another full budget, which
+      # would turn a crashed claimer into minutes of stalling. After a couple of
+      # short waits the claim is dead, not slow.
       defers=$((defers + 1))
       if [ "$defers" -gt "$LOCK_DEFERS_MAX" ]; then
         echo "ops-adopt: warning — reclaim claim $LOCKDIR.reclaim abandoned; clearing it" >&2
@@ -60,13 +179,31 @@ lock_acquire() {
     sleep 0.1
   done
   LOCK_HELD=1
+  LOCK_MINE="$(holder_stamp)"
+  printf '%s\n' "$LOCK_MINE" > "$LOCKDIR/holder" 2>/dev/null || true
   trap 'lock_release' EXIT
+  # A signal handler that only releases would let bash RESUME the critical
+  # section with the lock already gone. Release and exit.
   trap 'lock_release; exit 130' INT
   trap 'lock_release; exit 143' TERM
 }
+
 lock_release() {
-  if [ "${LOCK_HELD:-0}" = "1" ]; then rmdir "$LOCKDIR" 2>/dev/null || true; LOCK_HELD=0; fi
+  [ "${LOCK_HELD:-0}" = "1" ] || return 0
+  LOCK_HELD=0
+  # If the lock no longer names us, someone reclaimed it while we were inside the
+  # critical section. Removing it now would delete the NEW holder's lock and let
+  # a third writer in — the same displacement, one step further along. Report and
+  # leave it alone; the report is what the reclaim-exclusivity test observes.
+  lock_holder_read
+  if [ -n "$LOCK_MINE" ] && [ -n "$LOCK_HOLDER_REC" ] && [ "$LOCK_HOLDER_REC" != "$LOCK_MINE" ]; then
+    echo "ops-adopt: warning — $LOCKDIR was reclaimed while this process held it; not releasing another holder's lock" >&2
+    return 0
+  fi
+  rm -f "$LOCKDIR/holder" 2>/dev/null || true
+  rmdir "$LOCKDIR" 2>/dev/null || true
 }
+# <<< LOCK BLOCK
 
 NL="$(printf '\nx')"; NL="${NL%x}"
 

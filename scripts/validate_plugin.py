@@ -338,6 +338,53 @@ def check_guard_parity(root, problems):
                 "session id makes its task permanently non-blocking")
 
 
+def check_lock_parity(root, problems):
+    """ops-verdict.sh and ops-adopt.sh must carry the SAME lock implementation.
+
+    They contend on the same `.operator/.lock`, so a divergence is not a style
+    problem — it is two different ideas of mutual exclusion, and the failure it
+    produces (two writers inside the critical section) is invisible until it
+    corrupts the ledger of record.
+
+    "Keep the two implementations identical" was prose in CLAUDE.md and in both
+    files' comments for the whole 0.4.0 cycle. Prose cannot hold a coupling: the
+    same instruction is what `check_reader_bounds` was written to replace after a
+    byte bound reached one reader of four. This compares the marked block byte
+    for byte, normalizing only the tool name in warning messages.
+
+    The bash suite asserts this too, but it takes ~4 minutes to reach; the point
+    of a build gate is that a maintainer editing one file learns immediately.
+    """
+    blocks = {}
+    for name in ("ops-verdict.sh", "ops-adopt.sh"):
+        p = root / "scripts" / name
+        if not p.is_file():
+            return  # missing-file is already reported by check_scripts
+        text = p.read_text(encoding="utf-8")
+        start = text.find("# >>> LOCK BLOCK")
+        end = text.find("# <<< LOCK BLOCK")
+        if start < 0 or end < 0:
+            problems.append(
+                f"scripts/{name}: no `# >>> LOCK BLOCK` … `# <<< LOCK BLOCK` "
+                f"markers — the shared lock must stay delimited so its parity "
+                f"with the other CLI can be checked (see docs/PLAYBOOK.md)")
+            return
+        tool = name[:-3]  # ops-verdict.sh -> ops-verdict
+        blocks[name] = text[start:end].replace(f"{tool}:", "TOOL:")
+    a, b = blocks["ops-verdict.sh"], blocks["ops-adopt.sh"]
+    if a != b:
+        a_lines, b_lines = a.splitlines(), b.splitlines()
+        detail = "differing line counts"
+        for i, (x, y) in enumerate(zip(a_lines, b_lines), 1):
+            if x != y:
+                detail = f"first difference at block line {i}: {x.strip()[:60]!r} vs {y.strip()[:60]!r}"
+                break
+        problems.append(
+            f"scripts/ops-verdict.sh vs ops-adopt.sh: lock implementations have "
+            f"drifted — they contend on the same lock and must be identical "
+            f"({detail})")
+
+
 def main(argv=None):
     root = pathlib.Path(argv[0]) if argv else pathlib.Path(
         __file__).resolve().parent.parent
@@ -351,6 +398,7 @@ def main(argv=None):
     check_scripts(root, problems)
     check_reader_bounds(root, problems)
     check_guard_parity(root, problems)
+    check_lock_parity(root, problems)
 
     if problems:
         for p in problems:
