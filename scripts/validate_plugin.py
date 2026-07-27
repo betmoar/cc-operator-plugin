@@ -108,6 +108,45 @@ def check_manifests(root, problems):
                     f"{e.get('source')!r}, expected './' (repo-root layout)")
 
 
+def check_statusline(root, problems):
+    """The statusline manifest must point at a renderer that exists.
+
+    cc-status discovers the segment purely from `.claude-plugin/statusline.json`
+    and silently skips a manifest whose `render` path does not resolve. That is
+    the whole failure: no error anywhere, the segment simply never appears, and
+    the bar looks exactly like a project with no open tasks. Renaming or moving
+    the script is the obvious way to cause it.
+
+    The name must also match the plugin, because that string is the key users
+    toggle (`/cc-status:toggle cc-operator on`).
+    """
+    manifest = root / ".claude-plugin" / "statusline.json"
+    if not manifest.is_file():
+        problems.append(
+            ".claude-plugin/statusline.json: missing — the statusline segment "
+            "is only discoverable through this manifest")
+        return
+    data = load_json(manifest, problems)
+    if data is None:
+        return
+    if data.get("name") != PLUGIN_NAME:
+        problems.append(
+            f"statusline.json: name is {data.get('name')!r}, expected "
+            f"{PLUGIN_NAME!r} (the key users toggle in cc-status)")
+    render = data.get("render", "")
+    if not render:
+        problems.append("statusline.json: no 'render' path")
+    elif not (root / render).is_file():
+        problems.append(
+            f"statusline.json: render path {render!r} does not resolve — "
+            f"cc-status skips an unresolvable renderer SILENTLY, so the segment "
+            f"just never appears")
+    order = data.get("order")
+    if order is not None and not isinstance(order, int):
+        problems.append(
+            f"statusline.json: order {order!r} is not an integer")
+
+
 def check_changelog(root, problems):
     plugin = root / ".claude-plugin" / "plugin.json"
     changelog = root / "CHANGELOG.md"
@@ -243,7 +282,7 @@ def check_hook(root, problems):
 def check_scripts(root, problems):
     for name in ("ops-init.sh", "ops-verdict.sh", "ops-task.sh",
                  "ops-adopt.sh", "ops-stop-hook.sh",
-                 "ops-sessionstart-hook.sh"):
+                 "ops-sessionstart-hook.sh", "statusline.sh"):
         p = root / "scripts" / name
         if not p.is_file():
             problems.append(f"scripts/{name}: missing")
@@ -272,6 +311,12 @@ def check_reader_bounds(root, problems):
         "ops-stop-hook.sh": 1,   # sentinel_owner
         "ops-verdict.sh": 2,     # sentinel_owner + the --reconcile fragment loop
         "ops-adopt.sh": 1,       # the inline sentinel parse
+        # The statusline segment renders on a ~300ms timer, which makes it the
+        # hottest reader here by three orders of magnitude — the others run once
+        # per turn-end or per command. Measured on one 64MB newline-less
+        # sentinel: 0.014s bounded vs 6.20s per parse unbounded, i.e. a
+        # permanently wedged status bar rather than a slow one.
+        "statusline.sh": 1,      # sentinel_owner
     }
     for name, expected in readers.items():
         p = root / "scripts" / name
@@ -385,20 +430,31 @@ def check_lock_parity(root, problems):
             f"({detail})")
 
 
+# The registry, in run order. Both main() and the test suite iterate THIS —
+# a hand-copied second list is how three guardrails (reader bounds, guard
+# parity, lock parity) ended up running in the build but not in the test that
+# asserts a good tree is clean, which is the test most likely to be trusted.
+CHECKS = (
+    check_manifests,
+    check_statusline,
+    check_changelog,
+    check_charter,
+    check_ledger_schema,
+    check_agents,
+    check_hook,
+    check_scripts,
+    check_reader_bounds,
+    check_guard_parity,
+    check_lock_parity,
+)
+
+
 def main(argv=None):
     root = pathlib.Path(argv[0]) if argv else pathlib.Path(
         __file__).resolve().parent.parent
     problems = []
-    check_manifests(root, problems)
-    check_changelog(root, problems)
-    check_charter(root, problems)
-    check_ledger_schema(root, problems)
-    check_agents(root, problems)
-    check_hook(root, problems)
-    check_scripts(root, problems)
-    check_reader_bounds(root, problems)
-    check_guard_parity(root, problems)
-    check_lock_parity(root, problems)
+    for check in CHECKS:
+        check(root, problems)
 
     if problems:
         for p in problems:

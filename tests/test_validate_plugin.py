@@ -26,6 +26,22 @@ GOOD_CHARTER = "# OPERATOR.md\n\n" + "\n".join(
 )
 
 
+# Stub scripts that actually SATISFY the guardrail checks. The good tree must
+# be clean under every check in vp.CHECKS, not merely under the manifest-shaped
+# ones — a fixture that only passes the checks someone remembered to call is
+# how three guardrails went unexercised here.
+GOOD_STATUSLINE = (
+    "#!/usr/bin/env bash\n"
+    "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
+    "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]*) owner=\"\" ;; esac\n")
+
+GOOD_LOCK_BLOCK = (
+    "# >>> LOCK BLOCK\n"
+    "lock_acquire() { mkdir \"$LOCKDIR\" 2>/dev/null; }\n"
+    "lock_release() { rm -f \"$LOCKDIR/holder\"; rmdir \"$LOCKDIR\"; }\n"
+    "# <<< LOCK BLOCK\n")
+
+
 def write(p, text):
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(text, encoding="utf-8")
@@ -70,9 +86,27 @@ def make_good_tree(root):
             }]}],
         }
     }))
-    for s in ("ops-init.sh", "ops-verdict.sh", "ops-task.sh", "ops-adopt.sh",
-              "ops-stop-hook.sh", "ops-sessionstart-hook.sh"):
+    write(root / ".claude-plugin" / "statusline.json", json.dumps({
+        "name": "cc-operator", "render": "scripts/statusline.sh", "order": 30,
+    }))
+    for s in ("ops-init.sh", "ops-sessionstart-hook.sh"):
         write(root / "scripts" / s, "#!/usr/bin/env bash\nset -eu\necho ok\n")
+    # The readers/CLIs need bodies that satisfy the byte-bound, guard-parity and
+    # lock-parity checks — a bare `echo ok` stub fails all three.
+    guards = ("check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
+              "check_owner_name() { :; }\n")
+    bounded = "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
+    write(root / "scripts" / "ops-stop-hook.sh",
+          "#!/usr/bin/env bash\n" + bounded +
+          "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]*) owner=\"\" ;; esac\n")
+    write(root / "scripts" / "ops-task.sh", "#!/usr/bin/env bash\n" + guards)
+    write(root / "scripts" / "ops-verdict.sh",
+          "#!/usr/bin/env bash\n" + guards + bounded +
+          "while IFS= read -r -n 512 row; do :; done < \"$frag\"\n" +
+          GOOD_LOCK_BLOCK)
+    write(root / "scripts" / "ops-adopt.sh",
+          "#!/usr/bin/env bash\n" + guards + bounded + GOOD_LOCK_BLOCK)
+    write(root / "scripts" / "statusline.sh", GOOD_STATUSLINE)
 
 
 class ValidatorTest(unittest.TestCase):
@@ -84,14 +118,14 @@ class ValidatorTest(unittest.TestCase):
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def problems(self):
+        # Iterate vp.CHECKS rather than re-listing the checks here. The old
+        # hand-copied list had silently fallen three behind the build
+        # (check_reader_bounds, check_guard_parity, check_lock_parity), so
+        # test_good_tree_is_clean — the assertion a reader trusts most — was
+        # not exercising them at all.
         probs = []
-        vp.check_manifests(self.dir, probs)
-        vp.check_changelog(self.dir, probs)
-        vp.check_charter(self.dir, probs)
-        vp.check_ledger_schema(self.dir, probs)
-        vp.check_agents(self.dir, probs)
-        vp.check_hook(self.dir, probs)
-        vp.check_scripts(self.dir, probs)
+        for check in vp.CHECKS:
+            check(self.dir, probs)
         return probs
 
     def assertFires(self, needle):
@@ -239,6 +273,44 @@ class ValidatorTest(unittest.TestCase):
         (self.dir / "scripts" / "ops-sessionstart-hook.sh").unlink()
         self.assertFires("scripts/ops-sessionstart-hook.sh: missing")
 
+    # --- 8b. the statusline manifest ---
+    # cc-status discovers the segment ONLY through this manifest and skips an
+    # unresolvable renderer silently — no error, the segment just never appears
+    # and the bar looks like a project with no open tasks. Nothing else in the
+    # build would notice, which is exactly why it is a checked contract.
+
+    def test_statusline_manifest_missing(self):
+        (self.dir / ".claude-plugin" / "statusline.json").unlink()
+        self.assertFires("statusline.json: missing")
+
+    def test_statusline_render_path_does_not_resolve(self):
+        write(self.dir / ".claude-plugin" / "statusline.json", json.dumps({
+            "name": "cc-operator", "render": "scripts/moved.sh", "order": 30,
+        }))
+        self.assertFires("does not resolve")
+
+    def test_statusline_name_mismatch(self):
+        write(self.dir / ".claude-plugin" / "statusline.json", json.dumps({
+            "name": "cc-operatorr", "render": "scripts/statusline.sh",
+        }))
+        self.assertFires("the key users toggle")
+
+    def test_statusline_order_not_an_integer(self):
+        write(self.dir / ".claude-plugin" / "statusline.json", json.dumps({
+            "name": "cc-operator", "render": "scripts/statusline.sh",
+            "order": "30",
+        }))
+        self.assertFires("is not an integer")
+
+    def test_statusline_reader_bound_is_enforced(self):
+        # The segment renders on a ~300ms timer, so a lost byte bound is a
+        # permanently wedged bar (6.20s per parse on a 64MB single-line
+        # sentinel, measured), not merely a slow one. It is registered in
+        # check_reader_bounds alongside the three once-per-event readers.
+        write(self.dir / "scripts" / "statusline.sh",
+              '#!/usr/bin/env bash\nwhile IFS= read -r line; do :; done < "$1"\n')
+        self.assertFires("scripts/statusline.sh")
+
     # --- 9/10. audit guardrails: reader bounds + guard parity ---
     # These enforce cross-file couplings that were previously prose in CLAUDE.md
     # and were still violated: the byte bound reached one of four readers, and a
@@ -268,6 +340,7 @@ class ValidatorTest(unittest.TestCase):
               "#!/usr/bin/env bash\n"
               "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
               "check_owner_name() { :; }\n")
+        write(self.dir / "scripts" / "statusline.sh", GOOD_STATUSLINE)
 
     def bounds_problems(self):
         probs = []

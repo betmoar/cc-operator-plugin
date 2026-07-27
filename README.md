@@ -99,6 +99,27 @@ Task ids and session ids are filenames, so they must be bare names: no `/`, no
 leading `.` (a dotfile sentinel would be invisible to the Stop hook's glob), no
 `|` or newlines (they would break the ledger's one-line row schema).
 
+**On the status bar (optional).** `scripts/statusline.sh` renders the gate as a
+segment: `op[2]` when this session owns 2 open tasks (red — your stop is
+blocked), `op[1+2*]` when 1 is yours and 2 belong to other sessions in the tree
+(dim — informational). It prints nothing outside operator projects and nothing
+when there is nothing open.
+
+It deliberately does **not** count `.operator/pending/`. Since 0.4.0 the Stop
+hook blocks only on sentinels this session owns, plus unowned ones, so a raw
+count answers a different question than "will my stop be blocked?" — and gets
+it wrong in both directions. The segment runs the hook's own partition instead,
+against the session id in the statusline payload.
+
+Installed with [cc-status](https://github.com/betmoar/cc-status-plugin) as the
+composer, it is discovered automatically via `.claude-plugin/statusline.json`
+and toggled with `/cc-status:toggle cc-operator on`. Standalone, wire it
+directly:
+
+```json
+"statusLine": { "type": "command", "command": "bash /path/to/cc-operator/scripts/statusline.sh" }
+```
+
 ## Repository layout
 
 ```
@@ -111,6 +132,8 @@ agents/op-*.md                    # tier-aliased roles: author, mechanic, review
 skills/chief-operator/SKILL.md    # thin router (front door only)
 scripts/ops-{init,task,verdict,adopt}.sh       # the evidence-gate mechanism
 scripts/ops-{stop,sessionstart}-hook.sh        # completion gate + session-id injection
+.claude-plugin/statusline.json    # cc-status segment manifest (name/render/order)
+scripts/statusline.sh             # the segment: open tasks, partitioned by owner
 scripts/validate_plugin.py        # contract linter — run before every PR
 scripts/release_gate.py           # tag == version == newest changelog heading
 hooks/hooks.json                  # Stop + SessionStart wiring via ${CLAUDE_PLUGIN_ROOT}

@@ -64,8 +64,45 @@ and design: `docs/spec/concurrent-sessions.md`.
 - Validator: the SessionStart hook must be registered via
   `${CLAUDE_PLUGIN_ROOT}`, and every CLI in the `.operator/bin` install set must
   be named in the charter by its project-relative path.
+- **A statusline segment** — `scripts/statusline.sh` plus
+  `.claude-plugin/statusline.json`, discovered automatically by
+  [cc-status](https://github.com/betmoar/cc-status-plugin) and usable
+  standalone as a `statusLine` command. Renders `op[2]` when this session owns
+  2 open tasks (red — the stop is blocked) and `op[1+2*]` when 1 is yours and 2
+  are other sessions' (dim — informational). Silent outside operator projects
+  and when nothing is open.
+
+  It runs the Stop hook's own mine/foreign partition rather than counting
+  `.operator/pending/`, because since 0.4.0 those are different questions: a
+  raw count claims you are stuck when every open task belongs to someone else,
+  and — the direction that actually costs a session — shows nothing while an
+  unowned sentinel silently gates you. Same untrusted-body rules as every other
+  reader (`docs/PLAYBOOK.md`): bounded in bytes, sanitized at the parser, and a
+  degenerate body degrades to unowned = counted as blocking.
+- Validator: `check_statusline` (the manifest must name the plugin and point at
+  a renderer that resolves — cc-status skips an unresolvable one *silently*, so
+  the segment would simply never appear), and the segment is registered in
+  `check_reader_bounds` as the fourth sentinel reader. It renders on a ~300ms
+  timer, making a lost byte bound a permanently wedged bar rather than one slow
+  turn-end: measured 6.20s *per parse* on a 64 MB newline-less sentinel vs
+  0.014s bounded.
+- Test case 22 in `tests/test-scripts.sh` (18 assertions) — including that one
+  directory of three sentinels renders differently for each of three viewers,
+  which is the assertion a file count cannot pass. Verified discriminating by
+  mutation: degrading the segment to a naive count fails 8 assertions, dropping
+  the byte bound fails the timing bound alone, and dropping the owner sanitizer
+  fails the traversal case.
 
 ### Fixed (found in review of this branch, before release)
+- **`validate_plugin`'s test suite had silently fallen three checks behind the
+  build.** `ValidatorTest.problems()` hand-listed the checks to run, and
+  `check_reader_bounds`, `check_guard_parity` and `check_lock_parity` were
+  never added — so `test_good_tree_is_clean`, the assertion a reader trusts
+  most, did not exercise the three guardrails the 2026-07-27 audit added.
+  Both `main()` and the tests now iterate one `vp.CHECKS` registry, and the
+  good-tree fixture was given script bodies that actually satisfy those
+  contracts (bare `echo ok` stubs failed all three once they ran at all).
+  Found while wiring the statusline check in.
 - **The lock inferred a crash from elapsed time, and could steal a LIVE
   writer's lock.** The first draft presumed any holder past the budget dead,
   which cannot distinguish a slow writer from a dead one — the root of audit

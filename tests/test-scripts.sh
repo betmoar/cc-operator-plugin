@@ -953,5 +953,150 @@ rm -f "$P/.operator/.lock/holder" "$P/.operator/.lock.reclaim/holder" 2>/dev/nul
 rm -rf "$P" "$TMPD"
 
 ########################################################################
+echo "-- Case 22: the statusline segment reports the gate, not a file count"
+# The bar's whole value is that it answers "will my stop be blocked?". A raw
+# count of pending/ answers a DIFFERENT question and gets it wrong in both
+# directions: it cries wolf when every open task belongs to another session,
+# and it reads 0 when an unowned sentinel is silently gating you. So the
+# segment runs the Stop hook's partition — MINE + UNOWNED block, FOREIGN does
+# not — and these assertions are what stop it from decaying into `ls | wc -l`.
+#
+# Renders on a ~300ms timer, which makes it the hottest reader in the plugin by
+# three orders of magnitude (the Stop hook fires once per turn-end). Its byte
+# bound is therefore load-bearing in a way the others' are not; measured, a
+# 64MB newline-less sentinel costs 6.20s per parse unbounded vs 0.014s bounded.
+SL="$SCRIPTS/statusline.sh"
+# Case 5's PATH_NOJQ/PATH_NONE dirs are deleted at the end of that case, so
+# build fresh ones here rather than silently testing a nonexistent PATH (which
+# would make the python3-fallback assertion pass against no parser at all).
+# sys.executable, not `python3`: a pyenv/asdf shim cannot run under a minimal
+# PATH — the same trap case 5 documents.
+SLPY="$(newproj)"; SLNONE="$(newproj)"
+SLPYBIN="$(python3 -c 'import sys; print(sys.executable)' 2>/dev/null || true)"
+if [ -n "$SLPYBIN" ] && [ -x "$SLPYBIN" ]; then ln -s "$SLPYBIN" "$SLPY/python3"; fi
+sljson() { # sljson <session-id> <cwd>
+  printf '{"session_id":"%s","cwd":"%s","workspace":{"project_dir":"%s"}}' "$1" "$2" "$2"
+}
+render() { # render <session-id> <cwd> → segment text with ANSI stripped
+  sljson "$1" "$2" | "$BASH_ABS" "$SL" 2>/dev/null \
+    | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g'
+}
+
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+check "no open tasks → renders nothing (the bar stays clean)" \
+  "$([ -z "$(render SESS-A "$P")" ] && echo 0 || echo 1)"
+
+( cd "$P" && bash "$TASK" T-1 --owner SESS-A >/dev/null 2>&1 )
+( cd "$P" && bash "$TASK" T-2 --owner SESS-B >/dev/null 2>&1 )
+( cd "$P" && bash "$TASK" T-3 --owner SESS-B >/dev/null 2>&1 )
+# THE ASSERTION A FILE COUNT FAILS: one directory, three sentinels, and the
+# answer differs per viewer. A count would print "3" to all three.
+check "owner's view: 1 blocking + 2 foreign" \
+  "$([ "$(render SESS-A "$P")" = "op[1+2*]" ] && echo 0 || echo 1)"
+check "other owner's view: 2 blocking + 1 foreign" \
+  "$([ "$(render SESS-B "$P")" = "op[2+1*]" ] && echo 0 || echo 1)"
+check "bystander's view: 0 blocking + 3 foreign (nothing gates them)" \
+  "$([ "$(render SESS-C "$P")" = "op[0+3*]" ] && echo 0 || echo 1)"
+
+# A pre-0.4 empty sentinel is unowned, and unowned blocks EVERYONE. This is the
+# direction that must not regress: showing 0 while the hook blocks would send
+# the operator hunting a phantom.
+: > "$P/.operator/pending/T-LEGACY"
+check "an unowned sentinel counts as blocking, for a bystander too" \
+  "$([ "$(render SESS-C "$P")" = "op[1+3*]" ] && echo 0 || echo 1)"
+rm -f "$P/.operator/pending/T-LEGACY"
+
+# Same untrusted-body rules as every other reader (docs/PLAYBOOK.md). An owner
+# our CLIs could never have written must degrade to unowned = blocking, never
+# be believed as a foreign session's claim (which would wave the stop through).
+printf 'session_id: ../../PWNED\n' > "$P/.operator/pending/T-EVIL"
+check "a traversal-shaped owner degrades to unowned, not foreign" \
+  "$([ "$(render SESS-C "$P")" = "op[1+3*]" ] && echo 0 || echo 1)"
+rm -f "$P/.operator/pending/T-EVIL"
+
+# A CRLF checkout must not make a session's OWN task look foreign — the same
+# fail-OPEN that bit the Stop hook.
+printf 'session_id: SESS-A\r\n' > "$P/.operator/pending/T-CRLF"
+check "a CRLF sentinel still reads as MINE, not foreign" \
+  "$([ "$(render SESS-A "$P")" = "op[2+2*]" ] && echo 0 || echo 1)"
+rm -f "$P/.operator/pending/T-CRLF"
+
+# The segment resolves the project by the same upward walk as the Stop hook. If
+# they disagreed, the bar would describe a different gate than the one that
+# runs — which is exactly audit F01, in the hook itself.
+mkdir -p "$P/sub/deeper"
+check "a subdirectory cwd finds the same gate (F01 shape)" \
+  "$([ "$(render SESS-A "$P/sub/deeper")" = "op[1+2*]" ] && echo 0 || echo 1)"
+
+# Hostile/degenerate stdin must render nothing rather than spray errors onto
+# the bar. Includes the no-parser case: unlike the Stop hook, which warns on
+# stderr, a statusline has nowhere to warn — silence IS the correct behavior.
+check "garbage payload renders nothing" \
+  "$([ -z "$(printf 'NOT JSON{{' | "$BASH_ABS" "$SL" 2>&1)" ] && echo 0 || echo 1)"
+check "empty payload renders nothing" \
+  "$([ -z "$(printf '' | "$BASH_ABS" "$SL" 2>&1)" ] && echo 0 || echo 1)"
+# No jq AND no python3: PATH_NONE is an empty dir, so even `cat` is gone. This
+# is why the segment slurps stdin with the `read` builtin — an external command
+# here printed a bash error INTO the statusline (caught in review, pre-release).
+check "no parser and no external commands: silent, no stray output" \
+  "$([ -z "$(sljson SESS-A "$P" | PATH="$SLNONE" "$BASH_ABS" "$SL" 2>&1)" ] && echo 0 || echo 1)"
+# ...and it must TERMINATE, not merely stay quiet. Slurping stdin with `cat`
+# under an empty PATH does not fail — it HANGS, waiting on a command that will
+# never run, which freezes the whole bar rather than dropping one segment.
+# (Found by mutation-testing this very case: the mutant ran until killed while
+# every output assertion above sat there looking fine.) A silence assertion
+# cannot see the difference; a deadline can.
+SLS0=$(date +%s)
+sljson SESS-A "$P" | PATH="$SLNONE" "$BASH_ABS" "$SL" >/dev/null 2>&1 &
+SLPID=$!
+SLHUNG=1
+while [ "$(( $(date +%s) - SLS0 ))" -lt 5 ]; do
+  kill -0 "$SLPID" 2>/dev/null || { SLHUNG=0; break; }
+  sleep 0.2
+done
+[ "$SLHUNG" -eq 0 ] || kill -9 "$SLPID" 2>/dev/null
+wait "$SLPID" 2>/dev/null
+check "no parser and no external commands: terminates, does not hang the bar" "$SLHUNG"
+# The python3 fallback must produce the SAME partition as jq, or the bar tells
+# two different stories depending on which parser a machine happens to have.
+if [ -n "$SLPYBIN" ] && [ -x "$SLPYBIN" ]; then
+  check "python3 fallback agrees with jq" \
+    "$([ "$(sljson SESS-A "$P" | PATH="$SLPY" "$BASH_ABS" "$SL" 2>/dev/null \
+          | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g')" = "op[1+2*]" ] && echo 0 || echo 1)"
+else
+  fail "python3 fallback agrees with jq (no python3 resolved — fallback untested)"
+fi
+
+# A directory in pending/ is not a task; the hook's `-f` guard exists because a
+# bash error was once emitted AS operator guidance.
+mkdir -p "$P/.operator/pending/T-DIR"
+check "a directory in pending/ is not counted as a task" \
+  "$([ "$(render SESS-A "$P")" = "op[1+2*]" ] && echo 0 || echo 1)"
+rmdir "$P/.operator/pending/T-DIR"
+
+# The byte bound, on the reader that renders every 300ms. Unbounded, this same
+# file measured 6.20s PER PARSE — a permanently wedged bar, not a slow one.
+bigline "$P/.operator/pending/T-HUGE"
+S0=$(date +%s); OUT_HUGE="$(render SESS-A "$P")"; S1=$(date +%s)
+check "a 64MB single-line sentinel renders in bounded time (<3s)" \
+  "$([ "$((S1 - S0))" -lt 3 ] && echo 0 || echo 1)"
+check "the huge sentinel is still counted (bounded, not skipped)" \
+  "$([ "$OUT_HUGE" = "op[2+2*]" ] && echo 0 || echo 1)"
+rm -f "$P/.operator/pending/T-HUGE"
+
+# The manifest is how cc-status discovers the segment; a renderer path that does
+# not resolve means the segment silently never appears.
+MANIFEST="$REPO/.claude-plugin/statusline.json"
+check "statusline.json manifest exists" "$([ -f "$MANIFEST" ] && echo 0 || echo 1)"
+if [ -f "$MANIFEST" ]; then
+  MREND="$(LC_ALL=C sed -n 's/.*"render"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$MANIFEST")"
+  check "manifest render path resolves to a real file" \
+    "$([ -n "$MREND" ] && [ -f "$REPO/$MREND" ] && echo 0 || echo 1)"
+  check "manifest name matches the plugin name" \
+    "$(grep -q '"name"[[:space:]]*:[[:space:]]*"cc-operator"' "$MANIFEST" && echo 0 || echo 1)"
+fi
+rm -rf "$P" "$SLPY" "$SLNONE"
+
+########################################################################
 echo "== summary: $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]

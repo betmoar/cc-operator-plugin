@@ -50,7 +50,9 @@ and the maintainer's local `.archive/dev/` (untracked).
 | a charter section heading or its order | update `validate_plugin.CHARTER_SECTION_ORDER` |
 | the sentinel/pending convention in any `ops-*.sh` | update the other scripts, `tests/test-scripts.sh`, and the EVIDENCE GATE prose in `OPERATOR.md` |
 | the `.operator/bin` install set in `ops-init.sh` | update the charter's EVIDENCE GATE paths, the stop-hook fallback message, the *"project-installed gate CLIs"* test case, and `validate_plugin.CHARTER_REQUIRED_CLIS` + `check_scripts` |
-| the sentinel body format (`session_id:` line) | update `ops-task.sh`, `ops-adopt.sh`, both parsers (`ops-verdict.sh:sentinel_owner`, `ops-stop-hook.sh:sentinel_owner` — the latter **must** stay builtin-only), and the *"sentinel ownership"*, *"migration safety"*, and *"sentinel BODY is untrusted input"* cases |
+| the sentinel body format (`session_id:` line) | update `ops-task.sh`, `ops-adopt.sh`, **three** parsers (`ops-verdict.sh:sentinel_owner`, `ops-stop-hook.sh:sentinel_owner`, `statusline.sh:sentinel_owner` — the latter two **must** stay builtin-only), and the *"sentinel ownership"*, *"migration safety"*, *"sentinel BODY is untrusted input"*, and *"statusline segment reports the gate"* cases |
+| the mine/foreign partition rule in `ops-stop-hook.sh` | update `statusline.sh` — it renders that same partition, and a bar describing a different gate than the one that runs is worse than no bar |
+| `scripts/statusline.sh`'s path or name | update `.claude-plugin/statusline.json` — cc-status skips an unresolvable renderer **silently** (enforced by `validate_plugin.check_statusline`) |
 | the fragment/lock scheme in `ops-verdict.sh` | update `ops-init.sh` (`verdicts.d/`, `.gitattributes`), the README evidence-gate section, and the *"concurrent appends never interleave"* case |
 | the `check_bare_name` reject set in any CLI | update the other two CLIs **and** the `case` filter in both `sentinel_owner` parsers — the hook must reject what the writers reject, or a body our CLIs could never have written reads as a valid foreign owner and the gate opens (*"name guards agree"* + *"untrusted input"* cases) |
 
@@ -158,7 +160,14 @@ guard applied to only one of the three CLIs fails the build.
   missing binary: a 2 MB sentinel cost ~10s per turn-end tree-wide. The parse
   stops at 20 lines (the owner is line 1 by construction) and the enumeration
   requires `-f` — a directory in `pending/` otherwise emitted a raw bash error
-  *as operator guidance*.
+  *as operator guidance*. **`statusline.sh` is the same rule at 1000× the
+  frequency**: it renders on Claude Code's ~300ms timer, so the 64 MB
+  newline-less sentinel that costs the hook one slow turn-end costs the bar
+  6.20s *per render* — permanently wedged, not slow (measured; bounded is
+  0.014s). It is registered in `check_reader_bounds` like the other three.
+  Its two `read -r` calls over the python3 pipe carry `-n 4096` they do not
+  strictly need, so the guard needs no carve-out for "that one reads a pipe" —
+  a guard with an exception is one the next maintainer argues with.
 - **Nothing but sentinels may live in `.operator/pending/`.** The hook globs
   that directory and treats every entry as a task id. `ops-adopt.sh` originally
   wrote its temp file there, so a crashed adopt left a phantom pending task
