@@ -28,9 +28,11 @@ die() { echo "ops-adopt: $1" >&2; exit 2; }
 # Reclaim is exclusive — see the long note in ops-verdict.sh. An unconditional
 # rmdir+mkdir lets a second waiter delete the first waiter's FRESH lock and
 # enter alongside it. Keep the two implementations identical.
-LOCK_SPINS=300   # × 0.1s = 30s
+LOCK_SPINS=300        # × 0.1s = 30s before a held lock is presumed crashed
+RECLAIM_WAIT=50       # × 0.1s = 5s to let a LIVE reclaimer finish (it needs ms)
+LOCK_DEFERS_MAX=2     # short waits to grant before treating the claim as dead
 lock_acquire() {
-  local i=0
+  local i=0 defers=0
   while ! mkdir "$LOCKDIR" 2>/dev/null; do
     i=$((i+1))
     if [ "$i" -ge "$LOCK_SPINS" ]; then
@@ -45,7 +47,15 @@ lock_acquire() {
         echo "ops-adopt: warning — could not reclaim $LOCKDIR; proceeding unlocked" >&2
         return 0
       fi
-      i=0     # another waiter is reclaiming; wait for it, do not also reclaim
+      # Bounded deferral — an abandoned claim marker must never wedge adoption,
+      # which is the RECOVERY path. See the long note in ops-verdict.sh.
+      defers=$((defers + 1))
+      if [ "$defers" -gt "$LOCK_DEFERS_MAX" ]; then
+        echo "ops-adopt: warning — reclaim claim $LOCKDIR.reclaim abandoned; clearing it" >&2
+        rmdir "$LOCKDIR.reclaim" 2>/dev/null || true
+        defers=0
+      fi
+      i=$((LOCK_SPINS - RECLAIM_WAIT))
     fi
     sleep 0.1
   done

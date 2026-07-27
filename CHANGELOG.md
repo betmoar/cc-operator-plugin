@@ -119,6 +119,19 @@ and design: `docs/spec/concurrent-sessions.md`.
   matches ` | `, so `| a | b | c | injected | PASS |` passed it and was appended
   to `VERDICTS.md` — the corrupt-fragment hole the check was added to close, one
   level down. Cells are now counted by splitting on the delimiter.
+- **The reclaim claim could not expire, which turned a stall into a deadlock.**
+  A process killed between creating `.lock.reclaim` and removing it made every
+  later writer defer to it forever — strictly worse than the stale lock the
+  claim was introduced to fix, which at least proceeded after one budget.
+  Measured: still running after 45s. Deferral is now bounded (a live reclaimer
+  needs milliseconds, so it gets short waits, not whole budgets); after that the
+  claim is treated as dead and cleared. Worst case degrades to two reclaimers
+  racing — the milder, pre-existing failure — never a hang. Recovery measured at
+  ~51s. `ops-adopt.sh` shares the implementation and the fix.
+- **The Stop hook's sentinel parse was bounded in lines but not bytes.** A
+  single newline-less line is one "line", and `read -r` consumes all of it
+  before any counter runs — 256 MB measured at 8.5s, on *every* session's Stop
+  event. Now capped per line with `read -r -n 512`; same file, 0.16s.
 - **Stale-lock reclamation was not itself exclusive.** With several waiters,
   each timed out independently: one removed the stale dir and recreated it, then
   the next removed *that fresh* lock and entered too — two writers in the

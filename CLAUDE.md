@@ -155,6 +155,21 @@ and the maintainer's local `.archive/dev/` (untracked).
   satisfied it and `--reconcile` appended it to the ledger. Any future schema
   check splits on the delimiter and counts (`row_is_conformant`). The same trap
   applies to any "shape" assertion written as a glob.
+- **An unexpirable claim is a deadlock with extra steps.** The `.lock.reclaim`
+  marker below was first written with no expiry, so a process killed while
+  holding it wedged every later writer *forever* — worse than the stale lock it
+  fixed, which at least proceeded after a budget. Every wait in this codebase
+  must be bounded and must degrade to a *milder* failure, never a hang: deferral
+  to a claim is capped, then the claim is presumed dead. Ask of any new wait:
+  what happens if the thing I am waiting for never returns?
+- **`read -r` is bounded by lines, not bytes — and `read -N` is not a fix.** A
+  newline-less 256 MB file is one "line" and gets slurped whole before any line
+  counter runs (8.5s on *every* Stop event). Use `read -r -n N`, which stops at
+  N chars *or* the newline. Do not "simplify" to `read -N` (capital): it ignores
+  newlines, returned an empty chunk here, and made every sentinel parse as
+  unowned — every session blocking on every task, with the whole suite still
+  green because nothing asserted the partition through the real parser on a
+  normal sentinel. The *"parser regression guard"* assertions exist for that.
 - **A lock whose reclaim path is not itself exclusive is not a lock.** The naive
   timeout — `rmdir` the stale dir, `mkdir` your own — lets waiter B delete
   waiter A's *fresh* lock and enter beside it, with neither over budget.

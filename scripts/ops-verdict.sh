@@ -94,9 +94,20 @@ check_owner_name() { # check_owner_name <value>
 # The fix is to make the removal itself exclusive: claim the right to reclaim by
 # atomically creating a separate marker, and only the winner of that claim may
 # touch the stale lock. `mkdir` is the atomic primitive in both cases.
-LOCK_SPINS=300   # × 0.1s = 30s
+#
+# The claim marker must ITSELF be able to expire. A first version deferred to
+# the marker indefinitely, so a process killed between creating it and removing
+# it wedged every later writer FOREVER — strictly worse than the stale lock it
+# was introduced to fix, which at least proceeded after one budget (found by
+# Codex review). So: defer to a live reclaimer for a bounded number of budgets,
+# then treat the marker as abandoned and clear it. Worst case after that is two
+# reclaimers racing — the milder, pre-existing failure — never a deadlock. An
+# unexpirable claim is a deadlock with extra steps.
+LOCK_SPINS=300        # × 0.1s = 30s before a held lock is presumed crashed
+RECLAIM_WAIT=50       # × 0.1s = 5s to let a LIVE reclaimer finish (it needs ms)
+LOCK_DEFERS_MAX=2     # short waits to grant before treating the claim as dead
 lock_acquire() {
-  local i=0
+  local i=0 defers=0
   while ! mkdir "$LOCKDIR" 2>/dev/null; do
     i=$((i+1))
     if [ "$i" -ge "$LOCK_SPINS" ]; then
@@ -111,9 +122,17 @@ lock_acquire() {
         echo "ops-verdict: warning — could not reclaim $LOCKDIR; proceeding unlocked" >&2
         return 0
       fi
-      # Another waiter is reclaiming. Reset the budget and keep waiting for the
-      # lock it is about to hold — do NOT also reclaim.
-      i=0
+      # Someone else holds the reclaim claim. A LIVE reclaimer needs only
+      # milliseconds, so grant it a SHORT wait — not another full budget, which
+      # would turn a crashed claimer into minutes of stalling. After a couple of
+      # short waits the claim is dead, not slow.
+      defers=$((defers + 1))
+      if [ "$defers" -gt "$LOCK_DEFERS_MAX" ]; then
+        echo "ops-verdict: warning — reclaim claim $LOCKDIR.reclaim abandoned; clearing it" >&2
+        rmdir "$LOCKDIR.reclaim" 2>/dev/null || true
+        defers=0
+      fi
+      i=$((LOCK_SPINS - RECLAIM_WAIT))
     fi
     sleep 0.1
   done

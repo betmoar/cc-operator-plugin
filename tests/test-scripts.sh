@@ -645,5 +645,61 @@ check "reclaim marker is not left behind" "$([ ! -d "$P/.operator/.lock.reclaim"
 rm -rf "$P"
 
 ########################################################################
+echo "-- Case 16: bounded reads and an abandoned reclaim claim"
+# A claim marker with no expiry is a deadlock with extra steps: the first
+# version of the reclaim fix deferred to `.lock.reclaim` indefinitely, so a
+# process killed between creating and removing it wedged every later writer
+# FOREVER — strictly worse than the stale lock it replaced, which at least
+# proceeded after one budget. (Found by Codex review; measured: still running
+# after 45s, now bounded.) This test is slow by nature — it must outlast a real
+# budget — so it asserts the OUTCOME, not the timing.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+mkdir -p "$P/.operator/.lock" "$P/.operator/.lock.reclaim"
+( cd "$P" && bash "$TASK" T-AB --owner SESS-A >/dev/null 2>&1 )
+# Run under a polled watchdog: against the UNFIXED code this never returns, and
+# an unbounded wait here would hang CI instead of reporting a failure. No
+# `timeout(1)` — macOS does not ship one.
+( cd "$P" && bash "$VERDICT" T-AB crit ev PASS --owner SESS-A >/dev/null 2>&1 ) &
+ABPID=$!
+ABRC=1; waited=0
+while [ "$waited" -lt 120 ]; do
+  if ! kill -0 "$ABPID" 2>/dev/null; then wait "$ABPID" 2>/dev/null; ABRC=$?; break; fi
+  sleep 2; waited=$((waited + 2))
+done
+if kill -0 "$ABPID" 2>/dev/null; then kill -9 "$ABPID" 2>/dev/null; ABRC=99; fi
+check "abandoned reclaim claim recovers (does not wedge forever)" "$([ "$ABRC" -eq 0 ] && echo 0 || echo 1)"
+check "abandoned claim: verdict actually recorded" "$(grep -Fq '| T-AB | crit | ev | PASS |' "$P/.operator/VERDICTS.md" && [ ! -e "$P/.operator/pending/T-AB" ] && echo 0 || echo 1)"
+check "abandoned claim: no lock or marker left behind" "$([ ! -d "$P/.operator/.lock" ] && [ ! -d "$P/.operator/.lock.reclaim" ] && echo 0 || echo 1)"
+
+# A LINE cap is not a BYTE cap: one newline-less line is a single "line" and
+# `read -r` slurps all of it before any counter runs (256 MB measured at 8.5s,
+# on EVERY session's Stop event). `read -r -n N` stops at N chars or the
+# newline, whichever comes first.
+#
+# This also guards a regression I caused while fixing it: switching to `read -N`
+# (capital) returned an empty chunk, so EVERY sentinel parsed as unowned and
+# every session blocked on every task. The whole suite stayed green — nothing
+# asserted the partition on a NORMAL sentinel via the real parser. It does now.
+rm -f "$P"/.operator/pending/*
+( cd "$P" && bash "$TASK" T-OWN --owner SESS-A >/dev/null 2>&1 )
+run_hook stop-session-a.json "$P"
+check "parser regression guard: owner still blocks its own task" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+run_hook stop-session-b.json "$P"
+check "parser regression guard: foreign session still allowed" "$([ "$HRC" -eq 0 ] && echo 0 || echo 1)"
+rm -f "$P"/.operator/pending/*
+# 32 MB on one line. HONESTY NOTE: at this size the unfixed hook takes ~1s, so
+# this assertion does NOT discriminate — the cost is linear (256 MB measured at
+# 8.5s unfixed vs 0.16s fixed) and a test big enough to separate them would put
+# a quarter-gig of writes in CI. It guards the parse staying bounded and, more
+# importantly, that the bounded read still returns the right verdict.
+{ i=0; while [ "$i" -lt 32 ]; do printf '%1048576s' '' | tr ' ' 'x'; i=$((i+1)); done; } > "$P/.operator/pending/T-LONG"
+SEC0=$(date +%s)
+run_hook stop-session-a.json "$P"
+SEC1=$(date +%s)
+check "one-huge-line sentinel parsed in bounded time (<3s)" "$([ "$((SEC1 - SEC0))" -lt 3 ] && echo 0 || echo 1)"
+check "one-huge-line sentinel is unowned → still BLOCKS" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+rm -rf "$P"
+
+########################################################################
 echo "== summary: $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]

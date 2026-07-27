@@ -100,13 +100,20 @@ opdir="$cwd/.operator"
 #  - trailing \r/whitespace is stripped. A CRLF checkout would otherwise make a
 #    session's OWN task compare unequal to its id and be waved through as
 #    foreign — a fail-OPEN in the central invariant.
-#  - the scan stops after 20 lines. This runs on EVERY session's Stop event, so
-#    an unbounded read of a 2 MB file (or a directory named into pending/)
-#    stalls every turn-end in the tree. The owner is line 1 by construction.
+#  - the scan is bounded in lines AND in bytes per line. This runs on EVERY
+#    session's Stop event, so an unbounded read stalls every turn-end in the
+#    tree. A line cap alone is not a bound: a single newline-less line is one
+#    "line" and `read -r` consumes all of it first — measured 8.5s for a 256 MB
+#    line, the shape a merge artifact or stray binary easily takes. `read -n N`
+#    stops at N chars *or* the newline, whichever comes first, so a giant line
+#    is truncated instead of slurped. (`read -N` — capital — ignores the
+#    newline and proved unreliable here, returning an empty chunk; it would have
+#    made every sentinel parse as unowned. Do not "simplify" back to it.)
+#    The owner is line 1 by construction, so 512 chars is generous.
 sentinel_owner() { # sentinel_owner <path>
   local line owner="" n=0
   [ -f "$1" ] || return 0
-  while IFS= read -r line || [ -n "$line" ]; do
+  while IFS= read -r -n 512 line || [ -n "$line" ]; do
     n=$((n+1)); [ "$n" -le 20 ] || break
     case "$line" in
       "session_id: "*) owner="${line#session_id: }"; break ;;
