@@ -20,15 +20,22 @@ what you claim after.
   dispatch): a relaxed context diet, dispatch packets, and two-stage review.
 - **`.operator/`** — the ledger: `VERDICTS.md` (append-only, one row per
   gated task), `DECISIONS.md` (append-only, one line per deviation/decision),
-  `pending/` (task sentinels), and `bin/` (the gate CLIs `ops-task.sh` +
-  `ops-verdict.sh`, installed so the charter's paths resolve in any project;
-  refreshed on every re-run of `/cc-operator:start`).
+  `verdicts.d/` (per-session row fragments — a merge-repair backstop),
+  `pending/` (task sentinels), and `bin/` (the gate CLIs `ops-task.sh`,
+  `ops-verdict.sh`, `ops-adopt.sh`, installed so the charter's paths resolve in
+  any project; refreshed on every re-run of `/cc-operator:start`).
 - A **CLAUDE.md** stanza importing the charter (`@OPERATOR.md`) so it survives
   compaction, or the full charter inlined with `--inline`.
 
-The **Stop hook** blocks the session from ending while any task sentinel is
-still pending its verdict — a completion claim on a tracked task requires a
-ledger row whose evidence cell is real command output.
+The **Stop hook** blocks the session from ending while any task sentinel **it
+owns** is still pending its verdict — a completion claim on a tracked task
+requires a ledger row whose evidence cell is real command output.
+
+**Concurrent sessions.** Two sessions can share one working tree. Each sentinel
+stamps the session that opened it, so a session is gated by its own open tasks
+only; another session's are reported as informational and are refused by the
+writer if you try to close them. A sentinel with no owner blocks everyone — the
+safe default, and what pre-0.4 sentinels degrade to.
 
 ## Commands
 
@@ -54,20 +61,64 @@ Or from a local checkout:
 ## The evidence gate, concretely
 
 ```
-.operator/bin/ops-task.sh <id>                   # open a tracked task (drops the sentinel)
-.operator/bin/ops-verdict.sh <id> <criterion> <evidence> <PASS|FAIL>   # the single writer to VERDICTS.md
-.operator/bin/ops-verdict.sh <id> --defer "<reason>"   # honest exit for a blocked task
+.operator/bin/ops-task.sh <id> --owner <session-id>     # open a tracked task (drops the sentinel)
+.operator/bin/ops-verdict.sh <id> <criterion> <evidence> <PASS|FAIL> --owner <session-id>
+.operator/bin/ops-verdict.sh <id> --defer "<reason>"    # honest exit for a blocked task
+.operator/bin/ops-adopt.sh --owner <new-id> <id>...     # re-claim your tasks after a /clear
+.operator/bin/ops-verdict.sh --reconcile                # restore rows lost to a messy merge
 ```
 
 `ops-init.sh` (run by `/cc-operator:start`) installs those CLIs into
 `.operator/bin/` so they resolve from the project root — the model's shell has
 no `${CLAUDE_PLUGIN_ROOT}`. Opening a tracked task drops
-`.operator/pending/<id>`. `ops-verdict.sh` is the only writer to `VERDICTS.md`:
-it appends the row and clears the sentinel in one action, so append-only holds
-by construction. The Stop hook (`hooks/hooks.json` → `scripts/ops-stop-hook.sh`)
-exits 2 while any sentinel is pending, feeding the operator the instruction to
-record or defer the verdict; it fails open if neither `jq` nor `python3` is
+`.operator/pending/<id>`, stamped with the owning session. `ops-verdict.sh` is
+the only writer to `VERDICTS.md`: under a `mkdir`-based lock it mirrors the row
+to `verdicts.d/<owner-or-unowned>.md`, appends it, and clears the sentinel — so
+writes are mutually exclusive against concurrent sessions, not merely
+append-only. (One stated gap: a lock held past the timeout is presumed crashed
+and reclaimed, so a writer that genuinely ran longer would be overrun. The
+budget sits well above the slowest real critical section.) The Stop hook
+(`hooks/hooks.json` → `scripts/ops-stop-hook.sh`) exits 2 while any sentinel
+owned by that session is pending; it fails open if neither `jq` nor `python3` is
 available, so a missing dependency never bricks a session.
+
+**Where the session id comes from:** `CLAUDE_SESSION_ID` is not set in the Bash
+tool environment — only hooks receive it. The SessionStart hook
+(`scripts/ops-sessionstart-hook.sh`) injects it into the session's context, and
+the charter instructs the operator to pass it as `--owner`.
+
+**Across branches:** each session's rows also live in its own
+`verdicts.d/<owner>.md`, which git merges cleanly, and `.operator/.gitattributes`
+marks the ledgers `merge=union`. If `VERDICTS.md` still comes out of a merge
+wrong, resolve it any way at all and run `--reconcile` — every row is restored
+from the fragments. It repairs, never regenerates: hand-written BAR blocks in
+`VERDICTS.md` survive untouched, and any fragment line that does not match the
+4-cell `PASS`/`FAIL` schema is skipped and reported rather than copied in.
+
+Task ids and session ids are filenames, so they must be bare names: no `/`, no
+leading `.` (a dotfile sentinel would be invisible to the Stop hook's glob), no
+`|` or newlines (they would break the ledger's one-line row schema).
+
+**On the status bar (optional).** `scripts/statusline.sh` renders the gate as a
+segment: `op[2]` when this session owns 2 open tasks (red — your stop is
+blocked), `op[1+2*]` when 1 is yours and 2 belong to other sessions in the tree
+(dim — informational). It prints nothing outside operator projects and nothing
+when there is nothing open.
+
+It deliberately does **not** count `.operator/pending/`. Since 0.4.0 the Stop
+hook blocks only on sentinels this session owns, plus unowned ones, so a raw
+count answers a different question than "will my stop be blocked?" — and gets
+it wrong in both directions. The segment runs the hook's own partition instead,
+against the session id in the statusline payload.
+
+Installed with [cc-status](https://github.com/betmoar/cc-status-plugin) as the
+composer, it is discovered automatically via `.claude-plugin/statusline.json`
+and toggled with `/cc-status:toggle cc-operator on`. Standalone, wire it
+directly:
+
+```json
+"statusLine": { "type": "command", "command": "bash /path/to/cc-operator/scripts/statusline.sh" }
+```
 
 ## Repository layout
 
@@ -79,10 +130,13 @@ templates/{VERDICTS,DECISIONS}-header.md   # ledger schemas (byte-identical to t
 commands/{start,handoff}.md       # the two slash commands
 agents/op-*.md                    # tier-aliased roles: author, mechanic, reviewer, scout, verifier
 skills/chief-operator/SKILL.md    # thin router (front door only)
-scripts/ops-{init,task,verdict,stop-hook}.sh   # the evidence-gate mechanism
+scripts/ops-{init,task,verdict,adopt}.sh       # the evidence-gate mechanism
+scripts/ops-{stop,sessionstart}-hook.sh        # completion gate + session-id injection
+.claude-plugin/statusline.json    # cc-status segment manifest (name/render/order)
+scripts/statusline.sh             # the segment: open tasks, partitioned by owner
 scripts/validate_plugin.py        # contract linter — run before every PR
 scripts/release_gate.py           # tag == version == newest changelog heading
-hooks/hooks.json                  # Stop-hook wiring via ${CLAUDE_PLUGIN_ROOT}
+hooks/hooks.json                  # Stop + SessionStart wiring via ${CLAUDE_PLUGIN_ROOT}
 tests/                            # bash script suite + stdlib Python tests
 ```
 

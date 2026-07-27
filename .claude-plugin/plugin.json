@@ -1,12 +1,18 @@
 {
   "name": "cc-operator",
-  "version": "0.3.0",
-  "description": "Chief-operator charter for Claude Code sessions — materializes an operating charter (solo + orchestrated modes), an append-only evidence ledger, and a Stop-hook completion gate into a project via /cc-operator:start.",
+  "version": "0.4.0",
+  "description": "Chief-operator charter for Claude Code sessions \u2014 materializes an operating charter (solo + orchestrated modes), an append-only evidence ledger, and a Stop-hook completion gate into a project via /cc-operator:start.",
   "author": {
     "name": "betmoar"
   },
   "homepage": "https://github.com/betmoar/cc-operator-plugin",
   "repository": "https://github.com/betmoar/cc-operator-plugin",
   "license": "MIT",
-  "keywords": ["claude-code", "plugin", "operator", "orchestration", "evidence-gate"]
+  "keywords": [
+    "claude-code",
+    "plugin",
+    "operator",
+    "orchestration",
+    "evidence-gate"
+  ]
 }

@@ -4,6 +4,11 @@
 **Implementer:** Opus 4.8 or the human.
 **Deliverable of this spec:** not a prompt — the decisions, boundaries, and mechanisms the prompt must encode, each with rationale and confidence, plus the build plan that produces and validates it incrementally.
 
+> **Reading note (added 0.4.0):** every path in the evidence base below is relative to the *prior*
+> project this spec was derived from (`cc-harness-plugin` / `unknowns-harness`), not to this
+> repository. None of them resolve here and none are meant to — they record what was read to reach
+> these decisions. The spec's own conclusions are self-contained.
+
 **Evidence base (all read in full):** `CLAUDE.md` (373-line orchestration charter v2 as installed), `evals/results/DECISIONS.md` (43 entries), `evals/results/GATES.md` (7 gates + preflight, with self-audit lines), `evals/SCORECARD.md` (v0.1 actuals + v0.2 NOT-SHIPPED verdict, $79.48 / 117 runs), `evals/results/v0.1/DELTA.md`, `evals/results/baseline/SUMMARY.md` (5 failure patterns), `docs/superpowers/plans/unknowns-harness-roadmap.md` (stop conditions), `docs/superpowers/plans/v0.2-work-order.md`, `unknowns-harness/skills/surfacing-unknowns/SKILL.md` (shipped v0.1, 201 lines, 9 references), `.claude/agents/{harness-author,harness-mechanic,harness-reviewer}.md`, `scripts/run-eval.sh` (current, with GREEN_DIR fix), `evals/results/v0.2/FORK-DECISION.md`, `.reload/model`, `.reload/session.md`, git log (53+ commits). Hook semantics verified against current Claude Code documentation (2026-07-06).
 
 ---

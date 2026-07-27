@@ -6,14 +6,24 @@
 #             .operator/pending/ empty; stop_hook_active true (loop guard);
 #             no JSON parser available (fail-open — a broken hook must never
 #             brick a session).
-#   exit 2  — block the stop. .operator/pending/ is non-empty and
-#             stop_hook_active is false; stderr names the pending ids and the
-#             command to clear them (Claude Code feeds stderr back as guidance).
+#   exit 2  — block the stop. This session OWNS a pending sentinel (or one is
+#             unowned) and stop_hook_active is false; stderr names those ids and
+#             the command to clear them (Claude Code feeds stderr back as
+#             guidance).
+#
+# Ownership: a sentinel stamps `session_id: <id>` (ops-task.sh --owner). Only
+# sentinels owned by THIS session — or owned by nobody — block. Foreign ones are
+# reported on stderr and allowed, so one session can no longer be trapped by
+# another's open task, nor close a row it did not perform. An UNOWNED sentinel
+# fails CLOSED (pre-0.4 sentinels are empty files, and an unowned sentinel is a
+# real open task) — deliberately the opposite default from the no-parser
+# fail-open below, where a broken plugin must not brick a session.
 #
 # Reads the Stop payload as JSON on stdin ONCE. Sentinel check runs against the
 # cwd carried IN the payload, never the script's own cwd. External dependencies
-# are limited to one JSON parser (jq preferred, python3 fallback); stdin read
-# and pending enumeration use bash builtins only, so PATH loss cannot brick it.
+# are limited to one JSON parser (jq preferred, python3 fallback); stdin read,
+# pending enumeration, and owner parsing use bash builtins only (no grep/sed),
+# so PATH loss cannot brick it.
 set -u
 
 # --- read the whole payload from stdin (builtin; no external command) --------
@@ -60,24 +70,132 @@ else:
 
 cwd="$(json_get cwd)"
 active="$(json_get stop_hook_active)"
+session="$(json_get session_id)"
 
 # --- loop guard: never re-block an already-active stop -----------------------
 [ "$active" = "true" ] && exit 0
 
 # --- no-op guard: not an operator project → stay out of the way --------------
-[ -n "$cwd" ] || exit 0
-opdir="$cwd/.operator"
-[ -d "$opdir" ] || exit 0
+# An empty cwd has two very different causes: a payload that legitimately has no
+# cwd (fine, stay out of the way) and a payload that FAILED TO PARSE (json_get
+# swallows parser errors, so every field comes back empty). Both exit 0, but the
+# second is a fail-open we should not perform silently — it is the same class of
+# event as the no-parser branch above, which warns. Distinguish them: a payload
+# with content but no parseable cwd is a corrupt payload.
+if [ -z "$cwd" ]; then
+  if [ -n "$input" ]; then
+    echo "operator: warning — Stop payload present but unparseable (no cwd); hook failing open (exit 0)" >&2
+  fi
+  exit 0
+fi
+# Resolve the project by WALKING UP from the payload cwd to the nearest ancestor
+# holding .operator/ — the way git finds its own root.
+#
+# Why this is not just `"$cwd/.operator"`: ops-task.sh refuses to open a task
+# anywhere but the directory holding .operator/, so a task can only ever be armed
+# at the root. If the payload cwd is one directory deeper, an exact-match lookup
+# finds nothing, takes the no-op guard, and ALLOWS the stop with tasks still
+# open — the two components disagreeing about where the project is, and the
+# disagreement failing OPEN. That is the whole gate, silently off. (Audit F01.)
+#
+# The walk is bounded twice so it can never adopt an unrelated ancestor's ledger:
+# it stops at a .git boundary (a nested repo is its own project, not part of the
+# outer one) and at the filesystem root. `cd -P` resolves symlinks so a symlinked
+# worktree lands on its real path rather than walking a link chain.
+opdir=""
+walk="$(cd -P "$cwd" 2>/dev/null && pwd)" || walk=""
+while [ -n "$walk" ]; do
+  if [ -d "$walk/.operator" ]; then opdir="$walk/.operator"; break; fi
+  # a repository boundary ends the search: do not escape into the parent project
+  [ -e "$walk/.git" ] && break
+  [ "$walk" = "/" ] && break
+  walk="${walk%/*}"; [ -n "$walk" ] || walk="/"
+done
+[ -n "$opdir" ] || exit 0
+
+# --- read a sentinel's stamped owner (builtins only; no grep/sed) ------------
+# "" when the file has no usable session_id line — including a pre-0.4 empty
+# sentinel. "" means unowned, which BLOCKS every session: the safe direction,
+# so every degenerate body (unreadable, malformed, binary) fails closed.
+#
+# Two guards worth keeping:
+#  - trailing \r/whitespace is stripped. A CRLF checkout would otherwise make a
+#    session's OWN task compare unequal to its id and be waved through as
+#    foreign — a fail-OPEN in the central invariant.
+#  - the scan is bounded in lines AND in bytes per line. This runs on EVERY
+#    session's Stop event, so an unbounded read stalls every turn-end in the
+#    tree. A line cap alone is not a bound: a single newline-less line is one
+#    "line" and `read -r` consumes all of it first — measured 8.5s for a 256 MB
+#    line, the shape a merge artifact or stray binary easily takes. `read -n N`
+#    stops at N chars *or* the newline, whichever comes first, so a giant line
+#    is truncated instead of slurped. (`read -N` — capital — ignores the
+#    newline and proved unreliable here, returning an empty chunk; it would have
+#    made every sentinel parse as unowned. Do not "simplify" back to it.)
+#    The owner is line 1 by construction, so 512 chars is generous.
+# Emits "<owner>|<opened_at>" so ONE bounded pass yields both fields: this runs
+# on every session's Stop event, and a second read per sentinel is exactly the
+# cost the bound exists to avoid. Callers split on the first '|' — safe because
+# an owner containing '|' is rejected below. Not set as a global: the callers
+# use $( ), which is a subshell, so a side-effect variable would be discarded.
+sentinel_owner() { # sentinel_owner <path> → "owner|opened_at"
+  local line owner="" opened="" n=0
+  [ -f "$1" ] || return 0
+  while IFS= read -r -n 512 line || [ -n "$line" ]; do
+    n=$((n+1)); [ "$n" -le 20 ] || break
+    case "$line" in
+      "session_id: "*) owner="${line#session_id: }" ;;
+      "opened_at: "*)  opened="${line#opened_at: }" ;;
+    esac
+    [ -n "$owner" ] && [ -n "$opened" ] && break
+  done < "$1" 2>/dev/null
+  owner="${owner%$'\r'}"
+  owner="${owner%"${owner##*[![:space:]]}"}"
+  # An owner our CLIs could never have written is not a trustworthy claim of
+  # ownership — treat it as unowned so it BLOCKS, rather than as a foreign
+  # session's task which would wave the stop through. Must mirror the same
+  # rejects as check_bare_name in the three CLIs.
+  case "$owner" in
+    */* | .* | *"|"* | *[[:space:]]*) owner="" ;;
+  esac
+  # opened_at is display-only, so it is sanitized rather than rejected: a '|'
+  # would break the field split, and a newline cannot survive `read -r` anyway.
+  case "$opened" in *"|"*) opened="" ;; esac
+  printf '%s|%s' "$owner" "$opened"
+}
 
 # --- enumerate pending sentinels (builtin glob; no `find` dependency) --------
+# Partition: blocking = mine + unowned; foreign = someone else's (report only).
+# A payload with no session_id makes every sentinel unowned → pre-0.4 behavior.
 pending=""
+foreign=""
+foreign_n=0
 shopt -s nullglob
 for f in "$opdir/pending"/*; do
-  [ -e "$f" ] || continue
+  # -f, not -e: a directory named into pending/ would otherwise be read as a
+  # sentinel and emit a raw bash error as operator guidance.
+  [ -f "$f" ] || continue
   id="${f##*/}"
-  pending="${pending:+$pending, }$id"
+  parsed="$(sentinel_owner "$f")"
+  owner="${parsed%%|*}"
+  opened="${parsed#*|}"
+  if [ -n "$owner" ] && [ -n "$session" ] && [ "$owner" != "$session" ]; then
+    # Name the OWNER, not just the task: with three or more sessions a bystander
+    # otherwise cannot tell which session to chase.
+    entry="$id owned by $owner"
+    [ -n "$opened" ] && entry="$entry, opened $opened"
+    foreign="${foreign:+$foreign; }$entry"
+    foreign_n=$((foreign_n + 1))
+  else
+    pending="${pending:+$pending, }$id"
+  fi
 done
 shopt -u nullglob
+
+# Foreign tasks stay VISIBLE — that visibility is what made the collision
+# diagnosable in the field — but they never block.
+if [ -n "$foreign" ]; then
+  echo "operator: $foreign_n pending verdict(s) owned by another session ($foreign) — not blocking." >&2
+fi
 
 if [ -n "$pending" ]; then
   # Name a path that resolves from the project cwd: ops-init installs the

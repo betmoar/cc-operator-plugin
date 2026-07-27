@@ -15,13 +15,31 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import validate_plugin as vp  # noqa: E402
 
 
+_CLI_SENTENCE = " — run " + ", ".join(
+    f"`.operator/bin/{c}`" for c in vp.CHARTER_REQUIRED_CLIS) + " [DOC:spec-D4]."
+
 GOOD_CHARTER = "# OPERATOR.md\n\n" + "\n".join(
     f"## {sec}\n\nrule [D:tag-{i}] body"
-    + (" — run `.operator/bin/ops-verdict.sh` [DOC:spec-D4]."
-       if sec == "EVIDENCE GATE" else ".")
+    + (_CLI_SENTENCE if sec == "EVIDENCE GATE" else ".")
     + "\n"
     for i, sec in enumerate(vp.CHARTER_SECTION_ORDER)
 )
+
+
+# Stub scripts that actually SATISFY the guardrail checks. The good tree must
+# be clean under every check in vp.CHECKS, not merely under the manifest-shaped
+# ones — a fixture that only passes the checks someone remembered to call is
+# how three guardrails went unexercised here.
+GOOD_STATUSLINE = (
+    "#!/usr/bin/env bash\n"
+    "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
+    "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]*) owner=\"\" ;; esac\n")
+
+GOOD_LOCK_BLOCK = (
+    "# >>> LOCK BLOCK\n"
+    "lock_acquire() { mkdir \"$LOCKDIR\" 2>/dev/null; }\n"
+    "lock_release() { rm -f \"$LOCKDIR/holder\"; rmdir \"$LOCKDIR\"; }\n"
+    "# <<< LOCK BLOCK\n")
 
 
 def write(p, text):
@@ -57,13 +75,38 @@ def make_good_tree(root):
             Body. End with NEEDS_CONTEXT when underspecified.
             """))
     write(root / "hooks" / "hooks.json", json.dumps({
-        "hooks": {"Stop": [{"hooks": [{
-            "type": "command",
-            "command": 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-stop-hook.sh"',
-        }]}]}
+        "hooks": {
+            "Stop": [{"hooks": [{
+                "type": "command",
+                "command": 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-stop-hook.sh"',
+            }]}],
+            "SessionStart": [{"matcher": "startup", "hooks": [{
+                "type": "command",
+                "command": 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-sessionstart-hook.sh"',
+            }]}],
+        }
     }))
-    for s in ("ops-init.sh", "ops-verdict.sh", "ops-task.sh", "ops-stop-hook.sh"):
+    write(root / ".claude-plugin" / "statusline.json", json.dumps({
+        "name": "cc-operator", "render": "scripts/statusline.sh", "order": 30,
+    }))
+    for s in ("ops-init.sh", "ops-sessionstart-hook.sh"):
         write(root / "scripts" / s, "#!/usr/bin/env bash\nset -eu\necho ok\n")
+    # The readers/CLIs need bodies that satisfy the byte-bound, guard-parity and
+    # lock-parity checks — a bare `echo ok` stub fails all three.
+    guards = ("check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
+              "check_owner_name() { :; }\n")
+    bounded = "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
+    write(root / "scripts" / "ops-stop-hook.sh",
+          "#!/usr/bin/env bash\n" + bounded +
+          "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]*) owner=\"\" ;; esac\n")
+    write(root / "scripts" / "ops-task.sh", "#!/usr/bin/env bash\n" + guards)
+    write(root / "scripts" / "ops-verdict.sh",
+          "#!/usr/bin/env bash\n" + guards + bounded +
+          "while IFS= read -r -n 512 row; do :; done < \"$frag\"\n" +
+          GOOD_LOCK_BLOCK)
+    write(root / "scripts" / "ops-adopt.sh",
+          "#!/usr/bin/env bash\n" + guards + bounded + GOOD_LOCK_BLOCK)
+    write(root / "scripts" / "statusline.sh", GOOD_STATUSLINE)
 
 
 class ValidatorTest(unittest.TestCase):
@@ -75,14 +118,14 @@ class ValidatorTest(unittest.TestCase):
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def problems(self):
+        # Iterate vp.CHECKS rather than re-listing the checks here. The old
+        # hand-copied list had silently fallen three behind the build
+        # (check_reader_bounds, check_guard_parity, check_lock_parity), so
+        # test_good_tree_is_clean — the assertion a reader trusts most — was
+        # not exercising them at all.
         probs = []
-        vp.check_manifests(self.dir, probs)
-        vp.check_changelog(self.dir, probs)
-        vp.check_charter(self.dir, probs)
-        vp.check_ledger_schema(self.dir, probs)
-        vp.check_agents(self.dir, probs)
-        vp.check_hook(self.dir, probs)
-        vp.check_scripts(self.dir, probs)
+        for check in vp.CHECKS:
+            check(self.dir, probs)
         return probs
 
     def assertFires(self, needle):
@@ -148,6 +191,14 @@ class ValidatorTest(unittest.TestCase):
                                    "scripts/ops-verdict.sh"))
         self.assertFires(".operator/bin/ops-verdict.sh")
 
+    def test_charter_missing_adopt_cli_path(self):
+        # Every CLI ops-init installs must be reachable from the charter —
+        # ops-adopt.sh is the /clear recovery path and was the one most likely
+        # to be shipped without a charter reference.
+        write(self.dir / "templates" / "OPERATOR.md",
+              GOOD_CHARTER.replace(".operator/bin/ops-adopt.sh", "ops-adopt.sh"))
+        self.assertFires(".operator/bin/ops-adopt.sh")
+
     # --- 5. ledger schema ---
     def test_verdicts_header_wrong(self):
         write(self.dir / "templates" / "VERDICTS-header.md",
@@ -183,6 +234,23 @@ class ValidatorTest(unittest.TestCase):
         write(p, json.dumps(d))
         self.assertFires("ops-stop-hook.sh")
 
+    def test_sessionstart_hook_missing(self):
+        # Without it the agent never learns its session id, so every sentinel
+        # is opened unowned and blocks every concurrent session.
+        p = self.dir / "hooks" / "hooks.json"
+        d = json.loads(p.read_text())
+        del d["hooks"]["SessionStart"]
+        write(p, json.dumps(d))
+        self.assertFires("no SessionStart hook command found")
+
+    def test_sessionstart_hook_not_plugin_root(self):
+        p = self.dir / "hooks" / "hooks.json"
+        d = json.loads(p.read_text())
+        d["hooks"]["SessionStart"][0]["hooks"][0]["command"] = \
+            "bash scripts/ops-sessionstart-hook.sh"
+        write(p, json.dumps(d))
+        self.assertFires("SessionStart command should use")
+
     # --- 8. scripts ---
     def test_script_syntax_error(self):
         write(self.dir / "scripts" / "ops-init.sh",
@@ -196,6 +264,189 @@ class ValidatorTest(unittest.TestCase):
     def test_ops_task_missing(self):
         (self.dir / "scripts" / "ops-task.sh").unlink()
         self.assertFires("scripts/ops-task.sh: missing")
+
+    def test_ops_adopt_missing(self):
+        (self.dir / "scripts" / "ops-adopt.sh").unlink()
+        self.assertFires("scripts/ops-adopt.sh: missing")
+
+    def test_ops_sessionstart_hook_missing(self):
+        (self.dir / "scripts" / "ops-sessionstart-hook.sh").unlink()
+        self.assertFires("scripts/ops-sessionstart-hook.sh: missing")
+
+    # --- 8b. the statusline manifest ---
+    # cc-status discovers the segment ONLY through this manifest and skips an
+    # unresolvable renderer silently — no error, the segment just never appears
+    # and the bar looks like a project with no open tasks. Nothing else in the
+    # build would notice, which is exactly why it is a checked contract.
+
+    def test_statusline_manifest_missing(self):
+        (self.dir / ".claude-plugin" / "statusline.json").unlink()
+        self.assertFires("statusline.json: missing")
+
+    def test_statusline_render_path_does_not_resolve(self):
+        write(self.dir / ".claude-plugin" / "statusline.json", json.dumps({
+            "name": "cc-operator", "render": "scripts/moved.sh", "order": 30,
+        }))
+        self.assertFires("does not resolve")
+
+    def test_statusline_name_mismatch(self):
+        write(self.dir / ".claude-plugin" / "statusline.json", json.dumps({
+            "name": "cc-operatorr", "render": "scripts/statusline.sh",
+        }))
+        self.assertFires("the key users toggle")
+
+    def test_statusline_order_not_an_integer(self):
+        write(self.dir / ".claude-plugin" / "statusline.json", json.dumps({
+            "name": "cc-operator", "render": "scripts/statusline.sh",
+            "order": "30",
+        }))
+        self.assertFires("is not an integer")
+
+    def test_statusline_reader_bound_is_enforced(self):
+        # The segment renders on a ~300ms timer, so a lost byte bound is a
+        # permanently wedged bar (6.20s per parse on a 64MB single-line
+        # sentinel, measured), not merely a slow one. It is registered in
+        # check_reader_bounds alongside the three once-per-event readers.
+        write(self.dir / "scripts" / "statusline.sh",
+              '#!/usr/bin/env bash\nwhile IFS= read -r line; do :; done < "$1"\n')
+        self.assertFires("scripts/statusline.sh")
+
+    # --- 9/10. audit guardrails: reader bounds + guard parity ---
+    # These enforce cross-file couplings that were previously prose in CLAUDE.md
+    # and were still violated: the byte bound reached one of four readers, and a
+    # guard applied to the wrong one of two name-checks wedged legacy tasks.
+
+    def _write_readers(self, verdict_body=None, adopt_body=None, hook_body=None):
+        """Install minimal but realistic reader scripts into the fixture tree."""
+        good_hook = (
+            "#!/usr/bin/env bash\n"
+            "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
+            "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]*) owner=\"\" ;; esac\n")
+        good_verdict = (
+            "#!/usr/bin/env bash\n"
+            "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
+            "check_owner_name() { :; }\n"
+            "while IFS= read -r -n 512 line; do :; done < \"$f\"\n"
+            "while IFS= read -r -n 512 row; do :; done < \"$frag\"\n")
+        good_adopt = (
+            "#!/usr/bin/env bash\n"
+            "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
+            "check_owner_name() { :; }\n"
+            "while IFS= read -r -n 512 line; do :; done < \"$F\"\n")
+        write(self.dir / "scripts" / "ops-stop-hook.sh", hook_body or good_hook)
+        write(self.dir / "scripts" / "ops-verdict.sh", verdict_body or good_verdict)
+        write(self.dir / "scripts" / "ops-adopt.sh", adopt_body or good_adopt)
+        write(self.dir / "scripts" / "ops-task.sh",
+              "#!/usr/bin/env bash\n"
+              "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
+              "check_owner_name() { :; }\n")
+        write(self.dir / "scripts" / "statusline.sh", GOOD_STATUSLINE)
+
+    def bounds_problems(self):
+        probs = []
+        vp.check_reader_bounds(self.dir, probs)
+        vp.check_guard_parity(self.dir, probs)
+        return probs
+
+    def test_reader_bounds_clean_tree_passes(self):
+        self._write_readers()
+        self.assertEqual(self.bounds_problems(), [])
+
+    def test_unbounded_read_fires(self):
+        self._write_readers(verdict_body=(
+            "#!/usr/bin/env bash\n"
+            "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
+            "check_owner_name() { :; }\n"
+            "while IFS= read -r line; do :; done < \"$f\"\n"
+            "while IFS= read -r -n 512 row; do :; done < \"$frag\"\n"))
+        probs = self.bounds_problems()
+        self.assertTrue(any("unbounded `read -r`" in p for p in probs), probs)
+
+    def test_comments_mentioning_read_do_not_fire(self):
+        # A checker that fires on its own documentation trains the maintainer to
+        # ignore the build. This exact bug was introduced and caught in the audit.
+        self._write_readers(adopt_body=(
+            "#!/usr/bin/env bash\n"
+            "# `read -r` is bounded by LINES, not bytes — discussion only.\n"
+            "#    a plain read -r would slurp the whole line first\n"
+            "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
+            "check_owner_name() { :; }\n"
+            "while IFS= read -r -n 512 line; do :; done < \"$F\"\n"))
+        self.assertEqual(self.bounds_problems(), [])
+
+    def test_missing_guard_in_one_cli_fires(self):
+        self._write_readers()
+        write(self.dir / "scripts" / "ops-task.sh",
+              "#!/usr/bin/env bash\ncheck_bare_name() { case \"$2\" in .*) die x ;; esac; }\n")
+        probs = self.bounds_problems()
+        self.assertTrue(any("missing check_owner_name()" in p for p in probs), probs)
+
+    def test_hook_dropping_whitespace_reject_fires(self):
+        self._write_readers(hook_body=(
+            "#!/usr/bin/env bash\n"
+            "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
+            "case \"$owner\" in */* | .* | *\"|\"*) owner=\"\" ;; esac\n"))
+        probs = self.bounds_problems()
+        self.assertTrue(any("whitespace owners" in p for p in probs), probs)
+
+
+class LockParityTest(unittest.TestCase):
+    """The shared lock block must be identical in both writers.
+
+    The guardrail exists because "keep the two implementations identical" was
+    prose for the whole 0.4.0 cycle, and prose does not hold couplings — the
+    same lesson `check_reader_bounds` was written for.
+    """
+
+    BLOCK = (
+        "# >>> LOCK BLOCK\n"
+        "LOCK_SPINS=300\n"
+        "lock_acquire() {\n"
+        '  echo "TOOL: warning — reclaiming" >&2\n'
+        "}\n"
+        "# <<< LOCK BLOCK\n"
+    )
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        (self.dir / "scripts").mkdir(parents=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _write(self, verdict=None, adopt=None):
+        v = self.BLOCK.replace("TOOL:", "ops-verdict:") if verdict is None else verdict
+        a = self.BLOCK.replace("TOOL:", "ops-adopt:") if adopt is None else adopt
+        write(self.dir / "scripts" / "ops-verdict.sh", "#!/usr/bin/env bash\n" + v)
+        write(self.dir / "scripts" / "ops-adopt.sh", "#!/usr/bin/env bash\n" + a)
+
+    def problems(self):
+        probs = []
+        vp.check_lock_parity(self.dir, probs)
+        return probs
+
+    def test_identical_blocks_pass(self):
+        # The tool name in warnings is the ONE legitimate difference.
+        self._write()
+        self.assertEqual(self.problems(), [])
+
+    def test_drifted_logic_fires(self):
+        self._write(adopt=self.BLOCK.replace("TOOL:", "ops-adopt:")
+                    .replace("LOCK_SPINS=300", "LOCK_SPINS=100"))
+        probs = self.problems()
+        self.assertTrue(any("drifted" in p for p in probs), probs)
+        self.assertTrue(any("LOCK_SPINS" in p for p in probs), probs)
+
+    def test_missing_markers_fire(self):
+        self._write(adopt="lock_acquire() { :; }\n")
+        probs = self.problems()
+        self.assertTrue(any("LOCK BLOCK" in p for p in probs), probs)
+
+    def test_real_scripts_are_in_parity(self):
+        # Guards the shipped tree, not just a fixture.
+        probs = []
+        vp.check_lock_parity(ROOT, probs)
+        self.assertEqual(probs, [])
 
 
 if __name__ == "__main__":

@@ -32,8 +32,13 @@ when violated:
      track the recommended version. No agent references the build-specific
      `unknowns-harness` / `F1..F13` naming.
   7. hooks/hooks.json parses and registers a Stop hook whose command points at
-     scripts/ops-stop-hook.sh via ${CLAUDE_PLUGIN_ROOT}.
-  8. The four gate scripts exist and are syntactically valid bash (`bash -n`).
+     scripts/ops-stop-hook.sh, and a SessionStart hook pointing at
+     scripts/ops-sessionstart-hook.sh — both via ${CLAUDE_PLUGIN_ROOT}. The
+     SessionStart hook is load-bearing, not cosmetic: it is the only channel
+     through which the agent learns its own session id (CLAUDE_SESSION_ID is
+     not set in the Bash tool environment), and without that id every sentinel
+     is opened unowned and blocks every concurrent session.
+  8. The gate scripts exist and are syntactically valid bash (`bash -n`).
 
 Run from anywhere: python3 scripts/validate_plugin.py [repo-root]
 Exit 0 = all contracts hold; exit 1 = failures listed on stderr.
@@ -61,6 +66,9 @@ CHARTER_SECTION_ORDER = [
     "PRECEDENCE",
 ]
 VERDICTS_HEADER = "| Gate | Criterion | Evidence | PASS/FAIL |"
+# The .operator/bin install set (ops-init.sh) — every one must be named in the
+# charter by its project-relative path.
+CHARTER_REQUIRED_CLIS = ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh")
 AGENT_MODEL_ALIASES = ("opus", "sonnet", "haiku")
 
 
@@ -100,6 +108,45 @@ def check_manifests(root, problems):
                     f"{e.get('source')!r}, expected './' (repo-root layout)")
 
 
+def check_statusline(root, problems):
+    """The statusline manifest must point at a renderer that exists.
+
+    cc-status discovers the segment purely from `.claude-plugin/statusline.json`
+    and silently skips a manifest whose `render` path does not resolve. That is
+    the whole failure: no error anywhere, the segment simply never appears, and
+    the bar looks exactly like a project with no open tasks. Renaming or moving
+    the script is the obvious way to cause it.
+
+    The name must also match the plugin, because that string is the key users
+    toggle (`/cc-status:toggle cc-operator on`).
+    """
+    manifest = root / ".claude-plugin" / "statusline.json"
+    if not manifest.is_file():
+        problems.append(
+            ".claude-plugin/statusline.json: missing — the statusline segment "
+            "is only discoverable through this manifest")
+        return
+    data = load_json(manifest, problems)
+    if data is None:
+        return
+    if data.get("name") != PLUGIN_NAME:
+        problems.append(
+            f"statusline.json: name is {data.get('name')!r}, expected "
+            f"{PLUGIN_NAME!r} (the key users toggle in cc-status)")
+    render = data.get("render", "")
+    if not render:
+        problems.append("statusline.json: no 'render' path")
+    elif not (root / render).is_file():
+        problems.append(
+            f"statusline.json: render path {render!r} does not resolve — "
+            f"cc-status skips an unresolvable renderer SILENTLY, so the segment "
+            f"just never appears")
+    order = data.get("order")
+    if order is not None and not isinstance(order, int):
+        problems.append(
+            f"statusline.json: order {order!r} is not an integer")
+
+
 def check_changelog(root, problems):
     plugin = root / ".claude-plugin" / "plugin.json"
     changelog = root / "CHANGELOG.md"
@@ -137,12 +184,16 @@ def check_charter(root, problems):
             f"expected {CHARTER_SECTION_ORDER}")
 
     text = "\n".join(lines)
-    if ".operator/bin/ops-verdict.sh" not in text:
-        problems.append(
-            "templates/OPERATOR.md: does not reference "
-            "'.operator/bin/ops-verdict.sh' — the charter must name the "
-            "project-installed CLI path (a scripts/ path does not resolve in "
-            "a target project)")
+    # Every CLI ops-init installs into .operator/bin must be reachable from the
+    # charter — that project-relative path is the only one that resolves in a
+    # target project (the model's shell has no ${CLAUDE_PLUGIN_ROOT}).
+    for cli in CHARTER_REQUIRED_CLIS:
+        if f".operator/bin/{cli}" not in text:
+            problems.append(
+                f"templates/OPERATOR.md: does not reference "
+                f"'.operator/bin/{cli}' — the charter must name every "
+                f"project-installed CLI path (a scripts/ path does not "
+                f"resolve in a target project)")
 
     tags = TAG_RE.findall(text)
     if len(tags) < len([h for h in headings]):
@@ -211,23 +262,27 @@ def check_hook(root, problems):
     hook = load_json(hp, problems)
     if hook is None:
         return
-    try:
-        stop = hook["hooks"]["Stop"]
-        cmd = stop[0]["hooks"][0]["command"]
-    except (KeyError, IndexError, TypeError):
-        problems.append("hooks/hooks.json: no Stop hook command found")
-        return
-    if "ops-stop-hook.sh" not in cmd:
-        problems.append(
-            f"hooks/hooks.json: Stop command does not point at "
-            f"ops-stop-hook.sh (got {cmd!r})")
-    if "${CLAUDE_PLUGIN_ROOT}" not in cmd:
-        problems.append(
-            "hooks/hooks.json: Stop command should use ${CLAUDE_PLUGIN_ROOT}")
+    for event, script in (("Stop", "ops-stop-hook.sh"),
+                          ("SessionStart", "ops-sessionstart-hook.sh")):
+        try:
+            cmd = hook["hooks"][event][0]["hooks"][0]["command"]
+        except (KeyError, IndexError, TypeError):
+            problems.append(f"hooks/hooks.json: no {event} hook command found")
+            continue
+        if script not in cmd:
+            problems.append(
+                f"hooks/hooks.json: {event} command does not point at "
+                f"{script} (got {cmd!r})")
+        if "${CLAUDE_PLUGIN_ROOT}" not in cmd:
+            problems.append(
+                f"hooks/hooks.json: {event} command should use "
+                "${CLAUDE_PLUGIN_ROOT}")
 
 
 def check_scripts(root, problems):
-    for name in ("ops-init.sh", "ops-verdict.sh", "ops-task.sh", "ops-stop-hook.sh"):
+    for name in ("ops-init.sh", "ops-verdict.sh", "ops-task.sh",
+                 "ops-adopt.sh", "ops-stop-hook.sh",
+                 "ops-sessionstart-hook.sh", "statusline.sh"):
         p = root / "scripts" / name
         if not p.is_file():
             problems.append(f"scripts/{name}: missing")
@@ -237,17 +292,169 @@ def check_scripts(root, problems):
             problems.append(f"scripts/{name}: bash syntax error — {r.stderr.strip()}")
 
 
+def check_reader_bounds(root, problems):
+    """Every reader of a sentinel/fragment must bound its reads in BYTES.
+
+    `read -r` is bounded by LINES, not bytes — one newline-less line is a single
+    "line" and gets slurped whole. Measured on a 256MB single-line file:
+    0.17s bounded vs 13.5s / 16.8s / 32.6s unbounded across the three readers
+    that were missed when the bound was first added to the Stop hook only.
+
+    The 32.6s one mattered most: it happens while holding the ledger lock, whose
+    crash-presumption budget is 30s, so a concurrent writer reclaimed a LIVE
+    reconcile's lock and both entered the critical section.
+
+    This is a coupling no prose can enforce — the rule lives in CLAUDE.md and was
+    still applied to one of four readers. Now it fails the build instead.
+    """
+    readers = {
+        "ops-stop-hook.sh": 1,   # sentinel_owner
+        "ops-verdict.sh": 2,     # sentinel_owner + the --reconcile fragment loop
+        "ops-adopt.sh": 1,       # the inline sentinel parse
+        # The statusline segment renders on a ~300ms timer, which makes it the
+        # hottest reader here by three orders of magnitude — the others run once
+        # per turn-end or per command. Measured on one 64MB newline-less
+        # sentinel: 0.014s bounded vs 6.20s per parse unbounded, i.e. a
+        # permanently wedged status bar rather than a slow one.
+        "statusline.sh": 1,      # sentinel_owner
+    }
+    for name, expected in readers.items():
+        p = root / "scripts" / name
+        if not p.is_file():
+            continue  # missing-file is already reported by check_scripts
+        text = p.read_text(encoding="utf-8")
+        # count read-loops over a file, ignoring the stdin payload slurp
+        # CODE lines only — the scripts discuss `read -r` at length in their
+        # comments, and a checker that fires on its own documentation is worse
+        # than no checker: it trains the next maintainer to ignore the build.
+        code = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
+        bounded = sum(len(re.findall(r"read -r -n \d+", ln)) for ln in code)
+        unbounded = [
+            ln.strip() for ln in code
+            if re.search(r"\bread -r\b", ln)
+            and "read -r -n" not in ln
+            and "read -r -d" not in ln   # the stdin payload slurp; bounded by the payload
+        ]
+        if unbounded:
+            problems.append(
+                f"scripts/{name}: {len(unbounded)} unbounded `read -r` loop(s) — "
+                f"use `read -r -n N` (a line cap is not a byte cap; see "
+                f"docs/PLAYBOOK.md 'adding a reader of a file'): "
+                f"{unbounded[0][:70]}")
+        if bounded < expected:
+            problems.append(
+                f"scripts/{name}: expected >={expected} byte-bounded read(s), "
+                f"found {bounded} — a reader lost its bound")
+
+
+def check_guard_parity(root, problems):
+    """The three CLIs must agree on what a name may contain.
+
+    A guard enforced in one place only is the shape of the 2026-07-10 traversal
+    bug. `check_bare_name` (filename safety) and `check_owner_name` (additionally
+    compared against a session id) are deliberately separate — conflating them
+    wedged every pre-0.4 task whose id contained a space.
+    """
+    clis = ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh")
+    for name in clis:
+        p = root / "scripts" / name
+        if not p.is_file():
+            continue
+        text = p.read_text(encoding="utf-8")
+        for fn in ("check_bare_name", "check_owner_name"):
+            if f"{fn}()" not in text:
+                problems.append(
+                    f"scripts/{name}: missing {fn}() — all three CLIs must "
+                    f"carry both guards (see docs/PLAYBOOK.md)")
+        # the leading-dot rule: a dotfile sentinel is invisible to the hook's glob
+        if ".*)" not in text:
+            problems.append(
+                f"scripts/{name}: no leading-dot rejection — a dotfile sentinel "
+                f"is invisible to the Stop hook's glob, so the gate never sees it")
+    # the hook's parser must reject what the writers reject, or a hand-written
+    # sentinel reads as a valid foreign owner and the gate opens
+    hook = root / "scripts" / "ops-stop-hook.sh"
+    if hook.is_file():
+        text = hook.read_text(encoding="utf-8")
+        if "[[:space:]]" not in text:
+            problems.append(
+                "scripts/ops-stop-hook.sh: sentinel_owner does not reject "
+                "whitespace owners — an owner that can never match a real "
+                "session id makes its task permanently non-blocking")
+
+
+def check_lock_parity(root, problems):
+    """ops-verdict.sh and ops-adopt.sh must carry the SAME lock implementation.
+
+    They contend on the same `.operator/.lock`, so a divergence is not a style
+    problem — it is two different ideas of mutual exclusion, and the failure it
+    produces (two writers inside the critical section) is invisible until it
+    corrupts the ledger of record.
+
+    "Keep the two implementations identical" was prose in CLAUDE.md and in both
+    files' comments for the whole 0.4.0 cycle. Prose cannot hold a coupling: the
+    same instruction is what `check_reader_bounds` was written to replace after a
+    byte bound reached one reader of four. This compares the marked block byte
+    for byte, normalizing only the tool name in warning messages.
+
+    The bash suite asserts this too, but it takes ~4 minutes to reach; the point
+    of a build gate is that a maintainer editing one file learns immediately.
+    """
+    blocks = {}
+    for name in ("ops-verdict.sh", "ops-adopt.sh"):
+        p = root / "scripts" / name
+        if not p.is_file():
+            return  # missing-file is already reported by check_scripts
+        text = p.read_text(encoding="utf-8")
+        start = text.find("# >>> LOCK BLOCK")
+        end = text.find("# <<< LOCK BLOCK")
+        if start < 0 or end < 0:
+            problems.append(
+                f"scripts/{name}: no `# >>> LOCK BLOCK` … `# <<< LOCK BLOCK` "
+                f"markers — the shared lock must stay delimited so its parity "
+                f"with the other CLI can be checked (see docs/PLAYBOOK.md)")
+            return
+        tool = name[:-3]  # ops-verdict.sh -> ops-verdict
+        blocks[name] = text[start:end].replace(f"{tool}:", "TOOL:")
+    a, b = blocks["ops-verdict.sh"], blocks["ops-adopt.sh"]
+    if a != b:
+        a_lines, b_lines = a.splitlines(), b.splitlines()
+        detail = "differing line counts"
+        for i, (x, y) in enumerate(zip(a_lines, b_lines), 1):
+            if x != y:
+                detail = f"first difference at block line {i}: {x.strip()[:60]!r} vs {y.strip()[:60]!r}"
+                break
+        problems.append(
+            f"scripts/ops-verdict.sh vs ops-adopt.sh: lock implementations have "
+            f"drifted — they contend on the same lock and must be identical "
+            f"({detail})")
+
+
+# The registry, in run order. Both main() and the test suite iterate THIS —
+# a hand-copied second list is how three guardrails (reader bounds, guard
+# parity, lock parity) ended up running in the build but not in the test that
+# asserts a good tree is clean, which is the test most likely to be trusted.
+CHECKS = (
+    check_manifests,
+    check_statusline,
+    check_changelog,
+    check_charter,
+    check_ledger_schema,
+    check_agents,
+    check_hook,
+    check_scripts,
+    check_reader_bounds,
+    check_guard_parity,
+    check_lock_parity,
+)
+
+
 def main(argv=None):
     root = pathlib.Path(argv[0]) if argv else pathlib.Path(
         __file__).resolve().parent.parent
     problems = []
-    check_manifests(root, problems)
-    check_changelog(root, problems)
-    check_charter(root, problems)
-    check_ledger_schema(root, problems)
-    check_agents(root, problems)
-    check_hook(root, problems)
-    check_scripts(root, problems)
+    for check in CHECKS:
+        check(root, problems)
 
     if problems:
         for p in problems:
