@@ -246,6 +246,11 @@ check "owner's block message names T-A" "$(printf '%s' "$HERR" | grep -q 'T-A' &
 run_hook stop-session-b.json "$P"
 check "foreign session's Stop → exit 0 (not trapped)" "$([ "$HRC" -eq 0 ] && echo 0 || echo 1)"
 check "foreign session is told, not blocked" "$(printf '%s' "$HERR" | grep -q 'owned by another session' && echo 0 || echo 1)"
+# The report must name the OWNER and when it was opened, not just the task id:
+# with three or more sessions a bystander otherwise cannot tell whom to chase.
+# The doc's §4.1 example always showed this; the code did not until 0.4.0.
+check "foreign report names the owning session id" "$(printf '%s' "$HERR" | grep -q 'owned by SESS-A' && echo 0 || echo 1)"
+check "foreign report carries opened_at" "$(printf '%s' "$HERR" | grep -q 'opened 20' && echo 0 || echo 1)"
 # 8c: mixed — block, and name ONLY the caller's own task
 ( cd "$P" && bash "$TASK" T-B --owner SESS-B >/dev/null 2>&1 )
 run_hook stop-session-a.json "$P"
@@ -377,6 +382,11 @@ printf '\n### BAR: hand-written block\n- criterion: must survive reconcile\n' >>
 ( cd "$P" && bash "$VERDICT" --reconcile >/dev/null 2>&1 )
 check "--reconcile preserves hand-written BAR blocks" "$(grep -q 'BAR: hand-written block' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
 check "init writes .operator/.gitattributes (merge=union)" "$(grep -q 'VERDICTS.md merge=union' "$P/.operator/.gitattributes" && echo 0 || echo 1)"
+# All THREE append-only paths need it, not just VERDICTS.md — a regression that
+# dropped either of the others would silently reintroduce merge conflicts in the
+# exact files this design makes conflict-free.
+check "gitattributes covers DECISIONS.md" "$(grep -q 'DECISIONS.md merge=union' "$P/.operator/.gitattributes" && echo 0 || echo 1)"
+check "gitattributes covers the fragments dir" "$(grep -q 'verdicts.d/\*.md merge=union' "$P/.operator/.gitattributes" && echo 0 || echo 1)"
 # The schema assertions above are NOT discriminating on their own: a short
 # printf usually lands atomically on a local FS even unlocked (that is the
 # spec's point — it is a buffer-size property, not a guarantee). So prove the

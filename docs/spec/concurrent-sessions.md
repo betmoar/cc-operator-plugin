@@ -85,6 +85,7 @@ The sentinel is empty today, so its contents are free real estate. Write owner m
 session_id: <id>
 cwd: <path>
 opened_at: <ISO8601>
+adopted_at: <ISO8601>    # only on sentinels re-stamped by ops-adopt.sh
 ```
 
 `ops-stop-hook.sh` already parses the payload for `cwd` and `stop_hook_active`; add `session_id`
@@ -173,7 +174,8 @@ frequent*.
 > `VERDICTS.md` stays the single grep-compatible file every consumer depends on; each row is *also*
 > mirrored to `.operator/verdicts.d/<owner>.md`. Fragments merge cleanly across branches, and
 > `ops-verdict.sh --reconcile` appends back any row missing from `VERDICTS.md` — so a bad merge is
-> recoverable from any resolution. `.operator/.gitattributes` marks both ledgers `merge=union` to
+> recoverable from any resolution. `.operator/.gitattributes` marks all three append-only paths —
+> `VERDICTS.md`, `DECISIONS.md`, and `verdicts.d/*.md` — `merge=union` to
 > avoid most conflicts up front.
 >
 > `--reconcile` **repairs, never regenerates.** `VERDICTS.md` also carries hand-appended BAR blocks
@@ -191,31 +193,60 @@ frequent*.
 1. Two sessions, one tree: session A opens task X; session B's Stop hook exits 0 and reports X as
    foreign. Session A's Stop hook exits 2 on X.
 2. A sentinel with no owner metadata (pre-0.4 format) still blocks every session — migration safety.
-3. Session A closes X; A's Stop hook then exits 0. B never gained the ability to close X.
+3. Session A closes X; A's Stop hook then exits 0. B cannot close X through `ops-verdict.sh`:
+   a foreign `--owner` is refused (exit 2, no row, sentinel intact). B *can* reach X by first
+   re-stamping ownership with `ops-adopt.sh`, which is a deliberate, recorded act (`adopted_at:`
+   in the sentinel) — see the note below. The criterion is about the writer, not about
+   unreachability.
 4. Concurrent `ops-verdict.sh` invocations produce N well-formed rows, zero interleaved lines
    (loop-drive it: two shells × 50 appends, assert `wc -l` and that every line matches the 4-cell
-   schema).
+   schema) — **and** assert lock contention directly, because the loop-drive alone does not
+   discriminate: a short `printf` usually lands atomically on a local FS, so the schema check
+   passes against an unlocked build. Pre-take `.operator/.lock`, assert a writer blocks, release
+   it, assert the writer proceeds.
 5. `stop_hook_active` loop guard (`ops-stop-hook.sh:69`) and the no-parser fail-open (`:34`) behave
    exactly as today — neither path regresses.
 
-> **Status of §5 (0.4.0):** all five criteria are executable in
-> `tests/test-scripts.sh` — criteria 1+3 as case 8, criterion 2 as case 9, the writer-side half of
-> criterion 3 as case 10, criterion 4 as case 11, criterion 5 as cases 4/5 re-run unchanged.
-> Case 11 adds an assertion this note did not ask for and that the loop-drive alone does not
-> provide: the 4-cell schema check passes on the *unlocked* code too (a short `printf` usually
-> lands atomically on a local FS — the note says as much), so the test also takes the lock by hand
-> and asserts a writer waits for it.
+> **Status of §5 (0.4.0):** all five criteria are executable in `tests/test-scripts.sh` — criteria
+> 1+3 in the *ownership partition* case, criterion 2 in *migration safety*, the writer-side of
+> criterion 3 in *writer ownership gate + ops-adopt*, criterion 4 in *concurrent appends*,
+> criterion 5 in the *Stop hook exit codes* and *jq-absent fallback* cases, re-run unchanged.
+> (Cases are named, not numbered, on purpose: ordinals shift when a case is inserted.)
 >
-> One thing CI still cannot prove: that a real SessionStart payload carries `cwd` and that
-> `additionalContext` reaches the model. Verified live, not in CI.
+> **Criterion 3 is enforced on the writer, not absolutely.** `ops-verdict.sh` refuses a foreign
+> `--owner`; `ops-adopt.sh` is a door around that, by design. After a `/clear` a session's id has
+> rotated and its own tasks look foreign, which is exactly what adoption is for, and nothing
+> distinguishes "my orphan" from "someone else's live task" without a liveness signal the plugin
+> does not have. Explicit ids only (no bulk adopt) makes a takeover deliberate and auditable rather
+> than accidental. Criterion 3's wording above was corrected to match; an earlier draft asserted the
+> absolute, which the suite then contradicted by asserting adopt-then-close works.
 >
-> **Criterion 3 is enforced on the writer, not absolutely.** "B never gained the ability to close X"
-> holds for `ops-verdict.sh`, which refuses a foreign `--owner`. It does *not* hold through
-> `ops-adopt.sh`: B can adopt X and then close it. That door is required — after a `/clear` a
-> session's id has rotated and its own tasks look foreign, which is exactly what adoption is for,
-> and nothing distinguishes "my orphan" from "someone else's live task" without a liveness signal
-> the plugin does not have. Requiring explicit ids (no bulk adopt) makes the takeover deliberate
-> and auditable rather than accidental. Documented limitation, not an oversight.
+> **What a green suite does NOT prove.** Stated plainly, because a passing test that discriminates
+> nothing is worse than no test:
+> - *Lock exclusivity under reclaim.* No test distinguishes the shipped exclusive-reclaim protocol
+>   from the naive `rmdir`+`mkdir`; reproducing the two-waiter race needs two writers timing out
+>   simultaneously. Verified by code review only.
+> - *Bounded parse.* The huge-sentinel case uses 32 MB, where the unfixed hook takes ~1s — under the
+>   threshold. The cost is linear (256 MB measured at 8.5s unfixed vs 0.16s fixed); discriminating
+>   would put a quarter-gig of writes in every CI run. Accepted, not fixed.
+> - *`cwd` is not a discriminator.* §4.2's argument that the hook never compares the stamped `cwd` is
+>   asserted nowhere in the suite; a regression that made the hook enumerate by its own `$PWD` would
+>   silently reintroduce the worktree-collision shape.
+> - *`DECISIONS.md merge=union`.* Written by `ops-init.sh`, asserted by nothing.
+> - *A real SessionStart payload carries `cwd`, and `additionalContext` reaches the model.* Criterion
+>   1 depends on this end-to-end — the agent must learn its own id to pass `--owner` — and it is
+>   verified live, never in CI.
+>
+> **Known gaps not addressed by this note.** Recorded so they are not rediscovered as surprises:
+> - A session whose payload `cwd` is a *subdirectory* of the project finds no `.operator/` there and
+>   exits 0 with tasks still open — the gate silently does not apply. Reproduced; **pre-existing on
+>   `main`**, not introduced by ownership, and deliberately out of scope here.
+> - The foreign-task report names task ids but not their owners, so with three or more sessions a
+>   bystander cannot tell which session to chase.
+> - `--reconcile` dedups by exact line, so one task id whose evidence cell diverged across branches
+>   yields two admitted rows. `merge=union` makes this reachable.
+> - Owner ids are assumed unique across concurrent sessions in one tree; two sessions sharing an id
+>   share a fragment file.
 
 ## 6. Companion note
 

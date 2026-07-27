@@ -110,14 +110,21 @@ opdir="$cwd/.operator"
 #    newline and proved unreliable here, returning an empty chunk; it would have
 #    made every sentinel parse as unowned. Do not "simplify" back to it.)
 #    The owner is line 1 by construction, so 512 chars is generous.
-sentinel_owner() { # sentinel_owner <path>
-  local line owner="" n=0
+# Emits "<owner>|<opened_at>" so ONE bounded pass yields both fields: this runs
+# on every session's Stop event, and a second read per sentinel is exactly the
+# cost the bound exists to avoid. Callers split on the first '|' — safe because
+# an owner containing '|' is rejected below. Not set as a global: the callers
+# use $( ), which is a subshell, so a side-effect variable would be discarded.
+sentinel_owner() { # sentinel_owner <path> → "owner|opened_at"
+  local line owner="" opened="" n=0
   [ -f "$1" ] || return 0
   while IFS= read -r -n 512 line || [ -n "$line" ]; do
     n=$((n+1)); [ "$n" -le 20 ] || break
     case "$line" in
-      "session_id: "*) owner="${line#session_id: }"; break ;;
+      "session_id: "*) owner="${line#session_id: }" ;;
+      "opened_at: "*)  opened="${line#opened_at: }" ;;
     esac
+    [ -n "$owner" ] && [ -n "$opened" ] && break
   done < "$1" 2>/dev/null
   owner="${owner%$'\r'}"
   owner="${owner%"${owner##*[![:space:]]}"}"
@@ -128,7 +135,10 @@ sentinel_owner() { # sentinel_owner <path>
   case "$owner" in
     */* | .* | *"|"* | *[[:space:]]*) owner="" ;;
   esac
-  printf '%s' "$owner"
+  # opened_at is display-only, so it is sanitized rather than rejected: a '|'
+  # would break the field split, and a newline cannot survive `read -r` anyway.
+  case "$opened" in *"|"*) opened="" ;; esac
+  printf '%s|%s' "$owner" "$opened"
 }
 
 # --- enumerate pending sentinels (builtin glob; no `find` dependency) --------
@@ -143,9 +153,15 @@ for f in "$opdir/pending"/*; do
   # sentinel and emit a raw bash error as operator guidance.
   [ -f "$f" ] || continue
   id="${f##*/}"
-  owner="$(sentinel_owner "$f")"
+  parsed="$(sentinel_owner "$f")"
+  owner="${parsed%%|*}"
+  opened="${parsed#*|}"
   if [ -n "$owner" ] && [ -n "$session" ] && [ "$owner" != "$session" ]; then
-    foreign="${foreign:+$foreign, }$id"
+    # Name the OWNER, not just the task: with three or more sessions a bystander
+    # otherwise cannot tell which session to chase.
+    entry="$id owned by $owner"
+    [ -n "$opened" ] && entry="$entry, opened $opened"
+    foreign="${foreign:+$foreign; }$entry"
     foreign_n=$((foreign_n + 1))
   else
     pending="${pending:+$pending, }$id"
