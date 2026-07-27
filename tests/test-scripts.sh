@@ -484,6 +484,30 @@ for body in 'session_id: ' 'session_id: a|b' 'session_id: .hidden' 'garbage'; do
   run_hook stop-session-b.json "$P"
   check "degenerate body [$body] fails CLOSED (exit 2)" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
 done
+# WHITESPACE in an owner is the subtlest disarm: the hook compares the stamped
+# owner byte-for-byte against the payload session id, so " SESS-A" can never
+# equal any real session — the task is FOREIGN forever, and foreign never
+# blocks. Refused at the CLIs, and treated as unowned by the hook for sentinels
+# that never went through them.
+for o in " SESS-A" "SESS-A " "SE SS"; do
+  ( cd "$P" && bash "$TASK" T-WS --owner "$o" >/dev/null 2>&1 ); WRC=$?
+  check "ops-task refuses a whitespace --owner [$o]" "$([ "$WRC" -ne 0 ] && echo 0 || echo 1)"
+done
+rm -f "$P"/.operator/pending/*
+printf 'session_id:  SESS-A\ncwd: /x\n' > "$P/.operator/pending/T-WS2"
+run_hook stop-session-a.json "$P"
+check "hand-written whitespace owner is unowned → BLOCKS" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+# A payload that fails to parse must not fail open SILENTLY — json_get swallows
+# parser errors, so every field reads empty and looks like "no cwd".
+rm -f "$P"/.operator/pending/*; : > "$P/.operator/pending/T-J"
+errf="$(mktemp)"; printf '{"cwd": broken json' | "$BASH_ABS" "$HOOK" 2>"$errf"; JRC=$?
+JERR="$(cat "$errf")"; rm -f "$errf"
+check "corrupt payload still exits 0 (fail-open preserved)" "$([ "$JRC" -eq 0 ] && echo 0 || echo 1)"
+check "corrupt payload warns instead of failing open silently" "$(printf '%s' "$JERR" | grep -qi 'unparseable' && echo 0 || echo 1)"
+# an empty payload is NOT corrupt — it must stay silent
+errf="$(mktemp)"; printf '' | "$BASH_ABS" "$HOOK" 2>"$errf"; ERC=$?
+EERR="$(cat "$errf")"; rm -f "$errf"
+check "empty payload stays silent (no false warning)" "$([ "$ERC" -eq 0 ] && [ -z "$EERR" ] && echo 0 || echo 1)"
 # a directory in pending/ must not be read as a sentinel nor emit a raw error
 rm -rf "$P"/.operator/pending/*
 mkdir -p "$P/.operator/pending/T-DIR"

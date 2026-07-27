@@ -76,7 +76,18 @@ session="$(json_get session_id)"
 [ "$active" = "true" ] && exit 0
 
 # --- no-op guard: not an operator project → stay out of the way --------------
-[ -n "$cwd" ] || exit 0
+# An empty cwd has two very different causes: a payload that legitimately has no
+# cwd (fine, stay out of the way) and a payload that FAILED TO PARSE (json_get
+# swallows parser errors, so every field comes back empty). Both exit 0, but the
+# second is a fail-open we should not perform silently — it is the same class of
+# event as the no-parser branch above, which warns. Distinguish them: a payload
+# with content but no parseable cwd is a corrupt payload.
+if [ -z "$cwd" ]; then
+  if [ -n "$input" ]; then
+    echo "operator: warning — Stop payload present but unparseable (no cwd); hook failing open (exit 0)" >&2
+  fi
+  exit 0
+fi
 opdir="$cwd/.operator"
 [ -d "$opdir" ] || exit 0
 
@@ -108,7 +119,7 @@ sentinel_owner() { # sentinel_owner <path>
   # session's task which would wave the stop through. Must mirror the same
   # rejects as check_bare_name in the three CLIs.
   case "$owner" in
-    */* | .* | *"|"*) owner="" ;;
+    */* | .* | *"|"* | *[[:space:]]*) owner="" ;;
   esac
   printf '%s' "$owner"
 }

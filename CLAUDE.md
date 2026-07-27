@@ -49,10 +49,14 @@ and the maintainer's local `.archive/dev/` (untracked).
 | `templates/VERDICTS-header.md`'s table header | update `validate_plugin.VERDICTS_HEADER` and know you are breaking every existing ledger's grep-compatibility |
 | a charter section heading or its order | update `validate_plugin.CHARTER_SECTION_ORDER` |
 | the sentinel/pending convention in any `ops-*.sh` | update the other scripts, `tests/test-scripts.sh`, and the EVIDENCE GATE prose in `OPERATOR.md` |
-| the `.operator/bin` install set in `ops-init.sh` | update the charter's EVIDENCE GATE paths, the stop-hook fallback message, `tests/test-scripts.sh` case 6, and `validate_plugin.CHARTER_REQUIRED_CLIS` + `check_scripts` |
-| the sentinel body format (`session_id:` line) | update `ops-task.sh`, `ops-adopt.sh`, both parsers (`ops-verdict.sh:sentinel_owner`, `ops-stop-hook.sh:sentinel_owner` — the latter **must** stay builtin-only), and `tests/test-scripts.sh` cases 8–10 |
-| the fragment/lock scheme in `ops-verdict.sh` | update `ops-init.sh` (`verdicts.d/`, `.gitattributes`), the README evidence-gate section, and `tests/test-scripts.sh` case 11 |
-| the `check_bare_name` reject set in any CLI | update the other two CLIs **and** the `case` filter in both `sentinel_owner` parsers — the hook must reject what the writers reject, or a body our CLIs could never have written reads as a valid foreign owner and the gate opens (`tests/test-scripts.sh` cases 12–13) |
+| the `.operator/bin` install set in `ops-init.sh` | update the charter's EVIDENCE GATE paths, the stop-hook fallback message, the *"project-installed gate CLIs"* test case, and `validate_plugin.CHARTER_REQUIRED_CLIS` + `check_scripts` |
+| the sentinel body format (`session_id:` line) | update `ops-task.sh`, `ops-adopt.sh`, both parsers (`ops-verdict.sh:sentinel_owner`, `ops-stop-hook.sh:sentinel_owner` — the latter **must** stay builtin-only), and the *"sentinel ownership"*, *"migration safety"*, and *"sentinel BODY is untrusted input"* cases |
+| the fragment/lock scheme in `ops-verdict.sh` | update `ops-init.sh` (`verdicts.d/`, `.gitattributes`), the README evidence-gate section, and the *"concurrent appends never interleave"* case |
+| the `check_bare_name` reject set in any CLI | update the other two CLIs **and** the `case` filter in both `sentinel_owner` parsers — the hook must reject what the writers reject, or a body our CLIs could never have written reads as a valid foreign owner and the gate opens (*"name guards agree"* + *"untrusted input"* cases) |
+
+> Test cases are referenced **by title**, not by ordinal: `grep '^echo "-- Case' tests/test-scripts.sh`.
+> Numbers shift the moment a case is inserted, and a coupling table that quietly points at the
+> wrong case is worse than one that points nowhere.
 | `plugin.json` `version` | add the matching `## [x.y.z]` as the newest heading in `CHANGELOG.md`, same commit (the release gate fails otherwise) |
 | the Stop-hook command in `hooks.json` | keep `ops-stop-hook.sh` + `${CLAUDE_PLUGIN_ROOT}` (validator check 7) |
 | an agent's model/tools/NEEDS_CONTEXT | keep it project-agnostic — no `unknowns-harness`/`F1..F13` — and keep `model:` a tier alias (`opus`/`sonnet`/`haiku`), never a pinned ID (validator check 6) |
@@ -65,14 +69,14 @@ and the maintainer's local `.archive/dev/` (untracked).
   enumerates `pending/` with a glob, not `find`. Reason: the hook fires on
   *every* session's Stop event; if it depends on a binary missing from a
   stripped PATH, it bricks the session. It must fail *open* (exit 0 + warning)
-  when neither `jq` nor `python3` is present. `tests/test-scripts.sh` case 5
+  when neither `jq` nor `python3` is present. The *"jq-absent fallback"* case
   proves this — keep it.
 - **`ops-verdict.sh` refuses malformed cells; it never sanitizes.** A `|` or
   newline inside a cell breaks the one-line 4-cell row schema (the declared
   grep contract), and a task-id containing `/` once let `clear_sentinel`'s
   `rm -f` delete files *outside* `.operator/` (path traversal — a real bug,
   found and fixed 2026-07-10). Both are refused at the single writer with
-  exit 2; `tests/test-scripts.sh` case 7 locks this. Do not "helpfully"
+  exit 2; the *"ledger cell hygiene"* case locks this. Do not "helpfully"
   escape or strip instead — a rewritten cell is no longer evidence.
 - **`.operator/` and `OPERATOR.md` keep their names** even though the plugin is
   `cc-operator`. They are the ledger namespace and the charter filename, not the
@@ -100,6 +104,14 @@ and the maintainer's local `.archive/dev/` (untracked).
   same. Related: strip trailing `\r` — a CRLF checkout otherwise makes a
   session's own id compare unequal and its own task get waved through as
   foreign, a fail-OPEN in the central invariant.
+- **An owner that can never match is worse than no owner.** The hook compares
+  the stamped owner byte-for-byte against the payload's session id, so any
+  value a real session id cannot equal — whitespace, a stray space inside —
+  classifies the task FOREIGN forever, and foreign never blocks. That is a
+  silently disarmed gate reached by a typo (`--owner " SESS-A"`, found in
+  review of 0.4.0). Hence: whitespace is refused at all three CLIs *and*
+  mapped to unowned in both parsers. Any new owner-shaped field needs both
+  halves — refusing at the CLI alone leaves hand-written sentinels unguarded.
 - **Anything the Stop hook reads must be bounded.** It fires on *every*
   session's Stop event, so an unbounded read is the same class of hazard as a
   missing binary: a 2 MB sentinel cost ~10s per turn-end tree-wide. The parse
@@ -116,7 +128,7 @@ and the maintainer's local `.archive/dev/` (untracked).
   `.hidden` task-id created an open task that never blocked (found in review of
   0.4.0, before release). Every name that becomes a filename is refused a
   leading dot in *all three* CLIs; the rule subsumes the older `.`/`..`
-  traversal guard. `tests/test-scripts.sh` case 12 asserts the glob premise
+  traversal guard. The *"name guards agree"* case asserts the glob premise
   itself, not just the guard, so the reason cannot rot. If you ever switch the
   hook to `dotglob` or `find`, this rule is what you are trading away.
 - **`--reconcile` is a write to the ledger of record, so it validates.** It
@@ -126,9 +138,9 @@ and the maintainer's local `.archive/dev/` (untracked).
   enforce the 4-cell schema too, or it reopens the same hole.
 - **A concurrency test that only asserts the output schema proves nothing.**
   A short `printf` usually lands atomically on a local FS *without* any lock, so
-  "100 well-formed rows" passes on the unlocked code too. `tests/test-scripts.sh`
-  case 11 therefore also takes the lock dir by hand and asserts a writer waits —
-  that is the assertion that would fail if the lock were removed. Keep it.
+  "100 well-formed rows" passes on the unlocked code too. The *"concurrent
+  appends"* case therefore also takes the lock dir by hand and asserts a writer
+  waits — that is the assertion that would fail if the lock were removed. Keep it.
 
 ## Provenance
 

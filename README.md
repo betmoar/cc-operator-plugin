@@ -72,9 +72,12 @@ Or from a local checkout:
 `.operator/bin/` so they resolve from the project root — the model's shell has
 no `${CLAUDE_PLUGIN_ROOT}`. Opening a tracked task drops
 `.operator/pending/<id>`, stamped with the owning session. `ops-verdict.sh` is
-the only writer to `VERDICTS.md`: under a `mkdir`-based lock it appends the row,
-mirrors it to `verdicts.d/<owner>.md`, and clears the sentinel — so the append
-is atomic against concurrent sessions, not merely append-only. The Stop hook
+the only writer to `VERDICTS.md`: under a `mkdir`-based lock it mirrors the row
+to `verdicts.d/<owner-or-unowned>.md`, appends it, and clears the sentinel — so
+writes are mutually exclusive against concurrent sessions, not merely
+append-only. (One stated gap: a lock held past the timeout is presumed crashed
+and reclaimed, so a writer that genuinely ran longer would be overrun. The
+budget sits well above the slowest real critical section.) The Stop hook
 (`hooks/hooks.json` → `scripts/ops-stop-hook.sh`) exits 2 while any sentinel
 owned by that session is pending; it fails open if neither `jq` nor `python3` is
 available, so a missing dependency never bricks a session.

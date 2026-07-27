@@ -148,8 +148,17 @@ atomicity claim true.
 
 > **Implemented (0.4.0): the unconditional `mkdir` variant.** `command -v flock` exits 1 on the
 > maintainer's macOS, so the `flock` branch would be dead code on half the target platforms and the
-> two platforms would take different code paths — the worse outcome. A lock held >5s is treated as
-> stale and the writer proceeds with a warning: a stale lock must never cost a real verdict.
+> two platforms would take different code paths — the worse outcome.
+>
+> **Correction to this section's last sentence:** it does *not* make the atomicity claim
+> unconditionally true, and the shipped headers say so. A lock cannot distinguish a crashed holder
+> from a slow one, so there is a timeout: past it the holder is presumed crashed and the lock is
+> **reclaimed** (an earlier draft merely ignored it, which left a hard-killed writer's lock
+> poisoning every later write forever while providing no exclusion anyway). A writer that genuinely
+> ran longer than the budget would be overrun. The budget is set well above the slowest real
+> critical section — which required making `--reconcile` a single pass rather than a `grep` per
+> row; at one `grep` per row a 3000-row ledger took ~7s and would itself have tripped the timeout,
+> pushing concurrent writers onto the unlocked path exactly when contention was highest.
 
 ### 4.4 Ledger divergence across branches — open design question
 
@@ -228,4 +237,5 @@ session is accountable for **its own** criteria.
 > **Amended in 0.4.0.** The charter's *rules* are unchanged, as intended — but its *CLI surface*
 > had to change, because a rule the operator cannot execute is not enforced: EVIDENCE GATE now
 > shows `--owner` on the task/verdict commands, and RECOVERY PROTOCOL gains an adopt step (a
-> session id rotates on `/clear`, which is precisely when RECOVERY runs). 141/150 lines.
+> session id rotates on `/clear`, which is precisely when RECOVERY runs). Still under the
+> 150-line cap the validator enforces.

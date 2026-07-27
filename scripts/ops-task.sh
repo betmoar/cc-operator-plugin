@@ -31,11 +31,18 @@ NL="$(printf '\nx')"; NL="${NL%x}"
 # gate cannot see — an open task that silently never blocks. Keep this rule
 # identical in ops-verdict.sh and ops-adopt.sh (tests/test-scripts.sh case 12
 # asserts all three agree).
+# Whitespace is refused for a specific reason: the Stop hook compares the
+# stamped owner byte-for-byte against the payload's session id, so an owner with
+# a stray space can never equal any real session — the sentinel is classified
+# FOREIGN forever, and foreign sentinels never block. That is a silently
+# disarmed gate, not a typo. (Found in review of 0.4.0: `--owner " SESS-A"` →
+# hook exits 0 with the task still open.)
 check_bare_name() { # check_bare_name <label> <value>
   case "$2" in
     */*) die "$1 must be a bare name (no '/')" ;;
     .*) die "$1 must not start with '.' — a dotfile sentinel is invisible to the Stop hook's glob" ;;
     *"|"* | *"$NL"*) die "$1 must not contain '|' or newlines" ;;
+    *[[:space:]]*) die "$1 must not contain whitespace — it would never match a real session id, leaving the task permanently unblockable" ;;
   esac
 }
 

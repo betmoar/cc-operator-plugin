@@ -4,7 +4,8 @@
 # Why this exists: a session id rotates on /clear. Without adoption, a session's
 # OWN open tasks would look foreign to its Stop hook after a clear and silently
 # stop gating it — the gate would weaken at exactly the moment the operator's
-# context was wiped. The RECOVERY PROTOCOL therefore ends with adoption.
+# context was wiped. Adoption is therefore RECOVERY PROTOCOL step 6 of 7, just
+# before resuming the first incomplete task.
 #
 # Explicit ids only. There is deliberately no "adopt everything": a bulk sweep
 # in a shared tree is a takeover of another session's tasks by another name.
@@ -26,6 +27,7 @@ check_bare_name() { # check_bare_name <label> <value>
     */*) die "$1 must be a bare name (no '/')" ;;
     .*) die "$1 must not start with '.' — a dotfile sentinel is invisible to the Stop hook's glob" ;;
     *"|"* | *"$NL"*) die "$1 must not contain '|' or newlines" ;;
+    *[[:space:]]*) die "$1 must not contain whitespace — it would never match a real session id, leaving the task permanently unblockable" ;;
   esac
 }
 

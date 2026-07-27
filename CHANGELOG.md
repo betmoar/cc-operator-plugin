@@ -43,7 +43,8 @@ and design: `docs/spec/concurrent-sessions.md`.
 - `scripts/ops-adopt.sh` (installed to `.operator/bin/`) — re-stamps named
   sentinels to a new session id. A session id rotates on `/clear`, so without
   this a session's own tasks would degrade to "foreign" and stop gating it. The
-  charter's RECOVERY PROTOCOL now ends with adoption. Explicit ids only: there
+  charter's RECOVERY PROTOCOL gains adoption as step 6 of 7, just before
+  resuming the first incomplete task. Explicit ids only: there
   is deliberately no bulk adopt.
 - Per-session row fragments at `.operator/verdicts.d/<owner>.md`, plus
   `ops-verdict.sh --reconcile`, which restores to `VERDICTS.md` any row present
@@ -116,6 +117,30 @@ and design: `docs/spec/concurrent-sessions.md`.
 - `ops-adopt.sh` used `"${IDS[@]}"` on a possibly-empty array, which is an
   unbound-variable error on macOS's bash 3.2 under `set -u`. Uses the same
   `${IDS+"${IDS[@]}"}` guard as `ops-verdict.sh`.
+- **A whitespace `--owner` silently disarmed the gate.** The Stop hook compares
+  the stamped owner byte-for-byte against the payload's session id, so
+  `--owner " SESS-A"` could never match any real session: the task was
+  classified foreign forever, and foreign tasks never block. Reproduced (hook
+  exited 0 with the task still open). Whitespace is now refused at all three
+  CLIs and treated as unowned by both parsers, so a hand-written sentinel that
+  never passed through a CLI still fails closed.
+- **A payload that failed to parse failed open in total silence.** `json_get`
+  swallows parser errors, so a corrupt payload made every field read empty and
+  was indistinguishable from "no cwd, not an operator project". It now warns —
+  the same courtesy the no-parser branch already extended — while still
+  exiting 0. An empty payload stays silent, since that is not corruption.
+
+### Documentation corrections
+- "The RECOVERY PROTOCOL ends with adoption" was wrong in `ops-adopt.sh` and
+  this changelog: adoption is step 6 of 7, before resuming the first incomplete
+  task. The charter itself was always right.
+- The README's "atomic against concurrent sessions" repeated the unqualified
+  claim the script header now qualifies; both name the reclaim window. The
+  spec's §4.3 assertion that locking "makes the header comment's atomicity
+  claim true" is corrected in place rather than left standing.
+- `CLAUDE.md`'s coupling table referenced test cases by ordinal, which shift
+  whenever a case is inserted. It now references them by title, with the grep
+  that lists them.
 
 ### Known limitations
 - `DECISIONS.md` gets the lock and `merge=union` but no fragments. It is a log,

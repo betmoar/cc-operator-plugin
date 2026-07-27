@@ -60,6 +60,7 @@ check_bare_name() { # check_bare_name <label> <value>
   case "$2" in
     */*) die "$1 must be a bare name (no '/')" ;;
     .*) die "$1 must not start with '.' — a dotfile sentinel is invisible to the Stop hook's glob" ;;
+    *[[:space:]]*) die "$1 must not contain whitespace — it would never match a real session id, leaving the task permanently unblockable" ;;
   esac
   check_cell "$1" "$2"
 }
@@ -124,7 +125,7 @@ sentinel_owner() { # sentinel_owner <id> → stamped session_id ("" if none/inva
   owner="${owner%$'\r'}"
   owner="${owner%"${owner##*[![:space:]]}"}"
   case "$owner" in
-    "" | */* | .* | *"|"* ) return 0 ;;    # unusable → unowned → fails closed
+    "" | */* | .* | *"|"* | *[[:space:]]*) return 0 ;;  # unusable → unowned → fails closed
   esac
   printf '%s' "$owner"
 }
