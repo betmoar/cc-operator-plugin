@@ -253,6 +253,91 @@ def check_scripts(root, problems):
             problems.append(f"scripts/{name}: bash syntax error — {r.stderr.strip()}")
 
 
+def check_reader_bounds(root, problems):
+    """Every reader of a sentinel/fragment must bound its reads in BYTES.
+
+    `read -r` is bounded by LINES, not bytes — one newline-less line is a single
+    "line" and gets slurped whole. Measured on a 256MB single-line file:
+    0.17s bounded vs 13.5s / 16.8s / 32.6s unbounded across the three readers
+    that were missed when the bound was first added to the Stop hook only.
+
+    The 32.6s one mattered most: it happens while holding the ledger lock, whose
+    crash-presumption budget is 30s, so a concurrent writer reclaimed a LIVE
+    reconcile's lock and both entered the critical section.
+
+    This is a coupling no prose can enforce — the rule lives in CLAUDE.md and was
+    still applied to one of four readers. Now it fails the build instead.
+    """
+    readers = {
+        "ops-stop-hook.sh": 1,   # sentinel_owner
+        "ops-verdict.sh": 2,     # sentinel_owner + the --reconcile fragment loop
+        "ops-adopt.sh": 1,       # the inline sentinel parse
+    }
+    for name, expected in readers.items():
+        p = root / "scripts" / name
+        if not p.is_file():
+            continue  # missing-file is already reported by check_scripts
+        text = p.read_text(encoding="utf-8")
+        # count read-loops over a file, ignoring the stdin payload slurp
+        # CODE lines only — the scripts discuss `read -r` at length in their
+        # comments, and a checker that fires on its own documentation is worse
+        # than no checker: it trains the next maintainer to ignore the build.
+        code = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
+        bounded = sum(len(re.findall(r"read -r -n \d+", ln)) for ln in code)
+        unbounded = [
+            ln.strip() for ln in code
+            if re.search(r"\bread -r\b", ln)
+            and "read -r -n" not in ln
+            and "read -r -d" not in ln   # the stdin payload slurp; bounded by the payload
+        ]
+        if unbounded:
+            problems.append(
+                f"scripts/{name}: {len(unbounded)} unbounded `read -r` loop(s) — "
+                f"use `read -r -n N` (a line cap is not a byte cap; see "
+                f"docs/PLAYBOOK.md 'adding a reader of a file'): "
+                f"{unbounded[0][:70]}")
+        if bounded < expected:
+            problems.append(
+                f"scripts/{name}: expected >={expected} byte-bounded read(s), "
+                f"found {bounded} — a reader lost its bound")
+
+
+def check_guard_parity(root, problems):
+    """The three CLIs must agree on what a name may contain.
+
+    A guard enforced in one place only is the shape of the 2026-07-10 traversal
+    bug. `check_bare_name` (filename safety) and `check_owner_name` (additionally
+    compared against a session id) are deliberately separate — conflating them
+    wedged every pre-0.4 task whose id contained a space.
+    """
+    clis = ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh")
+    for name in clis:
+        p = root / "scripts" / name
+        if not p.is_file():
+            continue
+        text = p.read_text(encoding="utf-8")
+        for fn in ("check_bare_name", "check_owner_name"):
+            if f"{fn}()" not in text:
+                problems.append(
+                    f"scripts/{name}: missing {fn}() — all three CLIs must "
+                    f"carry both guards (see docs/PLAYBOOK.md)")
+        # the leading-dot rule: a dotfile sentinel is invisible to the hook's glob
+        if ".*)" not in text:
+            problems.append(
+                f"scripts/{name}: no leading-dot rejection — a dotfile sentinel "
+                f"is invisible to the Stop hook's glob, so the gate never sees it")
+    # the hook's parser must reject what the writers reject, or a hand-written
+    # sentinel reads as a valid foreign owner and the gate opens
+    hook = root / "scripts" / "ops-stop-hook.sh"
+    if hook.is_file():
+        text = hook.read_text(encoding="utf-8")
+        if "[[:space:]]" not in text:
+            problems.append(
+                "scripts/ops-stop-hook.sh: sentinel_owner does not reject "
+                "whitespace owners — an owner that can never match a real "
+                "session id makes its task permanently non-blocking")
+
+
 def main(argv=None):
     root = pathlib.Path(argv[0]) if argv else pathlib.Path(
         __file__).resolve().parent.parent
@@ -264,6 +349,8 @@ def main(argv=None):
     check_agents(root, problems)
     check_hook(root, problems)
     check_scripts(root, problems)
+    check_reader_bounds(root, problems)
+    check_guard_parity(root, problems)
 
     if problems:
         for p in problems:

@@ -19,6 +19,12 @@ __pycache__/
 .reload/
 .remember/
 
+# Audit resume-state (mode, phase cursor, append-only event log). Scaffolding for
+# a run in progress, not product — same rule as the build ledgers removed in
+# 0.3.0. The audit's OUTPUT ships under docs/audit-*.
+/AUDIT_STATE.md
+/AUDIT_LOG.md
+
 # Dogfooding /cc-operator:start in this repo materializes these at the root
 /.operator/
 /OPERATOR.md

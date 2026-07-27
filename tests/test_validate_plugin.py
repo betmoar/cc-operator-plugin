@@ -239,6 +239,83 @@ class ValidatorTest(unittest.TestCase):
         (self.dir / "scripts" / "ops-sessionstart-hook.sh").unlink()
         self.assertFires("scripts/ops-sessionstart-hook.sh: missing")
 
+    # --- 9/10. audit guardrails: reader bounds + guard parity ---
+    # These enforce cross-file couplings that were previously prose in CLAUDE.md
+    # and were still violated: the byte bound reached one of four readers, and a
+    # guard applied to the wrong one of two name-checks wedged legacy tasks.
+
+    def _write_readers(self, verdict_body=None, adopt_body=None, hook_body=None):
+        """Install minimal but realistic reader scripts into the fixture tree."""
+        good_hook = (
+            "#!/usr/bin/env bash\n"
+            "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
+            "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]*) owner=\"\" ;; esac\n")
+        good_verdict = (
+            "#!/usr/bin/env bash\n"
+            "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
+            "check_owner_name() { :; }\n"
+            "while IFS= read -r -n 512 line; do :; done < \"$f\"\n"
+            "while IFS= read -r -n 512 row; do :; done < \"$frag\"\n")
+        good_adopt = (
+            "#!/usr/bin/env bash\n"
+            "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
+            "check_owner_name() { :; }\n"
+            "while IFS= read -r -n 512 line; do :; done < \"$F\"\n")
+        write(self.dir / "scripts" / "ops-stop-hook.sh", hook_body or good_hook)
+        write(self.dir / "scripts" / "ops-verdict.sh", verdict_body or good_verdict)
+        write(self.dir / "scripts" / "ops-adopt.sh", adopt_body or good_adopt)
+        write(self.dir / "scripts" / "ops-task.sh",
+              "#!/usr/bin/env bash\n"
+              "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
+              "check_owner_name() { :; }\n")
+
+    def bounds_problems(self):
+        probs = []
+        vp.check_reader_bounds(self.dir, probs)
+        vp.check_guard_parity(self.dir, probs)
+        return probs
+
+    def test_reader_bounds_clean_tree_passes(self):
+        self._write_readers()
+        self.assertEqual(self.bounds_problems(), [])
+
+    def test_unbounded_read_fires(self):
+        self._write_readers(verdict_body=(
+            "#!/usr/bin/env bash\n"
+            "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
+            "check_owner_name() { :; }\n"
+            "while IFS= read -r line; do :; done < \"$f\"\n"
+            "while IFS= read -r -n 512 row; do :; done < \"$frag\"\n"))
+        probs = self.bounds_problems()
+        self.assertTrue(any("unbounded `read -r`" in p for p in probs), probs)
+
+    def test_comments_mentioning_read_do_not_fire(self):
+        # A checker that fires on its own documentation trains the maintainer to
+        # ignore the build. This exact bug was introduced and caught in the audit.
+        self._write_readers(adopt_body=(
+            "#!/usr/bin/env bash\n"
+            "# `read -r` is bounded by LINES, not bytes — discussion only.\n"
+            "#    a plain read -r would slurp the whole line first\n"
+            "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
+            "check_owner_name() { :; }\n"
+            "while IFS= read -r -n 512 line; do :; done < \"$F\"\n"))
+        self.assertEqual(self.bounds_problems(), [])
+
+    def test_missing_guard_in_one_cli_fires(self):
+        self._write_readers()
+        write(self.dir / "scripts" / "ops-task.sh",
+              "#!/usr/bin/env bash\ncheck_bare_name() { case \"$2\" in .*) die x ;; esac; }\n")
+        probs = self.bounds_problems()
+        self.assertTrue(any("missing check_owner_name()" in p for p in probs), probs)
+
+    def test_hook_dropping_whitespace_reject_fires(self):
+        self._write_readers(hook_body=(
+            "#!/usr/bin/env bash\n"
+            "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
+            "case \"$owner\" in */* | .* | *\"|\"*) owner=\"\" ;; esac\n"))
+        probs = self.bounds_problems()
+        self.assertTrue(any("whitespace owners" in p for p in probs), probs)
+
 
 if __name__ == "__main__":
     unittest.main()

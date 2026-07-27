@@ -61,7 +61,29 @@ and the maintainer's local `.archive/dev/` (untracked).
 | the Stop-hook command in `hooks.json` | keep `ops-stop-hook.sh` + `${CLAUDE_PLUGIN_ROOT}` (validator check 7) |
 | an agent's model/tools/NEEDS_CONTEXT | keep it project-agnostic — no `unknowns-harness`/`F1..F13` — and keep `model:` a tier alias (`opus`/`sonnet`/`haiku`), never a pinned ID (validator check 6) |
 
+## Procedure
+
+Before your first change read **`docs/PLAYBOOK.md`** — what to do when adding a
+guard, adding a reader, or touching the lock, each derived from a bug that
+actually happened here. The 2026-07-27 audit and its residual-risk register are
+in `docs/audit-2026-07-27-handoff.md`.
+
+Two couplings below are now enforced by `validate_plugin.py` (`check_reader_bounds`,
+`check_guard_parity`) rather than by remembering them: a missed byte bound or a
+guard applied to only one of the three CLIs fails the build.
+
 ## Landmines (already hit — do not re-hit)
+
+- **Nothing in this system defines "the project" — each component decides
+  locally, and they have disagreed.** `ops-task.sh` refuses to open a task
+  outside the directory holding `.operator/`; `ops-stop-hook.sh` used to resolve
+  `"$cwd/.operator"` by exact match, so a payload `cwd` one directory deeper
+  found nothing and **allowed the stop with tasks still open** — the whole gate,
+  silently off (audit F01, P0, pre-existing since before 0.4.0). The hook now
+  walks up to the nearest `.operator/`, bounded at a `.git` boundary and at `/`.
+  Any new component must use that same definition; `ops-init.sh` warns when it
+  is scaffolding somewhere that is not the repo root, because a second ledger
+  below the root would shadow the real one for everything beneath it.
 
 - **The Stop hook must use bash builtins + one JSON parser only.** It reads
   stdin with `read -r -d ''` (a line loop drops a newline-less final line — a

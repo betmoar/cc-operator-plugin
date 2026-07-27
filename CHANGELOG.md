@@ -184,7 +184,75 @@ and design: `docs/spec/concurrent-sessions.md`.
   whenever a case is inserted. It now references them by title, with the grep
   that lists them.
 
+### Fixed (departing-architect audit, before release)
+
+Full ledger in `docs/audit-2026-07-27-findings.md`; verdict and residual risk
+in `docs/audit-2026-07-27-handoff.md`; procedure in the new `docs/PLAYBOOK.md`.
+
+- **The gate failed OPEN from any subdirectory of the project.** `ops-task.sh`
+  refuses to open a task anywhere but the directory holding `.operator/`, while
+  the Stop hook resolved `"$cwd/.operator"` by exact match with no upward walk —
+  so a Stop payload whose `cwd` was one directory deeper found nothing, took the
+  no-op guard, and allowed the session to end with tasks still open. The whole
+  gate, silently off. Reproduced (`cwd=<root>` → block; `cwd=<root>/src` →
+  allow). Pre-existing since before 0.4.0. The hook now walks up to the nearest
+  `.operator/`, bounded at a `.git` boundary and at the filesystem root, with
+  `cd -P` resolving symlinks.
+  Root cause worth naming: **nothing in this system defined "the project"** —
+  three components each answered locally and disagreed. `ops-init.sh` now warns
+  when it is scaffolding somewhere that is not the repository root, because a
+  second ledger below the root would shadow the real one for everything beneath.
+- **A slow `--reconcile` had its lock reclaimed by a concurrent writer.** The
+  fragment read happens inside the critical section, and an unbounded read of a
+  256 MB fragment took 32.56s against the 30s crash-presumption budget — so a
+  second writer presumed the holder had crashed, took the lock, and both entered
+  the critical section against the ledger of record. Live repro captured. Fixed
+  by bounding the trigger: `--reconcile` now refuses a fragment larger than
+  `FRAG_MAX_BYTES` (8 MiB ≈ 100k rows) instead of reading it. 31.85s → **0.18s**;
+  a 500-row fragment reconciles normally.
+- **The per-line byte bound had been applied to one of four readers.** The 0.4.0
+  hardening reached the Stop hook only. Measured on one 256 MB line: hook 0.17s
+  vs `ops-verdict.sh` 13.51s, `ops-adopt.sh` 16.77s, `--reconcile` 32.56s. All
+  readers now use `read -r -n 512`; `ops-adopt.sh` also gained the 20-line cap it
+  never had.
+- `ops-adopt.sh` copied `cwd:`/`opened_at:` forward verbatim, so a CRLF sentinel
+  (an ordinary `core.autocrlf` checkout artifact) put a bare CR into the Stop
+  hook's foreign-task report, where a terminal carriage-returns mid-line and eats
+  the operator's guidance. Gating was unaffected. Now stripped.
+- `ops-init.sh` scaffolded the ledger in any directory, including one that is not
+  a repository, reporting success either way — writing the evidence of record
+  somewhere nobody would merge or review. Now warns (never hard-fails; a non-git
+  project is unusual but legitimate) and writes `.operator/.gitignore` so lock
+  ephemera (`.lock/`, `.lock.reclaim/`, `.adopt.*`) can never be committed.
+
+### Added (audit guardrails)
+- `validate_plugin.py` gains `check_reader_bounds` and `check_guard_parity` —
+  the two cross-file couplings that were prose in `CLAUDE.md` and were violated
+  anyway. A missed byte bound, or a name guard applied to only one of the three
+  CLIs, now fails the build instead of a review. Both verified to fire on each
+  regression and to pass the clean tree. (The first version of the reader check
+  matched `read -r` inside comments and failed correct code — a checker that
+  flags its own documentation teaches people to ignore the build; fixed and
+  locked by a test.)
+- `tests/test-scripts.sh` cases 17–20, each written before its fix and confirmed
+  failing against the unfixed code (10 failures → 0).
+- `docs/PLAYBOOK.md` — decision procedures for adding a guard, adding a reader,
+  and touching the lock, each derived from a bug that actually happened here,
+  plus an explicit "what a green suite does NOT prove" table.
+
 ### Known limitations
+- **Time-based crash inference remains the lock's root weakness.** It cannot
+  distinguish a slow holder from a dead one; the fix above bounded the trigger,
+  not the mechanism. Writing the holder's PID into the lock and checking
+  `kill -0` before reclaiming would close it — deliberately deferred, since it
+  adds a stale-PID-reuse edge case and a second thing both lock implementations
+  must keep identical.
+- Reclaim exclusivity is verified by code review, not by the suite: reproducing
+  it needs two writers timing out simultaneously. The tests say so themselves.
+- `mkdir`/`O_EXCL` atomicity is assumed by both the lock and sentinel creation.
+  Untested on network filesystems.
+- bash 3.2 compatibility is load-bearing on macOS and validated only by local
+  dev; CI runs a modern bash.
 - `DECISIONS.md` gets the lock and `merge=union` but no fragments. It is a log,
   not the evidence of record; the fragment machinery exists to make verdict rows
   unloseable.
