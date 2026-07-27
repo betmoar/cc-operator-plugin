@@ -153,8 +153,10 @@ catches that. Never treat a green validator as evidence the gate works.
 ## Verifying a fix — the part that is usually skipped
 
 1. **Record the baseline before you change anything**, and report the delta
-   (`144 passed/0 failed → 160 passed/0 failed`). "No regressions" without a
-   recorded baseline is not a claim, it is a hope.
+   in that shape — e.g. `144 passed/0 failed → 160 passed/0 failed` (a real
+   delta from the 2026-07-27 audit; the suite has grown since, so take your own
+   baseline rather than trusting any number written down here). "No
+   regressions" without a recorded baseline is not a claim, it is a hope.
 2. **Write the test first and watch it fail.** A guardrail that passes before
    the fix guards nothing.
 3. **Then prove it discriminates**: revert the script, re-run, confirm the new

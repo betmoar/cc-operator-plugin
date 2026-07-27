@@ -40,6 +40,18 @@ and the maintainer's local `.archive/dev/` (untracked).
   `${CLAUDE_PLUGIN_ROOT}/scripts/ops-stop-hook.sh` — the hook runs *from the
   plugin root*. Different bases on purpose; do not "unify" them. Validator
   check 4 enforces the charter path.
+- **`scripts/statusline.sh` is a mirror of the gate, not a display of it**
+  (0.4.0). It re-implements `ops-stop-hook.sh`'s mine/foreign partition —
+  deliberately, because a count of `.operator/pending/` answers a different
+  question than "will my stop be blocked?" and is wrong in both directions.
+  That duplication is the coupling: change the partition rule or the sentinel
+  body in the hook and this must move with it, or the bar confidently describes
+  a gate that is not the one running. It reads `session_id` from the
+  statusline stdin payload (documented schema) and is otherwise a fourth
+  sentinel reader bound by the same PLAYBOOK rules — with the byte bound
+  mattering most, since it renders on a ~300ms timer. cc-status discovers it
+  only through `.claude-plugin/statusline.json` and skips an unresolvable
+  renderer **silently**, which is why `check_statusline` exists.
 
 ## If you touch X, update Y
 
@@ -256,8 +268,21 @@ guard applied to only one of the three CLIs fails the build.
 
 ## Provenance
 
-- `docs/spec/chief-operator-spec.md` — the design spec (D1–D6, the seams); the
-  charter's `[DOC:spec-*]` citation tags resolve to it. Read-only rationale.
+Everything under `docs/` is read-only rationale — why the code is shaped this
+way. None of it is loaded by the plugin at runtime; the validator reads only
+`templates/`, `scripts/`, `hooks/`, `agents/`, and the manifests.
+
+- `docs/spec/chief-operator-spec.md` — the original design spec (D1–D6, the
+  seams); the charter's `[DOC:spec-*]` citation tags resolve to it.
+- `docs/spec/concurrent-sessions.md` — the 0.4.0 design: the field report, the
+  ownership proposal, and `Implemented (0.4.0)` amendments recording where the
+  shipped code diverged from the proposal. Its line numbers are 0.3.0-relative
+  and say so. Also the honest register of what a green suite does **not** prove.
+- `docs/PLAYBOOK.md` — the executable procedures (adding a guard, adding a
+  reader, touching the lock), each derived from a bug that happened here.
+- `docs/audit-2026-07-27-{findings,handoff}.md` — the departing-architect audit:
+  five verified defects with repro evidence, the guardrails added, and the
+  residual-risk register. Its test counts are frozen at the audit's close.
 - Everything else (build plan + ledger, pilot runbook and findings, the prior
   project's evidence bundle) was removed from the tree in 0.3.0: see git
   history (tree ≤ v0.2.0) or the maintainer's local `.archive/dev/`.

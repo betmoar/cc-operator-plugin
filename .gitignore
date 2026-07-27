@@ -25,6 +25,11 @@ __pycache__/
 /AUDIT_STATE.md
 /AUDIT_LOG.md
 
+# Review-panel run reports (lens breakdown, finding counts, scoring). Same rule:
+# HOW a doc got reviewed is scaffolding; WHY the code is shaped that way belongs
+# in the doc itself. One was committed in 14d6ca9 and removed for 0.4.0.
+.review-panel/
+
 # Dogfooding /cc-operator:start in this repo materializes these at the root
 /.operator/
 /OPERATOR.md

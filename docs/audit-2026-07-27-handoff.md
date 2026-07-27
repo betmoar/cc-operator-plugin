@@ -43,9 +43,16 @@ failure, not a review responsibility.
 | F04 | P3 | `ops-adopt.sh` strips trailing `\r` from copied-forward fields | No CR reaches the operator's report line |
 | F05 | P3 | `ops-init.sh` warns when cwd is not a repo / not the repo root; writes `.operator/.gitignore` for lock ephemera | Warning asserted; ephemera ignored |
 
-**Baseline → delta:** bash `144 passed / 0 failed` → **`160 passed / 0 failed`**
-(+16 assertions, cases 17–20). Python `30` → **`35`**. shellcheck clean,
-`validate_plugin.py` clean, `release_gate.py v0.4.0` OK.
+**Baseline → delta (this audit):** bash `144 passed / 0 failed` →
+**`160 passed / 0 failed`** (+16 assertions, cases 17–20). Python `30` →
+**`35`**. shellcheck clean, `validate_plugin.py` clean, `release_gate.py
+v0.4.0` OK.
+
+> Those are the audit's own numbers, frozen at its close. Later work on the
+> same branch (the lock's PID liveness, the statusline segment) moved the
+> totals to bash **192** / python **44**. Do not read the figures above as the
+> current suite size — read them as this audit's delta. The live total is
+> whatever `bash tests/test-scripts.sh` prints today.
 
 ## Guardrails added (they fail the build, not a review)
 
@@ -98,8 +105,12 @@ validator as evidence the gate works.
 3. **bash 3.2 in CI** — the compatibility contract is real, load-bearing, and
    currently validated only by whoever runs the suite on a Mac.
 4. **`capture_baseline.sh` does not detect this repo's suites** — it reported
-   `NO SUITE` for a repo with 160 bash assertions and 35 python tests, so the
-   baseline had to be taken by hand. Fix the detector or add a manifest.
+   `NO SUITE` for a repo that had 160 bash assertions and 35 python tests at
+   the time, so the baseline had to be taken by hand. **Not actionable from
+   this repo:** that script belongs to the `principal-architect-audit` skill
+   (`~/.claude/skills/principal-architect-audit/scripts/`), not to cc-operator.
+   Recorded here so the next audit of this repo expects the manual step; fix it
+   in the skill.
 5. **`--reconcile` admits divergent-evidence duplicates** — dedup is by exact
    line, so one task id with two different evidence cells yields two rows.
    Known, documented in the spec.

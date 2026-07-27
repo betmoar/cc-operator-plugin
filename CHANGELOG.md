@@ -301,14 +301,18 @@ in `docs/audit-2026-07-27-handoff.md`; procedure in the new `docs/PLAYBOOK.md`.
   plus an explicit "what a green suite does NOT prove" table.
 
 ### Known limitations
-- **Time-based crash inference remains the lock's root weakness.** It cannot
-  distinguish a slow holder from a dead one; the fix above bounded the trigger,
-  not the mechanism. Writing the holder's PID into the lock and checking
-  `kill -0` before reclaiming would close it — deliberately deferred, since it
-  adds a stale-PID-reuse edge case and a second thing both lock implementations
-  must keep identical.
-- Reclaim exclusivity is verified by code review, not by the suite: reproducing
-  it needs two writers timing out simultaneously. The tests say so themselves.
+- **A slow holder still loses mutual exclusion — but is no longer presumed
+  dead.** Time-based crash inference was the lock's root weakness and was
+  removed before release (see the `kill -0` entry under Fixed): a live holder
+  is never reclaimed. What remains is milder and deliberate — past
+  `LOCK_LIVE_SPINS` (60s) a waiter proceeds *unlocked* rather than stealing a
+  running writer's lock. Blocking indefinitely would trade a rare correctness
+  gap for a hang.
+- Reclaim exclusivity has no timing-based test, and this was **measured, not
+  skipped**: six approaches against a deliberately naive copy all read 0/N
+  (P ≈ 1e-5). It is instead guaranteed structurally — a held lock is stamped,
+  a stamped directory is non-empty, and `rmdir` refuses those — which the suite
+  asserts deterministically and which mutation-testing confirms discriminates.
 - `mkdir`/`O_EXCL` atomicity is assumed by both the lock and sentinel creation.
   Untested on network filesystems.
 - bash 3.2 compatibility is load-bearing on macOS and validated only by local
