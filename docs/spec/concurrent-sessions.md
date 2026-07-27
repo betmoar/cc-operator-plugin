@@ -234,8 +234,12 @@ frequent*.
 >   silently reintroduce the worktree-collision shape.
 > - *`DECISIONS.md merge=union`.* Written by `ops-init.sh`, asserted by nothing.
 > - *A real SessionStart payload carries `cwd`, and `additionalContext` reaches the model.* Criterion
->   1 depends on this end-to-end — the agent must learn its own id to pass `--owner` — and it is
->   verified live, never in CI.
+>   1 depends on this end-to-end — the agent must learn its own id to pass `--owner` — and it can only
+>   be verified live, never in CI. **Verified live 2026-07-27** on a `/clear`: the banner naming this
+>   session's own id appeared in the rehydrated context. The negative half came free and is the part
+>   that gives it teeth — an earlier start in the same tree, before `.operator/` existed, emitted
+>   nothing, because the hook gates on `[ -d "$cwd/.operator" ]` and so must have received a usable
+>   `cwd`. Re-verify the same way after touching either hook.
 >
 > **Known gaps not addressed by this note.** Recorded so they are not rediscovered as surprises:
 > - A session whose payload `cwd` is a *subdirectory* of the project finds no `.operator/` there and

@@ -78,7 +78,7 @@ validator as evidence the gate works.
 | The two-reclaimer race has no discriminating test | **Not deferred — measured as unreachable.** Six approaches vs. a naive copy all read 0/N; P(collision) ≈ 1e-5. | Nothing short of an injection point inside `lock_acquire`. The structural `rmdir`-refuses-non-empty assertion replaces it. |
 | `mkdir`/`O_EXCL` atomicity on network filesystems | The lock and sentinel creation both assume POSIX atomicity. Untested on NFS. | Test on an NFS mount, or document the platform constraint. |
 | bash 3.2 compatibility | The `${ARR+"${ARR[@]}"}` idiom is load-bearing on macOS; CI runs modern bash. | A CI matrix entry running `/bin/bash` 3.2. |
-| SessionStart `additionalContext` reaching the model | End-to-end, unverifiable in CI. Criterion 1 of the spec depends on it. | A live two-session check. |
+| ~~SessionStart `additionalContext` reaching the model~~ | **Closed 2026-07-27 by live check.** A `/clear` in this tree put the id banner in the rehydrated context; a start before `.operator/` existed emitted nothing, which also proves the payload `cwd` was usable (the hook gates on it). Still unverifiable in CI — re-check live after touching either hook. | Done. |
 | The gate is opt-in | Nothing forces a sentinel to be opened. Documented limitation since 0.3.0. | Out of scope; a design change, not a bug. |
 
 ## Backlog, prioritized
