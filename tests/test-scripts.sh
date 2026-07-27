@@ -453,5 +453,74 @@ check "--reconcile did not inject the MAYBE verdict" "$(! grep -q 'T-INJ' "$P/.o
 rm -rf "$P"
 
 ########################################################################
+echo "-- Case 13: the sentinel BODY is untrusted input"
+# INVARIANT: a sentinel is an ordinary file — a merge, a checkout, or a patch
+# can supply its contents. The stamped owner becomes a fragment FILENAME, so an
+# unvalidated one re-opens the 2026-07-10 traversal through a new door. Found in
+# review of 0.4.0: `session_id: ../../../tmp/x` appended a real ledger row to
+# /tmp/x.md. Every degenerate body must degrade to unowned, which fails CLOSED.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+# Escape exactly one level out of .operator/ — the invariant CLAUDE.md states
+# ("must not reach outside .operator/"). Fragments are written to
+# .operator/verdicts.d/, so '../../PWNED' lands in the project root. A deeper
+# absolute-ish path would "pass" for the wrong reason (nonexistent intermediate
+# dirs), which is exactly how a non-discriminating test looks.
+printf 'session_id: ../../PWNED\n' > "$P/.operator/pending/T-EVIL"
+( cd "$P" && bash "$VERDICT" T-EVIL "crit" "ev" PASS >/dev/null 2>&1 ) || true
+check "traversal via sentinel body writes nothing outside .operator/" "$([ ! -e "$P/PWNED.md" ] && echo 0 || echo 1)"
+check "traversal owner degrades to unowned (row still recorded inside)" "$([ -f "$P/.operator/verdicts.d/unowned.md" ] && echo 0 || echo 1)"
+# CRLF: a checkout could normalize line endings. A trailing \r must NOT make a
+# session's own task look foreign — that is a fail-OPEN in the core invariant.
+rm -f "$P"/.operator/pending/*
+printf 'session_id: SESS-A\r\ncwd: /x\n' > "$P/.operator/pending/T-CR"
+run_hook stop-session-a.json "$P"
+check "CRLF sentinel still blocks its OWN session (no fail-open)" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+( cd "$P" && bash "$VERDICT" T-CR "crit" "ev" PASS --owner SESS-A >/dev/null 2>&1 ); CRRC=$?
+check "CRLF sentinel: the true owner can still close it" "$([ "$CRRC" -eq 0 ] && echo 0 || echo 1)"
+# degenerate bodies → unowned → blocks everyone (fail closed)
+for body in 'session_id: ' 'session_id: a|b' 'session_id: .hidden' 'garbage'; do
+  rm -f "$P"/.operator/pending/*
+  printf '%s\n' "$body" > "$P/.operator/pending/T-DEG"
+  run_hook stop-session-b.json "$P"
+  check "degenerate body [$body] fails CLOSED (exit 2)" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+done
+# a directory in pending/ must not be read as a sentinel nor emit a raw error
+rm -rf "$P"/.operator/pending/*
+mkdir -p "$P/.operator/pending/T-DIR"
+run_hook stop-session-a.json "$P"
+check "a directory in pending/ emits no raw bash read error" "$(! printf '%s' "$HERR" | grep -qi 'read error' && echo 0 || echo 1)"
+rm -rf "$P/.operator/pending/T-DIR"
+# an unbounded sentinel must not stall every session's turn-end
+rm -f "$P"/.operator/pending/*
+{ i=0; while [ "$i" -lt 60000 ]; do printf 'filler line\n'; i=$((i+1)); done; } > "$P/.operator/pending/T-BIG"
+SECS_START=$(date +%s)
+run_hook stop-session-a.json "$P"
+SECS_END=$(date +%s)
+check "huge sentinel parsed in bounded time (<5s)" "$([ "$((SECS_END - SECS_START))" -lt 5 ] && echo 0 || echo 1)"
+check "huge sentinel (no owner line) still blocks" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+rm -rf "$P"
+
+########################################################################
+echo "-- Case 14: adopt is crash-safe and cannot resurrect a closed task"
+# The temp file must live OUTSIDE pending/: the Stop hook globs that directory
+# and treats every entry as a task id, so a crashed adopt would leave a phantom
+# pending task that blocks the session and can be closed as a garbage row.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+( cd "$P" && bash "$TASK" T-A --owner SESS-A >/dev/null 2>&1 )
+( cd "$P" && bash "$ADOPT" --owner SESS-B T-A >/dev/null 2>&1 )
+PENDN=0
+shopt -s nullglob; for _f in "$P"/.operator/pending/*; do PENDN=$((PENDN+1)); done; shopt -u nullglob
+check "adopt leaves exactly one file in pending/ (no temp residue)" "$([ "$PENDN" = "1" ] && echo 0 || echo 1)"
+ADOPT_RESIDUE=0
+shopt -s nullglob; for _f in "$P"/.operator/pending/*adopt*; do ADOPT_RESIDUE=1; done; shopt -u nullglob
+check "adopt leaves no .adopt temp inside pending/" "$([ "$ADOPT_RESIDUE" = "0" ] && echo 0 || echo 1)"
+# a stale temp from a crashed adopt must not read as a pending task
+: > "$P/.operator/.adopt.9999.T-A"
+run_hook stop-session-b.json "$P"
+check "a crashed adopt's temp is not a phantom pending task" "$(! printf '%s' "$HERR" | grep -q 'adopt' && echo 0 || echo 1)"
+rm -f "$P/.operator/.adopt.9999.T-A"
+rm -rf "$P"
+
+########################################################################
 echo "== summary: $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]

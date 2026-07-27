@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # ops-verdict.sh — the SINGLE writer to .operator/VERDICTS.md (and the defer
-# path to .operator/DECISIONS.md). Append + fragment + sentinel-clear run under
-# a mkdir-based lock, so the append is atomic against concurrent sessions —
-# not merely append-only.
+# path to .operator/DECISIONS.md). Fragment + append + sentinel-clear run under
+# a mkdir-based lock, so writes are mutually exclusive against concurrent
+# sessions — not merely append-only.
+#
+# The one gap, stated honestly: after LOCK_SPINS the holder is presumed crashed
+# and the lock is reclaimed. A live writer that genuinely runs longer than that
+# would be overrun. The budget is set well above the slowest real critical
+# section (a full --reconcile, which is a single pass, not a grep per row).
 #
 # Verdict:  ops-verdict.sh <task-id> <criterion> <evidence> <PASS|FAIL> [--owner <sid>]
 #   Appends exactly one row and clears .operator/pending/<task-id>.
@@ -62,30 +67,66 @@ check_bare_name() { # check_bare_name <label> <value>
 # --- lock: mkdir is atomic on every POSIX FS; flock(1) is absent on macOS -----
 # A stale lock must never cost a real verdict, so we spin briefly and then
 # proceed with a warning rather than failing.
+# Timeout is generous because a legitimate --reconcile over a large ledger can
+# hold the lock for seconds; a budget shorter than a real writer would make
+# every contended write take the unlocked path against a LIVE writer, which is
+# the opposite of the guarantee. On timeout we RECLAIM the lock rather than
+# merely ignoring it: the trap does not cover SIGKILL, so without reclamation a
+# hard-killed writer would leave every later write paying the full timeout and
+# warning, forever, while still not being mutually exclusive.
+LOCK_SPINS=300   # × 0.1s = 30s
 lock_acquire() {
   local i=0
   while ! mkdir "$LOCKDIR" 2>/dev/null; do
     i=$((i+1))
-    if [ "$i" -ge 50 ]; then
-      echo "ops-verdict: warning — lock $LOCKDIR held for >5s; proceeding unlocked" >&2
-      return 0
+    if [ "$i" -ge "$LOCK_SPINS" ]; then
+      echo "ops-verdict: warning — lock $LOCKDIR held >$((LOCK_SPINS / 10))s; assuming a crashed writer and reclaiming it" >&2
+      rmdir "$LOCKDIR" 2>/dev/null || true
+      mkdir "$LOCKDIR" 2>/dev/null || {
+        echo "ops-verdict: warning — could not reclaim $LOCKDIR; proceeding unlocked" >&2
+        return 0
+      }
+      break
     fi
     sleep 0.1
   done
   LOCK_HELD=1
-  trap 'lock_release' EXIT INT TERM
+  trap 'lock_release' EXIT
+  # A signal handler that only releases would let bash RESUME the critical
+  # section with the lock already gone. Release and exit.
+  trap 'lock_release; exit 130' INT
+  trap 'lock_release; exit 143' TERM
 }
 lock_release() {
   if [ "${LOCK_HELD:-0}" = "1" ]; then rmdir "$LOCKDIR" 2>/dev/null || true; LOCK_HELD=0; fi
 }
 
 # --- sentinel ownership ------------------------------------------------------
-sentinel_owner() { # sentinel_owner <id> → stamped session_id ("" if none)
-  local f="$OPDIR/pending/$1" line
+# The sentinel BODY is untrusted input: it is an ordinary file that a merge, a
+# checkout, or a hand-edit can supply, and it is not written only by our CLIs.
+# A stamped owner becomes a fragment FILENAME, so an unvalidated one re-opens
+# the 2026-07-10 traversal through a new door (`session_id: ../../../tmp/x`
+# appended a real ledger row to /tmp/x.md — found in review of this branch).
+# Sanitize at the parser, not at each call site: every consumer is then covered
+# by construction. A malformed owner degrades to "" = unowned, which fails
+# CLOSED (blocks everyone) — the safe direction.
+sentinel_owner() { # sentinel_owner <id> → stamped session_id ("" if none/invalid)
+  local f="$OPDIR/pending/$1" line owner="" n=0
   [ -f "$f" ] || return 0
   while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in "session_id: "*) printf '%s' "${line#session_id: }"; return 0 ;; esac
+    n=$((n+1)); [ "$n" -le 20 ] || break   # owner is line 1 by construction
+    case "$line" in
+      "session_id: "*) owner="${line#session_id: }"; break ;;
+    esac
   done < "$f"
+  # A CRLF checkout would otherwise leave a trailing \r, making a session's OWN
+  # task compare unequal to its id — a fail-OPEN in the central invariant.
+  owner="${owner%$'\r'}"
+  owner="${owner%"${owner##*[![:space:]]}"}"
+  case "$owner" in
+    "" | */* | .* | *"|"* ) return 0 ;;    # unusable → unowned → fails closed
+  esac
+  printf '%s' "$owner"
 }
 
 append_fragment() { # append_fragment <owner-or-empty> <row>
@@ -100,6 +141,14 @@ if [ "${1:-}" = "--reconcile" ]; then
   lock_acquire
   added=0
   skipped=0
+  # Collect candidate rows first, then diff against the ledger in ONE pass.
+  # The obvious `grep -Fxq` per fragment row is O(rows × ledger) and shells out
+  # per row — measured ~7s for a 3000-row ledger, which would exceed any sane
+  # lock budget and push concurrent writers onto the unlocked path, the lock's
+  # guarantee evaporating exactly when it matters. Associative arrays would be
+  # the other fix, but macOS /bin/bash is 3.2 and has none.
+  CAND="$(mktemp "${TMPDIR:-/tmp}/opsrec.XXXXXX")"
+  trap 'lock_release; rm -f "$CAND"' EXIT
   if [ -d "$FRAGDIR" ]; then
     for frag in "$FRAGDIR"/*.md; do
       [ -f "$frag" ] || continue
@@ -114,13 +163,20 @@ if [ "${1:-}" = "--reconcile" ]; then
           *) echo "ops-verdict: skipping non-conformant line in ${frag##*/}: $row" >&2
              skipped=$((skipped+1)); continue ;;
         esac
-        if ! grep -Fxq -- "$row" "$VERDICTS"; then
-          printf '%s\n' "$row" >> "$VERDICTS"
-          added=$((added+1))
-        fi
+        printf '%s\n' "$row" >> "$CAND"
       done < "$frag"
     done
   fi
+  if [ -s "$CAND" ]; then
+    # -F -x -v -f: keep candidate lines NOT present verbatim in the ledger.
+    # Sorted -u so a row duplicated across fragments is added once.
+    MISSING="$(grep -Fxv -f "$VERDICTS" -- "$CAND" 2>/dev/null | sort -u || true)"
+    if [ -n "$MISSING" ]; then
+      printf '%s\n' "$MISSING" >> "$VERDICTS"
+      added="$(printf '%s\n' "$MISSING" | wc -l | tr -d ' ')"
+    fi
+  fi
+  rm -f "$CAND"
   lock_release
   if [ "$skipped" -gt 0 ]; then
     echo "reconciled: $added row(s) restored to $VERDICTS from $FRAGDIR/ ($skipped non-conformant line(s) skipped — see stderr)"
@@ -205,8 +261,14 @@ esac
 
 ROW="$(printf '| %s | %s | %s | %s |' "$ID" "$CRITERION" "$EVIDENCE" "$VERDICT")"
 lock_acquire
-printf '%s\n' "$ROW" >> "$VERDICTS"
+# Fragment FIRST. Under `set -e` a failed write aborts the script, so the order
+# decides what a partial failure leaves behind: a fragment without a ledger row
+# is repaired by --reconcile and a duplicate fragment row is deduped there, but
+# a ledger row without its fragment is silently un-repairable, and a retry after
+# the abort would double the ledger row. Sentinel-clear stays last so a failure
+# anywhere above leaves the task OPEN — the gate holds.
 append_fragment "$FRAG_OWNER" "$ROW"
+printf '%s\n' "$ROW" >> "$VERDICTS"
 clear_sentinel
 lock_release
 echo "recorded $ID = $VERDICT (row appended, sentinel cleared)"

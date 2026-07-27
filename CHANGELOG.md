@@ -77,6 +77,45 @@ and design: `docs/spec/concurrent-sessions.md`.
 - A repeated `--owner` silently took the last value. All three CLIs now refuse
   it: a duplicated flag means the caller is confused about ownership, which is
   the one thing this mechanism must not guess at.
+- **The 2026-07-10 path traversal, reopened through the sentinel body.**
+  `--owner` was validated, but the owner *parsed out of a sentinel* was not —
+  and it becomes a fragment filename. A sentinel reading
+  `session_id: ../../PWNED`, closed without `--owner` (the warn-and-proceed
+  path kept for `/clear`'d sessions), appended a real ledger row outside
+  `.operator/`. Reproduced before fixing. Sentinel bodies are untrusted input:
+  they are ordinary files a merge, checkout, or patch can supply. Both
+  `sentinel_owner` parsers now sanitize at the parser rather than at each call
+  site, and an unusable owner degrades to unowned — which fails closed.
+- **A CRLF sentinel was a fail-open in the central invariant.** A trailing `\r`
+  (a checkout can introduce one) made a session's own id compare unequal, so
+  its own task was classified foreign and the stop was waved through. Both
+  parsers now strip trailing `\r`/whitespace.
+- **The Stop hook could stall every session's turn-end.** It read whole
+  sentinel files; a 2 MB one cost ~10s on every Stop event in the tree, and a
+  directory in `pending/` emitted a raw bash read error *as operator guidance*.
+  The parse is now capped at 20 lines (the owner is line 1 by construction) and
+  the enumeration requires a regular file.
+- **`ops-adopt.sh` wrote its temp file inside `pending/`**, which the Stop hook
+  globs — so a crashed adopt left a phantom pending task that blocked the
+  session and could be closed into the ledger as a garbage row. It also had a
+  TOCTOU: if the owner closed the task mid-adopt, `mv` resurrected a sentinel
+  for a task that already had a verdict. Temp moved out of `pending/`, and the
+  sentinel is re-checked immediately before `mv`.
+- **A stale lock was permanent and never reclaimed.** The trap does not cover
+  `SIGKILL`, and the timeout branch only *ignored* the lock, so after one hard
+  kill every later write paid the full timeout, warned, and was not mutually
+  exclusive anyway. The lock is now reclaimed on timeout. The budget also rose
+  to 30s because a legitimate large `--reconcile` could outlast the old 5s and
+  push real writers onto the unlocked path — the guarantee evaporating exactly
+  when it mattered. `--reconcile` itself went from O(rows × ledger) with a
+  `grep` per row to a single pass: measured 7s → 0s at 3000 rows.
+- The `INT`/`TERM` handler released the lock but let bash *resume* the critical
+  section; it now exits. The verdict path writes the fragment before the ledger
+  row, so a partial failure leaves a repairable state rather than an
+  un-repairable ledger row plus a duplicate on retry.
+- `ops-adopt.sh` used `"${IDS[@]}"` on a possibly-empty array, which is an
+  unbound-variable error on macOS's bash 3.2 under `set -u`. Uses the same
+  `${IDS+"${IDS[@]}"}` guard as `ops-verdict.sh`.
 
 ### Known limitations
 - `DECISIONS.md` gets the lock and `merge=union` but no fragments. It is a log,

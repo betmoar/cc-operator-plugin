@@ -47,16 +47,19 @@ done
 
 [ -n "$OWNER" ] || die "missing --owner (usage: ops-adopt.sh --owner <sid> <task-id>...)"
 check_bare_name "owner" "$OWNER"
+# ${IDS+"${IDS[@]}"} throughout: on macOS /bin/bash 3.2, "${EMPTY[@]}" under
+# `set -u` is an unbound-variable error, not an empty list. Same idiom as
+# ops-verdict.sh's POS array. Do not rely on the length check below to mask it.
 [ "${#IDS[@]}" -gt 0 ] || die "name at least one task-id — there is no bulk adopt"
 [ -d "$OPDIR" ] || die "no $OPDIR/ in cwd — run ops-init.sh first"
 
-for ID in "${IDS[@]}"; do
+for ID in ${IDS+"${IDS[@]}"}; do
   check_bare_name "task-id" "$ID"
   F="$OPDIR/pending/$ID"
   [ -f "$F" ] || die "no open task '$ID' (no sentinel at $F)"
 done
 
-for ID in "${IDS[@]}"; do
+for ID in ${IDS+"${IDS[@]}"}; do
   F="$OPDIR/pending/$ID"
   PREV=""
   OPENED=""
@@ -71,13 +74,26 @@ for ID in "${IDS[@]}"; do
 
   # Rewrite via a temp file + mv so a crash mid-write cannot leave a sentinel
   # that parses as unowned (which would silently widen the block to everyone).
-  TMP="$F.adopt.$$"
+  #
+  # The temp file lives OUTSIDE pending/: the Stop hook globs that directory and
+  # treats every entry as a task id, so a crashed adopt would leave a phantom
+  # pending task ("T-1.adopt.4242") that blocks the session and can be closed
+  # into the ledger as a garbage row. Found in review of this branch.
+  TMP="$OPDIR/.adopt.$$.$ID"
   {
     printf 'session_id: %s\n' "$OWNER"
     if [ -n "$CWDLINE" ]; then printf '%s\n' "$CWDLINE"; else printf 'cwd: %s\n' "$PWD"; fi
     if [ -n "$OPENED" ]; then printf '%s\n' "$OPENED"; fi
     printf 'adopted_at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "$TMP"
+  # Re-check under the same name we verified above: if the owner legitimately
+  # CLOSED the task while we were writing, mv would resurrect a sentinel for a
+  # task that already has a verdict row — the exact ledger-damaging trap this
+  # branch exists to remove. Narrower than a lock, and adopt is not the writer.
+  if [ ! -f "$F" ]; then
+    rm -f "$TMP"
+    die "task '$ID' was closed while adopting — not resurrecting its sentinel"
+  fi
   mv "$TMP" "$F"
 
   echo "adopted $ID: ${PREV:-<unowned>} -> $OWNER"

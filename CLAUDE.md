@@ -52,6 +52,7 @@ and the maintainer's local `.archive/dev/` (untracked).
 | the `.operator/bin` install set in `ops-init.sh` | update the charter's EVIDENCE GATE paths, the stop-hook fallback message, `tests/test-scripts.sh` case 6, and `validate_plugin.CHARTER_REQUIRED_CLIS` + `check_scripts` |
 | the sentinel body format (`session_id:` line) | update `ops-task.sh`, `ops-adopt.sh`, both parsers (`ops-verdict.sh:sentinel_owner`, `ops-stop-hook.sh:sentinel_owner` — the latter **must** stay builtin-only), and `tests/test-scripts.sh` cases 8–10 |
 | the fragment/lock scheme in `ops-verdict.sh` | update `ops-init.sh` (`verdicts.d/`, `.gitattributes`), the README evidence-gate section, and `tests/test-scripts.sh` case 11 |
+| the `check_bare_name` reject set in any CLI | update the other two CLIs **and** the `case` filter in both `sentinel_owner` parsers — the hook must reject what the writers reject, or a body our CLIs could never have written reads as a valid foreign owner and the gate opens (`tests/test-scripts.sh` cases 12–13) |
 | `plugin.json` `version` | add the matching `## [x.y.z]` as the newest heading in `CHANGELOG.md`, same commit (the release gate fails otherwise) |
 | the Stop-hook command in `hooks.json` | keep `ops-stop-hook.sh` + `${CLAUDE_PLUGIN_ROOT}` (validator check 7) |
 | an agent's model/tools/NEEDS_CONTEXT | keep it project-agnostic — no `unknowns-harness`/`F1..F13` — and keep `model:` a tier alias (`opus`/`sonnet`/`haiku`), never a pinned ID (validator check 6) |
@@ -87,6 +88,29 @@ and the maintainer's local `.archive/dev/` (untracked).
   real **SessionStart payload carries `cwd`** and its `additionalContext`
   actually reaches the model — was proven manually, not in CI. A green CI is
   necessary, not sufficient, for the gate; re-verify live after changing a hook.
+- **The sentinel BODY is untrusted input.** It is an ordinary file: a merge, a
+  checkout, or a patch can supply it, and `.operator/pending/` is not
+  gitignored. The stamped owner becomes a fragment *filename*, so an
+  unvalidated one reopened the 2026-07-10 traversal through a new door —
+  `session_id: ../../PWNED` appended a real ledger row outside `.operator/`
+  (found in review of 0.4.0, reproduced, fixed before release). Both
+  `sentinel_owner` parsers sanitize **at the parser**, never at the call site,
+  so every consumer is covered by construction; an unusable owner degrades to
+  `""` = unowned = blocks everyone. Any new reader of that file must do the
+  same. Related: strip trailing `\r` — a CRLF checkout otherwise makes a
+  session's own id compare unequal and its own task get waved through as
+  foreign, a fail-OPEN in the central invariant.
+- **Anything the Stop hook reads must be bounded.** It fires on *every*
+  session's Stop event, so an unbounded read is the same class of hazard as a
+  missing binary: a 2 MB sentinel cost ~10s per turn-end tree-wide. The parse
+  stops at 20 lines (the owner is line 1 by construction) and the enumeration
+  requires `-f` — a directory in `pending/` otherwise emitted a raw bash error
+  *as operator guidance*.
+- **Nothing but sentinels may live in `.operator/pending/`.** The hook globs
+  that directory and treats every entry as a task id. `ops-adopt.sh` originally
+  wrote its temp file there, so a crashed adopt left a phantom pending task
+  that blocked the session and could be closed into the ledger as a garbage
+  row. Temps go in `.operator/`, never `pending/`.
 - **A sentinel the Stop hook cannot SEE is worse than no sentinel.** The hook
   enumerates `pending/` with a plain glob, which does not match dotfiles — so a
   `.hidden` task-id created an open task that never blocked (found in review of

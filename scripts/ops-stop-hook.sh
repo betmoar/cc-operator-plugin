@@ -81,14 +81,36 @@ opdir="$cwd/.operator"
 [ -d "$opdir" ] || exit 0
 
 # --- read a sentinel's stamped owner (builtins only; no grep/sed) ------------
-# "" when the file has no session_id line — including a pre-0.4 empty sentinel.
+# "" when the file has no usable session_id line — including a pre-0.4 empty
+# sentinel. "" means unowned, which BLOCKS every session: the safe direction,
+# so every degenerate body (unreadable, malformed, binary) fails closed.
+#
+# Two guards worth keeping:
+#  - trailing \r/whitespace is stripped. A CRLF checkout would otherwise make a
+#    session's OWN task compare unequal to its id and be waved through as
+#    foreign — a fail-OPEN in the central invariant.
+#  - the scan stops after 20 lines. This runs on EVERY session's Stop event, so
+#    an unbounded read of a 2 MB file (or a directory named into pending/)
+#    stalls every turn-end in the tree. The owner is line 1 by construction.
 sentinel_owner() { # sentinel_owner <path>
-  local line
+  local line owner="" n=0
+  [ -f "$1" ] || return 0
   while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n+1)); [ "$n" -le 20 ] || break
     case "$line" in
-      "session_id: "*) printf '%s' "${line#session_id: }"; return 0 ;;
+      "session_id: "*) owner="${line#session_id: }"; break ;;
     esac
-  done < "$1"
+  done < "$1" 2>/dev/null
+  owner="${owner%$'\r'}"
+  owner="${owner%"${owner##*[![:space:]]}"}"
+  # An owner our CLIs could never have written is not a trustworthy claim of
+  # ownership — treat it as unowned so it BLOCKS, rather than as a foreign
+  # session's task which would wave the stop through. Must mirror the same
+  # rejects as check_bare_name in the three CLIs.
+  case "$owner" in
+    */* | .* | *"|"*) owner="" ;;
+  esac
+  printf '%s' "$owner"
 }
 
 # --- enumerate pending sentinels (builtin glob; no `find` dependency) --------
@@ -99,7 +121,9 @@ foreign=""
 foreign_n=0
 shopt -s nullglob
 for f in "$opdir/pending"/*; do
-  [ -e "$f" ] || continue
+  # -f, not -e: a directory named into pending/ would otherwise be read as a
+  # sentinel and emit a raw bash error as operator guidance.
+  [ -f "$f" ] || continue
   id="${f##*/}"
   owner="$(sentinel_owner "$f")"
   if [ -n "$owner" ] && [ -n "$session" ] && [ "$owner" != "$session" ]; then
