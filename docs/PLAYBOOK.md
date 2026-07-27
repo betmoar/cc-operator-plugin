@@ -93,18 +93,19 @@ delimited by `# >>> LOCK BLOCK` / `# <<< LOCK BLOCK`.
    its waiters do give up and proceed *unlocked* — the milder failure, still a
    failure. Before adding work under the lock, ask: what is the worst-case
    wall-clock? Slow `--reconcile` runs caused this twice.
-4. **Crash detection asks the kernel, not the clock** (0.5.0, was the root
-   weakness behind F03). The holder writes `host uid pid` to `.lock/holder`;
+4. **Crash detection asks the kernel, not the clock** (was the root weakness
+   behind F03). The holder writes `host uid pid` to `.lock/holder`;
    waiters `kill -0` it. Three outcomes, and all three matter:
-   - **dead** → reclaim at once (0.4.0 made every waiter behind a crashed
+   - **dead** → reclaim at once (the timed draft made every waiter behind a crashed
      holder sit out the full 30s budget; measured 34s).
    - **alive** → *never* reclaim, however long it runs. Wait, then proceed
      unlocked. Stealing a running writer's lock is the bug this replaced.
    - **unjudgeable** → fall back to the timed budget unchanged. Not a leftover:
      `kill -0` across uids fails with EPERM, indistinguishable from "dead", so
      judging a foreign uid would reclaim a LIVE lock. Only our own host+uid are
-     judgeable; a pre-0.5 stampless lock lands here too, which is the migration
-     path.
+     judgeable. This branch is reached constantly: `mkdir` and the stamp are not
+     one atomic step, so a lock is briefly held-but-unstamped and a waiter
+     spinning through that window sees no record.
 5. **Do not remove the stamp to "simplify".** A stamped `.lock/` is non-empty,
    and `rmdir` refuses non-empty directories — that is what actually stops a
    second reclaimer from stepping onto a fresh lock, deterministically, where

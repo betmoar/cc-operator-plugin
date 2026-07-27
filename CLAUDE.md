@@ -200,18 +200,22 @@ guard applied to only one of the three CLIs fails the build.
   enforced by `validate_plugin.check_lock_parity` over the `# >>> LOCK BLOCK`
   markers, because "keep them identical" as prose is exactly the kind of
   coupling that rots (it is the same lesson as `check_reader_bounds`).
-- **Never infer a crash from elapsed time when you can ask the kernel** (0.5.0).
-  0.4.0 presumed any holder over budget dead, which cannot distinguish a slow
-  writer from a dead one — a `--reconcile` that ran long had its lock reclaimed
+- **Never infer a crash from elapsed time when you can ask the kernel.** The
+  first draft of the lock presumed any holder over budget dead, which cannot
+  distinguish a slow writer from a dead one — a `--reconcile` that ran long had
+  its lock reclaimed
   *while still inside the critical section* (audit F03; reproduced directly:
   a live 30s holder got "assuming a crashed writer and reclaiming it"). F03
-  bounded the trigger; 0.5.0 removed the inference. The holder stamps
+  bounded the trigger; this removed the inference. The holder stamps
   `host uid pid` into `.lock/holder` and waiters run `kill -0`: dead → reclaim
-  at once (0.4.0 made them wait out the full 30s — measured 34s), **alive →
+  at once (the draft made them wait out the full 30s — measured 34s), **alive →
   never reclaim**, unjudgeable → fall back to the old timed path. The third
   branch is load-bearing: `kill -0` on another user's process fails with EPERM,
   which reads exactly like "dead", so judging a foreign uid would reclaim a LIVE
-  lock — the fail-OPEN direction. Only our own host+uid are judgeable.
+  lock — the fail-OPEN direction. Only our own host+uid are judgeable. The
+  unjudgeable branch is hot, not a compatibility path: `mkdir` and the stamp are
+  not one atomic step, so every lock is briefly held-but-unstamped (400/400
+  samples) and a waiter landing there must not judge it.
 - **The stamp is also what makes the lock un-stealable, and that is not
   incidental.** A stamped `.lock/` is a *non-empty* directory, and `rmdir`
   refuses those — so a reclaimer cannot remove a lock a healthy process has

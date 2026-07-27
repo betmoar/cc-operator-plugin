@@ -1,6 +1,6 @@
 {
   "name": "cc-operator",
-  "version": "0.5.0",
+  "version": "0.4.0",
   "description": "Chief-operator charter for Claude Code sessions \u2014 materializes an operating charter (solo + orchestrated modes), an append-only evidence ledger, and a Stop-hook completion gate into a project via /cc-operator:start.",
   "author": {
     "name": "betmoar"

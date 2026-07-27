@@ -89,35 +89,41 @@ FRAG_MAX_BYTES=8388608
 # mkdir is atomic on every POSIX FS; flock(1) is absent on macOS.
 #
 # A stale lock must never cost a real verdict, so a waiter degrades rather than
-# failing. But "stale" is a judgement, and how it is made is the whole design:
+# failing. But "stale" is a judgement, and how it is made is the whole design.
 #
-# 0.4.0 inferred it from ELAPSED TIME — hold the lock longer than the budget and
-# you were presumed crashed. That cannot distinguish a slow holder from a dead
-# one, and the difference is not academic: a --reconcile over a large ledger
-# genuinely ran past the budget, a concurrent writer reclaimed its lock, and both
-# sat inside the critical section (audit F03). F03 bounded the TRIGGER by
-# capping fragment size; it left the inference in place. Reproduced directly
-# before this change: a live writer holding the lock 30s got the message
-# "assuming a crashed writer and reclaiming it" while still running.
+# The first draft of this lock (earlier on this branch, never released) inferred
+# it from ELAPSED TIME — hold the lock longer than the budget and you were
+# presumed crashed. That cannot distinguish a slow holder from a dead one, and
+# the difference is not academic: a --reconcile over a large ledger genuinely ran
+# past the budget, a concurrent writer reclaimed its lock, and both sat inside
+# the critical section (audit F03). F03 bounded the TRIGGER by capping fragment
+# size; it left the inference in place. Reproduced directly before this change:
+# a live writer holding the lock 30s got told it was "a crashed writer".
 #
 # So the holder now IDENTIFIES itself — host, uid, pid — and waiters ask the
 # kernel instead of the clock:
 #
-#   confirmed dead        → reclaim at once (0.4.0 made every waiter behind a
-#                           crashed holder pay the full 30s budget; measured 34s)
+#   confirmed dead        → reclaim at once (the timed draft made every waiter
+#                           behind a crashed holder sit out the budget: 34s)
 #   confirmed alive       → NEVER reclaim, however long it runs. Wait a longer
 #                           budget, then proceed unlocked — the milder failure.
 #                           Stealing a running writer's lock is the failure this
 #                           whole block exists to prevent.
-#   cannot be judged      → fall back to the 0.4.0 time-based budget unchanged.
+#   cannot be judged      → fall back to the timed budget.
 #
-# The third case is load-bearing, not a leftover. `kill -0` against another
-# user's process fails with EPERM, which reads identically to "dead" — judging
-# it would reclaim a LIVE holder's lock, the fail-OPEN direction. Only our own
-# host and uid are judgeable. Everything else — a foreign host on a shared
-# filesystem, a pre-0.5 lock with no stamp at all (the migration case), a
-# garbled record — degrades to the behaviour that shipped, which is bounded and
-# already understood.
+# The third case is load-bearing and is reached constantly — it is not a
+# compatibility leftover. Two ways in:
+#
+#   1. `mkdir` and the stamp are NOT one atomic step. Between them the lock is
+#      legitimately held and not yet stamped (observed in 400/400 samples), so
+#      any waiter spinning through that window sees no record. Judging it would
+#      reclaim a lock somebody just took.
+#   2. `kill -0` against another user's process fails with EPERM, which reads
+#      identically to "dead". Judging a foreign uid would reclaim a LIVE lock.
+#
+# Both are the fail-OPEN direction, so only our own host and uid are judgeable
+# and everything else degrades to the timed path — bounded, and no worse than
+# what this replaced.
 #
 # Reclaim is itself a critical section, and identified death makes that sharper
 # rather than softer: two waiters now see the same dead holder in the same
@@ -143,7 +149,10 @@ LOCK_HOLDER_REC=""
 
 # host + uid + pid: the three facts needed to decide whether `kill -0` can answer
 # for this holder at all. Written INSIDE the lock we already hold, so it never
-# races — mkdir remains the only thing arbitrating entry.
+# races for CORRECTNESS — mkdir remains the only thing arbitrating entry. It is
+# not, however, simultaneous with the mkdir: see the held-but-unstamped window
+# above, which is exactly why an absent stamp must read as unjudgeable and never
+# as dead.
 holder_stamp() { printf '%s %s %s' "${HOSTNAME:-nohost}" "${UID:-0}" "$$"; }
 
 # Read the holder stamp into LOCK_HOLDER_REC ("" when absent or unreadable).
@@ -183,7 +192,7 @@ lock_acquire() {
 
     if [ "$state" -eq 0 ]; then
       # Confirmed alive. Never reclaim — wait, then degrade to unlocked. This is
-      # the case 0.4.0 got wrong (audit F03).
+      # the case the timed draft got wrong (audit F03).
       if [ "$i" -ge "$LOCK_LIVE_SPINS" ]; then
         echo "ops-verdict: warning — lock $LOCKDIR held by a LIVE process for >$((LOCK_LIVE_SPINS / 10))s; proceeding unlocked rather than stealing a running writer's lock" >&2
         return 0
@@ -272,7 +281,7 @@ lock_release() {
 # `read -r -n 512`, not plain `read -r`: a line cap is not a byte cap, because one
 # newline-less line is a single "line" and gets slurped whole first. Measured on a
 # 256MB single-line sentinel: 13.51s here vs 0.17s in the byte-bounded Stop hook.
-# The owner is a short token by construction. (Audit F02 — the 0.4.0 fix reached
+# The owner is a short token by construction. (Audit F02 — the first fix reached
 # only the Stop hook; this reader and two others kept the unbounded form.)
 sentinel_owner() { # sentinel_owner <id> → stamped session_id ("" if none/invalid)
   local f="$OPDIR/pending/$1" line owner="" n=0

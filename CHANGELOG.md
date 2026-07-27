@@ -9,45 +9,6 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
-## [0.5.0] - 2026-07-27
-
-The ledger lock stops guessing. Crash detection now asks the kernel instead of
-inferring death from elapsed time — the root cause behind audit finding F03,
-where a `--reconcile` that ran past the budget had its lock reclaimed while it
-was still inside the critical section.
-
-### Changed
-- **Lock holders identify themselves.** `.operator/.lock/holder` records
-  `host uid pid`; waiters call `kill -0` and act on the answer:
-  - **dead** → reclaim immediately. Previously every waiter behind a crashed
-    holder paid the full 30s budget (measured: 34s).
-  - **alive** → never reclaimed, however long it runs. Past `LOCK_LIVE_SPINS`
-    (60s) the waiter proceeds *unlocked* — the milder failure. 0.4.0 instead
-    took the lock away from the running writer.
-  - **unjudgeable** → falls back to 0.4.0's timed budget unchanged. This covers
-    a foreign host or uid (`kill -0` across uids fails with EPERM, which is
-    indistinguishable from "dead", so judging it would reclaim a LIVE lock) and
-    a pre-0.5 stampless lock, which is the migration path.
-- The lock implementation shared by `ops-verdict.sh` and `ops-adopt.sh` is now
-  delimited by `# >>> LOCK BLOCK` / `# <<< LOCK BLOCK`.
-
-### Added
-- `validate_plugin.check_lock_parity` — fails the build when the two lock
-  implementations drift. "Keep them identical" had been prose since 0.4.0; this
-  is the same fix `check_reader_bounds` was for a missed byte bound.
-- Test case 21 (13 assertions): dead-holder reclaim, live-holder protection,
-  simultaneous reclaimers, foreign-host fallback, and a mutation-tested
-  assertion that a held lock is stamped and a stamped lock cannot be `rmdir`'d.
-
-### Notes
-- Backlog #2 ("a discriminating reclaim-exclusivity test") is closed as
-  **unreachable**, not deferred: six approaches measured against a deliberately
-  naive implementation all returned 0/N, because the reclaim sequence is
-  microseconds against a 0.1s spin (P ≈ 1e-5). The deterministic property that
-  actually closes the race — a stamped lock directory is non-empty, so `rmdir`
-  refuses it — is asserted directly instead. See `docs/PLAYBOOK.md`.
-- A stamped lock directory survives a plain `rm -rf`; remove `holder` first.
-
 ## [0.4.0] - 2026-07-27
 
 Concurrent sessions in one working tree no longer trap each other. Field report
@@ -69,8 +30,10 @@ and design: `docs/spec/concurrent-sessions.md`.
   a session whose id rotated can still close its own work.
 - `ops-verdict.sh` appends under a `mkdir`-based lock (`flock(1)` is absent on
   macOS), making the file header's atomicity claim true rather than a property
-  of `printf`'s buffer size. A lock held >5s is treated as stale: the writer
-  proceeds with a warning, because a stale lock must never cost a real verdict.
+  of `printf`'s buffer size. Reclaiming a lock requires the kernel confirming
+  its holder is gone (see the lock entry under Fixed); a lock whose holder
+  cannot be judged falls back to a bounded wait, because a stale lock must
+  never cost a real verdict.
 - Re-opening an already-open task is still a no-op, now explicitly **including
   its ownership** — re-open can never be a silent takeover.
 
@@ -94,7 +57,7 @@ and design: `docs/spec/concurrent-sessions.md`.
 - `ops-init.sh` writes `.operator/.gitattributes` marking the ledgers
   `merge=union`, and creates `verdicts.d/`. Scoped to `.operator/` so the host
   repo's root `.gitattributes` is never touched.
-- Test cases 8–11 in `tests/test-scripts.sh` covering the spec's five
+- Test cases 8–11 and 21 in `tests/test-scripts.sh` covering the spec's five
   acceptance criteria: the ownership partition, pre-0.4 migration safety, the
   writer's ownership refusal and adoption, 2×50 concurrent appends with a
   full-schema assertion, genuine lock mutual-exclusion, and reconcile.
@@ -103,6 +66,27 @@ and design: `docs/spec/concurrent-sessions.md`.
   be named in the charter by its project-relative path.
 
 ### Fixed (found in review of this branch, before release)
+- **The lock inferred a crash from elapsed time, and could steal a LIVE
+  writer's lock.** The first draft presumed any holder past the budget dead,
+  which cannot distinguish a slow writer from a dead one — the root of audit
+  F03, where a long `--reconcile` had its lock reclaimed while it was still
+  inside the critical section (F03 capped fragment size, bounding the trigger
+  but not the inference). Reproduced both directions before fixing: a live
+  writer holding the lock 30s was told it was "a crashed writer", and a waiter
+  behind an already-dead holder burned 34s. Holders now stamp
+  `host uid pid` into `.operator/.lock/holder` and waiters ask the kernel via
+  `kill -0` — dead reclaims immediately, **alive is never reclaimed** (past 60s
+  the waiter proceeds unlocked, the milder failure), and anything unjudgeable
+  falls back to the timed budget. That last branch is reached constantly, not a
+  compatibility path: `mkdir` and the stamp are not one atomic step, so a lock
+  is briefly held-but-unstamped, and `kill -0` across uids fails with EPERM
+  indistinguishably from "dead" — judging either would reclaim a live lock.
+- **The two lock implementations were kept in sync by a comment.**
+  `ops-verdict.sh` and `ops-adopt.sh` contend on the same lock, and "keep them
+  identical" was prose. `validate_plugin.check_lock_parity` now compares the
+  `# >>> LOCK BLOCK` region byte for byte and fails the build on drift — the
+  same reasoning as `check_reader_bounds`, which exists because a byte bound
+  reached one reader of four.
 - **A dot-prefixed task-id silently defeated the gate.** `.hidden` passed the
   bare-name guard, but the Stop hook enumerates `pending/` with a plain glob,
   which does not match dotfiles — so the sentinel existed and the gate could

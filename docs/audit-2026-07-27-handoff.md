@@ -73,7 +73,7 @@ validator as evidence the gate works.
 
 | Risk | Why it remains | What would close it |
 |---|---|---|
-| ~~Time-based crash inference in the lock~~ | **Closed 2026-07-27 (0.5.0).** The holder stamps `host uid pid`; waiters `kill -0`. Dead → immediate reclaim, alive → never reclaimed, unjudgeable → old timed path. | Done — case 21, `check_lock_parity`. |
+| ~~Time-based crash inference in the lock~~ | **Closed 2026-07-27, same branch cycle.** The holder stamps `host uid pid`; waiters `kill -0`. Dead → immediate reclaim, alive → never reclaimed, unjudgeable → old timed path. | Done — case 21, `check_lock_parity`. |
 | A slow holder still loses *mutual exclusion* (not its lock) | Past `LOCK_LIVE_SPINS` (60s) waiters proceed unlocked rather than stealing the lock. Milder failure, still a failure. | Blocking indefinitely trades it for a hang; not obviously better. Revisit only with a real slow-holder report. |
 | The two-reclaimer race has no discriminating test | **Not deferred — measured as unreachable.** Six approaches vs. a naive copy all read 0/N; P(collision) ≈ 1e-5. | Nothing short of an injection point inside `lock_acquire`. The structural `rmdir`-refuses-non-empty assertion replaces it. |
 | `mkdir`/`O_EXCL` atomicity on network filesystems | The lock and sentinel creation both assume POSIX atomicity. Untested on NFS. | Test on an NFS mount, or document the platform constraint. |
@@ -83,7 +83,7 @@ validator as evidence the gate works.
 
 ## Backlog, prioritized
 
-~~1. **PID-based lock liveness**~~ — **done 2026-07-27 (0.5.0)**: holder stamps
+~~1. **PID-based lock liveness**~~ — **done 2026-07-27, same branch cycle**: holder stamps
    `host uid pid`, waiters `kill -0`, both implementations changed together and
    their parity is now enforced by `validate_plugin.check_lock_parity`. The
    pre-fix behaviour was reproduced first (a live 30s holder told it was "a
