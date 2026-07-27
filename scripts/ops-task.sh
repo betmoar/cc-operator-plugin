@@ -83,16 +83,25 @@ if [ -n "$OWNER" ]; then check_owner_name "$OWNER"; fi
 
 mkdir -p "$OPDIR/pending"
 
-if [ -e "$OPDIR/pending/$ID" ]; then
+# Create the sentinel ATOMICALLY. A test-then-write (`[ -e ] || > file`) is a
+# TOCTOU: two sessions opening the same id both pass the check, both truncate,
+# and the later write silently replaces the earlier session's ownership —
+# breaking the documented no-takeover guarantee. Measured at 155/200 trials
+# before this fix (found by Codex review).
+#
+# `set -C` makes `>` use O_EXCL: exactly one opener wins, the loser sees EEXIST
+# and reports the task as already open. No lock needed — the kernel arbitrates.
+set -C
+if { if [ -n "$OWNER" ]; then printf 'session_id: %s\n' "$OWNER"; fi
+     printf 'cwd: %s\n' "$PWD"
+     printf 'opened_at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+   } > "$OPDIR/pending/$ID" 2>/dev/null; then
+  set +C
+else
+  set +C
   echo "already open: $ID (ownership unchanged — use ops-adopt.sh to re-stamp)"
   exit 0
 fi
-
-{
-  if [ -n "$OWNER" ]; then printf 'session_id: %s\n' "$OWNER"; fi
-  printf 'cwd: %s\n' "$PWD"
-  printf 'opened_at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-} > "$OPDIR/pending/$ID"
 
 if [ -n "$OWNER" ]; then
   echo "opened $ID owned by $OWNER (sentinel $OPDIR/pending/$ID — cleared only by ops-verdict.sh)"

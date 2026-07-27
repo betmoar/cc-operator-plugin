@@ -114,6 +114,17 @@ and design: `docs/spec/concurrent-sessions.md`.
   section; it now exits. The verdict path writes the fragment before the ledger
   row, so a partial failure leaves a repairable state rather than an
   un-repairable ledger row plus a duplicate on retry.
+- **Two TOCTOU races in the ownership mechanism itself** (found by Codex
+  review). `ops-task.sh` created the sentinel with test-then-truncate, so two
+  sessions opening the same id both passed the check and both wrote — the later
+  silently replacing the earlier's ownership, breaking the documented
+  no-takeover guarantee. Measured at 155/200 trials; now 0/200: creation uses
+  `set -C` (`O_EXCL`), so the kernel picks exactly one winner and the loser
+  reports the task as already open. Separately, `ops-verdict.sh` validated
+  ownership *before* acquiring the lock, so an `ops-adopt.sh` landing in between
+  let the former owner record a verdict and delete the new owner's sentinel.
+  Ownership is now validated inside the lock, and `ops-adopt.sh` takes the same
+  lock — "validate ownership, then act on it" is indivisible across both tools.
 - `ops-adopt.sh` used `"${IDS[@]}"` on a possibly-empty array, which is an
   unbound-variable error on macOS's bash 3.2 under `set -u`. Uses the same
   `${IDS+"${IDS[@]}"}` guard as `ops-verdict.sh`.

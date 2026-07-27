@@ -15,8 +15,40 @@
 set -eu
 
 OPDIR=".operator"
+LOCKDIR="$OPDIR/.lock"
 
 die() { echo "ops-adopt: $1" >&2; exit 2; }
+
+# Adoption takes the SAME lock as ops-verdict.sh, and must: ops-verdict validates
+# ownership and then clears the sentinel, so an adopt landing between those two
+# steps would let the former owner delete the new owner's sentinel. The lock is
+# what makes "validate ownership, then act on it" indivisible across both tools.
+# Same reclaim-on-timeout semantics as the writer — a stale lock must never make
+# a wedged task unrecoverable, since adoption IS the recovery path.
+LOCK_SPINS=300   # × 0.1s = 30s
+lock_acquire() {
+  local i=0
+  while ! mkdir "$LOCKDIR" 2>/dev/null; do
+    i=$((i+1))
+    if [ "$i" -ge "$LOCK_SPINS" ]; then
+      echo "ops-adopt: warning — lock $LOCKDIR held >$((LOCK_SPINS / 10))s; assuming a crashed holder and reclaiming it" >&2
+      rmdir "$LOCKDIR" 2>/dev/null || true
+      mkdir "$LOCKDIR" 2>/dev/null || {
+        echo "ops-adopt: warning — could not reclaim $LOCKDIR; proceeding unlocked" >&2
+        return 0
+      }
+      break
+    fi
+    sleep 0.1
+  done
+  LOCK_HELD=1
+  trap 'lock_release' EXIT
+  trap 'lock_release; exit 130' INT
+  trap 'lock_release; exit 143' TERM
+}
+lock_release() {
+  if [ "${LOCK_HELD:-0}" = "1" ]; then rmdir "$LOCKDIR" 2>/dev/null || true; LOCK_HELD=0; fi
+}
 
 NL="$(printf '\nx')"; NL="${NL%x}"
 
@@ -66,6 +98,13 @@ check_owner_name "$OWNER"
 
 for ID in ${IDS+"${IDS[@]}"}; do
   check_bare_name "task-id" "$ID"
+done
+
+# Everything below mutates ownership, so it runs under the writer's lock:
+# validate-then-rewrite must be indivisible against a concurrent ops-verdict.sh.
+lock_acquire
+
+for ID in ${IDS+"${IDS[@]}"}; do
   F="$OPDIR/pending/$ID"
   [ -f "$F" ] || die "no open task '$ID' (no sentinel at $F)"
 done
@@ -97,10 +136,10 @@ for ID in ${IDS+"${IDS[@]}"}; do
     if [ -n "$OPENED" ]; then printf '%s\n' "$OPENED"; fi
     printf 'adopted_at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "$TMP"
-  # Re-check under the same name we verified above: if the owner legitimately
-  # CLOSED the task while we were writing, mv would resurrect a sentinel for a
-  # task that already has a verdict row — the exact ledger-damaging trap this
-  # branch exists to remove. Narrower than a lock, and adopt is not the writer.
+  # Belt and braces: the lock already excludes a concurrent ops-verdict.sh, so
+  # this can only fire if the lock was reclaimed from a crashed holder. Keep it
+  # — resurrecting a sentinel for a task that already has a verdict row is the
+  # exact ledger-damaging trap this branch exists to remove.
   if [ ! -f "$F" ]; then
     rm -f "$TMP"
     die "task '$ID' was closed while adopting — not resurrecting its sentinel"
@@ -109,3 +148,5 @@ for ID in ${IDS+"${IDS[@]}"}; do
 
   echo "adopted $ID: ${PREV:-<unowned>} -> $OWNER"
 done
+
+lock_release

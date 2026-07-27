@@ -104,6 +104,18 @@ and the maintainer's local `.archive/dev/` (untracked).
   same. Related: strip trailing `\r` — a CRLF checkout otherwise makes a
   session's own id compare unequal and its own task get waved through as
   foreign, a fail-OPEN in the central invariant.
+- **Ownership transitions must be atomic, and a sequential test cannot see it.**
+  Two TOCTOUs shipped in 0.4.0's first draft: `ops-task.sh` created the sentinel
+  with test-then-truncate (two openers both won — 155/200 trials), and
+  `ops-verdict.sh` read the owner *before* taking the lock, so an adopt landing
+  in between let the former owner delete the new owner's sentinel. Rules that
+  follow: sentinel creation uses `set -C` (`O_EXCL`) so the kernel arbitrates,
+  never a `[ -e ]` guard; and `ops-adopt.sh` shares `ops-verdict.sh`'s lock,
+  with ownership validated *inside* it — the two tools both mutate ownership, so
+  validate-then-act must be indivisible across them. The open race is caught by
+  a 40-trial loop; the adopt/verdict window is microseconds and does **not**
+  reproduce under test, so that assertion is a regression guard only. Treating
+  it as evidence would be exactly the "test proves nothing" trap noted below.
 - **An owner that can never match is worse than no owner.** The hook compares
   the stamped owner byte-for-byte against the payload's session id, so any
   value a real session id cannot equal — whitespace, a stray space inside —

@@ -226,16 +226,24 @@ if [ -n "$OWNER" ]; then check_owner_name "$OWNER"; fi
 # failure the evidence gate exists to prevent. A MISSING --owner only warns —
 # a session whose id rotated (/clear) must still be able to close its own work
 # (ops-adopt.sh is the clean path).
-SOWNER="$(sentinel_owner "$ID")"
-if [ -n "$SOWNER" ]; then
-  if [ -n "$OWNER" ] && [ "$OWNER" != "$SOWNER" ]; then
-    die "task '$ID' is owned by session $SOWNER, not $OWNER — refusing (run ops-adopt.sh to take ownership deliberately)"
+#
+# This MUST run while holding the lock, and ops-adopt.sh takes the same lock:
+# checking ownership before acquiring it is a TOCTOU — another session could
+# adopt the task between the read and the write, and the former owner would then
+# record a verdict and delete the new owner's sentinel (found by Codex review).
+# Callers therefore lock first, then call this.
+ownership_gate() {
+  SOWNER="$(sentinel_owner "$ID")"
+  if [ -n "$SOWNER" ]; then
+    if [ -n "$OWNER" ] && [ "$OWNER" != "$SOWNER" ]; then
+      die "task '$ID' is owned by session $SOWNER, not $OWNER — refusing (run ops-adopt.sh to take ownership deliberately)"
+    fi
+    if [ -z "$OWNER" ]; then
+      echo "ops-verdict: warning — task '$ID' is owned by session $SOWNER and no --owner was given; proceeding" >&2
+    fi
   fi
-  if [ -z "$OWNER" ]; then
-    echo "ops-verdict: warning — task '$ID' is owned by session $SOWNER and no --owner was given; proceeding" >&2
-  fi
-fi
-FRAG_OWNER="${OWNER:-$SOWNER}"
+  FRAG_OWNER="${OWNER:-$SOWNER}"
+}
 
 clear_sentinel() { rm -f "$OPDIR/pending/$ID"; }
 
@@ -246,6 +254,7 @@ if [ "${2:-}" = "--defer" ]; then
   check_cell "defer reason" "$REASON"
   [ -f "$DECISIONS" ] || die "missing $DECISIONS — run ops-init.sh first"
   lock_acquire
+  ownership_gate          # inside the lock: adoption cannot slip in behind it
   printf '%s | %s | DEFERRED-VERDICT | %s | deferred via ops-verdict.sh --defer\n' \
     "$(date +%F)" "$ID" "$REASON" >> "$DECISIONS"
   clear_sentinel
@@ -270,8 +279,9 @@ case "$VERDICT" in
 esac
 [ -f "$VERDICTS" ]  || die "missing $VERDICTS — run ops-init.sh first"
 
-ROW="$(printf '| %s | %s | %s | %s |' "$ID" "$CRITERION" "$EVIDENCE" "$VERDICT")"
 lock_acquire
+ownership_gate            # inside the lock: adoption cannot slip in behind it
+ROW="$(printf '| %s | %s | %s | %s |' "$ID" "$CRITERION" "$EVIDENCE" "$VERDICT")"
 # Fragment FIRST. Under `set -e` a failed write aborts the script, so the order
 # decides what a partial failure leaves behind: a fragment without a ledger row
 # is repaired by --reconcile and a duplicate fragment row is deduped there, but

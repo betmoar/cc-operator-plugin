@@ -564,5 +564,55 @@ rm -f "$P/.operator/.adopt.9999.T-A"
 rm -rf "$P"
 
 ########################################################################
+echo "-- Case 15: ownership transitions are atomic under concurrency"
+# INVARIANT: "re-open never takes over" and "B cannot close A's task" must hold
+# under a RACE, not just sequentially. Both were TOCTOU before this: ops-task
+# did test-then-truncate (two openers both won: 155/200 trials), and
+# ops-verdict read the owner BEFORE taking the lock, so an adopt landing in
+# between let the former owner delete the new owner's sentinel. Found by Codex
+# review. These loops are the only assertions that would catch a regression —
+# a sequential test passes on the racy code.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+BOTH=0
+for _i in $(seq 1 40); do
+  rm -f "$P/.operator/pending/T-RACE"
+  OUT="$( ( cd "$P" && bash "$TASK" T-RACE --owner SESS-A 2>&1 ) & \
+          ( cd "$P" && bash "$TASK" T-RACE --owner SESS-B 2>&1 ) & wait )"
+  [ "$(printf '%s\n' "$OUT" | grep -c '^opened ')" -gt 1 ] && BOTH=$((BOTH+1))
+done
+check "concurrent open: exactly one winner every time (no takeover)" "$([ "$BOTH" = "0" ] && echo 0 || echo 1)"
+# and the survivor is always a well-formed, owned sentinel — never a truncated
+# or interleaved one from two writers hitting the same file
+rm -f "$P/.operator/pending/T-RACE"
+( cd "$P" && bash "$TASK" T-RACE --owner SESS-A >/dev/null 2>&1 ) & \
+( cd "$P" && bash "$TASK" T-RACE --owner SESS-B >/dev/null 2>&1 ) & wait
+OWNLINES="$(grep -c '^session_id: ' "$P/.operator/pending/T-RACE" 2>/dev/null || true)"
+check "concurrent open: sentinel has exactly one owner line" "$([ "$OWNLINES" = "1" ] && echo 0 || echo 1)"
+
+# adopt vs verdict: whoever wins the lock, the loser must not damage the ledger.
+# HONESTY NOTE: unlike the open-race above (which fails ~155/200 on the unfixed
+# code), this assertion does NOT reliably reproduce the unfixed race — the
+# window between reading the owner and clearing the sentinel is microseconds, so
+# it passes on the racy code too. It is a regression GUARD, not evidence the
+# race existed; the evidence is the code path (owner read outside the lock,
+# Codex review). Do not read a green here as proof of serialization.
+STOLEN=0
+for _i in $(seq 1 25); do
+  rm -f "$P/.operator/pending/T-AV"
+  ( cd "$P" && bash "$TASK" T-AV --owner SESS-A >/dev/null 2>&1 )
+  ( cd "$P" && bash "$VERDICT" T-AV crit ev PASS --owner SESS-A >/dev/null 2>&1 ) & \
+  ( cd "$P" && bash "$ADOPT" --owner SESS-B T-AV >/dev/null 2>&1 ) & wait
+  # Legal outcomes: verdict won (sentinel gone, row exists) OR adopt won
+  # (sentinel present, owned by B). Illegal: sentinel gone AND owned by B —
+  # A deleted the sentinel B had just taken.
+  if [ ! -e "$P/.operator/pending/T-AV" ] && [ -f "$P/.operator/verdicts.d/SESS-B.md" ]; then
+    STOLEN=$((STOLEN+1))
+  fi
+done
+check "adopt vs verdict: no session clears another's adopted sentinel" "$([ "$STOLEN" = "0" ] && echo 0 || echo 1)"
+check "adopt vs verdict: lock released after the race" "$([ ! -d "$P/.operator/.lock" ] && echo 0 || echo 1)"
+rm -rf "$P"
+
+########################################################################
 echo "== summary: $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]
