@@ -450,6 +450,14 @@ check "--reconcile exits 0 despite corrupt fragment lines" "$([ "$RRC2" -eq 0 ] 
 check "--reconcile refuses non-conformant lines (ledger unchanged)" "$([ "$(wc -l < "$P/.operator/VERDICTS.md")" = "$RB" ] && echo 0 || echo 1)"
 check "--reconcile reports what it skipped" "$(printf '%s' "$ROUT" | grep -qi 'non-conformant' && echo 0 || echo 1)"
 check "--reconcile did not inject the MAYBE verdict" "$(! grep -q 'T-INJ' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
+# A row with EXTRA cells is the case a glob-based check waves through: each `*`
+# in '| '*' | '*' | '*' | PASS |' happily consumes ' | ' too, so a 5-cell row
+# matched a "4-cell" pattern (found by Codex review). The check must COUNT.
+RB2="$(wc -l < "$P/.operator/VERDICTS.md")"
+printf '| a | b | c | injected | PASS |\n| a | b | c | d | e | f | FAIL |\n' >> "$P/.operator/verdicts.d/SESS-A.md"
+( cd "$P" && bash "$VERDICT" --reconcile >/dev/null 2>&1 )
+check "--reconcile refuses a 5-cell row (counts cells, not globs)" "$(! grep -q 'injected' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
+check "--reconcile refuses any over-celled row" "$([ "$(wc -l < "$P/.operator/VERDICTS.md")" = "$RB2" ] && echo 0 || echo 1)"
 rm -rf "$P"
 
 ########################################################################
@@ -611,6 +619,29 @@ for _i in $(seq 1 25); do
 done
 check "adopt vs verdict: no session clears another's adopted sentinel" "$([ "$STOLEN" = "0" ] && echo 0 || echo 1)"
 check "adopt vs verdict: lock released after the race" "$([ ! -d "$P/.operator/.lock" ] && echo 0 || echo 1)"
+
+# Stale-lock RECLAIM must itself be exclusive. The naive `rmdir + mkdir` lets a
+# second waiter delete the first waiter's FRESH lock and enter alongside it —
+# two writers in the critical section, neither over budget (found by Codex
+# review). The guard is a `.lock.reclaim` claim marker: only its creator may
+# touch the stale lock. Assert the protocol directly rather than waiting out a
+# 30s budget: with the claim already held, a writer must NOT reclaim.
+#
+# HONESTY NOTE: these three do NOT fail against the pre-fix code — the naive
+# reclaim also waits here, because the stale .lock still blocks its mkdir. They
+# assert the claim marker is used and cleaned up, not that the two-waiter race
+# is closed; reproducing that needs two writers both timing out at 30s. The
+# evidence for the race is the code path, not this test.
+mkdir -p "$P/.operator/.lock" "$P/.operator/.lock.reclaim"
+( cd "$P" && bash "$TASK" T-RC --owner SESS-A >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" T-RC crit ev PASS --owner SESS-A >/dev/null 2>&1 ) &
+RCPID=$!
+sleep 2
+check "a held reclaim-claim blocks another writer from reclaiming" "$([ -d "$P/.operator/.lock" ] && [ -e "$P/.operator/pending/T-RC" ] && echo 0 || echo 1)"
+rmdir "$P/.operator/.lock.reclaim" "$P/.operator/.lock" 2>/dev/null || true
+wait "$RCPID" 2>/dev/null || true
+check "writer proceeds once the stale lock is gone" "$([ ! -e "$P/.operator/pending/T-RC" ] && echo 0 || echo 1)"
+check "reclaim marker is not left behind" "$([ ! -d "$P/.operator/.lock.reclaim" ] && echo 0 || echo 1)"
 rm -rf "$P"
 
 ########################################################################

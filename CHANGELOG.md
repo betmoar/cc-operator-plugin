@@ -114,6 +114,17 @@ and design: `docs/spec/concurrent-sessions.md`.
   section; it now exits. The verdict path writes the fragment before the ledger
   row, so a partial failure leaves a repairable state rather than an
   un-repairable ledger row plus a duplicate on retry.
+- **The `--reconcile` schema check was a glob, and globs do not count.**
+  `'| '*' | '*' | '*' | PASS |'` reads as a 4-cell pattern but each `*` also
+  matches ` | `, so `| a | b | c | injected | PASS |` passed it and was appended
+  to `VERDICTS.md` — the corrupt-fragment hole the check was added to close, one
+  level down. Cells are now counted by splitting on the delimiter.
+- **Stale-lock reclamation was not itself exclusive.** With several waiters,
+  each timed out independently: one removed the stale dir and recreated it, then
+  the next removed *that fresh* lock and entered too — two writers in the
+  critical section, neither over budget. Reclamation now requires winning an
+  atomic `.lock.reclaim` claim; everyone else keeps waiting for the winner's
+  lock. Applies to `ops-adopt.sh`, which shares the implementation.
 - **Two TOCTOU races in the ownership mechanism itself** (found by Codex
   review). `ops-task.sh` created the sentinel with test-then-truncate, so two
   sessions opening the same id both passed the check and both wrote — the later

@@ -25,19 +25,27 @@ die() { echo "ops-adopt: $1" >&2; exit 2; }
 # what makes "validate ownership, then act on it" indivisible across both tools.
 # Same reclaim-on-timeout semantics as the writer — a stale lock must never make
 # a wedged task unrecoverable, since adoption IS the recovery path.
+# Reclaim is exclusive — see the long note in ops-verdict.sh. An unconditional
+# rmdir+mkdir lets a second waiter delete the first waiter's FRESH lock and
+# enter alongside it. Keep the two implementations identical.
 LOCK_SPINS=300   # × 0.1s = 30s
 lock_acquire() {
   local i=0
   while ! mkdir "$LOCKDIR" 2>/dev/null; do
     i=$((i+1))
     if [ "$i" -ge "$LOCK_SPINS" ]; then
-      echo "ops-adopt: warning — lock $LOCKDIR held >$((LOCK_SPINS / 10))s; assuming a crashed holder and reclaiming it" >&2
-      rmdir "$LOCKDIR" 2>/dev/null || true
-      mkdir "$LOCKDIR" 2>/dev/null || {
+      if mkdir "$LOCKDIR.reclaim" 2>/dev/null; then
+        echo "ops-adopt: warning — lock $LOCKDIR held >$((LOCK_SPINS / 10))s; assuming a crashed holder and reclaiming it" >&2
+        rmdir "$LOCKDIR" 2>/dev/null || true
+        if mkdir "$LOCKDIR" 2>/dev/null; then
+          rmdir "$LOCKDIR.reclaim" 2>/dev/null || true
+          break
+        fi
+        rmdir "$LOCKDIR.reclaim" 2>/dev/null || true
         echo "ops-adopt: warning — could not reclaim $LOCKDIR; proceeding unlocked" >&2
         return 0
-      }
-      break
+      fi
+      i=0     # another waiter is reclaiming; wait for it, do not also reclaim
     fi
     sleep 0.1
   done

@@ -85,19 +85,35 @@ check_owner_name() { # check_owner_name <value>
 # merely ignoring it: the trap does not cover SIGKILL, so without reclamation a
 # hard-killed writer would leave every later write paying the full timeout and
 # warning, forever, while still not being mutually exclusive.
+# Reclaim is itself a critical section. An unconditional `rmdir` + `mkdir` is
+# NOT safe with several waiters: waiter A times out, removes the stale dir and
+# recreates it — then waiter B times out a moment later, removes *A's fresh*
+# lock and creates its own, and both proceed. Two writers inside the critical
+# section, neither having exceeded its budget (found by Codex review).
+#
+# The fix is to make the removal itself exclusive: claim the right to reclaim by
+# atomically creating a separate marker, and only the winner of that claim may
+# touch the stale lock. `mkdir` is the atomic primitive in both cases.
 LOCK_SPINS=300   # × 0.1s = 30s
 lock_acquire() {
   local i=0
   while ! mkdir "$LOCKDIR" 2>/dev/null; do
     i=$((i+1))
     if [ "$i" -ge "$LOCK_SPINS" ]; then
-      echo "ops-verdict: warning — lock $LOCKDIR held >$((LOCK_SPINS / 10))s; assuming a crashed writer and reclaiming it" >&2
-      rmdir "$LOCKDIR" 2>/dev/null || true
-      mkdir "$LOCKDIR" 2>/dev/null || {
+      if mkdir "$LOCKDIR.reclaim" 2>/dev/null; then
+        echo "ops-verdict: warning — lock $LOCKDIR held >$((LOCK_SPINS / 10))s; assuming a crashed writer and reclaiming it" >&2
+        rmdir "$LOCKDIR" 2>/dev/null || true
+        if mkdir "$LOCKDIR" 2>/dev/null; then
+          rmdir "$LOCKDIR.reclaim" 2>/dev/null || true
+          break                       # we now hold the lock
+        fi
+        rmdir "$LOCKDIR.reclaim" 2>/dev/null || true
         echo "ops-verdict: warning — could not reclaim $LOCKDIR; proceeding unlocked" >&2
         return 0
-      }
-      break
+      fi
+      # Another waiter is reclaiming. Reset the budget and keep waiting for the
+      # lock it is about to hold — do NOT also reclaim.
+      i=0
     fi
     sleep 0.1
   done
@@ -140,6 +156,33 @@ sentinel_owner() { # sentinel_owner <id> → stamped session_id ("" if none/inva
   printf '%s' "$owner"
 }
 
+# row_is_conformant <line> — true iff the line is EXACTLY the 4-cell ledger row
+# `| id | criterion | evidence | PASS-or-FAIL |`. Counts the cells by splitting
+# on the '|' delimiter rather than globbing, because a glob's `*` will happily
+# match a delimiter and let a 5-cell row through.
+row_is_conformant() {
+  local line="$1" rest field n=0 verdict=""
+  case "$line" in '| '*' |') ;; *) return 1 ;; esac
+  rest="${line#| }"          # strip leading  "| "
+  rest="${rest% |}"          # strip trailing " |"
+  # rest is now  cell1 | cell2 | cell3 | cell4  — split on " | "
+  while :; do
+    case "$rest" in
+      *" | "*) field="${rest%%" | "*}"; rest="${rest#*" | "}" ;;
+      *)       field="$rest"; rest="" ;;
+    esac
+    n=$((n+1))
+    [ -n "$field" ] || return 1        # empty cell is not conformant
+    case "$field" in *"|"*) return 1 ;; esac
+    verdict="$field"
+    [ -n "$rest" ] || break
+    [ "$n" -le 4 ] || return 1
+  done
+  [ "$n" -eq 4 ] || return 1
+  case "$verdict" in PASS|FAIL) ;; *) return 1 ;; esac
+  return 0
+}
+
 append_fragment() { # append_fragment <owner-or-empty> <row>
   local who="${1:-unowned}"
   mkdir -p "$FRAGDIR"
@@ -169,11 +212,16 @@ if [ "${1:-}" = "--reconcile" ]; then
         # 4-cell schema the direct path does. A fragment is an ordinary file
         # that a merge or a hand-edit can corrupt; without this, --reconcile
         # would be a hole straight through the single writer's cell hygiene.
-        case "$row" in
-          '| '*' | '*' | '*' | PASS |' | '| '*' | '*' | '*' | FAIL |') ;;
-          *) echo "ops-verdict: skipping non-conformant line in ${frag##*/}: $row" >&2
-             skipped=$((skipped+1)); continue ;;
-        esac
+        #
+        # COUNT the cells — do not pattern-match them. A glob like
+        # '| '*' | '*' | '*' | PASS |' looks like a 4-cell check but each `*`
+        # happily consumes ` | ` too, so `| a | b | c | injected | PASS |`
+        # matched and was admitted (found by Codex review). Splitting on the
+        # delimiter is the only check that actually counts.
+        if ! row_is_conformant "$row"; then
+          echo "ops-verdict: skipping non-conformant line in ${frag##*/}: $row" >&2
+          skipped=$((skipped+1)); continue
+        fi
         printf '%s\n' "$row" >> "$CAND"
       done < "$frag"
     done

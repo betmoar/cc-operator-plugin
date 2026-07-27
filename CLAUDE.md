@@ -150,6 +150,17 @@ and the maintainer's local `.archive/dev/` (untracked).
   traversal guard. The *"name guards agree"* case asserts the glob premise
   itself, not just the guard, so the reason cannot rot. If you ever switch the
   hook to `dotglob` or `find`, this rule is what you are trading away.
+- **Count cells; never glob them.** `'| '*' | '*' | '*' | PASS |'` looks like a
+  4-cell schema check and is not one: `*` matches ` | ` too, so a 5-cell row
+  satisfied it and `--reconcile` appended it to the ledger. Any future schema
+  check splits on the delimiter and counts (`row_is_conformant`). The same trap
+  applies to any "shape" assertion written as a glob.
+- **A lock whose reclaim path is not itself exclusive is not a lock.** The naive
+  timeout — `rmdir` the stale dir, `mkdir` your own — lets waiter B delete
+  waiter A's *fresh* lock and enter beside it, with neither over budget.
+  Reclaiming requires winning a separate atomic `.lock.reclaim` claim first.
+  `ops-verdict.sh` and `ops-adopt.sh` share this implementation; keep them
+  identical.
 - **`--reconcile` is a write to the ledger of record, so it validates.** It
   originally copied fragment lines verbatim, which routed around the single
   writer's cell hygiene entirely — a merge-corrupted fragment could inject a
