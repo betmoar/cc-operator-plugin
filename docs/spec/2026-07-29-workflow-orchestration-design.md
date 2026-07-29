@@ -130,12 +130,21 @@ failed** baseline it returned REFUTED and surfaced a P1 the suite and the
 That is the argument for the panel: a green suite plus four satisfied reviewers,
 and the adversarial seat still refuted on evidence it gathered itself.
 
-### 4.1 Correction to apply from the pilot
+### 4.1 On the `parallel()` vs `pipeline()` question
 
-Use `pipeline()`, not `parallel()`, for the panel. The barrier made the whole
-run wait on one read-heavy `glm-5-turbo` lens that took ~3× the others; cheap
-tier is not fast tier when the lens is read-heavy. Findings should flow to
-synthesis as each lens lands.
+The pilot's wall-clock was dominated by one read-heavy `glm-5-turbo` lens at
+~3× the others, and an initial reaction was "switch to `pipeline()`." That is
+wrong for this panel: synthesis **ranks findings across all lenses** (drop <50,
+bucket ≥75/60/50), so it is a barrier by construction — it cannot start until
+every lens has landed, and `pipeline()` would not let findings "flow as they
+land" because there is nothing to do with a partial set. The concurrency that
+matters (four lenses running at once, not four in series) is already what
+`parallel()` provides.
+
+The real lever is lens *balance*, not the primitive: a lens whose prompt sends
+the agent off to read a 1100-line suite is the slow one regardless of
+`parallel`/`pipeline`. Keep `parallel()` for the panel; reserve `pipeline()`
+for stages that genuinely stream item-to-item without a cross-item barrier.
 
 ---
 
