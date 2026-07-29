@@ -24,12 +24,34 @@ const DEFAULT_TIERS = {
   MECHANICAL: "glm-5-turbo",
 };
 
-const TIERS = { ...DEFAULT_TIERS, ...(args?.tiers ?? {}) };
+const ROUTABLE = /^glm-|\/|^claude-/;
+
+// args.tiers is caller-supplied and the ONLY input channel (the sandbox has no
+// fs/process), so it is validated as hard as the external resolver does. A
+// typo'd or wrong-case key (`Mechanical` vs `MECHANICAL`) would otherwise merge
+// in as an extra property, pass per-value validation, and be silently ignored
+// while the default dispatched — a silent mis-route with no signal to the
+// caller (PR review, finding #8). Reject unknown keys loudly, mirroring
+// ops-tiers.sh's `is_tier_name`.
+const overrides = args?.tiers;
+if (overrides != null) {
+  if (typeof overrides !== "object" || Array.isArray(overrides)) {
+    throw new Error(`args.tiers must be an object, got ${typeof overrides}`);
+  }
+  for (const name of Object.keys(overrides)) {
+    if (!Object.prototype.hasOwnProperty.call(DEFAULT_TIERS, name)) {
+      throw new Error(
+        `unknown tier '${name}' in args.tiers (known: ${Object.keys(DEFAULT_TIERS).join(", ")})`,
+      );
+    }
+  }
+}
+const TIERS = { ...DEFAULT_TIERS, ...(overrides ?? {}) };
 
 // Fail loud at resolve time, not deep inside a run: an unroutable id falls
 // through to cc-proxy's default backend, which is a silent mis-route.
 for (const [name, id] of Object.entries(TIERS)) {
-  if (typeof id !== "string" || !/^glm-|\/|^claude-/.test(id)) {
+  if (typeof id !== "string" || !ROUTABLE.test(id)) {
     throw new Error(
       `tier ${name}=${JSON.stringify(id)} is not cc-proxy-routable ` +
         `(need glm-*, vendor/model, or claude-*)`,
