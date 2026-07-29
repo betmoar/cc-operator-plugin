@@ -26,6 +26,22 @@ const DEFAULT_TIERS = {
 
 const ROUTABLE = /^glm-|\/|^claude-/;
 
+// Normalize args. The Workflow tool stringifies a passed object into a JSON
+// STRING in transit (verified), so `args?.tiers` reads undefined and defaults
+// silently fire. If args is a JSON string, parse it — it may be an object OR a
+// bare scalar (review accepts a bare path string as the target). Leave a
+// non-JSON string (the bare-target case when someone passes a plain path) as-is.
+const A = (() => {
+  if (typeof args === "string") {
+    const t = args.trim();
+    if (t.startsWith("{") || t.startsWith("[")) {
+      try { return JSON.parse(t); } catch { return args; }
+    }
+    return args; // bare string — the artifact path
+  }
+  return args ?? {};
+})();
+
 // args.tiers is caller-supplied and the ONLY input channel (the sandbox has no
 // fs/process), so it is validated as hard as the external resolver does. A
 // typo'd or wrong-case key (`Mechanical` vs `MECHANICAL`) would otherwise merge
@@ -33,7 +49,7 @@ const ROUTABLE = /^glm-|\/|^claude-/;
 // while the default dispatched — a silent mis-route with no signal to the
 // caller (PR review, finding #8). Reject unknown keys loudly, mirroring
 // ops-tiers.sh's `is_tier_name`.
-const overrides = args?.tiers;
+const overrides = typeof A === "object" ? A.tiers : undefined;
 if (overrides != null) {
   if (typeof overrides !== "object" || Array.isArray(overrides)) {
     throw new Error(`args.tiers must be an object, got ${typeof overrides}`);
@@ -62,8 +78,8 @@ for (const [name, id] of Object.entries(TIERS)) {
 const MECHANICAL = TIERS.MECHANICAL;
 const JUDGMENT = TIERS.JUDGMENT;
 
-const target = typeof args === "string" ? args : (args?.target ?? "the working diff");
-const doneMeans = args?.doneMeans ?? "";
+const target = typeof A === "string" ? A : (A?.target ?? "the working diff");
+const doneMeans = A?.doneMeans ?? "";
 
 // Each lens is a narrow question. Narrow is what makes a cheap tier honest:
 // a lens that needs judgment is not a lens, it is a review.
