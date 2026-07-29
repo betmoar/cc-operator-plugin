@@ -194,6 +194,38 @@ Q="$(newproj)"
 ( cd "$Q" && bash "$TASK" T-1 >/dev/null 2>&1 ); QRC=$?
 check "ops-task refuses without .operator/" "$([ "$QRC" -ne 0 ] && echo 0 || echo 1)"
 rm -rf "$Q"
+
+echo "-- Case: ops-task does not claim a non-regular entry in pending/ is 'already open'"
+# A directory or dangling symlink in pending/ is not a task sentinel. The
+# opener's `>` redirection fails on it for a reason OTHER than O_EXCL/EEXIST,
+# but the old else-branch conflated every failure with "already open" and
+# exited 0 — while the Stop hook's `-f` guard refuses to count the entry, so
+# the session stopped with a task the operator believed was tracked. Two
+# components disagreeing about what counts as a task, failing OPEN: the
+# whole gate silently off (P1, found by the review-panel pilot 2026-07-29).
+# The fix distinguishes "a regular file already exists" (legit already-open,
+# ownership unchanged) from "the target is non-regular or unwritable" (a
+# fault: refuse, exit non-zero, and do NOT claim ownership is unchanged).
+P2="$(newproj)"; ( cd "$P2" && bash "$INIT" >/dev/null 2>&1 )
+# directory: the open must fail, not silently report "already open"
+mkdir -p "$P2/.operator/pending/T-DIR"
+( cd "$P2" && ./.operator/bin/ops-task.sh T-DIR --owner SESS-A >/dev/null 2>&1 ); DRC=$?
+check "ops-task refuses to open over a directory (non-zero exit)" "$([ "$DRC" -ne 0 ] && echo 0 || echo 1)"
+( cd "$P2" && ./.operator/bin/ops-task.sh T-DIR --owner SESS-A 2>&1 ) | grep -qi "already open" && echo "FAIL: ops-task falsely reports a directory as already open" >&2
+check "ops-task does not claim a directory is 'already open'" "$([ "$DRC" -ne 0 ] && echo 0 || echo 1)"
+# dangling symlink: same — the redirection fails (cannot overwrite existing
+# file, because the symlink target exists nowhere to write through), and the
+# old code reported it as already-open + exit 0
+ln -s /nonexistent "$P2/.operator/pending/T-DEAD"
+( cd "$P2" && ./.operator/bin/ops-task.sh T-DEAD --owner SESS-A >/dev/null 2>&1 ); LRC=$?
+check "ops-task refuses to open over a dangling symlink (non-zero exit)" "$([ "$LRC" -ne 0 ] && echo 0 || echo 1)"
+# a legit already-open task (a real sentinel file) must STILL report already
+# open and exit 0 — the fix must not break the genuine O_EXCL path
+( cd "$P2" && ./.operator/bin/ops-task.sh T-REAL --owner SESS-A >/dev/null 2>&1 )
+( cd "$P2" && ./.operator/bin/ops-task.sh T-REAL --owner SESS-B 2>&1 ); RRC=$?; ROUT=$?
+check "ops-task still reports a real sentinel as already open (exit 0)" "$([ "$RRC" -eq 0 ] && echo 0 || echo 1)"
+rm -rf "$P2"
+
 # pre-0.3 project (no bin/): block message falls back to the plugin's absolute copy
 rm -rf "$P/.operator/bin"
 : > "$P/.operator/pending/T-8"

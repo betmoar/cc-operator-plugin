@@ -92,15 +92,36 @@ mkdir -p "$OPDIR/pending"
 # `set -C` makes `>` use O_EXCL: exactly one opener wins, the loser sees EEXIST
 # and reports the task as already open. No lock needed — the kernel arbitrates.
 set -C
-if { if [ -n "$OWNER" ]; then printf 'session_id: %s\n' "$OWNER"; fi
+# The redirection failure (EEXIST on a real sentinel, EISDIR on a directory,
+# ENOENT through a dangling symlink) is reported by bash on fd 2 OUTSIDE the
+# scope of any `2>/dev/null` on the compound body — the "a raw bash error as
+# operator guidance" landmine (review-pilot finding #3). Redirect the whole
+# test's fd 2 to silence bash's message; we emit our own precise one below.
+if { { if [ -n "$OWNER" ]; then printf 'session_id: %s\n' "$OWNER"; fi
      printf 'cwd: %s\n' "$PWD"
      printf 'opened_at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-   } > "$OPDIR/pending/$ID" 2>/dev/null; then
+   } > "$OPDIR/pending/$ID"
+   } 2>/dev/null; then
   set +C
 else
-  set +C
-  echo "already open: $ID (ownership unchanged — use ops-adopt.sh to re-stamp)"
-  exit 0
+  _rc=$?; set +C
+  # The redirection failed. O_EXCL makes this EEXIST when a real sentinel
+  # already exists — the legit "already open" path. But the SAME redirection
+  # fails for a non-regular entry (a directory, a dangling symlink) or a
+  # permission/ENOSPC error, and conflating those with EEXIST is a fail-OPEN
+  # in the gate: we'd print "already open, ownership unchanged" and exit 0,
+  # while the Stop hook's `-f` guard refuses to count a non-regular entry as a
+  # task — so the operator is told a task is tracked and the session stops
+  # unblocked. Two components disagreeing about what a task is, silently off
+  # (P1, found by the review-panel pilot 2026-07-29). Distinguish: only a
+  # pre-existing REGULAR FILE is a legit already-open; anything else is a
+  # fault we refuse rather than misreport.
+  if [ -f "$OPDIR/pending/$ID" ]; then
+    echo "already open: $ID (ownership unchanged — use ops-adopt.sh to re-stamp)"
+    exit 0
+  else
+    die "cannot create sentinel $OPDIR/pending/$ID (a non-regular entry or unwritable path already exists there) — remove it or choose another id"
+  fi
 fi
 
 if [ -n "$OWNER" ]; then
