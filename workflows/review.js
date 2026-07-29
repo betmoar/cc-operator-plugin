@@ -10,10 +10,35 @@ export const meta = {
   ],
 };
 
-// Tiers are ids, not aliases — cc-proxy routes by id shape (^glm-|/|^claude-).
-// opts.model overrides the agent file's frontmatter, measured 2026-07-29.
-const MECHANICAL = "glm-5-turbo";
-const JUDGMENT = "claude-opus-5";
+// Tiers arrive through `args` — the ONLY input channel a workflow script has.
+// The sandbox has no `process`, `require`, `fetch` or `fs` (measured
+// 2026-07-29), so a script cannot read a config file, an env var, or the proxy.
+// `scripts/ops-tiers.sh` resolves the layered config and the operator hands the
+// result to Workflow({args:{tiers:...}}); these are the fallback defaults for a
+// bare invocation.
+//
+// cc-proxy routes by id SHAPE (^glm-|/|^claude-), and opts.model overrides the
+// agent file's `model:` frontmatter — both measured 2026-07-29.
+const DEFAULT_TIERS = {
+  JUDGMENT: "claude-opus-5",
+  MECHANICAL: "glm-5-turbo",
+};
+
+const TIERS = { ...DEFAULT_TIERS, ...(args?.tiers ?? {}) };
+
+// Fail loud at resolve time, not deep inside a run: an unroutable id falls
+// through to cc-proxy's default backend, which is a silent mis-route.
+for (const [name, id] of Object.entries(TIERS)) {
+  if (typeof id !== "string" || !/^glm-|\/|^claude-/.test(id)) {
+    throw new Error(
+      `tier ${name}=${JSON.stringify(id)} is not cc-proxy-routable ` +
+        `(need glm-*, vendor/model, or claude-*)`,
+    );
+  }
+}
+
+const MECHANICAL = TIERS.MECHANICAL;
+const JUDGMENT = TIERS.JUDGMENT;
 
 const target = typeof args === "string" ? args : (args?.target ?? "the working diff");
 const doneMeans = args?.doneMeans ?? "";
