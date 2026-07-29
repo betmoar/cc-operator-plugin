@@ -75,12 +75,29 @@ set_tier() { # set_tier NAME id source
 # Parse a NAME=value file without sourcing it.
 load_file() { # load_file <path> <source-label>
   [ -f "$1" ] || return 0
-  while IFS= read -r line || [ -n "$line" ]; do
+  # Bounded read: a config file under .operator/ is untrusted input (a merge or
+  # checkout can produce it). A newline-less multi-MB file is one "line" to an
+  # unbounded read and gets slurped whole — the same class documented for the
+  # Stop hook. -n caps each line at 512 chars (a tier line is well under 80);
+  # the outer cap bounds a runaway file.
+  local lc=0
+  while IFS= read -r -n 512 line || [ -n "$line" ]; do
+    lc=$((lc + 1)); [ "$lc" -le 200 ] || die "$1: more than 200 lines — refusing"
     case "$line" in ''|'#'*) continue ;; esac
     name="${line%%=*}"; val="${line#*=}"
     [ "$name" != "$line" ] || die "$1: malformed line (want NAME=model-id): $line"
-    # trim surrounding whitespace from the name only; a model id never has any
-    name="$(printf '%s' "$name" | tr -d '[:space:]')"
+    # Reject, do not normalize: a tier name with embedded whitespace (`MECH
+    # ANICAL`) must not be silently coerced to `MECHANICAL` — that is a silent
+    # mis-route, the same class review.js guards against on the JS side. Only
+    # leading/trailing whitespace is trimmed, by shell parameter expansion; any
+    # whitespace remaining inside the name is caught by is_tier_name.
+    name="${name#"${name%%[![:space:]]*}"}"   # strip leading
+    name="${name%"${name##*[![:space:]]}"}"   # strip trailing
+    val="${val#"${val%%[![:space:]]*}"}"      # a model id never carries
+    val="${val%"${val##*[![:space:]]}"}"      # surrounding whitespace
+    case "$name" in
+      *[[:space:]]*) die "$1: whitespace inside tier name '$name' (known: $TIER_NAMES)" ;;
+    esac
     is_tier_name "$name" || die "$1: unknown tier '$name' (known: $TIER_NAMES)"
     check_routable "$name" "$val"
     set_tier "$name" "$val" "$2"

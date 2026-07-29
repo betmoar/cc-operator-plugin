@@ -317,6 +317,10 @@ def check_reader_bounds(root, problems):
         # sentinel: 0.014s bounded vs 6.20s per parse unbounded, i.e. a
         # permanently wedged status bar rather than a slow one.
         "statusline.sh": 1,      # sentinel_owner
+        # The tier-config resolver reads a file under .operator/ (untrusted — a
+        # merge or checkout can produce it). Same hazard class as the others:
+        # a newline-less multi-MB tiers.env is one "line" to an unbounded read.
+        "ops-tiers.sh": 1,       # the load_file config loop
     }
     for name, expected in readers.items():
         p = root / "scripts" / name
