@@ -63,6 +63,7 @@ and the maintainer's local `.archive/dev/` (untracked).
 | the sentinel/pending convention in any `ops-*.sh` | update the other scripts, `tests/test-scripts.sh`, and the EVIDENCE GATE prose in `OPERATOR.md` |
 | the `.operator/bin` install set in `ops-init.sh` | update the charter's EVIDENCE GATE paths, the stop-hook fallback message, the *"project-installed gate CLIs"* test case, and `validate_plugin.CHARTER_REQUIRED_CLIS` + `check_scripts` |
 | the sentinel body format (`session_id:` line) | update `ops-task.sh`, `ops-adopt.sh`, **three** parsers (`ops-verdict.sh:sentinel_owner`, `ops-stop-hook.sh:sentinel_owner`, `statusline.sh:sentinel_owner` — the latter two **must** stay builtin-only), and the *"sentinel ownership"*, *"migration safety"*, *"sentinel BODY is untrusted input"*, and *"statusline segment reports the gate"* cases |
+| the `else`-branch of the O_EXCL open in `ops-task.sh` | it must keep distinguishing a pre-existing **regular file** (legit already-open, exit 0) from a non-regular or unwritable target (a fault, exit non-zero). The branch once conflated every redirection failure with EEXIST and printed "already open, ownership unchanged" — while the Stop hook's `-f` guard refuses to count a directory/symlink, so the session stopped unblocked on a task the operator believed was tracked (the *"non-regular entry"* cases). The same branch must also wrap the write in `{ …; } 2>/dev/null` so bash's own redirection error (EISDIR, dangling-symlink) is silenced — a leaking raw `line N: Is a directory` is the *"raw bash error as operator guidance"* landmine, fixed in the hook via `-f`, now fixed here too |
 | the mine/foreign partition rule in `ops-stop-hook.sh` | update `statusline.sh` — it renders that same partition, and a bar describing a different gate than the one that runs is worse than no bar |
 | `scripts/statusline.sh`'s path or name | update `.claude-plugin/statusline.json` — cc-status skips an unresolvable renderer **silently** (enforced by `validate_plugin.check_statusline`) |
 | the fragment/lock scheme in `ops-verdict.sh` | update `ops-init.sh` (`verdicts.d/`, `.gitattributes`), the README evidence-gate section, and the *"concurrent appends never interleave"* case |
@@ -98,6 +99,23 @@ guard applied to only one of the three CLIs fails the build.
   Any new component must use that same definition; `ops-init.sh` warns when it
   is scaffolding somewhere that is not the repo root, because a second ledger
   below the root would shadow the real one for everything beneath it.
+
+- **A non-regular entry in `pending/` is not a task, and the opener must not
+  claim it is.** `ops-task.sh`'s O_EXCL open failed on a directory or dangling
+  symlink, and the `else`-branch conflated *every* redirection failure with
+  EEXIST — printing "already open, ownership unchanged" and exiting 0 — while
+  the Stop hook's `-f` guard refuses to count a non-regular entry as a task. So
+  the operator was told a task was tracked and the session stopped **unblocked**:
+  two components disagreeing about what a task is, the whole gate silently off.
+  This is the same shape as F01 (the `.git`-boundary walk) — a disagreement
+  between the opener and the hook, failing OPEN. Found by the review-panel
+  pilot (2026-07-29), not by the 192-case suite or the audit: the suite tested
+  the *hook's* handling of a directory but never the *opener's*. The fix: only a
+  pre-existing **regular file** is a legit already-open; anything else is a
+  fault that exits non-zero. The write is wrapped in `{ …; } 2>/dev/null` so
+  bash's own EISDIR / dangling-symlink message does not leak as guidance (the
+  *"raw bash error as operator guidance"* landmine, already fixed in the hook
+  via `-f`).
 
 - **The Stop hook must use bash builtins + one JSON parser only.** It reads
   stdin with `read -r -d ''` (a line loop drops a newline-less final line — a
