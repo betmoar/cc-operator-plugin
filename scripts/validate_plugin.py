@@ -434,6 +434,85 @@ def check_lock_parity(root, problems):
             f"({detail})")
 
 
+def check_workflows(root, problems):
+    """Every workflows/*.js must (a) be syntactically valid JS, (b) begin with a
+    `export const meta = {...}` first statement, and (c) carry the tier guard —
+    a ROUTABLE constant matching the canonical cc-proxy id shape AND a loop that
+    applies ROUTABLE.test to every resolved tier before dispatch.
+
+    The model values an agent() call receives are tier *constants* (JUDGMENT,
+    MECHANICAL, …), resolved through DEFAULT_TIERS and validated at runtime by
+    ROUTABLE.test. So this check does NOT regex-extract model strings from
+    agent() call sites — that would be brittle (they are variables, not
+    literals) and redundant with the runtime throw. Instead it validates the
+    GUARD INFRASTRUCTURE: the regex that the runtime uses to refuse an
+    unroutable id, and that it is actually applied. This mirrors
+    check_guard_parity (validate the guard exists, not the guarded data).
+
+    An unroutable id — a typo, a retired version — falls through to cc-proxy's
+    default backend at dispatch time, a silent mis-route deep inside a run with
+    no build-time signal. The runtime ROUTABLE.test catches it; this check
+    ensures a maintainer cannot silently remove or drift that guard while
+    editing a workflow. The canonical regex is the same shape check_routable
+    enforces in ops-tiers.sh and the same one every workflow shipped with.
+    """
+    wf_dir = root / "workflows"
+    files = sorted(wf_dir.glob("*.js")) if wf_dir.is_dir() else []
+    if not files:
+        return  # workflows/ is optional; the plugin ships review.js only at need
+    CANONICAL_ROUTABLE = r"/^glm-|\/|^claude-/"
+    for f in files:
+        rel = f"workflows/{f.name}"
+        text = f.read_text(encoding="utf-8")
+
+        # (b) meta is the first statement. The harness requires `export const
+        # meta = {…}` as the first statement and a pure literal — a computed
+        # meta is rejected at launch. Check the anchor, not the object body (the
+        # runtime validates phases/whenToUse).
+        #
+        # No `node --check` here: it is too lenient to gate on (measured
+        # 2026-07-30 — returns exit 0 on redeclared consts, unclosed parens,
+        # and dangling expressions; only structural nonsense like a stray `}`
+        # fails). A gate that passes 90% of real syntax errors trains
+        # maintainers to ignore the build. A genuine syntax error surfaces at
+        # launch time regardless; the contracts below are what the build can
+        # actually enforce.
+        body = text.lstrip()
+        if not body.startswith("export const meta ="):
+            problems.append(
+                f"{rel}: does not begin with `export const meta = {{…}}` as the "
+                f"first statement (the harness requires a pure-literal meta block "
+                f"first, or it refuses to launch the workflow)")
+
+        # (c) the tier guard. Two requirements, both structural:
+        #   - ROUTABLE is declared with the canonical cc-proxy id shape
+        #   - a loop applies ROUTABLE.test to every resolved tier (Object.entries
+        #     over TIERS, the resolved table). The loop is what makes an
+        #     unroutable id fail at resolve time, not dispatch time.
+        routable_decl = re.search(r"const\s+ROUTABLE\s*=\s*(/\S.*?)\s*;", text)
+        if not routable_decl:
+            problems.append(
+                f"{rel}: no `const ROUTABLE = …` declaration found — every "
+                f"workflow must validate tiers against the cc-proxy id shape "
+                f"before dispatch (an unroutable id otherwise silently falls "
+                f"through to the default backend)")
+        else:
+            # Direct equality on the matched regex literal against the canonical.
+            got = routable_decl.group(1).strip()
+            if got != CANONICAL_ROUTABLE.strip():
+                problems.append(
+                    f"{rel}: ROUTABLE regex is {got!r}, expected "
+                    f"{CANONICAL_ROUTABLE.strip()!r} — cc-proxy routes by id "
+                    f"shape; a divergent regex either over-accepts (silent "
+                    f"mis-route) or under-accepts (rejects valid ids)")
+
+        if not re.search(r"ROUTABLE\.test\s*\(", text):
+            problems.append(
+                f"{rel}: ROUTABLE is declared but never applied — a tier must be "
+                f"checked with `ROUTABLE.test(id)` inside the tier-resolution loop "
+                f"or an unroutable id reaches dispatch unchecked")
+
+
 # The registry, in run order. Both main() and the test suite iterate THIS —
 # a hand-copied second list is how three guardrails (reader bounds, guard
 # parity, lock parity) ended up running in the build but not in the test that
@@ -450,6 +529,7 @@ CHECKS = (
     check_reader_bounds,
     check_guard_parity,
     check_lock_parity,
+    check_workflows,
 )
 
 
