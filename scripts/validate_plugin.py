@@ -564,6 +564,61 @@ def check_workflow_parity(root, problems):
                 f"(see check_lock_parity for the bash analogue)")
 
 
+# The canonical tier namespace the resolver may emit. Workflows accept overrides
+# against THIS set (KNOWN_TIERS), not their smaller DEFAULT_TIERS — otherwise a
+# valid resolver key a workflow happens not to use (IMPLEMENT in review) is
+# rejected and forwarding the resolver's full map throws (audit F07). The guard
+# is the inverse coupling of WORKFLOW_PARITY_CONSTS: the regexes must not drift
+# APART across workflows, and KNOWN_TIERS must not drift FROM the resolver.
+TIER_NAMES_SRC = "scripts/ops-tiers.sh"
+
+
+def _resolver_tier_names(root):
+    """Read the TIER_NAMES literal from ops-tiers.sh, as a sorted tuple."""
+    p = root / TIER_NAMES_SRC
+    if not p.is_file():
+        return None
+    m = re.search(r'^TIER_NAMES="([^"]+)"', p.read_text(encoding="utf-8"),
+                  re.MULTILINE)
+    if not m:
+        return None
+    return tuple(sorted(m.group(1).split()))
+
+
+def check_workflow_tier_namespace(root, problems):
+    """Each workflow's KNOWN_TIERS array must equal the resolver's TIER_NAMES.
+
+    KNOWN_TIERS is the set of tier keys a workflow accepts in args.tiers; the
+    resolver (ops-tiers.sh TIER_NAMES) is the set it may emit. If a workflow's
+    KNOWN_TIERS omits a resolver tier, forwarding the resolver's full map throws
+    on a legitimate key — the F07 bug. If it adds one the resolver does not know,
+    a typo is no longer caught. Keep them equal; the array is copy-pasted per the
+    import-forbidden sandbox, so a check is the only thing holding it.
+    """
+    canonical = _resolver_tier_names(root)
+    wf_dir = root / "workflows"
+    files = sorted(wf_dir.glob("*.js")) if wf_dir.is_dir() else []
+    for f in files:
+        rel = f"workflows/{f.name}"
+        text = f.read_text(encoding="utf-8")
+        m = re.search(r"const\s+KNOWN_TIERS\s*=\s*\[([^\]]*)\]", text)
+        if not m:
+            problems.append(
+                f"{rel}: no `const KNOWN_TIERS = [...]` found — a workflow must "
+                f"validate args.tiers keys against the canonical tier namespace "
+                f"(see audit F07: rejecting a valid resolver tier breaks the "
+                f"forwarding path)")
+            continue
+        got = tuple(sorted(t.strip().strip('"').strip("'")
+                           for t in m.group(1).split(",") if t.strip()))
+        if canonical is not None and got != canonical:
+            problems.append(
+                f"{rel}: KNOWN_TIERS={list(got)} does not match the resolver's "
+                f"TIER_NAMES={list(canonical)} in {TIER_NAMES_SRC} — a workflow "
+                f"must accept every tier the resolver may emit or forwarding the "
+                f"resolver map throws on a valid key (F07)")
+
+
 # The frontmatter keys every slash command must carry. Matches the shape
 # commands/start.md and commands/handoff.md already use. argument-hint may be
 # an empty list (`argument-hint: []`), so the check accepts a value of `[]`.
@@ -645,6 +700,7 @@ CHECKS = (
     check_lock_parity,
     check_workflows,
     check_workflow_parity,
+    check_workflow_tier_namespace,
     check_commands,
 )
 

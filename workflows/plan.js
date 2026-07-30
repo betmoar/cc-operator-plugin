@@ -19,6 +19,12 @@ const DEFAULT_TIERS = {
 const ROUTABLE = /^glm-|\/|^claude-/;
 // Charset mirror of ops-tiers.sh's check_routable (audit F01). See review.js.
 const BAD_CHARSET = /[^\w./:@[\]-]/;
+// Canonical tier namespace ops-tiers.sh (TIER_NAMES) may emit. This workflow
+// uses JUDGMENT/MECHANICAL; IMPLEMENT/RECON are valid-but-unused and must be
+// accepted, not rejected (audit F07 — the prior F03 fix removed plan's
+// IMPLEMENT declaration, turning a valid resolver key into an error). DEFAULT_TIERS
+// = what it dispatches; KNOWN_TIERS = what it accepts. Sync with ops-tiers.sh TIER_NAMES.
+const KNOWN_TIERS = ["JUDGMENT", "IMPLEMENT", "MECHANICAL", "RECON"];
 
 // Normalize args: the Workflow tool stringifies a passed object into a JSON
 // STRING in transit (verified), so `args?.tiers` would read undefined and
@@ -35,9 +41,9 @@ if (overrides != null) {
     throw new Error(`args.tiers must be an object, got ${typeof overrides}`);
   }
   for (const name of Object.keys(overrides)) {
-    if (!Object.prototype.hasOwnProperty.call(DEFAULT_TIERS, name)) {
+    if (!KNOWN_TIERS.includes(name)) {
       throw new Error(
-        `unknown tier '${name}' in args.tiers (known: ${Object.keys(DEFAULT_TIERS).join(", ")})`,
+        `unknown tier '${name}' in args.tiers (known: ${KNOWN_TIERS.join(", ")})`,
       );
     }
   }

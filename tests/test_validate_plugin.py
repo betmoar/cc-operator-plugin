@@ -120,12 +120,19 @@ def make_good_tree(root):
             Run `bash "${{CLAUDE_PLUGIN_ROOT}}/scripts/ops-init.sh"`.
             """))
     # Two workflow fixtures carrying the shared tier-validation invariants
-    # identically (ROUTABLE + BAD_CHARSET byte-equal) so check_workflows and
-    # check_workflow_parity pass on the good tree. The sandbox forbids imports,
-    # so the block is copy-pasted; parity is the only thing holding it together.
+    # identically (ROUTABLE + BAD_CHARSET byte-equal, KNOWN_TIERS = resolver's
+    # TIER_NAMES) so check_workflows, check_workflow_parity, and
+    # check_workflow_tier_namespace pass on the good tree. The sandbox forbids
+    # imports, so the block is copy-pasted; parity + namespace-equality are the
+    # only things holding it together.
+    write(root / "scripts" / "ops-tiers.sh",
+          'TIER_NAMES="JUDGMENT IMPLEMENT MECHANICAL RECON"\n'
+          '# minimal stub; one byte-bounded read satisfies check_reader_bounds\n'
+          'while IFS= read -r -n 512 line; do :; done < "$1"\n')
     WF_SHARED = (
         'const ROUTABLE = /^glm-|\\/|^claude-/;\n'
         'const BAD_CHARSET = /[^\\w./:@[\\]-]/;\n'
+        'const KNOWN_TIERS = ["JUDGMENT","IMPLEMENT","MECHANICAL","RECON"];\n'
         'for (const [n, id] of Object.entries({JUDGMENT:"claude-opus-5"})) {\n'
         '  if (!ROUTABLE.test(id) || BAD_CHARSET.test(id)) throw new Error("bad");\n'
         '}\n'
@@ -543,6 +550,39 @@ class ValidatorTest(unittest.TestCase):
         probs = []
         vp.check_workflows(ROOT, probs)
         vp.check_workflow_parity(ROOT, probs)
+        vp.check_workflow_tier_namespace(ROOT, probs)
+        self.assertEqual(probs, [])
+
+    # --- 13. workflow tier namespace: KNOWN_TIERS == resolver TIER_NAMES (F07) ---
+    # A workflow must accept every tier the resolver may emit, else forwarding
+    # the resolver's full map throws on a valid-but-unused key (F07 — the prior
+    # F03 fix removed a workflow's IMPLEMENT declaration and broke this).
+
+    def test_workflow_missing_known_tiers_fires(self):
+        # A conforming workflow that omits KNOWN_TIERS entirely.
+        write(self.dir / "workflows" / "review.js",
+              'export const meta = { name: "review", description: "d" };\n'
+              'const ROUTABLE = /^glm-|\\/|^claude-/;\n'
+              'const BAD_CHARSET = /[^\\w./:@[\\]-]/;\n'
+              'for (const [n, id] of Object.entries({JUDGMENT:"claude-opus-5"})) {\n'
+              '  if (!ROUTABLE.test(id)) throw new Error("x");\n'
+              '}\n')
+        probs = []
+        vp.check_workflow_tier_namespace(self.dir, probs)
+        self.assertTrue(any("no `const KNOWN_TIERS" in p for p in probs), probs)
+
+    def test_workflow_known_tiers_diverges_from_resolver_fires(self):
+        # KNOWN_TIERS omits IMPLEMENT, which the resolver's TIER_NAMES emits.
+        write(self.dir / "workflows" / "review.js",
+              'export const meta = { name: "review", description: "d" };\n'
+              'const KNOWN_TIERS = ["JUDGMENT","MECHANICAL","RECON"];\n')
+        probs = []
+        vp.check_workflow_tier_namespace(self.dir, probs)
+        self.assertTrue(any("does not match the resolver's" in p for p in probs), probs)
+
+    def test_workflow_tier_namespace_holds_on_good_tree(self):
+        probs = []
+        vp.check_workflow_tier_namespace(self.dir, probs)
         self.assertEqual(probs, [])
 
 

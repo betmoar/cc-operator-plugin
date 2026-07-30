@@ -32,6 +32,17 @@ const ROUTABLE = /^glm-|\/|^claude-/;
 // the canonical resolver would refuse (audit F01, 2026-07-30).
 const BAD_CHARSET = /[^\w./:@[\]-]/;
 
+// The canonical tier namespace ops-tiers.sh (TIER_NAMES) may emit. A workflow
+// USES only the subset it destructures (review: JUDGMENT, MECHANICAL); the rest
+// are valid-but-unused and must be accepted, not rejected. Rejecting them breaks
+// the natural path of forwarding the resolver's full 4-tier map: the resolver
+// emits IMPLEMENT, and a workflow whose DEFAULT_TIERS omits it would throw on a
+// legitimate key (audit F07, 2026-07-30 — caused by the prior F03 fix removing
+// a workflow's IMPLEMENT declaration). DEFAULT_TIERS is what the workflow
+// dispatches; KNOWN_TIERS is what it accepts. Keep this in sync with
+// ops-tiers.sh TIER_NAMES (enforced by check_workflow_tier_namespace).
+const KNOWN_TIERS = ["JUDGMENT", "IMPLEMENT", "MECHANICAL", "RECON"];
+
 // Normalize args. The Workflow tool stringifies a passed object into a JSON
 // STRING in transit (verified), so `args?.tiers` reads undefined and defaults
 // silently fire. If args is a JSON string, parse it — it may be an object OR a
@@ -61,9 +72,9 @@ if (overrides != null) {
     throw new Error(`args.tiers must be an object, got ${typeof overrides}`);
   }
   for (const name of Object.keys(overrides)) {
-    if (!Object.prototype.hasOwnProperty.call(DEFAULT_TIERS, name)) {
+    if (!KNOWN_TIERS.includes(name)) {
       throw new Error(
-        `unknown tier '${name}' in args.tiers (known: ${Object.keys(DEFAULT_TIERS).join(", ")})`,
+        `unknown tier '${name}' in args.tiers (known: ${KNOWN_TIERS.join(", ")})`,
       );
     }
   }
