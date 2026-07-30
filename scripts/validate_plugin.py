@@ -513,6 +513,57 @@ def check_workflows(root, problems):
                 f"or an unroutable id reaches dispatch unchecked")
 
 
+# The shared invariants every workflow must carry identically. The workflow
+# sandbox forbids `import()` (measured 2026-07-30 — "import() is not available
+# in workflow scripts"), so the tier-validation block is COPY-PASTED across
+# review/brainstorm/plan rather than imported from a shared module. With no
+# dedup possible, byte-parity across the copies is the only thing that holds
+# them together — the same lesson check_lock_parity enforces for the bash
+# lock block. DEFAULT_TIERS is excluded: each workflow deliberately declares
+# only the tiers it uses (review has 2, brainstorm 3, plan 3), so it is NOT a
+# parity invariant. The regexes ARE — they define what "routable" and
+# "valid charset" mean, and a divergence between two workflows' ROUTABLE is a
+# silent disagreement about which ids dispatch.
+WORKFLOW_PARITY_CONSTS = ("ROUTABLE", "BAD_CHARSET")
+
+
+def check_workflow_parity(root, problems):
+    """Every workflow's shared regex constants (ROUTABLE, BAD_CHARSET) must be
+    byte-identical across all workflows/*.js.
+
+    The tier-resolution block is duplicated because the sandbox forbids imports
+    (measured 2026-07-30). Prose ("keep them in sync") does not hold that
+    coupling — check_lock_parity was written for the identical lesson in bash.
+    This is its JS analogue: a divergence between two workflows' ROUTABLE is a
+    silent disagreement about which model ids are routable, with no crash.
+    """
+    wf_dir = root / "workflows"
+    files = sorted(wf_dir.glob("*.js")) if wf_dir.is_dir() else []
+    if len(files) < 2:
+        return  # parity needs >= 2; a single workflow cannot drift against itself
+    # Extract each const's RHS (the `/.../flags` literal) per file.
+    seen = {}  # const_name -> {value: [filenames]}
+    for f in files:
+        text = f.read_text(encoding="utf-8")
+        for const in WORKFLOW_PARITY_CONSTS:
+            m = re.search(rf"const\s+{const}\s*=\s*(/\S.*?)\s*;", text)
+            if not m:
+                # a missing const is check_workflows' job, not parity's; skip
+                continue
+            val = m.group(1).strip()
+            seen.setdefault(const, {}).setdefault(val, []).append(f.name)
+    for const, by_val in seen.items():
+        if len(by_val) > 1:
+            detail = "; ".join(
+                f"{v!r} in {', '.join(ns)}" for v, ns in by_val.items())
+            problems.append(
+                f"workflows/: {const} has diverged across workflows ({detail}) "
+                f"— the sandbox forbids imports, so the tier-validation block "
+                f"is copy-pasted; the regexes must stay byte-identical or two "
+                f"workflows silently disagree on what is routable "
+                f"(see check_lock_parity for the bash analogue)")
+
+
 # The frontmatter keys every slash command must carry. Matches the shape
 # commands/start.md and commands/handoff.md already use. argument-hint may be
 # an empty list (`argument-hint: []`), so the check accepts a value of `[]`.
@@ -593,6 +644,7 @@ CHECKS = (
     check_guard_parity,
     check_lock_parity,
     check_workflows,
+    check_workflow_parity,
     check_commands,
 )
 

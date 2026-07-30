@@ -177,3 +177,39 @@ Keep this list honest; add to it when you find a new gap.
 | A live SessionStart payload carries `cwd`, and `additionalContext` reaches the model | End-to-end, needs a real session. Verified live, never in CI. |
 | bash 3.2 compatibility | CI runs modern bash. The `${ARR+"${ARR[@]}"}` idiom is load-bearing on macOS and is validated only by local dev. |
 | `mkdir` atomicity on network filesystems | The lock and O_EXCL sentinel creation both assume POSIX atomicity. Untested on NFS. |
+
+## Changing a workflow (workflows/*.js) — the copy-paste invariant
+
+The workflow sandbox forbids `import()` (measured 2026-07-30 — "import() is
+not available in workflow scripts"), so the tier-resolution + args-normalization
+block is **copy-pasted** across review.js, brainstorm.js, plan.js. There is no
+shared module. `check_workflow_parity` is the only thing holding the copies
+together — the same lesson `check_lock_parity` enforces for the bash lock block.
+
+When you change the tier-validation logic (ROUTABLE, BAD_CHARSET, the args
+normalizer, the unknown-tier-key guard):
+
+1. **Change all three files.** `check_workflow_parity` fails the build if
+   ROUTABLE or BAD_CHARSET diverge. DEFAULT_TIERS is NOT a parity invariant —
+   each workflow declares only the tiers it uses, so do not "align" them.
+2. **A new shared regex constant must be added to `WORKFLOW_PARITY_CONSTS`** in
+   validate_plugin.py, or it can drift undetected.
+3. **`args` arrives as a JSON string, not an object** (the Workflow tool
+   stringifies it in transit). Every workflow normalizes with the `A` IIFE;
+   review.js additionally accepts a bare-string target. If you change the
+   normalizer, decide deliberately whether the bare-string branch applies.
+4. **The JS ROUTABLE + BAD_CHARSET must agree with `ops-tiers.sh`'s
+   `check_routable`** (charset `[A-Za-z0-9._:/@[]-]`). The shell is the
+   canonical gate; the JS is its mirror. A divergence is audit F01 — silent
+   mis-route on a hand-written `args.tiers` bypassing the resolver.
+5. **No `node --check`** in the validator — it is too lenient (returns exit 0
+   on redeclared consts, unclosed parens). A real syntax error surfaces at
+   launch; the structural checks (meta-first, ROUTABLE canonical+applied) are
+   what the build can enforce.
+
+### Adding a workflow
+
+Drop a `.js` in `workflows/`. It must: begin with `export const meta = {…}`,
+declare `const ROUTABLE` and `const BAD_CHARSET` byte-identical to the others,
+and apply `ROUTABLE.test` + `BAD_CHARSET.test` in a tier-validation loop.
+`check_workflows` + `check_workflow_parity` enforce all three at build time.

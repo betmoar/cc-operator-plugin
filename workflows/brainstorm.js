@@ -29,6 +29,8 @@ const DEFAULT_TIERS = {
   RECON: "claude-haiku-4-5-20251001",
 };
 const ROUTABLE = /^glm-|\/|^claude-/;
+// Charset mirror of ops-tiers.sh's check_routable (audit F01). See review.js.
+const BAD_CHARSET = /[^\w./:@[\]-]/;
 const overrides = A.tiers;
 if (overrides != null) {
   if (typeof overrides !== "object" || Array.isArray(overrides)) {
@@ -49,6 +51,11 @@ for (const [name, id] of Object.entries(TIERS)) {
       `tier ${name}=${JSON.stringify(id)} is not cc-proxy-routable (need glm-*, vendor/model, or claude-*)`,
     );
   }
+  if (BAD_CHARSET.test(id)) {
+    throw new Error(
+      `tier ${name}=${JSON.stringify(id)} contains characters outside the model-id charset [A-Za-z0-9._:/@[]-]`,
+    );
+  }
 }
 const MECHANICAL = TIERS.MECHANICAL;
 const JUDGMENT = TIERS.JUDGMENT;
@@ -60,7 +67,11 @@ const RECON = TIERS.RECON;
 // SOLO MODE, not a cheap agent's.
 const topic = A.topic ?? "(no topic given — the operator must pass args.topic)";
 const ctx = A.context ?? "(no codebase context provided)";
-const N = Math.min(Math.max(A.directions ?? 4, 2), 6); // 2–6 directions
+// Coerce to a number: a non-numeric `directions` ("abc") would make Math.max
+// return NaN and Array.from({length: NaN}) silently yield zero directions.
+// Default 4, clamped to 2–6.
+const _d = Number(A.directions);
+const N = Math.min(Math.max(Number.isFinite(_d) ? _d : 4, 2), 6);
 
 // --- Phase 1: diverge ------------------------------------------------------
 // Three independent exploration angles, run in parallel. Each is narrow on
