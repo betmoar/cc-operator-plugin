@@ -107,6 +107,18 @@ def make_good_tree(root):
     write(root / "scripts" / "ops-adopt.sh",
           "#!/usr/bin/env bash\n" + guards + bounded + GOOD_LOCK_BLOCK)
     write(root / "scripts" / "statusline.sh", GOOD_STATUSLINE)
+    # Every shipped slash command: frontmatter the harness registers it by,
+    # and plugin-root script paths (a bare scripts/ path resolves only inside
+    # this repo — the v0.2.0 blocked-start bug check_commands exists for).
+    for name in ("start", "handoff"):
+        write(root / "commands" / f"{name}.md", textwrap.dedent(f"""\
+            ---
+            description: d
+            argument-hint: []
+            allowed-tools: Bash(bash:*), Read, Write, Edit
+            ---
+            Run `bash "${{CLAUDE_PLUGIN_ROOT}}/scripts/ops-init.sh"`.
+            """))
 
 
 class ValidatorTest(unittest.TestCase):
@@ -388,6 +400,80 @@ class ValidatorTest(unittest.TestCase):
             "case \"$owner\" in */* | .* | *\"|\"*) owner=\"\" ;; esac\n"))
         probs = self.bounds_problems()
         self.assertTrue(any("whitespace owners" in p for p in probs), probs)
+
+    # --- 11. slash commands ---
+    # The plugin's entry points are its slash commands. An empty frontmatter
+    # block, a missing key, or a bare scripts/ path are all silent shipping
+    # bugs — the command either won't register or will fail in a target project.
+
+    def test_commands_dir_optional(self):
+        # A plugin that ships only agents need not have commands/. The good-tree
+        # fixture builds one; removing it must stay clean (the check treats
+        # absence as "not applicable", not as a defect).
+        shutil.rmtree(self.dir / "commands")
+        self.assertEqual(self.problems(), [])
+
+    def test_empty_commands_dir_fires(self):
+        for f in (self.dir / "commands").glob("*.md"):
+            f.unlink()
+        self.assertFires("holds no *.md")
+
+    def test_command_without_frontmatter_fires(self):
+        write(self.dir / "commands" / "start.md", "Body only, no frontmatter.\n")
+        self.assertFires("no `---` frontmatter block")
+
+    def test_command_missing_required_key_fires(self):
+        write(self.dir / "commands" / "start.md", textwrap.dedent("""\
+            ---
+            description: d
+            allowed-tools: Bash(bash:*)
+            ---
+            Body.
+            """))
+        self.assertFires("missing required key 'argument-hint'")
+
+    def test_command_empty_argument_hint_is_valid(self):
+        # argument-hint: [] is a legitimate empty value (handoff.md uses it).
+        write(self.dir / "commands" / "handoff.md", textwrap.dedent("""\
+            ---
+            description: d
+            argument-hint: []
+            allowed-tools: Read
+            ---
+            Body.
+            """))
+        self.assertNotIn("argument-hint", " ".join(self.problems()))
+
+    def test_command_relative_script_path_fires(self):
+        write(self.dir / "commands" / "start.md", textwrap.dedent("""\
+            ---
+            description: d
+            argument-hint: []
+            allowed-tools: Bash(bash:*)
+            ---
+            Run `bash scripts/ops-init.sh`.
+            """))
+        self.assertFires("without ${CLAUDE_PLUGIN_ROOT}")
+
+    def test_command_plugin_root_path_is_valid(self):
+        # The layout-independent form must NOT fire — the whole point of the
+        # check is to steer toward this, not forbid script invocation outright.
+        write(self.dir / "commands" / "start.md", textwrap.dedent("""\
+            ---
+            description: d
+            argument-hint: []
+            allowed-tools: Bash(bash:*)
+            ---
+            Run `bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-init.sh"`.
+            """))
+        self.assertNotIn("CLAUDE_PLUGIN_ROOT", " ".join(
+            p for p in self.problems() if "commands/" in p))
+
+    def test_real_commands_are_clean(self):
+        # Guards the shipped tree, not just a fixture.
+        probs = []
+        vp.check_commands(ROOT, probs)
+        self.assertEqual(probs, [])
 
 
 class LockParityTest(unittest.TestCase):
