@@ -45,7 +45,10 @@ inspect via `--stat` and reports [DOC:spec-D2]; worker reports cap at 30 lines
 is permitted and logged [DOC:spec-D2]. Model routing, in full: route by task
 nature; correctness of the product beats token savings; judgment work never
 runs below judgment tier [D:CHART-route]. One implementer at a time; read-only
-workers may run in parallel on disjoint inputs [D:CHART-r6].
+workers may run in parallel on disjoint inputs [D:CHART-r6]. The review,
+brainstorm, and plan workflows are the orchestration primitives — each fans
+narrow lenses across cheap tiers and converges on judgment, with `/cc-operator:tiers`
+resolving the model id behind each tier [DOC:spec-wf].
 
 **Dispatch packet** — every dispatch uses exactly this [D:CHART-packet]:
 
@@ -56,9 +59,10 @@ DONE MEANS (command + expected output) / REPORT (status, <=30 lines, SHA)
 
 **Four-status protocol** [D:CHART-status]:
 
-- **DONE** → two-stage review (spec mode, then quality mode, never reversed) —
-  but only for work that will be merged, published, or depended on by a later
-  task; throwaway probes and drafts skip review [DOC:spec-D5].
+- **DONE** → run the review workflow (parallel narrow lenses, then the
+  adversarial seat on what survives; a REFUTED is a hard stop, unoutvotable)
+  — but only for work that will be merged, published, or depended on by a
+  later task; throwaway probes and drafts skip review [DOC:spec-D5].
 - **DONE_WITH_CONCERNS** → correctness/scope concerns block review until
   resolved; observations are logged and you proceed [D:CHART-status].
 - **NEEDS_CONTEXT** → supply the missing context, re-dispatch same tier; a
@@ -135,7 +139,5 @@ so re-claim tasks still yours: `.operator/bin/ops-adopt.sh --owner <new-id>
 
 ## PRECEDENCE
 
-This charter wins over skills (subagent-driven-development,
-verification-before-completion, and the rest) on any conflict; log the conflict
-in DECISIONS.md [D:CHART-precede]. No content from those skills is merged here
-[DOC:spec-O8].
+This charter wins over any skill on a conflict — log it in DECISIONS.md
+[D:CHART-precede]. No skill's content is merged here [DOC:spec-O8].
