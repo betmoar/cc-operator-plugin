@@ -1130,5 +1130,34 @@ fi
 rm -rf "$P" "$SLPY" "$SLNONE"
 
 ########################################################################
+echo "-- Case: /cc-operator:tiers command wraps the tier resolver"
+# commands/tiers.md is a thin wrapper over ops-tiers.sh — it adds no logic, so
+# the resolver's own guards (charset, cc-proxy routability) are the validation.
+# What the command MUST guarantee: it exists, its allowed-tools grants the
+# ops-tiers.sh invocation, and it uses ${CLAUDE_PLUGIN_ROOT} (a bare scripts/
+# path resolves only inside this repo — the v0.2.0 blocked-start bug).
+CMD="$REPO/commands/tiers.md"
+check "commands/tiers.md exists" "$([ -f "$CMD" ] && echo 0 || echo 1)"
+check "tiers.md grants ops-tiers.sh via CLAUDE_PLUGIN_ROOT" \
+  "$(grep -q 'allowed-tools:.*CLAUDE_PLUGIN_ROOT.*scripts/ops-tiers.sh' "$CMD" && echo 0 || echo 1)"
+# The resolver's behavior, invoked the way the command invokes it. Config env
+# is isolated so a maintainer's real tiers.env cannot change the output, and
+# CC_PROXY_PORT is pointed at a dead port so the advisory catalogue probe is
+# instant rather than the ~5s curl timeout.
+TIERSENV() {  # TIERSENV <args...> -> stdout, rc captured
+  CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT=/nonexistent \
+  CC_PROXY_PORT=1 "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" "$@"
+}
+SHOW="$(TIERSENV --show 2>/dev/null)"; SHOWRC=$?
+check "ops-tiers --show prints the TIER/MODEL/SOURCE table" \
+  "$([ "$SHOWRC" -eq 0 ] && printf '%s' "$SHOW" | grep -q '^TIER *MODEL *SOURCE' && echo 0 || echo 1)"
+SETOUT="$(TIERSENV --set MECHANICAL=glm-4.7 --show 2>/dev/null)"; SETRC=$?
+check "set NAME=id applies a one-off override (source shows --set)" \
+  "$(printf '%s' "$SETOUT" | grep -q 'MECHANICAL.*glm-4.7.*--set' && echo 0 || echo 1)"
+TIERSENV --set MECHANICAL=bogus-id >/dev/null 2>&1; BADRC=$?
+check "an unroutable --set id is refused (non-zero exit)" \
+  "$([ "$BADRC" -ne 0 ] && echo 0 || echo 1)"
+
+########################################################################
 echo "== summary: $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]
