@@ -119,6 +119,20 @@ def make_good_tree(root):
             ---
             Run `bash "${{CLAUDE_PLUGIN_ROOT}}/scripts/ops-init.sh"`.
             """))
+    # Two workflow fixtures carrying the shared tier-validation invariants
+    # identically (ROUTABLE + BAD_CHARSET byte-equal) so check_workflows and
+    # check_workflow_parity pass on the good tree. The sandbox forbids imports,
+    # so the block is copy-pasted; parity is the only thing holding it together.
+    WF_SHARED = (
+        'const ROUTABLE = /^glm-|\\/|^claude-/;\n'
+        'const BAD_CHARSET = /[^\\w./:@[\\]-]/;\n'
+        'for (const [n, id] of Object.entries({JUDGMENT:"claude-opus-5"})) {\n'
+        '  if (!ROUTABLE.test(id) || BAD_CHARSET.test(id)) throw new Error("bad");\n'
+        '}\n'
+    )
+    for wname in ("review", "brainstorm"):
+        write(root / "workflows" / f"{wname}.js",
+              f'export const meta = {{ name: "{wname}", description: "d" }};\n' + WF_SHARED)
 
 
 class ValidatorTest(unittest.TestCase):
@@ -473,6 +487,62 @@ class ValidatorTest(unittest.TestCase):
         # Guards the shipped tree, not just a fixture.
         probs = []
         vp.check_commands(ROOT, probs)
+        self.assertEqual(probs, [])
+
+    # --- 12. workflows: meta-first, ROUTABLE canonical+applied, charset, parity ---
+    # check_workflows validates the tier-guard infrastructure per file; the audit
+    # (2026-07-30) added BAD_CHARSET so JS and shell agree on the model-id
+    # charset (audit F01 — JS ROUTABLE accepted whitespace the shell rejects).
+    # check_workflow_parity holds the copy-pasted block together (the sandbox
+    # forbids imports, measured), so a regex divergence between workflows fails.
+
+    def _wf(self, name, body_extra=""):
+        """A conforming workflow with the shared invariants."""
+        return (
+            f'export const meta = {{ name: "{name}", description: "d" }};\n'
+            'const ROUTABLE = /^glm-|\\/|^claude-/;\n'
+            'const BAD_CHARSET = /[^\\w./:@[\\]-]/;\n'
+            'for (const [n, id] of Object.entries({JUDGMENT:"claude-opus-5"})) {\n'
+            '  if (!ROUTABLE.test(id) || BAD_CHARSET.test(id)) throw new Error("x");\n'
+            '}\n' + body_extra
+        )
+
+    def test_workflow_missing_meta_first_fires(self):
+        write(self.dir / "workflows" / "review.js",
+              '// stray comment\n' + self._wf("review"))
+        self.assertFires("does not begin with")
+
+    def test_workflow_divergent_routable_fires(self):
+        write(self.dir / "workflows" / "review.js",
+              self._wf("review").replace("const ROUTABLE = /^glm-|\\/|^claude-/;",
+                                         "const ROUTABLE = /^glm-5|^claude-5/;"))
+        self.assertFires("ROUTABLE regex is")
+
+    def test_workflow_routable_never_applied_fires(self):
+        write(self.dir / "workflows" / "review.js",
+              self._wf("review").replace("ROUTABLE.test(id)", "true"))
+        self.assertFires("ROUTABLE is declared but never applied")
+
+    def test_workflow_parity_holds_on_good_tree(self):
+        # make_good_tree writes two workflows with identical ROUTABLE/BAD_CHARSET.
+        probs = []
+        vp.check_workflow_parity(self.dir, probs)
+        self.assertEqual(probs, [])
+
+    def test_workflow_parity_diverged_bad_charset_fires(self):
+        # Diverge BAD_CHARSET in one workflow only — the audit F01 fix's lock.
+        write(self.dir / "workflows" / "review.js",
+              self._wf("review").replace("const BAD_CHARSET = /[^\\w./:@[\\]-]/;",
+                                         "const BAD_CHARSET = /[^\\w./:@-]/;"))
+        probs = []
+        vp.check_workflow_parity(self.dir, probs)
+        self.assertTrue(any("BAD_CHARSET has diverged" in p for p in probs), probs)
+
+    def test_real_workflows_pass_all_checks(self):
+        # Guards the shipped tree, not just a fixture.
+        probs = []
+        vp.check_workflows(ROOT, probs)
+        vp.check_workflow_parity(ROOT, probs)
         self.assertEqual(probs, [])
 
 

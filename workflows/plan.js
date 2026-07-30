@@ -13,11 +13,12 @@ export const meta = {
 // --- tier resolution (shared pattern; see workflows/review.js) -------------
 const DEFAULT_TIERS = {
   JUDGMENT: "claude-opus-5",
-  IMPLEMENT: "claude-sonnet-5",
   MECHANICAL: "glm-5-turbo",
   RECON: "claude-haiku-4-5-20251001",
 };
 const ROUTABLE = /^glm-|\/|^claude-/;
+// Charset mirror of ops-tiers.sh's check_routable (audit F01). See review.js.
+const BAD_CHARSET = /[^\w./:@[\]-]/;
 
 // Normalize args: the Workflow tool stringifies a passed object into a JSON
 // STRING in transit (verified), so `args?.tiers` would read undefined and
@@ -46,6 +47,11 @@ for (const [name, id] of Object.entries(TIERS)) {
   if (typeof id !== "string" || !ROUTABLE.test(id)) {
     throw new Error(
       `tier ${name}=${JSON.stringify(id)} is not cc-proxy-routable (need glm-*, vendor/model, or claude-*)`,
+    );
+  }
+  if (BAD_CHARSET.test(id)) {
+    throw new Error(
+      `tier ${name}=${JSON.stringify(id)} contains characters outside the model-id charset [A-Za-z0-9._:/@[]-]`,
     );
   }
 }

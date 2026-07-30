@@ -25,6 +25,12 @@ const DEFAULT_TIERS = {
 };
 
 const ROUTABLE = /^glm-|\/|^claude-/;
+// Charset mirror of ops-tiers.sh's check_routable: a model id must be inside
+// [A-Za-z0-9._:/@[]-]. ROUTABLE checks SHAPE only — it accepts "claude opus/x"
+// (contains /) that the shell gate rejects for whitespace. Without this, a
+// caller hand-writing args.tiers bypassing ops-tiers.sh could route on an id
+// the canonical resolver would refuse (audit F01, 2026-07-30).
+const BAD_CHARSET = /[^\w./:@[\]-]/;
 
 // Normalize args. The Workflow tool stringifies a passed object into a JSON
 // STRING in transit (verified), so `args?.tiers` reads undefined and defaults
@@ -71,6 +77,12 @@ for (const [name, id] of Object.entries(TIERS)) {
     throw new Error(
       `tier ${name}=${JSON.stringify(id)} is not cc-proxy-routable ` +
         `(need glm-*, vendor/model, or claude-*)`,
+    );
+  }
+  if (BAD_CHARSET.test(id)) {
+    throw new Error(
+      `tier ${name}=${JSON.stringify(id)} contains characters outside the ` +
+        `model-id charset [A-Za-z0-9._:/@[]-] (whitespace/quotes are never valid)`,
     );
   }
 }
