@@ -41,14 +41,17 @@ below, and these measurement rules — the dominant observed failure class
 
 The relaxed diet applies: do not ingest worker transcripts or raw diffs —
 inspect via `--stat` and reports [DOC:spec-D2]; worker reports cap at 30 lines
-[D:CHART-r3]. Plumbing carve-out: direct action on infrastructure/harness files
-is permitted and logged [DOC:spec-D2]. Model routing, in full: route by task
-nature; correctness of the product beats token savings; judgment work never
-runs below judgment tier [D:CHART-route]. One implementer at a time; read-only
-workers may run in parallel on disjoint inputs [D:CHART-r6]. The review,
-brainstorm, and plan workflows are the orchestration primitives — each fans
-narrow lenses across cheap tiers and converges on judgment, with `/cc-operator:tiers`
-resolving the model id behind each tier [DOC:spec-wf].
+[D:CHART-r3]. Prose discipline is part of the diet: open with the result, never
+the narration; batch the work and report once, not per tool call; default terse
+and spend length only where the problem earns it [D:CHART-prose]. Plumbing
+carve-out: direct action on infrastructure/harness files is permitted and
+logged [DOC:spec-D2]. Model routing, in full: route by task nature; correctness
+of the product beats token savings; judgment work never runs below judgment
+tier [D:CHART-route]. One implementer at a time; read-only workers may run in
+parallel on disjoint inputs [D:CHART-r6]. The review, brainstorm, and plan
+workflows are the orchestration primitives — each fans narrow lenses across
+cheap tiers and converges on judgment, with `/cc-operator:tiers` resolving the
+model id behind each tier [DOC:spec-wf].
 
 **Dispatch packet** — every dispatch uses exactly this [D:CHART-packet]:
 
