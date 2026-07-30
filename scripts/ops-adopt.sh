@@ -88,6 +88,24 @@ LOCK_LIVE_SPINS=${LOCK_LIVE_SPINS:-600}   # × 0.1s = 60s to wait on a CONFIRMED
 RECLAIM_WAIT=${RECLAIM_WAIT:-50}       # × 0.1s = 5s to let a LIVE reclaimer finish (it needs ms)
 LOCK_DEFERS_MAX=2     # short waits to grant before treating the claim as dead
 
+# Validate the env-overridable budgets. ${VAR:-default} only guards EMPTY, not
+# non-numeric — `[ "$i" -ge "$LOCK_SPINS" ]` with LOCK_SPINS=abc errors inside
+# the `if` (status 2), set -e does not fire on a failed test, and the spin loop
+# never exits → infinite hang, sentinel never clears, Stop blocks the session
+# forever (review F-A). LOCK_SPINS=0 collapses the unjudgeable-holder budget to
+# zero → instant reclaim of a holder that should sit out the full budget (the
+# F03 displacement class; review F-B). Reject both: a positive integer, or die.
+# This block is inside the LOCK BLOCK and must stay byte-identical in the sibling CLI.
+_lock_is_posint() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; [ "$1" -ge 1 ]; }
+_lock_budget_die() { echo "ops-adopt: $1 is not a positive integer (got '$2') — refusing; see LOCK_SPINS/LOCK_LIVE_SPINS/RECLAIM_WAIT" >&2; exit 2; }
+_lock_check_budget() { _lock_is_posint "$3" || _lock_budget_die "$1" "$3"; }
+_lock_check_budget LOCK_SPINS "$LOCK_SPINS" "$LOCK_SPINS"
+_lock_check_budget LOCK_LIVE_SPINS "$LOCK_LIVE_SPINS" "$LOCK_LIVE_SPINS"
+# RECLAIM_WAIT must be < LOCK_SPINS, else the backoff `i=$((LOCK_SPINS-RECLAIM_WAIT))`
+# goes non-positive and each defer pays the full RECLAIM_WAIT (review F-C).
+_lock_check_budget RECLAIM_WAIT "$RECLAIM_WAIT" "$RECLAIM_WAIT"
+[ "$RECLAIM_WAIT" -lt "$LOCK_SPINS" ] || _lock_budget_die "RECLAIM_WAIT (must be < LOCK_SPINS)" "$RECLAIM_WAIT"
+
 LOCK_HELD=0
 LOCK_MINE=""
 LOCK_HOLDER_REC=""

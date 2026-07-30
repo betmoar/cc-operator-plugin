@@ -703,16 +703,21 @@ mkdir -p "$P/.operator/.lock" "$P/.operator/.lock.reclaim"
 # `timeout(1)` — macOS does not ship one.
 #
 # Tiny budget via the env seam (audit F08): the abandoned-claim path pays
-# LOCK_SPINS + the defers; on the real 30s/5s budgets this case alone ran >60s.
+# LOCK_SPINS + the defers. on the real 30s/5s budgets this case alone ran >60s.
 # The OUTCOME under test (recovers, does not wedge; verdict recorded; nothing
 # left behind) is unchanged at a tiny budget.
-AB_BUDGET_SPINS="${LOCK_SPINS:-10}"   # 10 × 0.1s = ~1s; override the seam
-LOCK_SPINS="$AB_BUDGET_SPINS" \
+#
+# RECLAIM_WAIT must be set < LOCK_SPINS — the backoff `i=$((LOCK_SPINS-RECLAIM_WAIT))`
+# goes non-positive otherwise and each defer pays the full RECLAIM_WAIT (review
+# F-C: LOCK_SPINS=10 with the default RECLAIM_WAIT=50 took ~20s, not ~1s, and the
+# validator now rejects that combo anyway). Both set tiny; the guard requires
+# RECLAIM_WAIT < LOCK_SPINS.
+LOCK_SPINS=10 RECLAIM_WAIT=2 \
   bash -c 'cd "$0" && bash "$1" T-AB crit ev PASS --owner SESS-A >/dev/null 2>&1' \
   "$P" "$VERDICT" &
 ABPID=$!
 ABRC=1; waited=0
-while [ "$waited" -lt 30 ]; do
+while [ "$waited" -lt 20 ]; do
   if ! kill -0 "$ABPID" 2>/dev/null; then wait "$ABPID" 2>/dev/null; ABRC=$?; break; fi
   sleep 1; waited=$((waited + 1))
 done
@@ -896,11 +901,15 @@ check "dead holder: no lock or claim marker left behind" "$([ ! -d "$LK" ] && [ 
 # duration shrinks. Audit F08/F09: the real budget made the case take ~160s and
 # the "completed" assertion a flaky timing-race (spins≠0.1s wall-clock under
 # load). Measuring the property, not a wall-clock coincidence, is the fix.
-LIVE_BUDGET_SPINS="${LOCK_LIVE_SPINS:-10}"   # 10 × 0.1s = ~1s; override the seam
+#
+# Hardcode LOCK_LIVE_SPINS=10 (do not read the ambient value): the suite must be
+# hermetic against the very variable it exists to control (review minor note).
+# LOCK_SPINS/RECLAIM_WAIT stay default here — the live-degrade branch never
+# reclaims, so only LOCK_LIVE_SPINS bounds this case.
 ( cd "$P" && bash "$TASK" T-LIVE --owner SESS-A >/dev/null 2>&1 )
 sleep 300 & LIVEPID=$!   # stays "live" for the whole case; duration irrelevant
 mkdir -p "$LK"; printf '%s %s %s\n' "${HOSTNAME:-nohost}" "${UID:-0}" "$LIVEPID" > "$LK/holder"
-LOCK_LIVE_SPINS="$LIVE_BUDGET_SPINS" \
+LOCK_LIVE_SPINS=10 \
   bash -c 'cd "$0" && bash "$1" T-LIVE crit ev PASS --owner SESS-A >/dev/null 2>&1' \
   "$P" "$VERDICT" &
 LVWRITER=$!
@@ -999,6 +1008,19 @@ check "a held lock is stamped, and a stamped lock cannot be rmdir'd" "$([ "$PROB
 awk '/^# >>> LOCK BLOCK/,/^# <<< LOCK BLOCK/' "$SCRIPTS/ops-verdict.sh" | sed 's/ops-verdict:/TOOL:/g' > "$TMPD/lkv"
 awk '/^# >>> LOCK BLOCK/,/^# <<< LOCK BLOCK/' "$SCRIPTS/ops-adopt.sh"   | sed 's/ops-adopt:/TOOL:/g'   > "$TMPD/lka"
 check "adopt and verdict carry identical lock logic (no drift)" "$([ -s "$TMPD/lkv" ] && cmp -s "$TMPD/lkv" "$TMPD/lka" && echo 0 || echo 1)"
+
+# The env-overridable lock budgets must validate (review F-A/B/C of the F08 seam):
+# a non-numeric or zero value used to either wedge forever (F-A: [ -ge ] errors
+# inside the `if`, set -e doesn't fire, spin loop never exits) or collapse the
+# unjudgeable-holder budget to zero (F-B: instant reclaim — the F03 class). Both
+# now refuse at resolve time. RECLAIM_WAIT >= LOCK_SPINS is also refused (F-C: it
+# makes the backoff `i=$((LOCK_SPINS-RECLAIM_WAIT))` non-positive).
+ABORT_BUDGET() { # ABORT_BUDGET <var=val...> → exit code
+  ( cd "$P" && env "$@" bash "$VERDICT" T-BUD crit ev PASS --owner SESS-A >/dev/null 2>&1; echo $? )
+}
+check "non-numeric LOCK_SPINS is refused (no infinite hang, F-A)" "$([ "$(ABORT_BUDGET LOCK_SPINS=abc)" -eq 2 ] && echo 0 || echo 1)"
+check "zero LOCK_SPINS is refused (no budget collapse, F-B)" "$([ "$(ABORT_BUDGET LOCK_SPINS=0)" -eq 2 ] && echo 0 || echo 1)"
+check "RECLAIM_WAIT >= LOCK_SPINS is refused (no broken backoff, F-C)" "$([ "$(ABORT_BUDGET LOCK_SPINS=10 RECLAIM_WAIT=50)" -eq 2 ] && echo 0 || echo 1)"
 # Stamps first: a stamped lock dir is non-empty and survives `rm -rf` otherwise.
 rm -f "$P/.operator/.lock/holder" "$P/.operator/.lock.reclaim/holder" 2>/dev/null || true
 rm -rf "$P" "$TMPD"
