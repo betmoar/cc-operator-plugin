@@ -1151,7 +1151,7 @@ TIERSENV() {  # TIERSENV <args...> -> stdout, rc captured
 SHOW="$(TIERSENV --show 2>/dev/null)"; SHOWRC=$?
 check "ops-tiers --show prints the TIER/MODEL/SOURCE table" \
   "$([ "$SHOWRC" -eq 0 ] && printf '%s' "$SHOW" | grep -q '^TIER *MODEL *SOURCE' && echo 0 || echo 1)"
-SETOUT="$(TIERSENV --set MECHANICAL=glm-4.7 --show 2>/dev/null)"; SETRC=$?
+SETOUT="$(TIERSENV --set MECHANICAL=glm-4.7 --show 2>/dev/null)"
 check "set NAME=id applies a one-off override (source shows --set)" \
   "$(printf '%s' "$SETOUT" | grep -q 'MECHANICAL.*glm-4.7.*--set' && echo 0 || echo 1)"
 TIERSENV --set MECHANICAL=bogus-id >/dev/null 2>&1; BADRC=$?
