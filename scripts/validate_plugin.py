@@ -282,7 +282,7 @@ def check_hook(root, problems):
 def check_scripts(root, problems):
     for name in ("ops-init.sh", "ops-verdict.sh", "ops-task.sh",
                  "ops-adopt.sh", "ops-stop-hook.sh",
-                 "ops-sessionstart-hook.sh", "statusline.sh"):
+                 "ops-sessionstart-hook.sh", "statusline.sh", "ops-tiers.sh"):
         p = root / "scripts" / name
         if not p.is_file():
             problems.append(f"scripts/{name}: missing")
@@ -573,14 +573,30 @@ def check_workflow_parity(root, problems):
 TIER_NAMES_SRC = "scripts/ops-tiers.sh"
 
 
-def _resolver_tier_names(root):
-    """Read the TIER_NAMES literal from ops-tiers.sh, as a sorted tuple."""
+def _resolver_tier_names(root, problems):
+    """Read the TIER_NAMES literal from ops-tiers.sh, as a sorted tuple.
+
+    Fails LOUD — appends a problem and returns None on any read failure, rather
+    than silently disabling check_workflow_tier_namespace (the fail-open a review
+    caught: deleting ops-tiers.sh or single-quoting TIER_NAMES made the whole
+    namespace check pass with rc 0). A None return therefore ALWAYS carries a
+    problem; callers treat None as "unreadable, already reported" and skip the
+    per-workflow equality loop, not as "no constraint".
+
+    Accepts both quote styles and an optional `readonly` prefix so a legal shell
+    refactor of the TIER_NAMES line cannot silently turn the guard off.
+    """
     p = root / TIER_NAMES_SRC
     if not p.is_file():
-        return None
-    m = re.search(r'^TIER_NAMES="([^"]+)"', p.read_text(encoding="utf-8"),
-                  re.MULTILINE)
+        return None  # missing-file is check_scripts' job (ops-tiers.sh is required)
+    m = re.search(r'^\s*(?:readonly\s+)?TIER_NAMES=["\']([^"\']+)["\']',
+                  p.read_text(encoding="utf-8"), re.MULTILINE)
     if not m:
+        problems.append(
+            f"{TIER_NAMES_SRC}: no `TIER_NAMES=\"…\"` assignment found — the "
+            f"canonical tier namespace is unreadable, so check_workflow_tier_"
+            f"namespace cannot hold the resolver↔workflow contract (F07). A legal "
+            f"refactor (renaming, retyping) must update this regex, not silence it.")
         return None
     return tuple(sorted(m.group(1).split()))
 
@@ -595,13 +611,18 @@ def check_workflow_tier_namespace(root, problems):
     a typo is no longer caught. Keep them equal; the array is copy-pasted per the
     import-forbidden sandbox, so a check is the only thing holding it.
     """
-    canonical = _resolver_tier_names(root)
+    canonical = _resolver_tier_names(root, problems)
     wf_dir = root / "workflows"
     files = sorted(wf_dir.glob("*.js")) if wf_dir.is_dir() else []
     for f in files:
         rel = f"workflows/{f.name}"
         text = f.read_text(encoding="utf-8")
-        m = re.search(r"const\s+KNOWN_TIERS\s*=\s*\[([^\]]*)\]", text)
+        # CODE lines only — a KNOWN_TIERS appearing solely in a comment must NOT
+        # satisfy this check (matches the check_reader_bounds convention; a review
+        # caught that raw-text matching made `// const KNOWN_TIERS=…` pass).
+        code = "\n".join(ln for ln in text.splitlines()
+                         if not ln.lstrip().startswith("//"))
+        m = re.search(r"const\s+KNOWN_TIERS\s*=\s*\[([^\]]*)\]", code)
         if not m:
             problems.append(
                 f"{rel}: no `const KNOWN_TIERS = [...]` found — a workflow must "

@@ -69,6 +69,7 @@ and the maintainer's local `.archive/dev/` (untracked).
 | `scripts/statusline.sh`'s path or name | update `.claude-plugin/statusline.json` — cc-status skips an unresolvable renderer **silently** (enforced by `validate_plugin.check_statusline`) |
 | the fragment/lock scheme in `ops-verdict.sh` | update `ops-init.sh` (`verdicts.d/`, `.gitattributes`), the README evidence-gate section, and the *"concurrent appends never interleave"* case |
 | the `check_bare_name` reject set in any CLI | update the other two CLIs **and** the `case` filter in both `sentinel_owner` parsers — the hook must reject what the writers reject, or a body our CLIs could never have written reads as a valid foreign owner and the gate opens (*"name guards agree"* + *"untrusted input"* cases) |
+| the canonical tier set in `ops-tiers.sh` (`TIER_NAMES=…`) | update every workflow's `KNOWN_TIERS` array to match — they must accept every tier the resolver emits or forwarding the resolver map throws on a valid key (F07). `check_workflow_tier_namespace` enforces the equality, but it reads `TIER_NAMES` by regex: a rename/retype of that line must update `_resolver_tier_names`'s regex too, or the check fails *open* (silently passes). Do not move `KNOWN_TIERS` into a comment — the check matches code lines only |
 
 > Test cases are referenced **by title**, not by ordinal: `grep '^echo "-- Case' tests/test-scripts.sh`.
 > Numbers shift the moment a case is inserted, and a coupling table that quietly points at the

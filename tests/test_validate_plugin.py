@@ -585,6 +585,32 @@ class ValidatorTest(unittest.TestCase):
         vp.check_workflow_tier_namespace(self.dir, probs)
         self.assertEqual(probs, [])
 
+    def test_resolver_tier_names_unreadable_fails_loud(self):
+        # F2/F3 fix: a legal rewrite of TIER_NAMES that the regex can't read must
+        # FAIL LOUD, not silently disable the namespace check (fail-open). Single
+        # quotes are accepted; a genuinely unreadable form (no assignment) fires.
+        write(self.dir / "scripts" / "ops-tiers.sh",
+              "TIER_NAMES='JUDGMENT IMPLEMENT MECHANICAL RECON'\n")
+        probs = []
+        vp.check_workflow_tier_namespace(self.dir, probs)  # single-quote: accepted, no problem
+        self.assertFalse(any("unreadable" in p for p in probs), probs)
+        # A form the regex cannot read at all → fail loud.
+        write(self.dir / "scripts" / "ops-tiers.sh",
+              ' tiers=(JUDGMENT IMPLEMENT MECHANICAL RECON)\n')
+        probs = []
+        vp.check_workflow_tier_namespace(self.dir, probs)
+        self.assertTrue(any("unreadable" in p for p in probs), probs)
+
+    def test_known_tiers_only_in_comment_fires(self):
+        # F4 fix: a KNOWN_TIERS appearing only in a comment must not satisfy the
+        # check (matches check_reader_bounds' code-only convention).
+        write(self.dir / "workflows" / "review.js",
+              'export const meta = { name: "review", description: "d" };\n'
+              '// const KNOWN_TIERS = ["JUDGMENT","IMPLEMENT","MECHANICAL","RECON"];\n')
+        probs = []
+        vp.check_workflow_tier_namespace(self.dir, probs)
+        self.assertTrue(any("no `const KNOWN_TIERS" in p for p in probs), probs)
+
 
 class LockParityTest(unittest.TestCase):
     """The shared lock block must be identical in both writers.
