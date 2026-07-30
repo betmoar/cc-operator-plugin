@@ -701,12 +701,20 @@ mkdir -p "$P/.operator/.lock" "$P/.operator/.lock.reclaim"
 # Run under a polled watchdog: against the UNFIXED code this never returns, and
 # an unbounded wait here would hang CI instead of reporting a failure. No
 # `timeout(1)` — macOS does not ship one.
-( cd "$P" && bash "$VERDICT" T-AB crit ev PASS --owner SESS-A >/dev/null 2>&1 ) &
+#
+# Tiny budget via the env seam (audit F08): the abandoned-claim path pays
+# LOCK_SPINS + the defers; on the real 30s/5s budgets this case alone ran >60s.
+# The OUTCOME under test (recovers, does not wedge; verdict recorded; nothing
+# left behind) is unchanged at a tiny budget.
+AB_BUDGET_SPINS="${LOCK_SPINS:-10}"   # 10 × 0.1s = ~1s; override the seam
+LOCK_SPINS="$AB_BUDGET_SPINS" \
+  bash -c 'cd "$0" && bash "$1" T-AB crit ev PASS --owner SESS-A >/dev/null 2>&1' \
+  "$P" "$VERDICT" &
 ABPID=$!
 ABRC=1; waited=0
-while [ "$waited" -lt 120 ]; do
+while [ "$waited" -lt 30 ]; do
   if ! kill -0 "$ABPID" 2>/dev/null; then wait "$ABPID" 2>/dev/null; ABRC=$?; break; fi
-  sleep 2; waited=$((waited + 2))
+  sleep 1; waited=$((waited + 1))
 done
 if kill -0 "$ABPID" 2>/dev/null; then kill -9 "$ABPID" 2>/dev/null; ABRC=99; fi
 check "abandoned reclaim claim recovers (does not wedge forever)" "$([ "$ABRC" -eq 0 ] && echo 0 || echo 1)"
@@ -880,16 +888,27 @@ check "dead holder: no lock or claim marker left behind" "$([ ! -d "$LK" ] && [ 
 # created its own, so the holder's own release then removed the NEW holder's
 # lock and a third writer walked in. Exceeding the budget must degrade to the
 # milder failure — proceed unlocked — never to stealing a running writer's lock.
-# Slow by nature: it has to outlast a real 30s budget.
+#
+# The lock budgets are env-overridable (a test seam; defaults unchanged), so the
+# case runs on a TINY budget — ~1s to degrade on a confirmed-live holder —
+# instead of the real 60s. The invariant under test (never steal a live holder's
+# lock; the waiter degrades rather than hangs) is unchanged; only the absolute
+# duration shrinks. Audit F08/F09: the real budget made the case take ~160s and
+# the "completed" assertion a flaky timing-race (spins≠0.1s wall-clock under
+# load). Measuring the property, not a wall-clock coincidence, is the fix.
+LIVE_BUDGET_SPINS="${LOCK_LIVE_SPINS:-10}"   # 10 × 0.1s = ~1s; override the seam
 ( cd "$P" && bash "$TASK" T-LIVE --owner SESS-A >/dev/null 2>&1 )
-sleep 90 & LIVEPID=$!
+sleep 300 & LIVEPID=$!   # stays "live" for the whole case; duration irrelevant
 mkdir -p "$LK"; printf '%s %s %s\n' "${HOSTNAME:-nohost}" "${UID:-0}" "$LIVEPID" > "$LK/holder"
-( cd "$P" && bash "$VERDICT" T-LIVE crit ev PASS --owner SESS-A >/dev/null 2>&1 ) &
+LOCK_LIVE_SPINS="$LIVE_BUDGET_SPINS" \
+  bash -c 'cd "$0" && bash "$1" T-LIVE crit ev PASS --owner SESS-A >/dev/null 2>&1' \
+  "$P" "$VERDICT" &
 LVWRITER=$!
 LVRC=1; waited=0
-while [ "$waited" -lt 70 ]; do
+# Poll up to 20s (generous vs the ~1s degrade) for the writer to finish.
+while [ "$waited" -lt 20 ]; do
   if ! kill -0 "$LVWRITER" 2>/dev/null; then wait "$LVWRITER" 2>/dev/null; LVRC=$?; break; fi
-  sleep 2; waited=$((waited + 2))
+  sleep 1; waited=$((waited + 1))
 done
 if kill -0 "$LVWRITER" 2>/dev/null; then kill -9 "$LVWRITER" 2>/dev/null; LVRC=99; fi
 check "live holder: waiter still completes (bounded, never hangs)" "$([ "$LVRC" -eq 0 ] && echo 0 || echo 1)"

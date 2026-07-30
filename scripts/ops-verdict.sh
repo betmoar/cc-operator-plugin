@@ -138,9 +138,9 @@ FRAG_MAX_BYTES=8388608
 # — strictly worse than the stale lock it fixed, which at least proceeded after
 # one budget (found by Codex review). Bounded deferral, then it is presumed
 # abandoned. An unexpirable claim is a deadlock with extra steps.
-LOCK_SPINS=300        # × 0.1s = 30s before an UNJUDGEABLE holder is presumed dead
-LOCK_LIVE_SPINS=600   # × 0.1s = 60s to wait on a CONFIRMED-LIVE holder, then go unlocked
-RECLAIM_WAIT=50       # × 0.1s = 5s to let a LIVE reclaimer finish (it needs ms)
+LOCK_SPINS=${LOCK_SPINS:-300}        # × 0.1s = 30s before an UNJUDGEABLE holder is presumed dead
+LOCK_LIVE_SPINS=${LOCK_LIVE_SPINS:-600}   # × 0.1s = 60s to wait on a CONFIRMED-LIVE holder, then go unlocked
+RECLAIM_WAIT=${RECLAIM_WAIT:-50}       # × 0.1s = 5s to let a LIVE reclaimer finish (it needs ms)
 LOCK_DEFERS_MAX=2     # short waits to grant before treating the claim as dead
 
 LOCK_HELD=0
