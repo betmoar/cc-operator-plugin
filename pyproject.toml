@@ -1,0 +1,10 @@
+# pytest config. Pin testpaths to the plugin's OWN test modules so stray local
+# directories (e.g. untracked tests/pilot-seeds*/) cannot break collection of the
+# documented `pytest tests/` command. Audit F10/F06: without this, an untracked
+# seed dir with an unimportable test_* halts the whole run with 4 collection
+# errors before the real suite collects.
+[tool.pytest.ini_options]
+testpaths = [
+    "tests/test_validate_plugin.py",
+    "tests/test_release_gate.py",
+]
