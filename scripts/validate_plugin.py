@@ -513,6 +513,69 @@ def check_workflows(root, problems):
                 f"or an unroutable id reaches dispatch unchecked")
 
 
+# The frontmatter keys every slash command must carry. Matches the shape
+# commands/start.md and commands/handoff.md already use. argument-hint may be
+# an empty list (`argument-hint: []`), so the check accepts a value of `[]`.
+COMMAND_REQUIRED_KEYS = ("description", "argument-hint", "allowed-tools")
+
+
+def check_commands(root, problems):
+    r"""Every commands/*.md must carry the frontmatter the harness registers it
+    by (description / argument-hint / allowed-tools), and must reference scripts
+    only as `${CLAUDE_PLUGIN_ROOT}/scripts/...`.
+
+    The plugin-root rule is the same landmine the charter's EVIDENCE GATE hits:
+    a bare `scripts/foo.sh` path resolves only inside THIS repo, so a target
+    project running the command gets a "command not found" and the operator is
+    blocked from starting/stopping — the v0.2.0 bug the charter path-check
+    exists for, now applied to the command bodies that invoke those scripts.
+
+    `commands/` is optional: the good-tree fixture and a plugin that ships only
+    agents need not have one. When present, every file is checked; an empty dir
+    (present but no .md) is flagged, since a command the harness cannot register
+    is worse than none.
+    """
+    cmd_dir = root / "commands"
+    files = sorted(cmd_dir.glob("*.md")) if cmd_dir.is_dir() else []
+    if not cmd_dir.is_dir():
+        return  # commands/ is optional
+    if not files:
+        problems.append(
+            "commands/: present but holds no *.md — the plugin's slash "
+            "commands are its entry points; an empty dir is a shipping bug")
+        return
+    for f in files:
+        rel = f"commands/{f.name}"
+        text = f.read_text(encoding="utf-8")
+        fm = re.match(r"\A---\n(.*?)\n---\n", text, re.DOTALL)
+        if not fm:
+            problems.append(
+                f"{rel}: no `---` frontmatter block — Claude Code will not "
+                f"register the command without it")
+            continue
+        front = fm.group(1)
+        for key in COMMAND_REQUIRED_KEYS:
+            # `argument-hint: []` is a valid (empty) value; `\S` would reject it
+            # because `]` follows whitespace. Accept an explicit empty list too.
+            if not re.search(rf"^{re.escape(key)}:\s*\S", front, re.MULTILINE) \
+               and not re.search(rf"^{re.escape(key)}:\s*\[\]", front, re.MULTILINE):
+                problems.append(
+                    f"{rel}: frontmatter missing required key '{key}'")
+        # A bare `scripts/<x>` reference resolves only inside this repo. The
+        # charter's path-check covers the gate CLIs; this covers any script a
+        # command body invokes. `${CLAUDE_PLUGIN_ROOT}/scripts/...` is the
+        # layout-independent form (the same distinction validator check 4 makes
+        # for the charter, and hook check 7 makes for hooks.json).
+        for hit in re.finditer(r"(?<![$/])scripts/[A-Za-z0-9._-]+", text):
+            # `(?<![$/])` lets `${CLAUDE_PLUGIN_ROOT}/scripts/` and a preceding
+            # `/scripts/` pass; a bare leading `scripts/` is the fault.
+            problems.append(
+                f"{rel}: references `{hit.group(0)}` without "
+                f"${{CLAUDE_PLUGIN_ROOT}} — a bare scripts/ path resolves only "
+                f"inside this repo, not in a target project (the v0.2.0 "
+                f"blocked-start bug)")
+
+
 # The registry, in run order. Both main() and the test suite iterate THIS —
 # a hand-copied second list is how three guardrails (reader bounds, guard
 # parity, lock parity) ended up running in the build but not in the test that
@@ -530,6 +593,7 @@ CHECKS = (
     check_guard_parity,
     check_lock_parity,
     check_workflows,
+    check_commands,
 )
 
 
