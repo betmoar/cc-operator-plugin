@@ -211,5 +211,49 @@ normalizer, the unknown-tier-key guard):
 
 Drop a `.js` in `workflows/`. It must: begin with `export const meta = {…}`,
 declare `const ROUTABLE` and `const BAD_CHARSET` byte-identical to the others,
-and apply `ROUTABLE.test` + `BAD_CHARSET.test` in a tier-validation loop.
-`check_workflows` + `check_workflow_parity` enforce all three at build time.
+declare `const KNOWN_TIERS = [...]` equal to the resolver's `TIER_NAMES`, and
+apply `ROUTABLE.test` + `BAD_CHARSET.test` in a tier-validation loop whose
+unknown-key check is `if (!KNOWN_TIERS.includes(name))`.
+`check_workflows` + `check_workflow_parity` + `check_workflow_tier_namespace`
+enforce all three at build time.
+
+### The tier-namespace coupling (audit F07, 2026-07-31)
+
+`KNOWN_TIERS` (what a workflow *accepts* in `args.tiers`) and the resolver's
+`TIER_NAMES` (what `ops-tiers.sh` *emits*) must be the same set, even though a
+workflow only *uses* a subset (its `DEFAULT_TIERS`). The trap: if you add a tier
+to the resolver (e.g. a fifth seat) and forget to add it to every workflow's
+`KNOWN_TIERS`, forwarding the resolver's full map throws on the new key — exactly
+the F07 bug. `check_workflow_tier_namespace` holds this, but it is a regex
+reader, so:
+
+- **`KNOWN_TIERS` must be a real statement, not a comment.** The check matches
+  code lines only (it strips `//` lines, like `check_reader_bounds`). A
+  `// const KNOWN_TIERS = …` in a comment does NOT satisfy it.
+- **A rename/retype of the resolver's `TIER_NAMES=` line breaks the regex.** If
+  you change it to `readonly TIER_NAMES=` or single quotes, both work (the regex
+  accepts them); anything else (an array, a different var name) makes the check
+  **fail loud** — update `_resolver_tier_names`'s regex, do not silence it. The
+  check must never fail *open* (silently pass) — that was the review-caught
+  defect in the first version of this guard.
+- **`DEFAULT_TIERS` ≠ `KNOWN_TIERS`.** DEFAULT_TIERS is what the workflow
+  dispatches (review: 2 tiers); KNOWN_TIERS is what it accepts (always all 4).
+  Do not "fix" a workflow by making them equal — that re-opens F07.
+
+### The env-overridable lock budgets (audit F08, 2026-07-31)
+
+`LOCK_SPINS`, `LOCK_LIVE_SPINS`, `RECLAIM_WAIT` in the LOCK BLOCK are
+`${VAR:-default}` — a test seam (the slow concurrency cases run on a tiny
+budget). They are validated as positive integers at resolve time in BOTH
+ops-verdict.sh and ops-adopt.sh (byte-identical block). If you change the lock:
+
+- **Any new budget var must get the same positive-int guard**, or a non-numeric
+  value wedges the spin loop forever (`[ -ge ]` errors inside the `if`, `set -e`
+  doesn't fire) — review F-A.
+- **`RECLAIM_WAIT` must stay `< LOCK_SPINS`.** The backoff `i=$((LOCK_SPINS -
+  RECLAIM_WAIT))` goes non-positive otherwise and each defer pays the full
+  RECLAIM_WAIT — review F-C.
+- The whole validation block is inside `# >>> LOCK BLOCK … # <<< LOCK BLOCK`,
+  so `check_lock_parity` enforces it stays byte-identical in both files. A
+  comment that names the sibling file by name will break parity (the normalizer
+  only rewrites `ops-tool:` message prefixes) — refer to "the sibling CLI".

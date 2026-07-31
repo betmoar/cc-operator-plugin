@@ -115,6 +115,13 @@ way. None of it is loaded by the plugin at runtime; the validator reads only
 - `docs/audit-2026-07-27-{findings,handoff}.md` — the departing-architect audit:
   five verified defects with repro evidence, the guardrails added, and the
   residual-risk register. Its test counts are frozen at the audit's close.
+  **Note:** the `handoff` file is referenced here but absent from the tree (a
+  dangling ref); its ledger survives in `AUDIT_LOG.md` Phase 2 (F01–F06). The
+  findings file, if present, is the canonical one.
+- `docs/audit-2026-07-31-handoff.md` — the token-diet / workflow-layer audit:
+  the workflow + tier-system mental model, the F07–F11 findings' decisions, the
+  guardrails shipped this pass, the residual-risk register, and the prioritized
+  backlog (incl. the input-axis compressor spec at `docs/spec/input-axis-compressor.md`).
 - Everything else (build plan + ledger, pilot runbook and findings, the prior
   project's evidence bundle) was removed from the tree in 0.3.0: see git
   history (tree ≤ v0.2.0) or the maintainer's local `.archive/dev/`.
