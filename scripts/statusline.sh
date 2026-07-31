@@ -126,6 +126,36 @@ sentinel_owner() { # sentinel_owner <path> → owner ("" = unowned)
   printf '%s' "$owner"
 }
 
+# --- find the session's newest LIVE workflow journal -------------------------
+# The harness appends ~/.claude/projects/<dashed-cwd>/<session>/subagents/
+# workflows/wf_<runid>/journal.jsonl per run, and never GC's them. We key on
+# SESSION alone (survives worktree isolation, where cwd is the worktree but the
+# journal sits under the session's project dir) and pick the newest dir whose
+# journal mtime is within LIVE_SEC — a stopped run's journal stops growing, so
+# recency is the liveness signal. Builtins/glob + stat only; no find, no lock.
+# Prints the journal path, or nothing. Caller treats empty as "no live run".
+glob_newest_live_journal() { # glob_newest_live_journal <session> [live_sec]
+  [ -n "$1" ] || return 0
+  local live="${2:-90}" newest="" nmtime=0
+  shopt -s nullglob
+  local j
+  for j in "$HOME/.claude/projects"/*/"$1"/subagents/workflows/wf_*/journal.jsonl; do
+    [ -f "$j" ] || continue
+    # Portable mtime: macOS stat is `stat -f %m`, Linux (GNU) is `stat -c %Y`.
+    # The bar renders on the user's host; try both, fall back to 0 (renders
+    # nothing — the safe direction for a non-load-bearing segment).
+    local m
+    m="$(stat -f %m "$j" 2>/dev/null || stat -c %Y "$j" 2>/dev/null || echo 0)"
+    [ "${m:-0}" -gt "${nmtime:-0}" ] || continue
+    nmtime="$m"; newest="$j"
+  done
+  shopt -u nullglob
+  [ -n "$newest" ] || return 0
+  # Liveness: the newest journal must have been touched within LIVE_SEC seconds.
+  local now; now="$(date +%s 2>/dev/null || echo 0)"
+  if [ $((now - nmtime)) -le "$live" ]; then printf '%s' "$newest"; fi
+}
+
 # --- partition pending sentinels ---------------------------------------------
 # Plain glob, not `find`: no PATH dependency, and it matches the hook's own
 # enumeration. A dotfile is invisible to both — that is why all three CLIs
@@ -144,16 +174,48 @@ for f in "$OPDIR/pending"/*; do
 done
 shopt -u nullglob
 
-# An operator project with nothing open renders nothing. The bar is for states
-# that change what you do next; "no open tasks" is the default, not news.
-[ "$MINE" -gt 0 ] || [ "$FOREIGN" -gt 0 ] || exit 0
-
+# An operator project with nothing open AND no live workflow renders nothing.
+# The bar is for states that change what you do next; the defaults are not news.
 RED=$'\033[31m'; DIM=$'\033[2m'; RESET=$'\033[0m'
+
+# --- workflow progress (the journal-based ratio, NOT a %) --------------------
+# Unlike the op[ segment above (a mirror of the gate), this is the one part of
+# the bar that is NOT gate state: it reflects an in-flight workflow run. It is
+# observable because the harness appends a per-run journal.jsonl under the
+# session's project dir. Two bounded greps give done/started; the ratio is a
+# DISPATCHED-WORK ratio, never a completion % (total isn't known until the last
+# agent() call — "2/4" can become "2/9", and a % that lies is worse than none,
+# the same failure the file header was written to avoid).
+#
+# Liveness: wf_* dirs are never GC'd, so mtime must be recent (a stopped run's
+# journal stops growing). Schema is undocumented harness internals — on ANY
+# surprise (missing, unreadable, no started lines) this renders nothing. A wrong
+# progress number is worse than no progress number; fail toward silence.
+WFSEG=""
+if [ -n "$SESSION" ]; then
+  WFDIR="$(glob_newest_live_journal "$SESSION" 2>/dev/null || true)"
+  if [ -n "$WFDIR" ] && [ -f "$WFDIR" ]; then
+    started="$(grep -c '"type":"started"' "$WFDIR" 2>/dev/null || echo 0)"
+    done="$(grep -c '"type":"result"' "$WFDIR" 2>/dev/null || echo 0)"
+    if [ "${started:-0}" -gt 0 ] 2>/dev/null; then
+      WFSEG="${DIM}wf ${done}/${started}${RESET}"
+    fi
+  fi
+fi
+
+[ "$MINE" -gt 0 ] || [ "$FOREIGN" -gt 0 ] || [ -n "$WFSEG" ] || exit 0
 
 # Red only when YOUR stop is actually blocked — the one genuinely actionable
 # state. Foreign tasks are dim: worth seeing (that visibility is what made the
-# original collision diagnosable) but never a call to action.
-OUT="op["
-[ "$MINE" -gt 0 ] && OUT="${OUT}${RED}${MINE}${RESET}" || OUT="${OUT}0"
-[ "$FOREIGN" -gt 0 ] && OUT="${OUT}${DIM}+${FOREIGN}*${RESET}"
-printf '%s]' "$OUT"
+# original collision diagnosable) but never a call to action. The op[ segment
+# renders ONLY when there is a task to count — op[0] is noise, and the original
+# rule ("nothing open renders nothing") still holds for the no-task + no-wf case.
+if [ "$MINE" -gt 0 ] || [ "$FOREIGN" -gt 0 ]; then
+  SEP=""
+  OUT="op["
+  [ "$MINE" -gt 0 ] && OUT="${OUT}${RED}${MINE}${RESET}" || OUT="${OUT}0"
+  [ "$FOREIGN" -gt 0 ] && OUT="${OUT}${DIM}+${FOREIGN}*${RESET}"
+  printf '%s]' "$OUT"
+  SEP=" "
+fi
+[ -n "$WFSEG" ] && printf '%s%s' "${SEP:-}" "$WFSEG"

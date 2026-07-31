@@ -163,5 +163,42 @@ ok(blockedIds.includes("blocked"), "plan: feasible=no (or contradiction) → blo
 ok(needsInfoIds.includes("info"), "plan: feasible=needs-info → needsInfo");
 ok(!blockedIds.includes("clean") && !needsInfoIds.includes("clean"), "plan: clean task is neither blocked nor needsInfo");
 
+// ── crawl: shard fan-out + merge ─────────────────────────────────────────────
+console.log("-- Case: crawl.js shard fan-out + merge");
+// The operator packs shards; the workflow dispatches one crawler per shard, then
+// one merge. Assert: N shards → N crawler calls (labels shard i/N), exactly one
+// merge call, and the result carries the merged findings/gaps. Also: no shards
+// → an error return (the operator must pack them; the workflow has no fs).
+const crawlFixtures = {
+  // every shard gets the same canned digest; the merge returns a merged shape.
+  // (the stub keys on label; shard labels are "shard 1/3" etc.)
+  merge: { findings: [{ fact: "merged", inferred: false }], gaps: [] },
+};
+// Override: return a shard digest for any "shard i/N" label, merge for "merge".
+const fs2 = await import("node:fs");
+const crawlSrc = fs2.readFileSync(new URL(WF("crawl.js")), "utf8").replace(/\bexport\s+const\s+meta\b/, "const meta");
+const crawlFn = new Function("args", "agent", "parallel", "pipeline", "phase", "log",
+  `return (async () => {\n${crawlSrc}\n})();`);
+const crawlCalls = [];
+const crawlAgent = async (p, o = {}) => {
+  crawlCalls.push(o.label);
+  if (o.label === "merge") return crawlFixtures.merge;
+  return { shard: ["a:1"], findings: [{ fact: "f" + o.label, inferred: false }], gaps: [] };
+};
+const crawlRes = await crawlFn(
+  { question: "how does auth work", shards: [{ paths: ["a"] }, { paths: ["b"] }, { paths: ["c"] }] },
+  crawlAgent, makeRuntime().parallel, makeRuntime().pipeline, () => {}, () => {},
+);
+const shardCalls = crawlCalls.filter((l) => l?.startsWith("shard")).length;
+ok(shardCalls === 3, "crawl: 3 shards → 3 crawler dispatches (one per shard)");
+ok(crawlCalls.filter((l) => l === "merge").length === 1, "crawl: exactly one merge dispatch");
+ok((crawlRes.shardsRequested ?? 0) === 3 && (crawlRes.shardsReturned ?? 0) === 3,
+  "crawl: reports shardsRequested/shardsReturned");
+ok(Array.isArray(crawlRes.findings) && crawlRes.findings.length === 1,
+  "crawl: returns the merged findings");
+// no shards → error, not a crash
+const noShard = await crawlFn({ question: "x" }, crawlAgent, makeRuntime().parallel, makeRuntime().pipeline, () => {}, () => {});
+ok(noShard?.error && /no shards/.test(noShard.error), "crawl: no args.shards → error return (workflow has no fs to pack them)");
+
 console.log(`\n== summary: ${pass} passed, ${fail} failed ==`);
 if (fail > 0) process.exit(1);

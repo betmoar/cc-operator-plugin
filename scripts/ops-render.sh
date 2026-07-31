@@ -97,6 +97,8 @@ seat_add author IMPLEMENT default
 seat_add mechanic MECHANICAL default
 seat_add scout RECON default
 seat_add verifier JUDGMENT default
+seat_add crawler MECHANICAL default
+seat_add brainstorm MECHANICAL default
 
 # ── parse a tiers.env file (NAME=VALUE), parsed never sourced. Two line kinds:
 #   NAME=<model-id>      → tier override  (if NAME is a known tier)
@@ -177,9 +179,12 @@ render_to() { # render_to <dest>
   printf '%s\n' "$SEATS" | while IFS='|' read -r -n 256 sn st ss; do
     [ -n "$sn" ] || continue
     eval "mid=\$TRES_$st"
-    tpl="$TPL_DIR/${st}.tmpl"
+    # Template lookup is SEAT-based (a seat names its template), falling back to
+    # default.tmpl. Two seats can share a tier but need distinct bodies — e.g.
+    # crawler and brainstorm are both MECHANICAL but render different contracts.
+    tpl="$TPL_DIR/${sn}.tmpl"
     [ -f "$tpl" ] || tpl="$TPL_DIR/default.tmpl"
-    [ -f "$tpl" ] || die "no template for seat '$sn' (tier $st) and no $TPL_DIR/default.tmpl"
+    [ -f "$tpl" ] || die "no template for seat '$sn' and no $TPL_DIR/default.tmpl"
     # Splice model: into frontmatter. If the template has a model: line, replace
     # its value; if it has a NAME placeholder, swap it; else prepend a block.
     awk -v seat="op-$sn" -v model="$mid" '

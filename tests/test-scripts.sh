@@ -1274,5 +1274,40 @@ check "M7: warns when CLAUDE_CODE_SUBAGENT_MODEL is set (overrides frontmatter)"
 rm -rf "$RP"
 
 ########################################################################
+echo "-- Case: statusline shows workflow progress (journal-based ratio)"
+# The wf segment reads the session's newest LIVE journal.jsonl (done/started
+# ratio). It is NOT a % (total isn't known until the last dispatch — a % that
+# lies is the failure the file header was written to avoid). Fails toward
+# silence: absent/stale journal → no segment. Reuses the Case-22 `render` helper
+# + project $P (an operator project).
+# A FRESH operator project: Case 22's $P has open sentinels by now, which would
+# prefix the bar with op[...] and mask the wf-only assertion.
+WFPROJ="$(newproj)"; ( cd "$WFPROJ" && bash "$INIT" >/dev/null 2>&1 )
+WFSESS="wf-sess-test"
+WFDIR="$HOME/.claude/projects/wftestproj/$WFSESS/subagents/workflows/wf_abc"
+mkdir -p "$WFDIR"
+mkjournal() { # mkjournal <started> <result>
+  : > "$WFDIR/journal.jsonl"
+  i=0; while [ "$i" -lt "$1" ]; do i=$((i+1)); printf '%s\n' '{"type":"started","key":"v2:k","agentId":"a'$i'"}' >> "$WFDIR/journal.jsonl"; done
+  i=0; while [ "$i" -lt "$2" ]; do i=$((i+1)); printf '%s\n' '{"type":"result","key":"v2:k","agentId":"a'$i'","result":null}' >> "$WFDIR/journal.jsonl"; done
+}
+mkjournal 12 5
+# No open tasks in $P, so the only segment is the wf ratio. Strip ANSI → "wf 5/12".
+check "live journal → renders 'wf 5/12' (done/started, not a %)" \
+  "$([ "$(render "$WFSESS" "$WFPROJ")" = "wf 5/12" ] && echo 0 || echo 1)"
+check "wf segment is dim (not red — a running workflow is not actionable)" \
+  "$(sljson "$WFSESS" "$WFPROJ" | "$BASH_ABS" "$SL" 2>/dev/null | grep -q $'\033\[2m' && echo 0 || echo 1)"
+# Stale journal: backdate >90s → no wf segment (liveness fails → render nothing,
+# since $P has no open tasks either).
+touch -t "$(date -v-5M +%Y%m%d%H%M)" "$WFDIR/journal.jsonl" 2>/dev/null
+check "stale journal (>90s) → no wf segment" \
+  "$([ -z "$(render "$WFSESS" "$WFPROJ")" ] && echo 0 || echo 1)"
+# Missing journal entirely → nothing (the fail-toward-silence default).
+: > "$WFDIR/journal.jsonl"   # empty: zero started → no ratio
+check "empty journal (0 started) → no wf segment" \
+  "$([ -z "$(render "$WFSESS" "$WFPROJ")" ] && echo 0 || echo 1)"
+rm -rf "$HOME/.claude/projects/wftestproj"
+
+########################################################################
 echo "== summary: $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]
