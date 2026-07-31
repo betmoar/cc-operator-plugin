@@ -18,3 +18,5 @@ jobs:
         run: python3 -m unittest discover -s tests -v
       - name: Run shell script tests
         run: bash tests/test-scripts.sh
+      - name: Run workflow logic tests
+        run: node tests/test_workflows.mjs
