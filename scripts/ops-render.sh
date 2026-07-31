@@ -37,6 +37,10 @@
 #   ops-render.sh --show     print the resolved seat→model table
 #   ops-render.sh --revert   remove the project layer (fall back to plugin-root)
 #   ops-render.sh --check    render to a temp dir + probe, write nothing
+# Tier values (TRES_*) and provenance twins (TSRC_*) are set and read through
+# `eval` (bash 3.2 on macOS has no associative arrays), so shellcheck cannot see
+# either side of the use — same pattern, same directive, as ops-tiers.sh:27.
+# shellcheck disable=SC2034,SC2154
 set -eu
 
 OPDIR=".operator"
