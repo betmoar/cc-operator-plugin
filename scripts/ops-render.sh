@@ -220,7 +220,9 @@ case "$MODE" in
   render)
     [ -d "$TPL_DIR" ] || die "no templates dir at $TPL_DIR"
     warn_subagent_env
-    [ -d "$OUTDIR" ] && ls "$OUTDIR" > "$LASTGOOD" 2>/dev/null || true
+    # Record the current rendered set as last-known-good (best-effort: a missing
+    # dir or unreadable listing is fine — revert falls back to plugin-root).
+    if [ -d "$OUTDIR" ]; then ls "$OUTDIR" > "$LASTGOOD" 2>/dev/null || true; fi
     TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
     render_to "$TMP/agents"
     mkdir -p "$OUTDIR"
