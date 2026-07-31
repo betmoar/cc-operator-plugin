@@ -75,6 +75,30 @@ else
   echo "kept $OPDIR/DECISIONS.md (exists)"
 fi
 
+# The tier config: tier→model (and optional seat→tier) bindings the renderer
+# (ops-render.sh) and the resolver (ops-tiers.sh) read. Commented defaults only —
+# uncomment/override to repoint a tier to a cc-proxy model id or bind a seat.
+# Layered: this project file overrides ~/.claude/cc-operator/tiers.env. Never
+# clobbered once it exists (the operator's bindings are source-of-truth here).
+if [ ! -f "$OPDIR/tiers.env" ]; then
+  cat > "$OPDIR/tiers.env" <<'EOF'
+# Tier → model-id bindings (cc-proxy routes by id shape: glm-*, vendor/model,
+# claude-*). Uncomment and edit to repoint a tier, e.g. MECHANICAL=glm-5-turbo.
+#JUDGMENT=claude-opus-5
+#IMPLEMENT=claude-sonnet-5
+#MECHANICAL=glm-5-turbo
+#RECON=claude-haiku-4-5-20251001
+#
+# Seat → tier overrides (optional; 'op-' prefix optional). Default seats:
+#   author=IMPLEMENT  mechanic=MECHANICAL  scout=RECON  verifier=JUDGMENT
+# Example: run scout on the cheap tier too.
+#op-scout=MECHANICAL
+EOF
+  echo "created $OPDIR/tiers.env (commented defaults)"
+else
+  echo "kept $OPDIR/tiers.env (exists)"
+fi
+
 # Install the gate CLIs into the project so the charter's `.operator/bin/...`
 # paths resolve in any project, not only the plugin repo (the model's shell has
 # no ${CLAUDE_PLUGIN_ROOT}). Unlike the ledgers these are always refreshed:

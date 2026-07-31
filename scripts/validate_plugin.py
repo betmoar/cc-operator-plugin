@@ -257,6 +257,35 @@ def check_agents(root, problems):
                 f"(unknowns-harness / F1..F13) — should be project-agnostic")
 
 
+def check_render_templates(root, problems):
+    """ops-render.sh splices a resolved model id into each template's `model:`
+    frontmatter line. A template lacking that line produces an agent silently
+    bound to the default backend — the splice lands nowhere. Require at least a
+    default.tmpl carrying a model: line whenever the renderer ships.
+
+    Templates live in agents/_templates/*.tmpl. They are deliberately NOT .md so
+    check_agents' `*.md` glob skips them (they are inputs to the renderer, not
+    agents themselves): a .tmpl with a NAME/MODEL placeholder would trip the
+    alias rule for no reason.
+    """
+    render = root / "scripts" / "ops-render.sh"
+    if not render.is_file():
+        return  # the renderer is optional; no templates to check
+    tpl_dir = root / "agents" / "_templates"
+    if not tpl_dir.is_dir() or not any(tpl_dir.glob("*.tmpl")):
+        problems.append(
+            "agents/_templates/: ops-render.sh ships but no *.tmpl found — the "
+            f"renderer needs at least {tpl_dir}/default.tmpl to splice into")
+        return
+    for t in sorted(tpl_dir.glob("*.tmpl")):
+        text = t.read_text(encoding="utf-8")
+        if not re.search(r"^model:\s*\S", text, re.MULTILINE):
+            problems.append(
+                f"agents/_templates/{t.name}: no `model:` frontmatter line — "
+                f"ops-render.sh splices the resolved id into it; a template "
+                f"without one produces an agent bound to the default backend")
+
+
 def check_hook(root, problems):
     hp = root / "hooks" / "hooks.json"
     hook = load_json(hp, problems)
@@ -282,7 +311,8 @@ def check_hook(root, problems):
 def check_scripts(root, problems):
     for name in ("ops-init.sh", "ops-verdict.sh", "ops-task.sh",
                  "ops-adopt.sh", "ops-stop-hook.sh",
-                 "ops-sessionstart-hook.sh", "statusline.sh", "ops-tiers.sh"):
+                 "ops-sessionstart-hook.sh", "statusline.sh", "ops-tiers.sh",
+                 "ops-render.sh"):
         p = root / "scripts" / name
         if not p.is_file():
             problems.append(f"scripts/{name}: missing")
@@ -321,6 +351,8 @@ def check_reader_bounds(root, problems):
         # merge or checkout can produce it). Same hazard class as the others:
         # a newline-less multi-MB tiers.env is one "line" to an unbounded read.
         "ops-tiers.sh": 1,       # the load_file config loop
+        # ops-render.sh parses the same tiers.env with the same bounded loop.
+        "ops-render.sh": 1,      # the load_file config loop
     }
     for name, expected in readers.items():
         p = root / "scripts" / name
@@ -714,6 +746,7 @@ CHECKS = (
     check_charter,
     check_ledger_schema,
     check_agents,
+    check_render_templates,
     check_hook,
     check_scripts,
     check_reader_bounds,

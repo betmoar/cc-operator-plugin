@@ -129,6 +129,15 @@ def make_good_tree(root):
           'TIER_NAMES="JUDGMENT IMPLEMENT MECHANICAL RECON"\n'
           '# minimal stub; one byte-bounded read satisfies check_reader_bounds\n'
           'while IFS= read -r -n 512 line; do :; done < "$1"\n')
+    # ops-render.sh ships alongside the resolver; a stub with one bounded read
+    # satisfies check_scripts (bash -n) and check_reader_bounds.
+    write(root / "scripts" / "ops-render.sh",
+          '# stub renderer\n'
+          'while IFS= read -r -n 256 line; do :; done\n')
+    # The renderer splices a model: id into each template; default.tmpl must
+    # carry a model: line or check_render_templates fires.
+    write(root / "agents" / "_templates" / "default.tmpl",
+          '---\nname: op-NAME\nmodel: MODEL\ntools: Read\n---\nbody\n')
     WF_SHARED = (
         'const ROUTABLE = /^glm-|\\/|^claude-/;\n'
         'const BAD_CHARSET = /[^\\w./:@[\\]-]/;\n'
@@ -610,6 +619,38 @@ class ValidatorTest(unittest.TestCase):
         probs = []
         vp.check_workflow_tier_namespace(self.dir, probs)
         self.assertTrue(any("no `const KNOWN_TIERS" in p for p in probs), probs)
+
+
+class RenderTemplateTest(unittest.TestCase):
+    """ops-render.sh splices a model id into each template's model: line. A
+    template without one produces an agent silently bound to the default
+    backend — the splice lands nowhere."""
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        make_good_tree(self.dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_good_tree_templates_clean(self):
+        probs = []
+        vp.check_render_templates(self.dir, probs)
+        self.assertEqual(probs, [])
+
+    def test_template_without_model_line_fires(self):
+        write(self.dir / "agents" / "_templates" / "default.tmpl",
+              '---\nname: op-NAME\ntools: Read\n---\nbody\n')
+        probs = []
+        vp.check_render_templates(self.dir, probs)
+        self.assertTrue(any("no `model:` frontmatter line" in p for p in probs), probs)
+
+    def test_renderer_without_templates_fires(self):
+        import shutil as _sh
+        _sh.rmtree(self.dir / "agents" / "_templates")
+        probs = []
+        vp.check_render_templates(self.dir, probs)
+        self.assertTrue(any("no *.tmpl found" in p for p in probs), probs)
 
 
 class LockParityTest(unittest.TestCase):
