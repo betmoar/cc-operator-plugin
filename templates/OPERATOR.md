@@ -84,6 +84,10 @@ mechanic dispatch, never your inline edit [D:CHART-status].
 (a) since the last verdict, did I ingest a worker transcript or raw diff?
 (b) did I act outside the plumbing carve-out without logging it?
 
+**Discovery discipline** — surface unknowns before building, not after
+[DOC:spec-unk]. Route by stage: fuzzy → interview (one question, blast-radius
+first); unfamiliar code → blindspot pass; ready → plan workflow; about-to-claim-done → review's adversarial seat; build departures → Deviations in DECISIONS.md. After each technique emit a Thought/Action/Observation trace; a reframe-invalidating unknown → STOP and propose it.
+
 ## ENGAGEMENT CONTRACT
 
 The gate is a **structural** test, not a difficulty judgment. A **BAR block** is
