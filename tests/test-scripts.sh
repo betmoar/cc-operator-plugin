@@ -1200,5 +1200,79 @@ check "an unroutable --set id is refused (non-zero exit)" \
   "$([ "$BADRC" -ne 0 ] && echo 0 || echo 1)"
 
 ########################################################################
+echo "-- Case: /cc-operator:tiers render branch + ops-render.sh behavior"
+# ops-render.sh renders project-layer agents (.claude/agents/op-*.md) from the
+# tier config so a PLAIN Agent dispatch can run on a cc-proxy model. The command
+# (commands/tiers.md) is a thin wrapper; the renderer's guard chain
+# (charset/routable/seat-name) + atomic write are the validation. These cases
+# exercise the renderer's behavior, not just its validator-level shape.
+RENDER="$SCRIPTS/ops-render.sh"
+check "commands/tiers.md grants ops-render.sh via CLAUDE_PLUGIN_ROOT" \
+  "$(grep -q 'allowed-tools:.*CLAUDE_PLUGIN_ROOT.*scripts/ops-render.sh' "$CMD" && echo 0 || echo 1)"
+check "tiers.md documents the render branch" \
+  "$(grep -q 'render' "$CMD" && echo 0 || echo 1)"
+
+# A render fixture project, isolated from the maintainer's real tiers.env. The
+# renderer reads .operator/tiers.env; CC_PROXY_PORT=1 makes the --check liveness
+# probe instant (dead port) without hanging.
+RENDERENV() { # RENDERENV <args...> -> runs in the fixture project
+  CC_OPERATOR_TIERS_USER=/nonexistent CC_PROXY_PORT=1 \
+  "$BASH_ABS" "$RENDER" "$@"
+}
+RP="$(newproj)"
+# newproj does not init .operator; the renderer needs .operator/tiers.env + the
+# _templates (resolved from the plugin install, not the fixture). Set both up.
+( cd "$RP" && "$BASH_ABS" "$INIT" >/dev/null 2>&1 )
+
+# --show: the resolved seat→model table, with a tier repoint applied.
+printf 'MECHANICAL=glm-5-turbo\nop-scout=MECHANICAL\n' > "$RP/.operator/tiers.env"
+SHOWR="$( cd "$RP" && RENDERENV --show 2>/dev/null )"; SHOWRRC=$?
+check "ops-render --show prints the SEAT/TIER/MODEL/SOURCE table" \
+  "$([ "$SHOWRRC" -eq 0 ] && printf '%s' "$SHOWR" | grep -q '^SEAT *TIER *MODEL' && echo 0 || echo 1)"
+check "ops-render --show resolves a repointed tier (MECHANICAL→glm-5-turbo)" \
+  "$(printf '%s' "$SHOWR" | grep -q 'mechanic.*MECHANICAL.*glm-5-turbo' && echo 0 || echo 1)"
+check "ops-render --show resolves a seat override (scout→MECHANICAL)" \
+  "$(printf '%s' "$SHOWR" | grep -q 'scout.*MECHANICAL.*glm-5-turbo' && echo 0 || echo 1)"
+
+# render: writes .claude/agents/op-*.md with the spliced model id.
+( cd "$RP" && RENDERENV >/dev/null 2>&1 ); RENDRC=$?
+check "ops-render render exits 0" "$([ "$RENDRC" -eq 0 ] && echo 0 || echo 1)"
+check "render writes a project-layer op-mechanic.md" \
+  "$([ -f "$RP/.claude/agents/op-mechanic.md" ] && echo 0 || echo 1)"
+check "rendered op-mechanic.md frontmatter has model: glm-5-turbo (spliced)" \
+  "$(grep -q '^model: glm-5-turbo' "$RP/.claude/agents/op-mechanic.md" && echo 0 || echo 1)"
+check "rendered op-mechanic.md frontmatter has name: op-mechanic" \
+  "$(grep -q '^name: op-mechanic' "$RP/.claude/agents/op-mechanic.md" && echo 0 || echo 1)"
+check "render states restart-to-apply (agent files read at session start)" \
+  "$( cd "$RP" && RENDERENV 2>&1 | grep -qi 'restart' && echo 0 || echo 1)"
+
+# revert: removes the project layer (fall back to plugin-root alias agents).
+( cd "$RP" && RENDERENV --revert >/dev/null 2>&1 ); REVRC=$?
+check "ops-render --revert exits 0" "$([ "$REVRC" -eq 0 ] && echo 0 || echo 1)"
+check "revert removes the rendered op-mechanic.md" \
+  "$([ ! -f "$RP/.claude/agents/op-mechanic.md" ] && echo 0 || echo 1)"
+
+# guard chain: each rejection changes no file and exits non-zero.
+gmkdir() { mkdir -p "$RP/.claude/agents"; }
+printf 'MECHANICAL=not-a-model\n' > "$RP/.operator/tiers.env"
+( cd "$RP" && RENDERENV --show >/dev/null 2>&1 ); G1=$?
+check "guard: unroutable model id is refused (non-zero exit)" "$([ "$G1" -ne 0 ] && echo 0 || echo 1)"
+printf 'op-scout=BOGUS\n' > "$RP/.operator/tiers.env"
+( cd "$RP" && RENDERENV --show >/dev/null 2>&1 ); G2=$?
+check "guard: seat bound to unknown tier is refused (non-zero exit)" "$([ "$G2" -ne 0 ] && echo 0 || echo 1)"
+printf 'MECHANICAL=glm 5\n' > "$RP/.operator/tiers.env"
+( cd "$RP" && RENDERENV --show >/dev/null 2>&1 ); G3=$?
+check "guard: whitespace in model id is refused (non-zero exit)" "$([ "$G3" -ne 0 ] && echo 0 || echo 1)"
+
+# M7: CLAUDE_CODE_SUBAGENT_MODEL set → warned (it overrides frontmatter at dispatch).
+printf 'MECHANICAL=glm-5-turbo\n' > "$RP/.operator/tiers.env"
+M7WARN="$( cd "$RP" && CC_OPERATOR_TIERS_USER=/nonexistent CC_PROXY_PORT=1 \
+  CLAUDE_CODE_SUBAGENT_MODEL=glm-5.2 "$BASH_ABS" "$RENDER" --show 2>&1 )"
+check "M7: warns when CLAUDE_CODE_SUBAGENT_MODEL is set (overrides frontmatter)" \
+  "$(printf '%s' "$M7WARN" | grep -qi 'CLAUDE_CODE_SUBAGENT_MODEL' && echo 0 || echo 1)"
+
+rm -rf "$RP"
+
+########################################################################
 echo "== summary: $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]
