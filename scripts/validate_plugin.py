@@ -559,6 +559,95 @@ def check_lock_parity(root, problems):
             f"({detail})")
 
 
+def check_resolver_renderer_parity(root, problems):
+    """ops-tiers.sh and ops-render.sh must agree on check_routable and on the
+    canonical tier set.
+
+    Both parse the same tiers.env and both refuse an id the other would refuse —
+    that agreement was prose ("share check_routable byte-aligned" in CLAUDE.md's
+    coupling table) with nothing enforcing it, while the two neighbouring
+    duplications (the bash lock, the workflow regexes) each got a parity check
+    after the same lesson. A divergence here means the renderer writes a seat
+    binding the resolver would have rejected, or refuses one the resolver
+    accepts: two different ideas of which model ids exist.
+
+    TIER_NAMES is the second copy. _resolver_tier_names reads it from
+    ops-tiers.sh only, and check_workflow_tier_namespace holds the workflows to
+    that; ops-render.sh declares its own literal and nothing checked it. A fifth
+    tier added per the coupling table's instructions would leave the renderer's
+    is_tier_name gating a stale namespace — accepting or rejecting the wrong
+    set, with a `die` message listing tiers that disagree with the resolver's.
+
+    Compared as normalized token streams, not byte-for-byte: the two copies are
+    line-wrapped differently for readability, and reflowing a `case` arm is not
+    a semantic change. Whitespace collapses; everything else must match.
+    """
+    src = {}
+    for name in ("ops-tiers.sh", "ops-render.sh"):
+        p = root / "scripts" / name
+        if not p.is_file():
+            return  # missing-file is already reported by check_scripts
+        src[name] = p.read_text(encoding="utf-8")
+
+    def routable_body(text):
+        m = re.search(r"check_routable\(\)\s*\{(.*?)\n\}", text, re.DOTALL)
+        if not m:
+            return None
+        # CODE only, matching check_reader_bounds' convention: one copy carries
+        # a trailing `# check_routable <label> <id>` signature comment and the
+        # other does not. A comment is not a semantic divergence, and a parity
+        # check that fires on one trains maintainers to route around it.
+        code = [ln.split("#", 1)[0] for ln in m.group(1).splitlines()]
+        return " ".join(" ".join(code).split())
+
+    bodies = {n: routable_body(t) for n, t in src.items()}
+    missing = [n for n, b in bodies.items() if b is None]
+    if missing:
+        problems.append(
+            f"scripts/{', '.join(missing)}: no `check_routable() {{ … }}` "
+            f"definition found — the resolver and the renderer must refuse the "
+            f"same model ids, and this check cannot compare what it cannot find")
+    elif bodies["ops-tiers.sh"] != bodies["ops-render.sh"]:
+        problems.append(
+            "scripts/ops-tiers.sh vs ops-render.sh: check_routable has drifted "
+            "— they validate the same tiers.env, so a divergence means one "
+            "writes a binding the other would refuse (whitespace-insensitive "
+            "comparison, so this is a real logic difference)")
+    else:
+        # Equality alone is satisfied by two IDENTICALLY gutted copies — the
+        # same hole CANONICAL_BAD_CHARSET closed for the workflow regexes,
+        # reachable here by commenting the body out in both files (comments are
+        # stripped above). Pin the two load-bearing rejects to their content.
+        for frag, why in (
+                (r"[!A-Za-z0-9._:/@[\]-]", "the charset reject"),
+                ("not cc-proxy-routable", "the id-shape reject")):
+            if frag not in bodies["ops-tiers.sh"]:
+                problems.append(
+                    f"scripts/ops-tiers.sh + ops-render.sh: check_routable no "
+                    f"longer contains {why} ({frag!r}) — the two copies agree, "
+                    f"but agreeing on a guard that checks nothing is how a "
+                    f"parity check passes while the guard is gone")
+
+    names = {}
+    for name, text in src.items():
+        m = re.search(r"^(?:readonly\s+)?TIER_NAMES=([\"'])(.*?)\1",
+                      text, re.MULTILINE)
+        if not m:
+            problems.append(
+                f"scripts/{name}: no `TIER_NAMES=\"…\"` assignment found — both "
+                f"the resolver and the renderer gate seat bindings on this set; "
+                f"a legal refactor (renaming, retyping) must update this regex, "
+                f"not silence it")
+            return
+        names[name] = tuple(m.group(2).split())
+    if names["ops-tiers.sh"] != names["ops-render.sh"]:
+        problems.append(
+            f"scripts/ops-render.sh: TIER_NAMES={list(names['ops-render.sh'])} "
+            f"does not match the resolver's {list(names['ops-tiers.sh'])} in "
+            f"ops-tiers.sh — the renderer's is_tier_name would gate seat "
+            f"bindings on a stale namespace")
+
+
 def check_workflows(root, problems):
     """Every workflows/*.js must (a) be syntactically valid JS, (b) begin with a
     `export const meta = {...}` first statement, (c) carry the tier guard —
@@ -910,6 +999,7 @@ CHECKS = (
     check_platform_idioms,
     check_guard_parity,
     check_lock_parity,
+    check_resolver_renderer_parity,
     check_workflows,
     check_workflow_parity,
     check_workflow_tier_namespace,

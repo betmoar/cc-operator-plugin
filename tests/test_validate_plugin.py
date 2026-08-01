@@ -127,13 +127,29 @@ def make_good_tree(root):
     # check_workflow_tier_namespace pass on the good tree. The sandbox forbids
     # imports, so the block is copy-pasted; parity + namespace-equality are the
     # only things holding it together.
+    # Both stubs carry check_routable and TIER_NAMES: the resolver and the
+    # renderer parse the same tiers.env, so check_resolver_renderer_parity
+    # requires both to declare each (a plugin shipping one guarded and one
+    # unguarded is exactly what that check exists to reject).
+    ROUTABLE_STUB = (
+        'check_routable() {\n'
+        '  case "$2" in\n'
+        '    "") die "$1 is empty" ;;\n'
+        '    *[!A-Za-z0-9._:/@[\\]-]*) die "$1 outside charset" ;;\n'
+        '  esac\n'
+        '  case "$2" in glm-*|claude-*) return 0 ;; */*) return 0 ;;\n'
+        '    *) die "$1 is not cc-proxy-routable" ;; esac\n'
+        '}\n'
+        'TIER_NAMES="JUDGMENT IMPLEMENT MECHANICAL RECON"\n'
+    )
     write(root / "scripts" / "ops-tiers.sh",
-          'TIER_NAMES="JUDGMENT IMPLEMENT MECHANICAL RECON"\n'
+          ROUTABLE_STUB +
           '# minimal stub; one byte-bounded read satisfies check_reader_bounds\n'
           'while IFS= read -r -n 512 line; do :; done < "$1"\n')
     # ops-render.sh ships alongside the resolver; a stub with one bounded read
     # satisfies check_scripts (bash -n) and check_reader_bounds.
     write(root / "scripts" / "ops-render.sh",
+          ROUTABLE_STUB +
           '# stub renderer\n'
           'while IFS= read -r -n 256 line; do :; done\n')
     # The renderer splices a model: id into each template; default.tmpl must
@@ -873,6 +889,111 @@ class LockParityTest(unittest.TestCase):
         # Guards the shipped tree, not just a fixture.
         probs = []
         vp.check_lock_parity(ROOT, probs)
+        self.assertEqual(probs, [])
+
+
+class ResolverRendererParityTest(unittest.TestCase):
+    """ops-tiers.sh and ops-render.sh parse the same tiers.env, so they must
+    refuse the same ids and gate on the same tier set.
+
+    Both couplings were prose in CLAUDE.md with nothing enforcing them, while
+    the two neighbouring duplications (the bash lock, the workflow regexes) each
+    got a parity check after the same lesson.
+    """
+
+    ROUTABLE = (
+        "check_routable() {\n"
+        '  case "$2" in\n'
+        '    "") die "$1 is empty" ;;\n'
+        '    *[!A-Za-z0-9._:/@[\\]-]*)\n'
+        '      die "$1=\'$2\' outside charset" ;;\n'
+        "  esac\n"
+        '  case "$2" in glm-*|claude-*) return 0 ;; */*) return 0 ;;\n'
+        '    *) die "$1=\'$2\' is not cc-proxy-routable" ;; esac\n'
+        "}\n"
+    )
+    TIERS = 'TIER_NAMES="JUDGMENT IMPLEMENT MECHANICAL RECON"\n'
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        (self.dir / "scripts").mkdir(parents=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _write(self, tiers=None, render=None):
+        for name, body in (("ops-tiers.sh", tiers), ("ops-render.sh", render)):
+            write(self.dir / "scripts" / name,
+                  "#!/usr/bin/env bash\n" +
+                  (self.ROUTABLE + self.TIERS if body is None else body))
+
+    def problems(self):
+        probs = []
+        vp.check_resolver_renderer_parity(self.dir, probs)
+        return probs
+
+    def test_identical_guards_pass(self):
+        self._write()
+        self.assertEqual(self.problems(), [])
+
+    def test_reflowed_copy_passes(self):
+        # The shipped copies are line-wrapped differently and one carries a
+        # signature comment. Neither is a semantic difference; firing on them
+        # would train maintainers to route around the check.
+        reflowed = ("check_routable() { # check_routable <label> <id>\n"
+                    '  case "$2" in "") die "$1 is empty" ;;\n'
+                    '    *[!A-Za-z0-9._:/@[\\]-]*)\n'
+                    '      die "$1=\'$2\' outside charset" ;; esac\n'
+                    '  case "$2" in glm-*|claude-*) return 0 ;;\n'
+                    '    */*) return 0 ;;\n'
+                    '    *) die "$1=\'$2\' is not cc-proxy-routable" ;;\n'
+                    "  esac\n}\n")
+        self._write(render=reflowed + self.TIERS)
+        self.assertEqual(self.problems(), [])
+
+    def test_drifted_charset_fires(self):
+        # The renderer accepts a charset the resolver refuses: it would write a
+        # seat binding the resolver rejects.
+        self._write(render=self.ROUTABLE.replace(
+            "[!A-Za-z0-9._:/@[\\]-]", "[!A-Za-z0-9._-]") + self.TIERS)
+        self.assertTrue(any("check_routable has drifted" in p
+                            for p in self.problems()), self.problems())
+
+    def test_gutted_in_both_copies_fires(self):
+        # Equality alone is satisfied by two IDENTICALLY gutted copies — the
+        # hole CANONICAL_BAD_CHARSET closed for the workflow regexes. Comments
+        # are stripped before comparison, so commenting the body out in BOTH
+        # files makes them compare equal.
+        gutted = ("check_routable() {\n"
+                  '  # case "$2" in *[!A-Za-z0-9._:/@[\\]-]*) die "x" ;; esac\n'
+                  "  return 0\n}\n")
+        self._write(tiers=gutted + self.TIERS, render=gutted + self.TIERS)
+        probs = self.problems()
+        self.assertTrue(any("agreeing on a guard that checks nothing" in p
+                            for p in probs), probs)
+
+    def test_missing_definition_fires(self):
+        self._write(render="echo hi\n" + self.TIERS)
+        self.assertTrue(any("no `check_routable()" in p
+                            for p in self.problems()), self.problems())
+
+    def test_renderer_tier_names_drift_fires(self):
+        # A fifth tier added to the resolver per the coupling table leaves the
+        # renderer's is_tier_name gating a stale namespace.
+        self._write(tiers=self.ROUTABLE +
+                    'TIER_NAMES="JUDGMENT IMPLEMENT MECHANICAL RECON EXTRA"\n')
+        probs = self.problems()
+        self.assertTrue(any("does not match the resolver's" in p
+                            for p in probs), probs)
+
+    def test_missing_tier_names_fires(self):
+        self._write(render=self.ROUTABLE)
+        self.assertTrue(any("no `TIER_NAMES" in p
+                            for p in self.problems()), self.problems())
+
+    def test_real_scripts_are_in_parity(self):
+        probs = []
+        vp.check_resolver_renderer_parity(ROOT, probs)
         self.assertEqual(probs, [])
 
 
