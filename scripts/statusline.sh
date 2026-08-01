@@ -130,9 +130,11 @@ sentinel_owner() { # sentinel_owner <path> → owner ("" = unowned)
 # The harness appends ~/.claude/projects/<dashed-cwd>/<session>/subagents/
 # workflows/wf_<runid>/journal.jsonl per run, and never GC's them. We key on
 # SESSION alone (survives worktree isolation, where cwd is the worktree but the
-# journal sits under the session's project dir) and pick the newest dir whose
-# journal mtime is within LIVE_SEC — a stopped run's journal stops growing, so
-# recency is the liveness signal. Builtins/glob + stat only; no find, no lock.
+# journal sits under the session's project dir), pick the newest journal, and
+# call the run live when the newest file in its dir (journal OR an agent
+# transcript) changed within LIVE_SEC — a stopped run's whole dir goes quiet,
+# while a long dispatch keeps its transcript growing even though the journal
+# is silent between events. Builtins/glob + stat only; no find, no lock.
 # Prints the journal path, or nothing. Caller treats empty as "no live run".
 glob_newest_live_journal() { # glob_newest_live_journal <session> [live_sec]
   [ -n "$1" ] || return 0
@@ -149,9 +151,21 @@ glob_newest_live_journal() { # glob_newest_live_journal <session> [live_sec]
     [ "${m:-0}" -gt "${nmtime:-0}" ] || continue
     nmtime="$m"; newest="$j"
   done
+  [ -n "$newest" ] || { shopt -u nullglob; return 0; }
+  # Liveness: the journal is appended only on DISPATCH events (started/result),
+  # so it legitimately goes quiet for the whole duration of a long agent run —
+  # minutes, not seconds. The agent-*.jsonl transcripts in the same dir DO grow
+  # during a dispatch, so liveness is the max mtime across the journal and its
+  # siblings (one extra glob over the single selected dir; selection above
+  # stays journal-keyed — a newer run always has a newer journal).
+  local a
+  for a in "${newest%/journal.jsonl}"/agent-*.jsonl; do
+    [ -f "$a" ] || continue
+    local am
+    am="$(stat -f %m "$a" 2>/dev/null || stat -c %Y "$a" 2>/dev/null || echo 0)"
+    [ "${am:-0}" -gt "${nmtime:-0}" ] && nmtime="$am"
+  done
   shopt -u nullglob
-  [ -n "$newest" ] || return 0
-  # Liveness: the newest journal must have been touched within LIVE_SEC seconds.
   local now; now="$(date +%s 2>/dev/null || echo 0)"
   if [ $((now - nmtime)) -le "$live" ]; then printf '%s' "$newest"; fi
 }
@@ -195,8 +209,12 @@ WFSEG=""
 if [ -n "$SESSION" ]; then
   WFDIR="$(glob_newest_live_journal "$SESSION" 2>/dev/null || true)"
   if [ -n "$WFDIR" ] && [ -f "$WFDIR" ]; then
-    started="$(grep -c '"type":"started"' "$WFDIR" 2>/dev/null || echo 0)"
-    done="$(grep -c '"type":"result"' "$WFDIR" 2>/dev/null || echo 0)"
+    # `grep -c` prints "0" AND exits 1 on zero matches, so `|| echo 0` would
+    # capture "0\n0" — an embedded newline that renders a two-line segment and
+    # breaks the composed bar (hit live: every run's first phase has done=0).
+    # Assignment form keeps the captured stdout and the fallback distinct.
+    started="$(grep -c '"type":"started"' "$WFDIR" 2>/dev/null)" || started="${started:-0}"
+    done="$(grep -c '"type":"result"' "$WFDIR" 2>/dev/null)" || done="${done:-0}"
     if [ "${started:-0}" -gt 0 ] 2>/dev/null; then
       WFSEG="${DIM}wf ${done}/${started}${RESET}"
     fi

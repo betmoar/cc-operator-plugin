@@ -98,7 +98,18 @@ load_file() { # load_file <path> <source-label>
     case "$name" in
       *[[:space:]]*) die "$1: whitespace inside tier name '$name' (known: $TIER_NAMES)" ;;
     esac
-    is_tier_name "$name" || die "$1: unknown tier '$name' (known: $TIER_NAMES)"
+    # tiers.env carries TWO line kinds (the renderer's header documents both):
+    #   TIER=model-id      → ours (resolve it)
+    #   [op-]seat=TIER     → the renderer's seat binding (ops-render.sh) — SKIP,
+    # but only after validating its VALUE is a known tier, so a typo'd tier name
+    # (JUDGEMENT=...) still dies here instead of silently resolving to defaults.
+    # Before this branch existed, the resolver died on the scaffold's own
+    # documented seat example (audit F15), so the two features could not share
+    # the one config file ops-init.sh scaffolds.
+    if ! is_tier_name "$name"; then
+      is_tier_name "$val" || die "$1: unknown tier '$name' (known: $TIER_NAMES; a seat line needs a tier VALUE, e.g. op-scout=MECHANICAL)"
+      continue   # a valid seat binding — the renderer's business, not ours
+    fi
     check_routable "$name" "$val"
     set_tier "$name" "$val" "$2"
   done < "$1"

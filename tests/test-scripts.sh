@@ -1198,6 +1198,23 @@ check "set NAME=id applies a one-off override (source shows --set)" \
 TIERSENV --set MECHANICAL=bogus-id >/dev/null 2>&1; BADRC=$?
 check "an unroutable --set id is refused (non-zero exit)" \
   "$([ "$BADRC" -ne 0 ] && echo 0 || echo 1)"
+# tiers.env carries TWO line kinds (the renderer's seat bindings share the
+# file). The resolver must SKIP a seat line, not die on it — the scaffold's own
+# documented example ('#op-scout=MECHANICAL', ops-init.sh) used to kill every
+# resolver invocation once uncommented (audit F15). A seat line with a BOGUS
+# tier value must still die: a typo is a mis-route, not a seat binding.
+SEATENV="$(mktemp "${TMPDIR:-/tmp}/opstest-seat.XXXXXX")"
+printf 'MECHANICAL=glm-4.7\nop-scout=MECHANICAL\n' > "$SEATENV"
+SEATOUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$SEATENV" \
+  CC_PROXY_PORT=1 "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" --show 2>/dev/null)"; SEATRC=$?
+check "a seat line in tiers.env is skipped by the resolver, tiers still resolve (F15)" \
+  "$([ "$SEATRC" -eq 0 ] && printf '%s' "$SEATOUT" | grep -q 'MECHANICAL *glm-4.7' && echo 0 || echo 1)"
+printf 'op-scout=MECHANICL\n' > "$SEATENV"
+CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$SEATENV" \
+  CC_PROXY_PORT=1 "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" --show >/dev/null 2>&1; SEATBADRC=$?
+check "a seat line with an unknown tier VALUE still dies in the resolver" \
+  "$([ "$SEATBADRC" -ne 0 ] && echo 0 || echo 1)"
+rm -f "$SEATENV"
 
 ########################################################################
 echo "-- Case: /cc-operator:tiers render branch + ops-render.sh behavior"
@@ -1229,8 +1246,13 @@ printf 'MECHANICAL=glm-5-turbo\nop-scout=MECHANICAL\n' > "$RP/.operator/tiers.en
 SHOWR="$( cd "$RP" && RENDERENV --show 2>/dev/null )"; SHOWRRC=$?
 check "ops-render --show prints the SEAT/TIER/MODEL/SOURCE table" \
   "$([ "$SHOWRRC" -eq 0 ] && printf '%s' "$SHOWR" | grep -q '^SEAT *TIER *MODEL' && echo 0 || echo 1)"
-check "ops-render --show resolves a repointed tier (MECHANICAL→glm-5-turbo)" \
-  "$(printf '%s' "$SHOWR" | grep -q 'mechanic.*MECHANICAL.*glm-5-turbo' && echo 0 || echo 1)"
+check "ops-render --show resolves a repointed tier (crawler: MECHANICAL→glm-5-turbo)" \
+  "$(printf '%s' "$SHOWR" | grep -q 'crawler.*MECHANICAL.*glm-5-turbo' && echo 0 || echo 1)"
+# F21: the implementer seats default to their ALIAS tiers (author=JUDGMENT,
+# mechanic=IMPLEMENT) — a MECHANICAL repoint must NOT move them; down-tiering
+# is a deliberate tiers.env act, never a default.
+check "ops-render --show keeps mechanic on IMPLEMENT (alias-matched default, F21)" \
+  "$(printf '%s' "$SHOWR" | grep -q 'mechanic.*IMPLEMENT' && echo 0 || echo 1)"
 check "ops-render --show resolves a seat override (scout→MECHANICAL)" \
   "$(printf '%s' "$SHOWR" | grep -q 'scout.*MECHANICAL.*glm-5-turbo' && echo 0 || echo 1)"
 
@@ -1239,10 +1261,25 @@ check "ops-render --show resolves a seat override (scout→MECHANICAL)" \
 check "ops-render render exits 0" "$([ "$RENDRC" -eq 0 ] && echo 0 || echo 1)"
 check "render writes a project-layer op-mechanic.md" \
   "$([ -f "$RP/.claude/agents/op-mechanic.md" ] && echo 0 || echo 1)"
-check "rendered op-mechanic.md frontmatter has model: glm-5-turbo (spliced)" \
-  "$(grep -q '^model: glm-5-turbo' "$RP/.claude/agents/op-mechanic.md" && echo 0 || echo 1)"
+check "rendered op-crawler.md frontmatter has model: glm-5-turbo (spliced)" \
+  "$(grep -q '^model: glm-5-turbo' "$RP/.claude/agents/op-crawler.md" && echo 0 || echo 1)"
+check "rendered op-mechanic.md frontmatter has model: claude-sonnet-5 (IMPLEMENT, F21)" \
+  "$(grep -q '^model: claude-sonnet-5' "$RP/.claude/agents/op-mechanic.md" && echo 0 || echo 1)"
 check "rendered op-mechanic.md frontmatter has name: op-mechanic" \
   "$(grep -q '^name: op-mechanic' "$RP/.claude/agents/op-mechanic.md" && echo 0 || echo 1)"
+# Single-source bodies (F14): the rendered implementer seats must keep the
+# plugin-root agent's tools line — the template-era render built author and
+# mechanic from default.tmpl, silently STRIPPING Write/Edit from both (a
+# rendered "implementer" that cannot implement). The verifier must likewise
+# keep its disallowedTools line.
+check "rendered op-mechanic keeps Write/Edit (single-source body, F14)" \
+  "$(grep -q '^tools:.*Write.*Edit' "$RP/.claude/agents/op-mechanic.md" && echo 0 || echo 1)"
+check "rendered op-author keeps Write/Edit (F14)" \
+  "$(grep -q '^tools:.*Write.*Edit' "$RP/.claude/agents/op-author.md" && echo 0 || echo 1)"
+check "rendered op-verifier keeps disallowedTools (F14)" \
+  "$(grep -q '^disallowedTools:' "$RP/.claude/agents/op-verifier.md" && echo 0 || echo 1)"
+check "rendered op-crawler exists (plugin-root body, crawl workflow seat)" \
+  "$(grep -q '^name: op-crawler' "$RP/.claude/agents/op-crawler.md" && echo 0 || echo 1)"
 check "render states restart-to-apply (agent files read at session start)" \
   "$( cd "$RP" && RENDERENV 2>&1 | grep -qi 'restart' && echo 0 || echo 1)"
 
@@ -1271,6 +1308,48 @@ M7WARN="$( cd "$RP" && CC_OPERATOR_TIERS_USER=/nonexistent CC_PROXY_PORT=1 \
 check "M7: warns when CLAUDE_CODE_SUBAGENT_MODEL is set (overrides frontmatter)" \
   "$(printf '%s' "$M7WARN" | grep -qi 'CLAUDE_CODE_SUBAGENT_MODEL' && echo 0 || echo 1)"
 
+# Renderer ownership (F17): render/revert delete ONLY files stamped with the
+# render mark. A hand-authored op-custom.md (plausible name — every shipped
+# agent is op-*) must survive both; a hand-authored file at a SEAT's own name
+# must block the render loudly rather than be overwritten.
+printf 'MECHANICAL=glm-5-turbo\n' > "$RP/.operator/tiers.env"
+mkdir -p "$RP/.claude/agents"
+printf -- '---\nname: op-custom\nmodel: opus\n---\nhand-written\n' > "$RP/.claude/agents/op-custom.md"
+( cd "$RP" && RENDERENV >/dev/null 2>&1 ); OWNRC=$?
+check "render succeeds alongside a hand-authored op-custom.md" \
+  "$([ "$OWNRC" -eq 0 ] && echo 0 || echo 1)"
+check "render preserves the hand-authored op-custom.md (F17)" \
+  "$([ -f "$RP/.claude/agents/op-custom.md" ] && grep -q 'hand-written' "$RP/.claude/agents/op-custom.md" && echo 0 || echo 1)"
+check "rendered files carry the ownership mark" \
+  "$(grep -q 'rendered-by: cc-operator ops-render' "$RP/.claude/agents/op-mechanic.md" && echo 0 || echo 1)"
+( cd "$RP" && RENDERENV --revert >/dev/null 2>&1 )
+check "revert preserves the hand-authored op-custom.md (F17)" \
+  "$([ -f "$RP/.claude/agents/op-custom.md" ] && [ ! -f "$RP/.claude/agents/op-mechanic.md" ] && echo 0 || echo 1)"
+# Collision: a hand-authored file at a seat's target name → die, nothing deleted.
+printf -- '---\nname: op-scout\nmodel: opus\n---\nmine\n' > "$RP/.claude/agents/op-scout.md"
+( cd "$RP" && RENDERENV >/dev/null 2>&1 ); COLRC=$?
+check "render refuses to overwrite an unmarked op-<seat>.md (non-zero exit)" \
+  "$([ "$COLRC" -ne 0 ] && grep -q 'mine' "$RP/.claude/agents/op-scout.md" && echo 0 || echo 1)"
+rm -f "$RP/.claude/agents/op-scout.md" "$RP/.claude/agents/op-custom.md"
+
+# Seat-name allowlist (F18): a metachar in a seat name used to be interpolated
+# into a BRE ('s.out' silently DELETED the baked scout record via grep -v).
+# Now anything outside [A-Za-z0-9_-] is refused loudly, and the override filter
+# compares literally.
+printf 'op-s.out=MECHANICAL\n' > "$RP/.operator/tiers.env"
+BREOUT="$( cd "$RP" && RENDERENV --show 2>&1 )"; BRERC=$?
+check "guard: seat name with a regex metachar is refused (F18)" \
+  "$([ "$BRERC" -ne 0 ] && printf '%s' "$BREOUT" | grep -q 'outside \[A-Za-z0-9_-\]' && echo 0 || echo 1)"
+printf 'op-x[y=MECHANICAL\n' > "$RP/.operator/tiers.env"
+( cd "$RP" && RENDERENV --show >/dev/null 2>&1 ); BRE2RC=$?
+check "guard: seat name with an unbalanced bracket is refused, no raw grep error" \
+  "$([ "$BRE2RC" -ne 0 ] && ! ( cd "$RP" && RENDERENV --show 2>&1 | grep -q 'brackets' ) && echo 0 || echo 1)"
+# A legitimate override still works: project seat line re-tiers scout, record intact.
+printf 'op-scout=MECHANICAL\n' > "$RP/.operator/tiers.env"
+OVR="$( cd "$RP" && RENDERENV --show 2>/dev/null )"
+check "literal override: scout re-tiered, no other seat lost" \
+  "$(printf '%s' "$OVR" | grep -q 'scout.*MECHANICAL.*project' && [ "$(printf '%s\n' "$OVR" | grep -c -E ' (default|project)$')" -eq 6 ] && echo 0 || echo 1)"
+
 rm -rf "$RP"
 
 ########################################################################
@@ -1297,11 +1376,32 @@ check "live journal → renders 'wf 5/12' (done/started, not a %)" \
   "$([ "$(render "$WFSESS" "$WFPROJ")" = "wf 5/12" ] && echo 0 || echo 1)"
 check "wf segment is dim (not red — a running workflow is not actionable)" \
   "$(sljson "$WFSESS" "$WFPROJ" | "$BASH_ABS" "$SL" 2>/dev/null | grep -q $'\033\[2m' && echo 0 || echo 1)"
+# Fresh run: started>0, done=0. `grep -c` prints "0" AND exits 1 on zero
+# matches — a `|| echo 0` fallback captured "0\n0" and rendered a two-line
+# segment that broke the composed bar (audit F12, hit on a live run's whole
+# first phase). Assert one line AND the exact ratio.
+mkjournal 3 0
+WF0="$(render "$WFSESS" "$WFPROJ")"
+check "fresh run (done=0) → renders 'wf 0/3' on ONE line (F12)" \
+  "$([ "$WF0" = "wf 0/3" ] && echo 0 || echo 1)"
 # Stale journal: backdate >90s → no wf segment (liveness fails → render nothing,
 # since $P has no open tasks either).
+mkjournal 12 5
 touch -t "$(date -v-5M +%Y%m%d%H%M)" "$WFDIR/journal.jsonl" 2>/dev/null
 check "stale journal (>90s) → no wf segment" \
   "$([ -z "$(render "$WFSESS" "$WFPROJ")" ] && echo 0 || echo 1)"
+# Long dispatch: journal quiet >90s but an agent transcript in the same dir is
+# fresh — the run is LIVE (journals are appended only on dispatch events, so a
+# single long agent run legitimately silences the journal for minutes; audit
+# F26). Liveness = newest of journal + agent-*.jsonl.
+printf '%s\n' '{"x":1}' > "$WFDIR/agent-live.jsonl"
+check "quiet journal + fresh agent transcript → still live (F26)" \
+  "$([ "$(render "$WFSESS" "$WFPROJ")" = "wf 5/12" ] && echo 0 || echo 1)"
+# ...and when the transcript is ALSO stale, the run is genuinely stopped.
+touch -t "$(date -v-5M +%Y%m%d%H%M)" "$WFDIR/agent-live.jsonl" 2>/dev/null
+check "quiet journal + stale agent transcript → no wf segment" \
+  "$([ -z "$(render "$WFSESS" "$WFPROJ")" ] && echo 0 || echo 1)"
+rm -f "$WFDIR/agent-live.jsonl"
 # Missing journal entirely → nothing (the fail-toward-silence default).
 : > "$WFDIR/journal.jsonl"   # empty: zero started → no ratio
 check "empty journal (0 started) → no wf segment" \
