@@ -304,5 +304,47 @@ ok(Array.isArray(crawlRes.findings) && crawlRes.findings.length === 1,
 const noShard = await crawlFn({ question: "x" }, crawlAgent, makeRuntime().parallel, makeRuntime().pipeline, () => {}, () => {});
 ok(noShard?.error && /no shards/.test(noShard.error), "crawl: no args.shards → error return (workflow has no fs to pack them)");
 
+// ── F32: a dead TERMINAL single agent must not read as a clean result ────────
+console.log("-- Case: dead terminal agents fail loud, not clean (F32)");
+// The fan-out accounting (deadLenses, vettingIncomplete) covers agents that die
+// mid-fan-out; these cover the single judgment call each workflow ENDS on. The
+// stub returns null for any label without a fixture — the same null a schema
+// mismatch, timeout, or rate limit produces in production.
+
+// review: the adversarial verifier dies → the gate must fail CLOSED. null and
+// CONFIRMED both made `adversarial?.verdict === "REFUTED"` false, so a
+// verification that never ran read as a pass.
+const { result: deadAdv } = await run(WF("review.js"), "docs/x.md", everyLens);
+ok(deadAdv.blocked === true, "review: dead adversarial → blocked (fails closed, not open)");
+ok(deadAdv.unverified === true, "review: dead adversarial is named `unverified`, distinct from REFUTED");
+const { result: liveAdv } = await run(WF("review.js"), "docs/x.md",
+  { ...everyLens, adversarial: { verdict: "CONFIRMED", evidence: "ran x, saw y" } });
+ok(liveAdv.blocked === false && liveAdv.unverified === undefined,
+  "review: CONFIRMED adversarial → not blocked, not unverified");
+
+// crawl: the merge dies → error return CARRYING the shard digests (the paid
+// crawl work), never findings:[] masquerading as "nothing relevant found".
+const deadMerge = await crawlFn(
+  { question: "q", shards: [{ paths: ["a"] }, { paths: ["b"] }] },
+  async (p, o = {}) => o.label === "merge"
+    ? null
+    : { shard: ["a:1"], findings: [{ fact: "f", inferred: false }], gaps: [] },
+  makeRuntime().parallel, makeRuntime().pipeline, () => {}, () => {},
+);
+ok(deadMerge?.error && /merge agent died/.test(deadMerge.error),
+  "crawl: dead merge → error return, not a clean-empty result");
+ok(Array.isArray(deadMerge?.digests) && deadMerge.digests.length === 2,
+  "crawl: dead-merge error carries the shard digests (re-merge, don't re-crawl)");
+
+// brainstorm: the converge dies → error return carrying the divergent work.
+const { result: deadConv } = await run(WF("brainstorm.js"), { topic: "t", noReferences: true },
+  Object.fromEntries([1, 2, 3, 4].map((i) =>
+    [`direction ${i}/4`, { stance: "s", sketch: "k", tradeoffs: [], yagnis: "y" }])
+    .concat([["blindspots", { findings: [] }]])));
+ok(deadConv?.error && /converge agent died/.test(deadConv.error),
+  "brainstorm: dead converge → error return, not bundle:null");
+ok(Array.isArray(deadConv?.directions) && deadConv.directions.length === 4,
+  "brainstorm: dead-converge error carries the surviving directions");
+
 console.log(`\n== summary: ${pass} passed, ${fail} failed ==`);
 if (fail > 0) process.exit(1);

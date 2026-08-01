@@ -241,8 +241,16 @@ const adversarial = await agent(
 
 // A REFUTED is a hard stop: it does not enter the pool, cannot be outvoted by
 // panel scores, and cannot be dropped by the threshold.
+//
+// A DEAD verifier is also a hard stop, and it must fail CLOSED: null here
+// means the verification never ran (schema mismatch, timeout, rate limit —
+// the same deaths the lens accounting catches), and `adversarial?.verdict ===
+// "REFUTED"` evaluates to false on null, the exact value a CONFIRMED produces.
+// An artifact whose verification never happened is not a verified artifact
+// (audit F32; plan.js's dead-decompose error return is the same move).
 return {
-  blocked: adversarial?.verdict === "REFUTED",
+  blocked: adversarial == null || adversarial.verdict === "REFUTED",
+  unverified: adversarial == null || undefined,
   adversarial,
   findings: scored.map((f) => ({ ...f, bucket: bucket(f) })),
   dropped: returned.flatMap((p) => p.findings).length - scored.length,

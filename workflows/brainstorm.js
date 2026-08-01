@@ -226,6 +226,21 @@ const bundle = await agent(
   { agentType: "cc-operator:op-author", model: JUDGMENT, label: "converge", phase: "Converge", schema: OPTIONS },
 );
 
+// A dead converge must not ship `bundle: null` unmarked: the divergent work
+// (directions, blindspots, references) succeeded and is worth keeping, but the
+// operator needs to know the ranking/questions never ran (audit F32; same
+// error-return move as plan.js's dead decompose).
+if (bundle == null) {
+  return {
+    error: "converge agent died — directions/blindspots below are intact; " +
+      "re-run only the convergence over them (do not re-diverge)",
+    topic,
+    directions,
+    blindspots,
+    references: references || null,
+  };
+}
+
 return {
   topic,
   directions,

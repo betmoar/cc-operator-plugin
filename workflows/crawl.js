@@ -191,10 +191,25 @@ const merged = await agent(
   { agentType: "cc-operator:op-author", model: JUDGMENT, label: "merge", phase: "Merge", schema: MERGED },
 );
 
+// A dead merge must not read as a clean-empty crawl: `merged?.findings ?? []`
+// alone would return findings:[] — indistinguishable from "the code contains
+// nothing relevant" — after the operator paid for every shard (audit F32).
+// Return the un-merged digests instead so the crawl's value is not lost.
+if (merged == null) {
+  return {
+    error: "merge agent died — shard digests returned but were never merged; " +
+      "re-run the merge over `digests` below (do not re-crawl)",
+    question,
+    shardsRequested: shards.length,
+    shardsReturned: digests.length,
+    digests: capped,
+  };
+}
+
 return {
   question,
   shardsRequested: shards.length,
   shardsReturned: digests.length,
-  findings: merged?.findings ?? [],
-  gaps: merged?.gaps ?? [],
+  findings: merged.findings ?? [],
+  gaps: merged.gaps ?? [],
 };
