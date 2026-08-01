@@ -105,7 +105,27 @@ ok((await brainstormN(undefined)) === 4, "brainstorm N: undefined → default 4"
 await throws(() => run(WF("brainstorm.js"), { tiers: { Mechanical: "glm-5" } }, {}),
   "brainstorm tier: typo 'Mechanical' rejected (F07 typo guard)");
 await throws(() => run(WF("brainstorm.js"), { tiers: { MECHANICAL: "glm 5" } }, {}),
-  "brainstorm tier: whitespace in id rejected (F01 charset)");
+  "brainstorm tier: whitespace in id rejected (via ROUTABLE — no glm- prefix)");
+// The above throws on ROUTABLE, NOT on the charset guard: "glm 5" has no
+// `glm-` prefix, no `/`, no `claude-` prefix, so it never reaches
+// BAD_CHARSET.test. Verified — a review found this test's old "(F01 charset)"
+// label claimed coverage it did not provide, and neutering BAD_CHARSET in all
+// four workflows left the whole suite green. The charset guard needs an id
+// that PASSES ROUTABLE and fails only on charset. Both shapes below do:
+// "glm-5 turbo" via the glm- prefix, "vendor/model x" via the slash.
+for (const bad of ["glm-5 turbo", "vendor/model x", 'glm-5"q', "claude-opus 5"]) {
+  await throws(() => run(WF("brainstorm.js"), { tiers: { MECHANICAL: bad } }, {}),
+    `brainstorm tier: ROUTABLE-shaped but charset-bad ${JSON.stringify(bad)} rejected (F01)`);
+}
+// The converse: a bracket-marked id is charset-LEGAL and must NOT be rejected
+// (a Copilot review asserted `]` was excluded from the allowed set; it is not —
+// `\]` inside a JS character class includes a literal `]`).
+let bracketOk = true;
+try {
+  await run(WF("brainstorm.js"), { tiers: { MECHANICAL: "glm-5.2[1m]" } },
+    { blindspots: { findings: [] }, converge: { ranked: [], sharedConstraints: [], openQuestions: [] } });
+} catch { bracketOk = false; }
+ok(bracketOk, "brainstorm tier: bracket-marked id 'glm-5.2[1m]' accepted (charset allows ])");
 await throws(() => run(WF("brainstorm.js"), { tiers: { MECHANICAL: "not-routable" } }, {}),
   "brainstorm tier: unroutable id rejected");
 // IMPLEMENT is in KNOWN_TIERS → accepted (no throw); it's unused but routable.

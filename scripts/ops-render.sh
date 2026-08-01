@@ -229,9 +229,17 @@ render_to() { # render_to <dest>
     [ -f "$tpl" ] || tpl="$TPL_DIR/${sn}.tmpl"
     [ -f "$tpl" ] || tpl="$TPL_DIR/default.tmpl"
     [ -f "$tpl" ] || die "no plugin-root agent or template for seat '$sn' and no $TPL_DIR/default.tmpl"
-    # Splice model: into frontmatter. If the template has a model: line, replace
-    # its value; if it has a NAME placeholder, swap it; else prepend a block.
+    # Splice model:/name: into frontmatter, replacing each line's VALUE. A
+    # template carrying neither is rejected by the post-splice check below.
+    #
+    # `sub(/\r$/, "")` first: the delimiters anchor on /^---$/, which a CRLF
+    # source never matches (`---\r` != `---`). Without the strip, infm never
+    # sets, EVERY substitution branch is skipped, and the file copies through
+    # verbatim carrying the template's stale model: value — a seat silently
+    # bound to the wrong backend, exit 0. Normalizing also means the rendered
+    # agent is LF regardless of how the source was saved.
     awk -v seat="op-$sn" -v model="$mid" '
+      { sub(/\r$/, "") }
       BEGIN { infm=0; done_fm=0 }
       /^---$/ && !infm { infm=1; print; next }
       /^---$/ && infm && !done_fm { done_fm=1; print; next }
@@ -242,10 +250,14 @@ render_to() { # render_to <dest>
       }
       { print }
     ' "$tpl" > "$dest/op-$sn.md"
-    # The template MUST have carried a model: line for the splice to land. A
-    # template with no model: frontmatter is malformed for render (the splice
-    # would silently produce an agent bound to the default backend).
-    grep -q '^model:' "$dest/op-$sn.md" || die "$tpl: no model: line in frontmatter — cannot splice"
+    # Assert the splice LANDED — the resolved id is on the model: line — not
+    # merely that a model: line exists. `grep -q '^model:'` cannot tell "spliced
+    # correctly" from "never touched": it matches the template's own untouched
+    # line just as happily. Exact-line compare in awk, so a model id containing
+    # regex metacharacters needs no escaping.
+    awk -v want="model: $mid" '$0 == want { found = 1 } END { exit !found }' \
+      "$dest/op-$sn.md" ||
+      die "$tpl: model: splice did not land (expected 'model: $mid') — a template with no model: frontmatter line renders an agent bound to the default backend"
     # Stamp ownership: render/revert delete only stamped files (F17).
     printf '\n%s\n' "$RENDER_MARK" >> "$dest/op-$sn.md"
   done

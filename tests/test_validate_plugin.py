@@ -541,6 +541,39 @@ class ValidatorTest(unittest.TestCase):
               self._wf("review").replace("ROUTABLE.test(id)", "true"))
         self.assertFires("ROUTABLE is declared but never applied")
 
+    def test_workflow_uniform_bad_charset_drift_fires(self):
+        # The gap a review found: check_workflow_parity compares the copies to
+        # EACH OTHER, so neutering BAD_CHARSET in ALL of them at once passed
+        # every gate (node 25/25, validator rc 0). Four identically-broken files
+        # are trivially "in parity". Uniform drift is the REALISTIC failure —
+        # the copy-paste convention tells a maintainer to edit one and copy it
+        # to the rest. Only a canonical pin catches it.
+        for name in ("review.js", "brainstorm.js"):
+            write(self.dir / "workflows" / name,
+                  self._wf(name[:-3]).replace(
+                      "const BAD_CHARSET = /[^\\w./:@[\\]-]/;",
+                      "const BAD_CHARSET = /(?!)/;"))
+        probs = []
+        vp.check_workflow_parity(self.dir, probs)
+        self.assertEqual(probs, [], "parity alone cannot see uniform drift")
+        self.assertFires("BAD_CHARSET regex is")
+
+    def test_workflow_bad_charset_never_applied_fires(self):
+        # A declared-but-unused BAD_CHARSET guards nothing. Deleting only the
+        # `.test(id)` call site leaves the literal in place, so both the parity
+        # check and the canonical pin still pass — this is the third way the
+        # guard can be silently removed.
+        write(self.dir / "workflows" / "review.js",
+              self._wf("review").replace("|| BAD_CHARSET.test(id)", ""))
+        self.assertFires("BAD_CHARSET is declared but never applied")
+
+    def test_workflow_missing_bad_charset_fires(self):
+        write(self.dir / "workflows" / "review.js",
+              self._wf("review")
+              .replace("const BAD_CHARSET = /[^\\w./:@[\\]-]/;\n", "")
+              .replace(" || BAD_CHARSET.test(id)", ""))
+        self.assertFires("no `const BAD_CHARSET")
+
     def test_workflow_parity_holds_on_good_tree(self):
         # make_good_tree writes two workflows with identical ROUTABLE/BAD_CHARSET.
         probs = []
@@ -705,6 +738,34 @@ class RenderTemplateTest(unittest.TestCase):
         probs = []
         vp.check_render_templates(self.dir, probs)
         self.assertTrue(any("no *.tmpl found" in p for p in probs), probs)
+
+    # --- F29: CR in a splice source ---
+    # render_to()'s awk anchors on /^---$/; `---\r` does not match, so pre-fix a
+    # CRLF source skipped every substitution and shipped the template's stale
+    # model: value at exit 0. The renderer strips CR now; this is the build-time
+    # backstop against the source itself drifting to CRLF.
+
+    def test_crlf_template_fires(self):
+        (self.dir / "agents" / "_templates" / "default.tmpl").write_bytes(
+            b"---\r\nname: op-NAME\r\nmodel: haiku\r\n---\r\nbody\r\n")
+        probs = []
+        vp.check_render_templates(self.dir, probs)
+        self.assertTrue(any("contains CR" in p for p in probs), probs)
+
+    def test_crlf_plugin_root_agent_fires(self):
+        # agents/op-*.md is the FIRST body source render_to tries (F14), so a
+        # CRLF one is likelier than a CRLF template — and was unchecked.
+        (self.dir / "agents" / "op-scout.md").write_bytes(
+            b"---\r\nname: op-scout\r\nmodel: haiku\r\n---\r\nbody\r\n")
+        probs = []
+        vp.check_render_templates(self.dir, probs)
+        self.assertTrue(any("op-scout.md" in p and "contains CR" in p
+                            for p in probs), probs)
+
+    def test_real_tree_splice_sources_are_lf(self):
+        probs = []
+        vp.check_render_templates(ROOT, probs)
+        self.assertEqual(probs, [])
 
     # --- platform-dialect idioms (CI-caught: the wf segment died on Linux) ---
     # `stat -f %m F || stat -c %Y F` is not portable: GNU `-f` means FILESYSTEM

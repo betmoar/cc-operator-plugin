@@ -308,6 +308,27 @@ def check_render_templates(root, problems):
                 f"ops-render.sh splices the resolved id into it; a template "
                 f"without one produces an agent bound to the default backend")
 
+    # No CR in any splice SOURCE. render_to()'s awk anchors its frontmatter
+    # delimiters on /^---$/, which `---\r` never matches — pre-F29 that skipped
+    # every substitution branch and copied the file through verbatim, shipping
+    # an agent with the template's stale model: value at exit 0. The renderer
+    # now strips CR itself, so this is defense in depth against the source
+    # drifting to CRLF (a Windows checkout, an editor default) rather than the
+    # only guard.
+    #
+    # agents/op-*.md is checked too, NOT just _templates/: render_to tries the
+    # plugin-root agent file FIRST as the body source (F14, single-source
+    # bodies), so it is the likelier splice input of the two.
+    crlf_sources = sorted(tpl_dir.glob("*.tmpl")) + \
+        sorted((root / "agents").glob("op-*.md"))
+    for s in crlf_sources:
+        if b"\r" in s.read_bytes():
+            rel = s.relative_to(root)
+            problems.append(
+                f"{rel}: contains CR — ops-render.sh splices `model:` into "
+                f"this file's frontmatter and its awk anchors on /^---$/, "
+                f"which `---\\r` does not match (F29). Save it LF-only.")
+
 
 def check_hook(root, problems):
     hp = root / "hooks" / "hooks.json"
@@ -540,9 +561,10 @@ def check_lock_parity(root, problems):
 
 def check_workflows(root, problems):
     """Every workflows/*.js must (a) be syntactically valid JS, (b) begin with a
-    `export const meta = {...}` first statement, and (c) carry the tier guard —
+    `export const meta = {...}` first statement, (c) carry the tier guard —
     a ROUTABLE constant matching the canonical cc-proxy id shape AND a loop that
-    applies ROUTABLE.test to every resolved tier before dispatch.
+    applies ROUTABLE.test to every resolved tier before dispatch — and (d) carry
+    BAD_CHARSET under the same canonical pin, since ROUTABLE checks shape only.
 
     The model values an agent() call receives are tier *constants* (JUDGMENT,
     MECHANICAL, …), resolved through DEFAULT_TIERS and validated at runtime by
@@ -565,6 +587,7 @@ def check_workflows(root, problems):
     if not files:
         return  # workflows/ is optional; the plugin ships review.js only at need
     CANONICAL_ROUTABLE = r"/^glm-|\/|^claude-/"
+    CANONICAL_BAD_CHARSET = r"/[^\w./:@[\]-]/"
     for f in files:
         rel = f"workflows/{f.name}"
         text = f.read_text(encoding="utf-8")
@@ -615,6 +638,41 @@ def check_workflows(root, problems):
                 f"{rel}: ROUTABLE is declared but never applied — a tier must be "
                 f"checked with `ROUTABLE.test(id)` inside the tier-resolution loop "
                 f"or an unroutable id reaches dispatch unchecked")
+
+        # (d) the charset guard, held to the SAME standard as ROUTABLE — pinned
+        # to a canonical literal, and proven applied.
+        #
+        # check_workflow_parity compares the copies to EACH OTHER, which is
+        # necessary but not sufficient: a review mutated BAD_CHARSET to /(?!)/
+        # in all four workflows at once and every gate stayed green (node 25/25,
+        # validator rc 0), because four identically-broken files are trivially
+        # "in parity". ROUTABLE was already immune via CANONICAL_ROUTABLE; this
+        # closes the same hole for the guard that rejects whitespace and quotes.
+        # Uniform drift is the realistic failure — a maintainer edits the block
+        # once and copies it to the other three, exactly as the copy-paste
+        # convention instructs.
+        badcharset_decl = re.search(r"const\s+BAD_CHARSET\s*=\s*(/\S.*?)\s*;", text)
+        if not badcharset_decl:
+            problems.append(
+                f"{rel}: no `const BAD_CHARSET = …` declaration found — ROUTABLE "
+                f"checks id SHAPE only and accepts `claude opus/x`; without the "
+                f"charset guard an id carrying whitespace or quotes reaches "
+                f"dispatch (audit F01)")
+        else:
+            got = badcharset_decl.group(1).strip()
+            if got != CANONICAL_BAD_CHARSET.strip():
+                problems.append(
+                    f"{rel}: BAD_CHARSET regex is {got!r}, expected "
+                    f"{CANONICAL_BAD_CHARSET.strip()!r} — it must mirror "
+                    f"ops-tiers.sh's check_routable charset [A-Za-z0-9._:/@[]-]; "
+                    f"a divergent regex either lets whitespace/quotes through or "
+                    f"rejects valid bracket-marked ids like `glm-5.2[1m]`")
+
+        if not re.search(r"BAD_CHARSET\.test\s*\(", text):
+            problems.append(
+                f"{rel}: BAD_CHARSET is declared but never applied — the "
+                f"declaration alone guards nothing; it must be checked with "
+                f"`BAD_CHARSET.test(id)` in the tier-resolution loop")
 
 
 # The shared invariants every workflow must carry identically. The workflow

@@ -1353,6 +1353,44 @@ check "literal override: scout re-tiered, no other seat lost" \
 rm -rf "$RP"
 
 ########################################################################
+echo "-- Case: ops-render splices into a CRLF template (F29)"
+# The awk splice anchors its frontmatter delimiters on /^---$/, which `---\r`
+# does NOT match. Pre-fix, a CRLF template made infm never set, so EVERY
+# substitution branch was skipped and the file copied through verbatim: the
+# rendered agent kept the template's literal `NAME` placeholder and its stale
+# `model:` value, exit 0, "rendered N seat(s)". The old post-splice guard
+# (`grep -q '^model:'`) could not see it — it matched the untouched line.
+#
+# Needs a CRLF template, and templates resolve from the PLUGIN root (not the
+# fixture project), so mirror the two scripts + a CRLF default.tmpl into a
+# throwaway plugin root and render a project against that.
+CRP="$(newproj)"; CRM="$(newproj)"
+mkdir -p "$CRM/scripts" "$CRM/agents/_templates" "$CRP/.operator"
+cp "$SCRIPTS/ops-render.sh" "$SCRIPTS/ops-tiers.sh" "$CRM/scripts/"
+printf -- '---\r\nname: NAME\r\nmodel: haiku\r\ndescription: d\r\n---\r\nbody\r\n' \
+  > "$CRM/agents/_templates/default.tmpl"
+printf 'op-widget=MECHANICAL\nMECHANICAL=glm-5-turbo\n' > "$CRP/.operator/tiers.env"
+( cd "$CRP" && CC_OPERATOR_TIERS_USER=/nonexistent CC_PROXY_PORT=1 \
+    "$BASH_ABS" "$CRM/scripts/ops-render.sh" >/dev/null 2>&1 ); CRRC=$?
+check "CRLF template: render exits 0" "$([ "$CRRC" -eq 0 ] && echo 0 || echo 1)"
+check "CRLF template: model: splice lands (not the template's stale value)" \
+  "$(grep -q '^model: glm-5-turbo$' "$CRP/.claude/agents/op-widget.md" 2>/dev/null && echo 0 || echo 1)"
+check "CRLF template: name: placeholder is replaced, not shipped literally" \
+  "$(grep -q '^name: op-widget$' "$CRP/.claude/agents/op-widget.md" 2>/dev/null && echo 0 || echo 1)"
+check "CRLF template: rendered agent carries no CR" \
+  "$(! grep -q $'\r' "$CRP/.claude/agents/op-widget.md" 2>/dev/null && echo 0 || echo 1)"
+# The post-splice guard must assert the VALUE. A template with no model: line
+# renders an agent bound to the default backend; catch it loudly.
+printf -- '---\nname: NAME\ndescription: d\n---\nbody\n' \
+  > "$CRM/agents/_templates/default.tmpl"
+find "$CRP/.claude" -type f -delete 2>/dev/null
+( cd "$CRP" && CC_OPERATOR_TIERS_USER=/nonexistent CC_PROXY_PORT=1 \
+    "$BASH_ABS" "$CRM/scripts/ops-render.sh" >/dev/null 2>&1 ); NMRC=$?
+check "template with no model: line is refused (non-zero exit)" \
+  "$([ "$NMRC" -ne 0 ] && echo 0 || echo 1)"
+rm -rf "$CRP" "$CRM"
+
+########################################################################
 echo "-- Case: statusline shows workflow progress (journal-based ratio)"
 # The wf segment reads the session's newest LIVE journal.jsonl (done/started
 # ratio). It is NOT a % (total isn't known until the last dispatch — a % that
