@@ -257,3 +257,37 @@ ops-verdict.sh and ops-adopt.sh (byte-identical block). If you change the lock:
   so `check_lock_parity` enforces it stays byte-identical in both files. A
   comment that names the sibling file by name will break parity (the normalizer
   only rewrites `ops-tool:` message prefixes) — refer to "the sibling CLI".
+
+### The renderer's ownership + body-source rules (audit F14/F17/F18/F21/F22, 2026-08-01)
+
+`ops-render.sh` writes into the USER'S `.claude/agents/` — treat every change
+to its delete/write path as a data-loss surface:
+
+- **Delete only what you own.** Rendered files end with the `RENDER_MARK` line;
+  render/revert remove marked files only, and a seat whose target name is held
+  by an UNMARKED file dies before anything is deleted (F17). Never reintroduce
+  a glob-delete: `op-*` is the user's namespace too (op-reviewer is shipped but
+  not a seat — hand-shadowing it is legitimate).
+- **Seat names are allowlisted** (`[A-Za-z0-9_-]`), and the seat_add override
+  filter compares the name FIELD literally (awk `$1 != n`). Both guards exist
+  because a blocklist + BRE interpolation let `s.out` silently delete the
+  `scout` record (F18). A new place a seat name flows into (pattern, filename,
+  awk -v) inherits the allowlist, not a new blocklist.
+- **Bodies are single-sourced from plugin-root agents.** Lookup order:
+  `agents/op-<seat>.md` → `agents/_templates/<seat>.tmpl` → `default.tmpl`.
+  Editing a seat's contract happens in the plugin-root agent file ONLY — a
+  template that shadows a shipped seat re-opens F14 (the default.tmpl era
+  stripped Write/Edit from both implementer seats).
+- **Default seat tiers match the aliases** (author=JUDGMENT, mechanic=IMPLEMENT,
+  scout=RECON, verifier=JUDGMENT; crawler/brainstorm=MECHANICAL by design).
+  Down-tiering is a tiers.env act by the operator, never a shipped default —
+  the charter's "judgment work never runs below judgment tier" applies to
+  defaults too (F21).
+- **A workflow agentType must name a shipped plugin-root agent** — rendered
+  project-layer agents don't exist in the plugin registry
+  (`check_workflow_agent_types`, F22). When you add a seat a workflow
+  dispatches, ship the agent file, then reference it.
+- **tiers.env has two line kinds and two readers.** `ops-tiers.sh` skips seat
+  lines (after validating the tier VALUE); `ops-render.sh` consumes both. A new
+  line kind must be taught to BOTH parsers in the same commit, with a test
+  feeding it to each (F15 — the scaffold's own example killed the resolver).

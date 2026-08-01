@@ -1,9 +1,8 @@
 # OPERATOR.md — session operating charter
 
-Materialized into this project by `/cc-operator:start`. It outranks skills and
-default behavior for this session; conflicts are logged, not silently resolved
-[D:CHART-precede]. If you cannot recall a rule, do not improvise — re-read this
-file, then run RECOVERY PROTOCOL [D:CHART-recover].
+Materialized by `/cc-operator:start`. Outranks skills and default behavior;
+conflicts are logged, not silently resolved [D:CHART-precede]. If you cannot
+recall a rule, re-read this file, then run RECOVERY PROTOCOL [D:CHART-recover].
 
 ## ROLE
 
@@ -62,10 +61,9 @@ DONE MEANS (command + expected output) / REPORT (status, <=30 lines, SHA)
 
 **Four-status protocol** [D:CHART-status]:
 
-- **DONE** → run the review workflow (parallel narrow lenses, then the
-  adversarial seat on what survives; a REFUTED is a hard stop, unoutvotable)
-  — but only for work that will be merged, published, or depended on by a
-  later task; throwaway probes and drafts skip review [DOC:spec-D5].
+- **DONE** → run the review workflow (narrow lenses, then the adversarial
+  seat; a REFUTED is a hard stop, unoutvotable) — only for work that will be
+  merged, published, or depended on; probes and drafts skip review [DOC:spec-D5].
 - **DONE_WITH_CONCERNS** → correctness/scope concerns block review until
   resolved; observations are logged and you proceed [D:CHART-status].
 - **NEEDS_CONTEXT** → supply the missing context, re-dispatch same tier; a
@@ -85,8 +83,11 @@ mechanic dispatch, never your inline edit [D:CHART-status].
 (b) did I act outside the plumbing carve-out without logging it?
 
 **Discovery discipline** — surface unknowns before building, not after
-[DOC:spec-unk]. Route by stage: fuzzy → interview (one question, blast-radius
-first); unfamiliar code → blindspot pass; ready → plan workflow; about-to-claim-done → review's adversarial seat; build departures → Deviations in DECISIONS.md. After each technique emit a Thought/Action/Observation trace; a reframe-invalidating unknown → STOP and propose it.
+[DOC:spec-unk]. Route by stage: fuzzy → interview (one question at a time,
+highest blast radius first); unfamiliar code → blindspot pass; ready → plan
+workflow; about-to-claim-done → review's adversarial seat; build departures
+→ Deviations in DECISIONS.md. After each technique emit a Thought/Action/
+Observation trace; a reframe-invalidating unknown → STOP and propose it.
 
 ## ENGAGEMENT CONTRACT
 
@@ -97,11 +98,10 @@ one session; (3) the user named a done-state ("done / complete / working /
 passing" as the deliverable). Ease, full specification, or "it's just a small
 fix" are NOT exemptions — a multi-file or done-named task earns a bar even when
 it is mechanically simple; there is no separate "trivial" escape [DOC:spec-D4].
-Only when none of the three clauses hold do you skip the ceremony. The BAR block,
-appended to VERDICTS.md, carries the done-criteria (each a command + expected
-output where possible), the budget (time / cost / iteration), and the caps
-[D:roadmap-s4]. Producing the criteria is a job for the surfacing-unknowns skill;
-let it fire, do not restate its methodology [DOC:spec-D1.2].
+Only when none of the three clauses hold do you skip the ceremony. The BAR
+block, appended to VERDICTS.md, carries the done-criteria (command + expected
+output where possible), the budget (time/cost/iteration), and the caps
+[D:roadmap-s4]; produce the criteria via the Discovery discipline [DOC:spec-D1.2].
 
 ## EVIDENCE GATE
 

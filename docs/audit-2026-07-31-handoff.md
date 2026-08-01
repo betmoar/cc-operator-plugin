@@ -5,10 +5,9 @@ pass. Complements the 2026-07-27 handoff (the gate-hardening pass) — this one
 covers the workflow layer, the tier system, and the token-diet axes. For the
 *why* behind each decision, read the finding in `AUDIT_LOG.md` (the IDs match).
 
-> The CLAUDE.md "Provenance" section references `docs/audit-2026-07-27-handoff.md`,
-> which is **not present in the tree** (a dangling ref). This 2026-07-31 doc is
-> the one that exists; the 2026-07-27 ledger lives only in `AUDIT_LOG.md`'s
-> Phase 2 entries (F01–F06). Fix the CLAUDE.md ref or restore the file.
+> (Resolved 2026-08-01: the 07-27 files live at `docs/audits/` — gitignored,
+> local-only — and CLAUDE.md's Provenance now says so. A fresh clone reads the
+> F01–F06 summary from `AUDIT_LOG.md` Phase 2.)
 
 ## Mental model (the workflow layer, in 5 sentences)
 
@@ -75,7 +74,83 @@ Each test **names the invariant** — read the failure, understand the contract.
 
 ## Backlog (prioritized, pickup-able cold)
 
-1. **Implement the input-axis compressor (F11).** — context: `docs/spec/input-axis-compressor.md` is the full boundary contract; port Chisle's `hooks/chisle-compress-output.js` (zero-LLM, deterministic) with cc-operator's gate-CLI carve-out. — first step: resolve the I2 open question (is the gate-CLI exclusion list alone sufficient, or does capture need a session flag?). — done-when: PostToolUse hook shipped; replay test asserts Read/Edit/Write never mutated and gate CLIs never compressed; validator check (#1-3 in the spec) green.
-2. **Resolve the CLAUDE.md dangling ref** to `docs/audit-2026-07-27-handoff.md` (absent). — first step: decide restore-the-file vs fix-the-ref. — done-when: the Provenance section points at a file that exists.
-3. **Statusline orchestration progress** (pre-existing Task #1). — context: show workflow phase / % complete on the bar. — first step: brainstorm the segment against `scripts/statusline.sh`'s byte bound + the gate-partition it already mirrors. — done-when: segment shipped, `check_statusline` green.
-4. **cc-agents retirement** — HALTED (not superseded). Do not resume without re-scoping; its model-profile system is concurrent with, not replaced by, this plugin's tier resolver.
+1. **Implement the input-axis compressor (F11).** — context: `docs/spec/input-axis-compressor.md` is the full boundary contract, REWRITTEN 2026-08-01 (round 2): the I2 open question is CLOSED (spill-and-cite mechanism; the CLI-exclusion lean was vacuous — F16), thresholds are pinned, Agent/mcp dropped from the allowlist, ledger paths excluded BY PATH. — first step: port Chisle's `hooks/chisle-compress-output.js` against the pinned spec; ship the OPERATOR.md spill-citation rule in the same commit. — done-when: PostToolUse hook shipped; the replay test asserts every case in the spec's guardrail #3; validator checks #1-2 green.
+2. ~~CLAUDE.md dangling ref~~ — DONE 2026-08-01 (Provenance points at `docs/audits/`, notes it is gitignored).
+3. ~~Statusline orchestration progress~~ — DONE 2026-07-31 (8c640ff, wf segment) + hardened 2026-08-01 (F12 corrupt-bar fix, F26 transcript-mtime liveness).
+4. **cc-agents retirement** — repo-side (tag/strip/README/marketplace) is the human's. cc-operator-side absorption is COMPLETE as of round 2 (see the absorption ledger below); the model-profile one-command fleet flip remains a cc-agents-only feature, recorded as not-ported.
+5. **Round-2 deferred decisions:** (a) the spec-plan-suggest PostToolUse auto-trigger (cc-agents) was dropped with no decision — decide dropped-by-design (charter routing supersedes) or ride it on the F11 hook registration; (b) reconcile the absorption inventory against the INSTALLED cc-agents 0.3.0 set (glm-scout discovery role, glm-review-design) — one paragraph here when decided.
+
+---
+
+# Round-2 addendum (2026-08-01) — post-absorption audit
+
+Five-axis pass (context bloat / token maximization / agent consolidation /
+regression / compressor-spec) over the post-f86ecda delta: the renderer
+(ee93bec), the unknowns fold (4e73619), and the absorption commit (8c640ff).
+Findings F12–F27 in `AUDIT_LOG.md` (linted, admissible format). 19-agent
+panel + operator repros; every P0–P2 adversarially verified.
+
+## What round 2 changed (mental-model deltas)
+
+- **The renderer now OWNS its files explicitly.** Rendered agents end with the
+  `RENDER_MARK` line; render/revert delete marked files only and refuse to
+  overwrite an unmarked file at a seat's name (F17). The spec §3.4
+  last-known-good file is GONE (written-never-read; ownership subsumes it).
+- **Render bodies are single-sourced from plugin-root agents** (F14):
+  `agents/op-<seat>.md` → `_templates/<seat>.tmpl` → `default.tmpl`. The seat
+  templates for crawler/brainstorm were deleted; those seats are now shipped
+  plugin-root agents (`op-crawler.md`, `op-brainstorm.md`), which also gives
+  the crawl workflow a real dispatch target (F22).
+- **Seat names are allowlisted** (`[A-Za-z0-9_-]`) and the seat-override filter
+  is a literal awk compare (F18 — BRE injection deleted unrelated seats).
+- **`ops-tiers.sh` skips seat lines** (validating the tier VALUE) so both
+  tiers.env line kinds coexist in the one scaffolded file (F15).
+- **Default seat tiers match the aliases** — author=JUDGMENT,
+  mechanic=IMPLEMENT (F21; the down-tiered defaults violated the charter's
+  routing rule on plain dispatch).
+- **plan.js vet is spec-excerpt-based** (F13): decompose emits a required
+  `specExcerpt` per task; the feasibility lens never sees the full spec again.
+- **review.js has a fifth lens** — correctness/error-handling at MECHANICAL
+  (F23: no other lens asks "is there a bug"); plan's vet enum gains `risk`.
+- **The charter cap is byte-honest** (F19): 100-char non-table line bound +
+  9000-byte ceiling in `check_charter` (constants `CHARTER_MAX_LINE_CHARS`,
+  `CHARTER_MAX_BYTES`).
+
+## Guardrails shipped (round 2)
+
+| Invariant (named) | Enforcement | Proven firing |
+|---|---|---|
+| wf-agentType-names-shipped-agent (F22) | `check_workflow_agent_types` | op-nonexistent → FAIL, restore → green |
+| charter-line+byte-bounds (F19) | `check_charter` additions | packed line → FAIL; table row exempt; ceiling test |
+| renderer-deletes-only-owned (F17) | RENDER_MARK + bash cases | op-custom survives render+revert; collision rc=2 |
+| seat-name-allowlist + literal-override (F18) | check_seat_name + awk | 4 metachar probes refused; override intact |
+| resolver-skips-seat-lines (F15) | ops-tiers load_file branch + bash cases | scaffold example resolves; bad VALUE dies |
+| rendered-implementers-keep-tools (F14) | bash cases on rendered frontmatter | Write/Edit + disallowedTools asserted |
+| plan-vet-never-carries-full-spec (F13) | node test (BIG_SPEC sentinel) | sentinel in decompose only |
+| statusline-one-line-wf-segment (F12) | bash case done=0 | corrupt render reproduced, then fixed |
+
+## Absorption ledger (cc-agents → cc-operator, closing F23's class)
+
+| cc-agents artifact | Disposition |
+|---|---|
+| glm-code-crawler | → `agents/op-crawler.md` (plugin-root) + `workflows/crawl.js` |
+| code-crawl skill | → `workflows/crawl.js` (operator packs shards; harness caps concurrency) |
+| glm-brainstorm | → `agents/op-brainstorm.md` + brainstorm workflow's diverge phase |
+| glm-bulk-reader | dropped BY DESIGN (spec 07-28 §3.3: sharded crawler covers it) |
+| review-panel skill | → `workflows/review.js` (thresholds byte-identical; REFUTED hard-stop kept) |
+| glm-review-code | correctness/error-handling axes → review.js `correctness` lens (round 2, F23) |
+| glm-review-plan | risk axis → plan.js vet `risk` kind (round 2); sequencing already covered (dependency order + produced-by checks) |
+| glm-review-spec / glm-review-implementation | → review.js `spec` + `feasibility` lenses |
+| coder / reasoner / simple (3-role) | → 4-tier system (spec 07-28 §3: separates strong seat from second-opinion seat) |
+| glm-implementer | → op-mechanic (plain or rendered; render now keeps Write/Edit — F14) |
+| /model-profile fleet flip | NOT ported — tiers.env edit + render + restart is the migration path; one-command flip stays cc-agents-only (recorded, deliberate) |
+| spec-plan-suggest PostToolUse trigger | NOT ported, decision pending (backlog #5a) |
+
+## Residual risks added in round 2
+
+| Risk | Sev | Why not fixed | Mitigation |
+|---|---|---|---|
+| statusline wf schema is undocumented harness internals | low | can't pin what we don't own | fail-toward-silence + fixtures match live journal (verified against a real run) |
+| crawl merge stringify bounded only by defensive caps (200/40/15 per digest) | low (P3, verifier-downgraded) | 1M-ctx JUDGMENT default makes overflow implausible | caps shipped anyway; hierarchical merge if N ever ~50+ |
+| brainstorm references lens: no agentType (needs default toolset for web search), output capped nowhere | low (P3) | op-scout's toolset lacks search; a schema would strip the tools | single call, format-constrained prompt; revisit if converge bloats |
+| workflow prompts + end-to-end fan-out untested live | med | needs live harness + models — a pilot, not a unit test | execution tests stub agent(); prompts reviewed twice |
