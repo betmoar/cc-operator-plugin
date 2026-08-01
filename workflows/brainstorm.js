@@ -3,7 +3,7 @@ export const meta = {
   description:
     "Divergent design exploration: multiple directions at a cheap tier, a blindspot scan of the target codebase, and a reference search, converged into a design-options bundle the operator presents to the human one question at a time.",
   whenToUse:
-    "At the start of a feature or design, before a spec exists. Replaces superpowers:brainstorming's divergent phase. The operator drives the interactive Q&A; this workflow does the fan-out exploration that feeds it.",
+    "At the start of a feature or design, before a spec exists. The operator drives the interactive Q&A; this workflow does the fan-out exploration that feeds it.",
   phases: [
     { title: "Diverge", detail: "directions + blindspots + references in parallel" },
     { title: "Converge", detail: "synthesize into ranked design options" },
@@ -117,6 +117,7 @@ const directions = await parallel(
       {
         agentType: "cc-operator:op-author",
         model: MECHANICAL,
+        effort: "low", // divergent generation is breadth, not depth
         label: `direction ${i + 1}/${N}`,
         phase: "Diverge",
         schema: DIRECTION,
@@ -152,7 +153,7 @@ const blindspots = await agent(
     `near-duplicates, hidden constraints. Cite path:line for each.\n\nTOPIC: ${topic}\n\n` +
     `CODEBASE CONTEXT:\n${ctx}\n\n` +
     `You are read-only. Report findings; do not propose a design.`,
-  { agentType: "cc-operator:op-scout", model: RECON, label: "blindspots", phase: "Diverge", schema: BLINDSPOTS },
+  { agentType: "cc-operator:op-scout", model: RECON, effort: "low", label: "blindspots", phase: "Diverge", schema: BLINDSPOTS },
 ).then((r) => r?.findings ?? []);
 
 // (c) reference search — the "unknown knowns" from outside this repo. Kept
@@ -163,7 +164,7 @@ if (!A.noReferences) {
     `Search for prior art and established solutions to this problem outside this codebase. ` +
       `Libraries, patterns, published designs. For each: name it, one-line what it does, and ` +
       `the one idea worth stealing. Do not recommend adopting wholesale — extract the move.\n\nTOPIC: ${topic}`,
-    { model: RECON, label: "references", phase: "Diverge" },
+    { model: RECON, effort: "low", label: "references", phase: "Diverge" },
   )
     .then((t) => (typeof t === "string" ? t.trim() : ""))
     .catch((e) => { log("references lens failed: " + (e?.message ?? e)); return ""; });

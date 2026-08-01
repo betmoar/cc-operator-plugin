@@ -127,6 +127,15 @@ const LENSES = [
     tier: JUDGMENT,
     ask: `Craft and project conventions. Every finding needs concrete evidence from the code — a path:line and what specifically is wrong. No taste assertions without evidence.`,
   },
+  {
+    // The correctness axis absorbed from glm-review-code (audit F23): none of
+    // the other lenses asks "is there a bug" — spec sees only what was asked,
+    // feasibility only what is CLAIMED, quality only conventions. A logic
+    // error outside all three escaped the panel by design.
+    key: "correctness",
+    tier: MECHANICAL,
+    ask: `Correctness and error handling ONLY: logic errors, off-by-one, null/undefined, unhandled cases, races, silent failures (empty catch, swallowed error, ignored return code), missing validation. Cite path:line for each. Do not propose fixes; do not judge style or spec fit.`,
+  },
 ];
 
 const FINDINGS = {

@@ -37,7 +37,7 @@ function makeRuntime(agentReturns = {}) {
   const calls = [];
   const agent = async (prompt, opts = {}) => {
     const label = opts.label ?? "_";
-    calls.push({ label, model: opts.model });
+    calls.push({ label, model: opts.model, prompt });
     return agentReturns[label] ?? null;
   };
   const parallel = async (thunks) => {
@@ -156,12 +156,22 @@ const planFixtures = {
   "test:blocked": { feasible: "yes", testable: "yes", issues: [] },
   "test:info": { feasible: "yes", testable: "yes", issues: [] },
 };
-const { result: plan } = await run(WF("plan.js"), { spec: "s" }, planFixtures);
+const BIG_SPEC = "SPEC_SENTINEL_" + "s".repeat(5000);
+const { result: plan, rt: planRt } = await run(WF("plan.js"), { spec: BIG_SPEC }, planFixtures);
+const planCalls = planRt.calls;
 const blockedIds = (plan.blocked ?? []).map((b) => b.taskId);
 const needsInfoIds = plan.needsInfo ?? [];
 ok(blockedIds.includes("blocked"), "plan: feasible=no (or contradiction) → blocked");
 ok(needsInfoIds.includes("info"), "plan: feasible=needs-info → needsInfo");
 ok(!blockedIds.includes("clean") && !needsInfoIds.includes("clean"), "plan: clean task is neither blocked nor needsInfo");
+// F13: the full spec goes to decompose ONCE; the per-task vet lenses get the
+// bounded specExcerpt, never the whole spec (it was re-billed T times at the
+// judgment tier — pure duplicate input).
+const feasCalls = planCalls.filter((c) => c.label.startsWith("feas:"));
+ok(feasCalls.length === 3 && feasCalls.every((c) => !c.prompt.includes(BIG_SPEC)),
+  "plan: feasibility vet prompt does NOT carry the full spec (F13)");
+ok(planCalls.find((c) => c.label === "decompose").prompt.includes(BIG_SPEC),
+  "plan: decompose (once) is the only full-spec consumer");
 
 // ── crawl: shard fan-out + merge ─────────────────────────────────────────────
 console.log("-- Case: crawl.js shard fan-out + merge");

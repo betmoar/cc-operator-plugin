@@ -1,12 +1,12 @@
 export const meta = {
   name: "plan",
   description:
-    "Decompose an approved spec into bite-sized TDD tasks, then run a feasibility + testability lens on each task in parallel at cheap tiers. Returns a plan the operator reviews against the spec before any implementation.",
+    "Decompose an approved spec into bite-sized TDD tasks, then vet each task in parallel — feasibility at judgment tier, testability at cheap tier. Returns a plan the operator reviews against the spec before any implementation.",
   whenToUse:
-    "After a spec/design is approved (by the brainstorm workflow or written directly). Replaces superpowers:writing-plans's decomposition + self-review. The operator owns the human-review gate and the spec-coverage check.",
+    "After a spec/design is approved (by the brainstorm workflow or written directly). The operator owns the human-review gate and the spec-coverage check.",
   phases: [
     { title: "Decompose", detail: "spec -> task list (judgment tier)" },
-    { title: "Vet", detail: "per-task feasibility + testability lenses (cheap tier)" },
+    { title: "Vet", detail: "per-task lenses: feasibility (judgment), testability (cheap)" },
   ],
 };
 
@@ -79,7 +79,7 @@ phase("Decompose");
 
 const TASK = {
   type: "object",
-  required: ["id", "title", "files", "produces", "testCycle"],
+  required: ["id", "title", "files", "produces", "testCycle", "specExcerpt"],
   properties: {
     id: { type: "string", description: "Stable short id, e.g. 'auth-token'." },
     title: { type: "string", description: "One line: the deliverable." },
@@ -95,6 +95,12 @@ const TASK = {
     consumes: {
       type: "string",
       description: "What this task uses from earlier tasks (names/signatures). Empty for the first task.",
+    },
+    specExcerpt: {
+      type: "string",
+      description:
+        "The <=1500-char excerpt of the SPEC this task implements — the exact requirements, quoted. " +
+        "The vet lenses see THIS, not the whole spec, so quote everything load-bearing.",
     },
     testCycle: {
       type: "string",
@@ -169,7 +175,7 @@ const VET = {
         type: "object",
         required: ["kind", "detail"],
         properties: {
-          kind: { type: "string", enum: ["gap", "contradiction", "untestable", "dependency-missing"] },
+          kind: { type: "string", enum: ["gap", "contradiction", "untestable", "dependency-missing", "risk"] },
           detail: { type: "string", description: "Concrete: what's wrong, with path:line where relevant." },
         },
       },
@@ -187,10 +193,18 @@ const vetted = await pipeline(
     parallel([
       () =>
         agent(
+          // The task carries its own bounded specExcerpt; re-billing the FULL
+          // spec here cost T x |spec| at the judgment tier for material the
+          // lens never needed — the reviewer has Read/Grep/Glob to consult the
+          // repo, and the excerpt carries the requirements (audit F13). Static
+          // constraints lead, varying task JSON trails: prefix-cache friendly.
           `Vet ONE implementation task for FEASIBILITY. Check its files/signatures/claims against the ` +
             `actual codebase. Does the path exist? Will the signature compile against what's there? ` +
-            `Is the dependency it consumes actually produced by an earlier task?\n\n` +
-            `TASK:\n${JSON.stringify(task)}\n\nSPEC:\n${spec}\n\n` +
+            `Is the dependency it consumes actually produced by an earlier task? Flag blast-radius ` +
+            `risks (issue kind "risk"): shared state, load-bearing files, breaking-change exposure.\n\n` +
+            (globalConstraints ? `GLOBAL CONSTRAINTS:\n${globalConstraints}\n\n` : "") +
+            `SPEC EXCERPT (what this task implements):\n${(task.specExcerpt ?? "").slice(0, 2000)}\n\n` +
+            `TASK:\n${JSON.stringify(task)}\n\n` +
             `Cite path:line for each issue. You are read-only.`,
           { agentType: "cc-operator:op-reviewer", model: JUDGMENT, label: `feas:${task.id}`, phase: "Vet", schema: VET },
         ),
@@ -200,7 +214,7 @@ const vetted = await pipeline(
             `acceptance criterion — a real command and its expected output? Or does it assert behavior ` +
             `vaguely ("works correctly", "handles errors")?\n\nTASK:\n${JSON.stringify(task)}\n\n` +
             `You are read-only. If testable=no, the issue detail must state what observable command would make it testable.`,
-          { agentType: "cc-operator:op-reviewer", model: MECHANICAL, label: `test:${task.id}`, phase: "Vet", schema: VET },
+          { agentType: "cc-operator:op-reviewer", model: MECHANICAL, effort: "low", label: `test:${task.id}`, phase: "Vet", schema: VET },
         ),
     ]).then(([f, t]) => ({
       taskId: task.id,
