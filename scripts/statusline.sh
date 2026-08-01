@@ -136,6 +136,34 @@ sentinel_owner() { # sentinel_owner <path> → owner ("" = unowned)
 # while a long dispatch keeps its transcript growing even though the journal
 # is silent between events. Builtins/glob + stat only; no find, no lock.
 # Prints the journal path, or nothing. Caller treats empty as "no live run".
+# mtime <path> → epoch seconds, or 0. Portability trap, hit in CI: `stat -f` on
+# GNU coreutils means FILESYSTEM status and takes the format via -c, so
+# `stat -f %m FILE` treats BOTH operands as files — `%m` errors (exit 1) while
+# FILE prints a filesystem block to STDOUT. In a `A || B` command substitution
+# that partial stdout is CONCATENATED with B's output, yielding garbage like
+# "  File: …\n1785…" that fails `[ -gt ]` and silently killed the whole segment
+# on Linux (same class as F12's `grep -c || echo 0`). Probe the flavor ONCE and
+# branch — never let a failing stat's stdout survive into the value.
+_STAT_KIND=""
+mtime() { # mtime <path> → epoch seconds (0 on any failure)
+  local v
+  if [ -z "$_STAT_KIND" ]; then
+    if v="$(stat -c %Y "$1" 2>/dev/null)" && case "$v" in ''|*[!0-9]*) false ;; *) true ;; esac; then
+      _STAT_KIND=gnu
+    elif v="$(stat -f %m "$1" 2>/dev/null)" && case "$v" in ''|*[!0-9]*) false ;; *) true ;; esac; then
+      _STAT_KIND=bsd
+    else
+      _STAT_KIND=none
+    fi
+  fi
+  case "$_STAT_KIND" in
+    gnu) v="$(stat -c %Y "$1" 2>/dev/null)" ;;
+    bsd) v="$(stat -f %m "$1" 2>/dev/null)" ;;
+    *)   v="" ;;
+  esac
+  case "$v" in ''|*[!0-9]*) printf '0' ;; *) printf '%s' "$v" ;; esac
+}
+
 glob_newest_live_journal() { # glob_newest_live_journal <session> [live_sec]
   [ -n "$1" ] || return 0
   local live="${2:-90}" newest="" nmtime=0
@@ -143,12 +171,9 @@ glob_newest_live_journal() { # glob_newest_live_journal <session> [live_sec]
   local j
   for j in "$HOME/.claude/projects"/*/"$1"/subagents/workflows/wf_*/journal.jsonl; do
     [ -f "$j" ] || continue
-    # Portable mtime: macOS stat is `stat -f %m`, Linux (GNU) is `stat -c %Y`.
-    # The bar renders on the user's host; try both, fall back to 0 (renders
-    # nothing — the safe direction for a non-load-bearing segment).
     local m
-    m="$(stat -f %m "$j" 2>/dev/null || stat -c %Y "$j" 2>/dev/null || echo 0)"
-    [ "${m:-0}" -gt "${nmtime:-0}" ] || continue
+    m="$(mtime "$j")"
+    [ "$m" -gt "$nmtime" ] || continue
     nmtime="$m"; newest="$j"
   done
   [ -n "$newest" ] || { shopt -u nullglob; return 0; }
@@ -162,8 +187,8 @@ glob_newest_live_journal() { # glob_newest_live_journal <session> [live_sec]
   for a in "${newest%/journal.jsonl}"/agent-*.jsonl; do
     [ -f "$a" ] || continue
     local am
-    am="$(stat -f %m "$a" 2>/dev/null || stat -c %Y "$a" 2>/dev/null || echo 0)"
-    [ "${am:-0}" -gt "${nmtime:-0}" ] && nmtime="$am"
+    am="$(mtime "$a")"
+    [ "$am" -gt "$nmtime" ] && nmtime="$am"
   done
   shopt -u nullglob
   local now; now="$(date +%s 2>/dev/null || echo 0)"

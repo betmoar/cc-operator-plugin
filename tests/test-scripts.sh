@@ -1365,6 +1365,14 @@ WFPROJ="$(newproj)"; ( cd "$WFPROJ" && bash "$INIT" >/dev/null 2>&1 )
 WFSESS="wf-sess-test"
 WFDIR="$HOME/.claude/projects/wftestproj/$WFSESS/subagents/workflows/wf_abc"
 mkdir -p "$WFDIR"
+# Backdate a file past the liveness window. `date -v` is BSD-only and `date -d`
+# is GNU-only: the BSD form silently produced an EMPTY string on the Linux CI
+# runner, so `touch -t ""` failed and the "stale" cases never actually
+# backdated anything (they passed for the wrong reason while the live cases
+# failed). `touch -t` with an explicit past stamp works on both.
+backdate() { # backdate <path>
+  touch -t 202601010000 "$1"
+}
 mkjournal() { # mkjournal <started> <result>
   : > "$WFDIR/journal.jsonl"
   i=0; while [ "$i" -lt "$1" ]; do i=$((i+1)); printf '%s\n' '{"type":"started","key":"v2:k","agentId":"a'$i'"}' >> "$WFDIR/journal.jsonl"; done
@@ -1387,7 +1395,7 @@ check "fresh run (done=0) → renders 'wf 0/3' on ONE line (F12)" \
 # Stale journal: backdate >90s → no wf segment (liveness fails → render nothing,
 # since $P has no open tasks either).
 mkjournal 12 5
-touch -t "$(date -v-5M +%Y%m%d%H%M)" "$WFDIR/journal.jsonl" 2>/dev/null
+backdate "$WFDIR/journal.jsonl"
 check "stale journal (>90s) → no wf segment" \
   "$([ -z "$(render "$WFSESS" "$WFPROJ")" ] && echo 0 || echo 1)"
 # Long dispatch: journal quiet >90s but an agent transcript in the same dir is
@@ -1398,7 +1406,7 @@ printf '%s\n' '{"x":1}' > "$WFDIR/agent-live.jsonl"
 check "quiet journal + fresh agent transcript → still live (F26)" \
   "$([ "$(render "$WFSESS" "$WFPROJ")" = "wf 5/12" ] && echo 0 || echo 1)"
 # ...and when the transcript is ALSO stale, the run is genuinely stopped.
-touch -t "$(date -v-5M +%Y%m%d%H%M)" "$WFDIR/agent-live.jsonl" 2>/dev/null
+backdate "$WFDIR/agent-live.jsonl"
 check "quiet journal + stale agent transcript → no wf segment" \
   "$([ -z "$(render "$WFSESS" "$WFPROJ")" ] && echo 0 || echo 1)"
 rm -f "$WFDIR/agent-live.jsonl"

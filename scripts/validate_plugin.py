@@ -406,6 +406,55 @@ def check_reader_bounds(root, problems):
                 f"found {bounded} — a reader lost its bound")
 
 
+def check_platform_idioms(root, problems):
+    """Ban the try-BSD-then-GNU fallback idiom in scripts and tests.
+
+    `stat -f %m F || stat -c %Y F` looks portable and is not. On GNU coreutils
+    `-f` means FILESYSTEM status and the format goes via `-c`, so `stat -f %m F`
+    treats BOTH operands as files: `%m` errors (exit 1) while F prints a
+    filesystem block to STDOUT. In a command substitution that partial stdout is
+    CONCATENATED with the fallback's output — the value is garbage, every
+    numeric comparison on it fails, and the feature dies silently on Linux while
+    passing on the maintainer's Mac. Exactly how the statusline's wf segment
+    shipped broken (its first CI run caught it; four cases red).
+
+    Same shape, same silence: `date -v-5M` (BSD) vs `date -d '5 min ago'` (GNU).
+    A test that backdates with the wrong one gets an EMPTY string, `touch -t ""`
+    fails, and the "stale" assertion passes for the wrong reason.
+
+    The rule: PROBE the flavor once and branch, or use a form both accept
+    (`touch -t <literal>`). Never `A || B` across platform dialects where A can
+    emit stdout before failing.
+    """
+    bad = (
+        (re.compile(r"stat\s+-f\s+%\w+.*\|\|.*stat\s+-c"),
+         "stat -f … || stat -c … — GNU `-f` prints filesystem info to stdout "
+         "before failing, so the fallback CONCATENATES garbage; probe the "
+         "flavor once and branch (see statusline.sh:mtime)"),
+        (re.compile(r"stat\s+-c\s+%\w+.*\|\|.*stat\s+-f"),
+         "stat -c … || stat -f … — same trap in the other order; probe once "
+         "and branch (see statusline.sh:mtime)"),
+        (re.compile(r"date\s+-v[-+]"),
+         "date -v is BSD-only (empty output on GNU); use a literal "
+         "`touch -t YYYYMMDDhhmm` or probe the flavor"),
+        (re.compile(r"date\s+-d\s"),
+         "date -d is GNU-only (fails on BSD); use a literal "
+         "`touch -t YYYYMMDDhhmm` or probe the flavor"),
+    )
+    targets = sorted((root / "scripts").glob("*.sh"))
+    tsh = root / "tests" / "test-scripts.sh"
+    if tsh.is_file():
+        targets.append(tsh)
+    for p in targets:
+        rel = p.relative_to(root)
+        for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue  # the ban is documented at length in comments
+            for rx, why in bad:
+                if rx.search(line):
+                    problems.append(f"{rel}:{i}: {why}")
+
+
 def check_guard_parity(root, problems):
     """The three CLIs must agree on what a name may contain.
 
@@ -800,6 +849,7 @@ CHECKS = (
     check_hook,
     check_scripts,
     check_reader_bounds,
+    check_platform_idioms,
     check_guard_parity,
     check_lock_parity,
     check_workflows,

@@ -706,6 +706,55 @@ class RenderTemplateTest(unittest.TestCase):
         vp.check_render_templates(self.dir, probs)
         self.assertTrue(any("no *.tmpl found" in p for p in probs), probs)
 
+    # --- platform-dialect idioms (CI-caught: the wf segment died on Linux) ---
+    # `stat -f %m F || stat -c %Y F` is not portable: GNU `-f` means FILESYSTEM
+    # status, so it prints a filesystem block to STDOUT *and* exits 1 — the
+    # fallback's output is concatenated onto that garbage. Same silence class
+    # for `date -v` (BSD) / `date -d` (GNU).
+
+    def test_stat_bsd_gnu_fallback_fires(self):
+        write(self.dir / "scripts" / "statusline.sh",
+              GOOD_STATUSLINE +
+              'm="$(stat -f %m "$j" 2>/dev/null || stat -c %Y "$j" 2>/dev/null)"\n')
+        probs = []
+        vp.check_platform_idioms(self.dir, probs)
+        self.assertTrue(any("stat -f" in p for p in probs), probs)
+
+    def test_stat_gnu_bsd_fallback_fires(self):
+        write(self.dir / "scripts" / "statusline.sh",
+              GOOD_STATUSLINE +
+              'm="$(stat -c %Y "$j" 2>/dev/null || stat -f %m "$j" 2>/dev/null)"\n')
+        probs = []
+        vp.check_platform_idioms(self.dir, probs)
+        self.assertTrue(any("stat -c" in p for p in probs), probs)
+
+    def test_date_v_and_d_fire(self):
+        write(self.dir / "scripts" / "statusline.sh",
+              GOOD_STATUSLINE + 't="$(date -v-5M +%s)"\n')
+        probs = []
+        vp.check_platform_idioms(self.dir, probs)
+        self.assertTrue(any("date -v is BSD-only" in p for p in probs), probs)
+        write(self.dir / "scripts" / "statusline.sh",
+              GOOD_STATUSLINE + 't="$(date -d \'5 min ago\' +%s)"\n')
+        probs = []
+        vp.check_platform_idioms(self.dir, probs)
+        self.assertTrue(any("date -d is GNU-only" in p for p in probs), probs)
+
+    def test_platform_idiom_in_comment_is_ignored(self):
+        # The ban is documented at length in comments; a checker that fires on
+        # its own documentation trains the maintainer to ignore the build.
+        write(self.dir / "scripts" / "statusline.sh",
+              GOOD_STATUSLINE +
+              '# never write: stat -f %m F || stat -c %Y F  (see the CI failure)\n')
+        probs = []
+        vp.check_platform_idioms(self.dir, probs)
+        self.assertEqual(probs, [])
+
+    def test_real_tree_platform_idioms_clean(self):
+        probs = []
+        vp.check_platform_idioms(ROOT, probs)
+        self.assertEqual(probs, [])
+
 
 class LockParityTest(unittest.TestCase):
     """The shared lock block must be identical in both writers.
