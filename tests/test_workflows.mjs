@@ -346,5 +346,90 @@ ok(deadConv?.error && /converge agent died/.test(deadConv.error),
 ok(Array.isArray(deadConv?.directions) && deadConv.directions.length === 4,
   "brainstorm: dead-converge error carries the surviving directions");
 
+// ── F33: an array target must review what was passed, or fail loud ──────────
+console.log("-- Case: review.js multi-path target (F33)");
+// meta.whenToUse promises "Pass the artifact path(s)" and the normalizer
+// explicitly JSON-parses a leading `[`, but `typeof A === "string"` then fell
+// through to the "the working diff" default: the panel reviewed something
+// OTHER than what was passed, with no error. Silent-wrong is the worst of the
+// three possible behaviours (right / loud-wrong / silent-wrong).
+const arrRt = (await run(WF("review.js"), JSON.stringify(["docs/a.md", "docs/b.md"]), everyLens)).rt;
+const arrPrompt = arrRt.calls.find((c) => c.label.startsWith("lens:")).prompt;
+ok(arrPrompt.includes("docs/a.md") && arrPrompt.includes("docs/b.md"),
+  "review: an array target reaches the lens prompt (both paths)");
+ok(!arrPrompt.includes("the working diff"),
+  "review: an array target does NOT silently degrade to the working-diff default");
+const oneRt = (await run(WF("review.js"), JSON.stringify(["docs/only.md"]), everyLens)).rt;
+ok(oneRt.calls.find((c) => c.label.startsWith("lens:")).prompt.includes("ARTIFACT: docs/only.md\n"),
+  "review: a single-element array is rendered exactly like a bare path");
+// A malformed array is a caller error: reject it rather than review the wrong
+// thing. Loud-wrong beats silent-wrong.
+await throws(() => run(WF("review.js"), JSON.stringify([]), everyLens),
+  "review: an empty array target is rejected, not defaulted");
+await throws(() => run(WF("review.js"), JSON.stringify(["docs/a.md", 42]), everyLens),
+  "review: a non-string array element is rejected");
+// The object form may carry an array too — same contract.
+const objArrRt = (await run(WF("review.js"), { target: ["docs/x.md", "docs/y.md"] }, everyLens)).rt;
+ok(objArrRt.calls.find((c) => c.label.startsWith("lens:")).prompt.includes("docs/y.md"),
+  "review: args.target as an array is honored, same as the bare form");
+
+// ── F34: the lenses that ask about the task text must RECEIVE it ────────────
+console.log("-- Case: review.js lens context (F34)");
+// spec asks "what the task text asked for" and testability asks "for each
+// stated requirement" — but doneMeans went only to the adversarial seat, so
+// both were structurally forced into op-reviewer.md's NEEDS_CONTEXT branch.
+// Measured live: the spec lens returned one finding, score 0, saying exactly
+// that. A paid dispatch that cannot answer its own question.
+const dmRt = (await run(WF("review.js"),
+  { target: "docs/x.md", doneMeans: "DONEMEANS_SENTINEL: ships a --json flag" }, everyLens)).rt;
+const byLens = Object.fromEntries(
+  dmRt.calls.filter((c) => c.label.startsWith("lens:")).map((c) => [c.label.slice(5), c.prompt]));
+for (const k of ["spec", "testability"]) {
+  ok(byLens[k].includes("DONEMEANS_SENTINEL"),
+    `review: the ${k} lens receives the task text it asks about (F34)`);
+}
+for (const k of ["quality", "correctness"]) {
+  ok(!byLens[k].includes("DONEMEANS_SENTINEL"),
+    `review: the ${k} lens does NOT carry the task text (it never asks about it)`);
+}
+// No doneMeans passed → no dangling empty header in any prompt.
+const noDmRt = (await run(WF("review.js"), "docs/x.md", everyLens)).rt;
+ok(!noDmRt.calls.some((c) => /TASK TEXT:\s*\n/.test(c.prompt)),
+  "review: an absent doneMeans emits no empty TASK TEXT header");
+
+// ── F35: a malformed verdict is not a passing verdict ───────────────────────
+console.log("-- Case: review.js malformed adversarial verdict (F35)");
+// F32 made `adversarial == null` fail closed, but a NON-null malformed object
+// ({} or {verdict:"MAYBE"}) still yielded blocked:false — the same value a
+// CONFIRMED produces. The fix leaned entirely on the harness turning schema
+// violations into null; that is a narrower guarantee than "fails closed".
+for (const [label, adv] of [["{}", {}], ['{verdict:"MAYBE"}', { verdict: "MAYBE" }],
+                            ['{verdict:""}', { verdict: "" }]]) {
+  const r = (await run(WF("review.js"), "docs/x.md", { ...everyLens, adversarial: adv })).result;
+  ok(r.blocked === true && r.unverified === true,
+    `review: a malformed verdict ${label} is unverified + blocked, not a pass`);
+}
+const refuted = (await run(WF("review.js"), "docs/x.md",
+  { ...everyLens, adversarial: { verdict: "REFUTED", evidence: "e" } })).result;
+ok(refuted.blocked === true && refuted.unverified === undefined,
+  "review: REFUTED blocks but is NOT unverified (a real verdict was returned)");
+
+// ── F36: meta must not misstate what a dispatch costs ───────────────────────
+console.log("-- Case: review.js cost contract (F36)");
+// meta advertised "narrow lenses at cheap tiers" while 2 of 5 dispatch at
+// JUDGMENT — the cost shown in the tool picker was wrong. Assert the text
+// against the LENSES table itself so the two cannot drift apart again.
+const metaSrc = (await import("node:fs")).readFileSync(new URL(WF("review.js")), "utf8");
+const judgmentLenses = (metaSrc.match(/tier:\s*JUDGMENT/g) ?? []).length;
+const metaBlock = metaSrc.slice(0, metaSrc.indexOf("};"));
+// The panel's own cost must be described honestly. "cheap tiers" UNQUALIFIED is
+// the lie (2 of 5 lenses are JUDGMENT); "most at cheap tiers and two at
+// judgment tier" is the truth, so the check is for an unhedged claim, not for
+// the substring. `phases[].detail` is what the tool picker shows, so it must
+// not say "cheap tiers" flatly either.
+const unhedgedCheap = /(?<!most |mixed )(?:at |, )cheap tiers(?! and)/.test(metaBlock);
+ok(judgmentLenses > 0 && /judgment/i.test(metaBlock) && !unhedgedCheap,
+  "review: meta does not claim 'cheap tiers' while lenses dispatch at JUDGMENT (F36)");
+
 console.log(`\n== summary: ${pass} passed, ${fail} failed ==`);
 if (fail > 0) process.exit(1);
