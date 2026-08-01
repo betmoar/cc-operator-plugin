@@ -184,14 +184,18 @@ const panel = await parallel(
         phase: "Panel",
         schema: FINDINGS,
       },
-    ).then((r) => ({ lens: l.key, findings: r?.findings ?? [] })),
+      // `r == null` is a DEAD lens (schema mismatch, timeout, rate limit), not
+      // a lens that found nothing. `r?.findings ?? []` alone laundered the two
+      // into the same shape, so the death was unrecoverable downstream — even
+      // `.filter(Boolean)` saw a truthy object. Carry the distinction.
+    ).then((r) => ({ lens: l.key, findings: r?.findings ?? [], dead: r == null })),
   ),
 );
 
 // Synthesis is plain code, not an agent: drop below threshold, then rank.
 // Buckets follow the charter's existing thresholds.
-const scored = panel
-  .filter(Boolean)
+const returned = panel.filter((p) => p && !p.dead);
+const scored = returned
   .flatMap((p) => p.findings.map((f) => ({ ...f, lens: p.lens })))
   .filter((f) => f.score >= 50)
   .sort((a, b) => b.score - a.score);
@@ -199,7 +203,18 @@ const scored = panel
 const bucket = (f) =>
   f.score >= 75 ? "must-resolve" : f.score >= 60 ? "should-clarify" : "consider";
 
-log(`panel: ${scored.length} findings survived the 50 threshold`);
+// Report the lens ratio, not just the surviving findings. A dead lens is
+// otherwise indistinguishable from a lens that legitimately found nothing, and
+// the panel silently runs at less than the coverage the operator asked for.
+// crawl.js logs the same ratio for the same fan-out shape.
+const deadLenses = panel.filter((p) => !p || p.dead).map((p) => p?.lens ?? "?");
+log(
+  `panel: ${returned.length}/${LENSES.length} lenses returned` +
+    (deadLenses.length
+      ? ` (${deadLenses.length} FAILED: ${deadLenses.join(", ")} — coverage is incomplete)`
+      : "") +
+    `; ${scored.length} findings survived the 50 threshold`,
+);
 
 // The adversarial seat runs AFTER the panel, on what survived — it verifies the
 // artifact rather than racing the reviewers. It never enters the scoring pool.
@@ -226,5 +241,9 @@ return {
   blocked: adversarial?.verdict === "REFUTED",
   adversarial,
   findings: scored.map((f) => ({ ...f, bucket: bucket(f) })),
-  dropped: panel.filter(Boolean).flatMap((p) => p.findings).length - scored.length,
+  dropped: returned.flatMap((p) => p.findings).length - scored.length,
+  // Non-empty means the panel ran at reduced coverage: those lenses returned
+  // nothing because they died, not because the artifact was clean. A clean
+  // verdict from a partial panel is not the verdict the operator asked for.
+  deadLenses,
 };

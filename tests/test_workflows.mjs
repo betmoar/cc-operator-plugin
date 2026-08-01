@@ -55,8 +55,12 @@ function makeRuntime(agentReturns = {}) {
     return out;
   };
   const phase = () => {};
-  const log = () => {};
-  return { agent, parallel, pipeline, phase, log, calls };
+  // Captured, not discarded: log() is the ONLY channel by which a fan-out
+  // reports that some of its agents failed to return. A workflow that silently
+  // narrows its coverage is a real defect, so the messages are assertable.
+  const logs = [];
+  const log = (m) => { logs.push(String(m)); };
+  return { agent, parallel, pipeline, phase, log, calls, logs };
 }
 
 // Load a workflow with injected globals + args, return its result. The workflow
@@ -157,23 +161,56 @@ ok(rev.findings.find((f) => f.score === 90).bucket === "must-resolve", "review: 
 ok(rev.findings.find((f) => f.score === 65).bucket === "should-clarify", "review: bucket 60-74 → should-clarify");
 ok(rev.findings.find((f) => f.score === 55).bucket === "consider", "review: bucket 50-59 → consider");
 
+// A lens whose agent dies resolves to null and is dropped by .filter(Boolean).
+// Dropped-lens and found-nothing are then indistinguishable unless the ratio is
+// logged — crawl.js logs it for the identical pattern; review.js did not, so a
+// panel could silently run at half the coverage the operator asked for.
+const ALL_LENSES = ["spec", "testability", "feasibility", "quality", "correctness"];
+const everyLens = Object.fromEntries(ALL_LENSES.map((k) => [`lens:${k}`, { findings: [] }]));
+const { rt: fullRt } = await run(WF("review.js"), {}, everyLens);
+ok(fullRt.logs.some((m) => new RegExp(`\\b${ALL_LENSES.length}/${ALL_LENSES.length} lenses returned`).test(m)) &&
+   !fullRt.logs.some((m) => /FAILED/.test(m)),
+  "review: logs a full lens ratio, no FAILED, when every lens returns");
+// Drop one lens fixture → its agent returns null and is filtered out.
+const { rt: partialRt } = await run(WF("review.js"), {},
+  Object.fromEntries(Object.entries(everyLens).filter(([k]) => k !== "lens:quality")));
+ok(partialRt.logs.some((m) =>
+     new RegExp(`\\b${ALL_LENSES.length - 1}/${ALL_LENSES.length} lenses returned`).test(m) &&
+     /1 FAILED: quality/.test(m)),
+  "review: a dead lens is reported as FAILED coverage, not silently dropped");
+const { result: partialRev } = await run(WF("review.js"), {},
+  Object.fromEntries(Object.entries(everyLens).filter(([k]) => k !== "lens:quality")));
+ok((partialRev.deadLenses ?? []).join() === "quality",
+  "review: the dead lens is named in the RESULT, not only the log");
+
 // ── plan: decomposition + vet classification ────────────────────────────────
 console.log("-- Case: plan.js vet classification (blocked / needs-info / clear)");
 // Stub decompose to return 2 tasks; vet lenses return feasible/testable/issues.
 // Assert the workflow classifies a 'no' feasibility as blocked, 'needs-info' as
 // needsInfo, and clean as neither.
+// `blocked` is three OR'd conditions. The original fixture set feasible:"no"
+// AND a contradiction issue on the same task, so it proved only that their
+// disjunction fires — a regression killing the testable or contradiction branch
+// alone would have passed. Each condition now has its own task.
 const planFixtures = {
   decompose: { tasks: [
     { id: "clean", title: "t", files: [], produces: "", testCycle: "run x → pass" },
     { id: "blocked", title: "t", files: [], produces: "", testCycle: "run x" },
+    { id: "untestable", title: "t", files: [], produces: "", testCycle: "works correctly" },
+    { id: "contra", title: "t", files: [], produces: "", testCycle: "run x" },
     { id: "info", title: "t", files: [], produces: "", testCycle: "run x" },
   ], fileStructure: "f: r" },
   // feasibility lens (JUDGMENT) returns per-task via the label; we key on label.
   "feas:clean": { feasible: "yes", testable: "yes", issues: [] },
-  "feas:blocked": { feasible: "no", testable: "yes", issues: [{ kind: "contradiction", detail: "x" }] },
+  "feas:blocked": { feasible: "no", testable: "yes", issues: [] },
+  "feas:untestable": { feasible: "yes", testable: "yes", issues: [] },
+  // feasible AND testable both clean — only the contradiction issue blocks it.
+  "feas:contra": { feasible: "yes", testable: "yes", issues: [{ kind: "contradiction", detail: "x" }] },
   "feas:info": { feasible: "needs-info", testable: "yes", issues: [] },
   "test:clean": { feasible: "yes", testable: "yes", issues: [] },
   "test:blocked": { feasible: "yes", testable: "yes", issues: [] },
+  "test:untestable": { feasible: "yes", testable: "no", issues: [] },
+  "test:contra": { feasible: "yes", testable: "yes", issues: [] },
   "test:info": { feasible: "yes", testable: "yes", issues: [] },
 };
 const BIG_SPEC = "SPEC_SENTINEL_" + "s".repeat(5000);
@@ -181,14 +218,36 @@ const { result: plan, rt: planRt } = await run(WF("plan.js"), { spec: BIG_SPEC }
 const planCalls = planRt.calls;
 const blockedIds = (plan.blocked ?? []).map((b) => b.taskId);
 const needsInfoIds = plan.needsInfo ?? [];
-ok(blockedIds.includes("blocked"), "plan: feasible=no (or contradiction) → blocked");
+ok(blockedIds.includes("blocked"), "plan: feasible=no → blocked");
+ok(blockedIds.includes("untestable"), "plan: testable=no alone → blocked");
+ok(blockedIds.includes("contra"), "plan: contradiction issue alone → blocked");
 ok(needsInfoIds.includes("info"), "plan: feasible=needs-info → needsInfo");
 ok(!blockedIds.includes("clean") && !needsInfoIds.includes("clean"), "plan: clean task is neither blocked nor needsInfo");
+
+// A lens that dies resolves its slot to null → feasible/testable are undefined,
+// which matches neither "no" nor "needs-info". Before the fix that fell through
+// to the implicit "clear" bucket: a task whose vetting never ran reported as
+// having PASSED. It must surface as vettingIncomplete instead.
+const nullFixtures = {
+  decompose: { tasks: [
+    { id: "dead", title: "t", files: [], produces: "", testCycle: "run x" },
+  ], fileStructure: "f: r" },
+  // "feas:dead" deliberately absent → the stub returns null for that label.
+  "test:dead": { feasible: "yes", testable: "yes", issues: [] },
+};
+const { result: nullPlan } = await run(WF("plan.js"), { spec: "s" }, nullFixtures);
+ok((nullPlan.vettingIncomplete ?? []).includes("dead"),
+  "plan: a lens returning null → vettingIncomplete, NOT clear");
+ok(!(nullPlan.blocked ?? []).map((b) => b.taskId).includes("dead"),
+  "plan: vetting-incomplete is its own bucket, not conflated with blocked");
 // F13: the full spec goes to decompose ONCE; the per-task vet lenses get the
 // bounded specExcerpt, never the whole spec (it was re-billed T times at the
 // judgment tier — pure duplicate input).
 const feasCalls = planCalls.filter((c) => c.label.startsWith("feas:"));
-ok(feasCalls.length === 3 && feasCalls.every((c) => !c.prompt.includes(BIG_SPEC)),
+// One feasibility lens per decomposed task — derived, not hardcoded, so adding
+// a classification fixture does not silently weaken the F13 assertion.
+ok(feasCalls.length === planFixtures.decompose.tasks.length &&
+   feasCalls.every((c) => !c.prompt.includes(BIG_SPEC)),
   "plan: feasibility vet prompt does NOT carry the full spec (F13)");
 ok(planCalls.find((c) => c.label === "decompose").prompt.includes(BIG_SPEC),
   "plan: decompose (once) is the only full-spec consumer");

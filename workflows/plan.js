@@ -220,21 +220,36 @@ const vetted = await pipeline(
       taskId: task.id,
       feasible: f?.feasible,
       testable: t?.testable,
+      // A lens that dies (schema mismatch, timeout, rate limit) resolves its
+      // slot to null, so f?.feasible is undefined — which matches NEITHER "no"
+      // nor "needs-info" below and would fall through to the implicit "clear"
+      // bucket. A task whose vetting never ran would then report as having
+      // PASSED vetting and proceed toward implementation unflagged, defeating
+      // the point of the phase. Make the gap explicit instead of inferred.
+      vettingIncomplete: f == null || t == null,
       issues: [...(f?.issues ?? []), ...(t?.issues ?? [])],
     })),
   // stage 2: nothing further per task — flatten
   (v) => v,
 );
 
+// pipeline() drops a throwing item to null; count that too. `vetted.length` is
+// the task count, so a shortfall here is dispatch loss, not a vetting verdict.
 const flat = vetted.filter(Boolean);
+const lost = vetted.length - flat.length;
 const blocked = flat.filter(
   (v) => v.feasible === "no" || v.testable === "no" || v.issues.some((i) => i.kind === "contradiction"),
 );
-const needsInfo = flat.filter((v) => v.feasible === "needs-info");
+const needsInfo = flat.filter((v) => v.feasible === "needs-info" && !blocked.includes(v));
+const incomplete = flat.filter(
+  (v) => v.vettingIncomplete && !blocked.includes(v) && !needsInfo.includes(v),
+);
 
 log(
-  `vet: ${flat.length} vetted — ${blocked.length} blocked, ${needsInfo.length} needs-info, ` +
-    `${flat.length - blocked.length - needsInfo.length} clear`,
+  `vet: ${flat.length}/${vetted.length} vetted — ${blocked.length} blocked, ` +
+    `${needsInfo.length} needs-info, ${incomplete.length} vetting-incomplete, ` +
+    `${flat.length - blocked.length - needsInfo.length - incomplete.length} clear` +
+    (lost ? ` (${lost} task(s) LOST to dispatch failure)` : ""),
 );
 
 return {
@@ -249,4 +264,7 @@ return {
   //  3. Write the plan to docs/spec/ or docs/plans/ and open the human-review gate.
   blocked: blocked.map((v) => ({ taskId: v.taskId, issues: v.issues })),
   needsInfo: needsInfo.map((v) => v.taskId),
+  //  4. A vetting-incomplete task is NOT a clear task: its lens failed to
+  //     return, so nothing is known about it. Re-vet before dispatching it.
+  vettingIncomplete: incomplete.map((v) => v.taskId),
 };
