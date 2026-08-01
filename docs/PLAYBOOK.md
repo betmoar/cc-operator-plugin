@@ -240,6 +240,33 @@ reader, so:
   dispatches (review: 2 tiers); KNOWN_TIERS is what it accepts (always all 4).
   Do not "fix" a workflow by making them equal — that re-opens F07.
 
+### Dead agents: null is a DEATH, not an empty result (audit F31 + F32)
+
+`agent()` resolves to **null** when the dispatched agent dies — schema
+mismatch, timeout, rate limit. Null is NOT "found nothing"; every consumer of
+an agent's return must decide which of the two it is holding, or the death
+launders into the passing shape:
+
+- **Fan-outs** (a lens, a vet, a shard): mark the death and carry it to both
+  the log AND the return value. Never let a `.then()` rewrite null into a
+  truthy empty object before a `.filter(Boolean)` — that was F31's worst
+  variant (the filter dropped nothing; a naive ratio log printed 5/5 with a
+  dead lens). Pattern: `dead: r == null` in review.js, `vettingIncomplete` in
+  plan.js.
+- **Terminal single calls** (the one judgment agent a workflow ends on): a
+  null here must produce an explicit `{error: …}` return that CARRIES the
+  surviving upstream work (shard digests, directions) so only the dead step is
+  re-run — never a default that reads as clean (F32: a dead adversarial made
+  `blocked:false`, the same value a CONFIRMED produces; the hard-stop gate
+  failed open).
+- **Gates fail CLOSED.** If the dead agent was a verifier, its absence blocks
+  (review.js: `blocked: adversarial == null || …`, plus `unverified: true` so
+  the operator can tell death from refutation).
+- Locking tests exist for every case above ("dead terminal agents fail loud"
+  in test_workflows.mjs); a new fan-out or terminal call gets the same pair
+  (dead → loud; alive → unchanged) or it will regress silently — null-handling
+  has no crash to catch it.
+
 ### The env-overridable lock budgets (audit F08, 2026-07-31)
 
 `LOCK_SPINS`, `LOCK_LIVE_SPINS`, `RECLAIM_WAIT` in the LOCK BLOCK are
