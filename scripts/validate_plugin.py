@@ -55,6 +55,10 @@ TAG_RE = re.compile(r"\[D:[^\]]+\]|\[DOC:[^\]]+\]")
 
 PLUGIN_NAME = "cc-operator"
 CHARTER_MAX_LINES = 150
+# Companions to the line cap (audit F19): the cap bounds ALWAYS-ON tokens, so
+# it must also bound what a line and the file may weigh, or packing defeats it.
+CHARTER_MAX_LINE_CHARS = 100   # non-table lines; the file's own wrap is ~80
+CHARTER_MAX_BYTES = 9000       # file is ~8.3KB today; headroom, not a target
 CHARTER_SECTION_ORDER = [
     "ROLE",
     "SOLO MODE",
@@ -175,6 +179,25 @@ def check_charter(root, problems):
     if len(lines) > CHARTER_MAX_LINES:
         problems.append(
             f"templates/OPERATOR.md: {len(lines)} lines > {CHARTER_MAX_LINES} cap")
+    # The line cap is a proxy for ALWAYS-ON BYTES — chars are what a session is
+    # billed, and a line-count-only gate is gameable by packing prose into one
+    # long line (audit F19: a 286-char line shipped through a green validator
+    # at zero line cost the moment the file hit 150/150). Two companion bounds
+    # make the cap honest: a per-line cap on non-table lines (tables are
+    # legitimately one-row-per-line) and a total-bytes ceiling.
+    for i, ln in enumerate(lines, 1):
+        if len(ln) > CHARTER_MAX_LINE_CHARS and not ln.lstrip().startswith("|"):
+            problems.append(
+                f"templates/OPERATOR.md:{i}: {len(ln)}-char line > "
+                f"{CHARTER_MAX_LINE_CHARS} — packing prose into long lines "
+                f"defeats the {CHARTER_MAX_LINES}-line cap's purpose (F19); "
+                f"wrap it and trim elsewhere")
+    total = sum(len(ln) + 1 for ln in lines)
+    if total > CHARTER_MAX_BYTES:
+        problems.append(
+            f"templates/OPERATOR.md: {total} bytes > {CHARTER_MAX_BYTES} "
+            f"ceiling — the charter is billed in every operated session; "
+            f"cut before adding (F19)")
 
     headings = [ln[3:].split(" (")[0].strip()
                 for ln in lines if ln.startswith("## ")]
@@ -672,6 +695,33 @@ def check_workflow_tier_namespace(root, problems):
                 f"resolver map throws on a valid key (F07)")
 
 
+def check_workflow_agent_types(root, problems):
+    """Every `agentType: "cc-operator:X"` in workflows/*.js must name a shipped
+    plugin-root agent (agents/X.md).
+
+    A workflow agentType resolves against the PLUGIN registry — a rendered
+    project-layer agent cannot be named there. crawl.js shipped dispatching
+    op-scout for shards while its commit message and template claimed
+    op-crawler, which could not exist as a workflow agentType (audit F22): the
+    shard prompt said "read every path" while op-scout's body said "read only
+    the relevant excerpts, <=20 lines". The name check is mechanical; keeping
+    the BODY compatible with the dispatch prompt stays a PLAYBOOK judgment.
+    """
+    wf_dir = root / "workflows"
+    files = sorted(wf_dir.glob("*.js")) if wf_dir.is_dir() else []
+    for f in files:
+        text = f.read_text(encoding="utf-8")
+        for m in re.finditer(
+                rf'agentType:\s*"{re.escape(PLUGIN_NAME)}:([\w-]+)"', text):
+            agent_name = m.group(1)
+            if not (root / "agents" / f"{agent_name}.md").is_file():
+                problems.append(
+                    f"workflows/{f.name}: agentType "
+                    f"'{PLUGIN_NAME}:{agent_name}' names no shipped agent — "
+                    f"agents/{agent_name}.md does not exist; a rendered "
+                    f"project-layer agent cannot be a workflow agentType (F22)")
+
+
 # The frontmatter keys every slash command must carry. Matches the shape
 # commands/start.md and commands/handoff.md already use. argument-hint may be
 # an empty list (`argument-hint: []`), so the check accepts a value of `[]`.
@@ -755,6 +805,7 @@ CHECKS = (
     check_workflows,
     check_workflow_parity,
     check_workflow_tier_namespace,
+    check_workflow_agent_types,
     check_commands,
 )
 

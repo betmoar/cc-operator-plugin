@@ -90,7 +90,8 @@ if [ ! -f "$OPDIR/tiers.env" ]; then
 #RECON=claude-haiku-4-5-20251001
 #
 # Seat → tier overrides (optional; 'op-' prefix optional). Default seats:
-#   author=IMPLEMENT  mechanic=MECHANICAL  scout=RECON  verifier=JUDGMENT
+#   author=JUDGMENT  mechanic=IMPLEMENT  scout=RECON  verifier=JUDGMENT
+#   crawler=MECHANICAL  brainstorm=MECHANICAL
 # Example: run scout on the cheap tier too.
 #op-scout=MECHANICAL
 EOF

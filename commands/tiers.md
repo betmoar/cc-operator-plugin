@@ -67,6 +67,12 @@ their output; relay that line. If `$CLAUDE_CODE_SUBAGENT_MODEL` is set it
 OVERRIDES the rendered binding at dispatch (spec M7) — the renderer warns; relay
 that too and tell the operator to unset it.
 
+**Ownership:** rendered files carry a `rendered-by: cc-operator ops-render`
+marker line; `render` and `revert` delete ONLY marked files. A hand-authored
+`.claude/agents/op-*.md` is never deleted — and if it sits at a seat's own
+target name, `render` refuses (non-zero exit) rather than overwrite. Relay the
+"kept (not renderer-owned)" line when the script prints it.
+
 Any other `$ARGUMENTS` — print the `argument-hint` and stop.
 
 The four tiers: `JUDGMENT` (opus-class review/verdict), `IMPLEMENT`

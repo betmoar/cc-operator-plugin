@@ -15,8 +15,10 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import validate_plugin as vp  # noqa: E402
 
 
-_CLI_SENTENCE = " — run " + ", ".join(
-    f"`.operator/bin/{c}`" for c in vp.CHARTER_REQUIRED_CLIS) + " [DOC:spec-D4]."
+# One CLI per line: the charter now bounds per-line length (F19), so the
+# fixture must satisfy CHARTER_MAX_LINE_CHARS like the real charter does.
+_CLI_SENTENCE = " — run [DOC:spec-D4]:\n" + "\n".join(
+    f"`.operator/bin/{c}`" for c in vp.CHARTER_REQUIRED_CLIS)
 
 GOOD_CHARTER = "# OPERATOR.md\n\n" + "\n".join(
     f"## {sec}\n\nrule [D:tag-{i}] body"
@@ -560,7 +562,59 @@ class ValidatorTest(unittest.TestCase):
         vp.check_workflows(ROOT, probs)
         vp.check_workflow_parity(ROOT, probs)
         vp.check_workflow_tier_namespace(ROOT, probs)
+        vp.check_workflow_agent_types(ROOT, probs)
         self.assertEqual(probs, [])
+
+    # --- workflow agentType resolution (F22) ---
+    # A workflow agentType resolves against the PLUGIN registry; a rendered
+    # project-layer agent cannot be named there. crawl.js shipped dispatching
+    # op-scout while claiming op-crawler — which did not exist as an agent.
+
+    def test_workflow_agent_type_unshipped_fires(self):
+        write(self.dir / "workflows" / "review.js",
+              'export const meta = { name: "review", description: "d" };\n'
+              'const KNOWN_TIERS = ["JUDGMENT","IMPLEMENT","MECHANICAL","RECON"];\n'
+              'agent("x", { agentType: "cc-operator:op-ghost" });\n')
+        probs = []
+        vp.check_workflow_agent_types(self.dir, probs)
+        self.assertTrue(any("op-ghost" in p and "names no shipped agent" in p
+                            for p in probs), probs)
+
+    def test_workflow_agent_type_shipped_is_clean(self):
+        write(self.dir / "workflows" / "review.js",
+              'export const meta = { name: "review", description: "d" };\n'
+              'const KNOWN_TIERS = ["JUDGMENT","IMPLEMENT","MECHANICAL","RECON"];\n'
+              'agent("x", { agentType: "cc-operator:op-author" });\n')
+        probs = []
+        vp.check_workflow_agent_types(self.dir, probs)
+        self.assertEqual(probs, [])
+
+    # --- charter byte bounds (F19) ---
+    # The 150-line cap bounds ALWAYS-ON tokens; a line-count-only gate is
+    # gameable by packing prose into one long line (a 286-char line shipped
+    # through a green validator). Non-table lines are length-bounded; table
+    # rows (|-prefixed) are exempt; the file has a total-bytes ceiling.
+
+    def test_charter_packed_line_fires(self):
+        write(self.dir / "templates" / "OPERATOR.md",
+              GOOD_CHARTER + "\npacked rule [D:tag-x] " + "y" * 120 + "\n")
+        probs = []
+        vp.check_charter(self.dir, probs)
+        self.assertTrue(any("char line" in p for p in probs), probs)
+
+    def test_charter_long_table_row_is_exempt(self):
+        write(self.dir / "templates" / "OPERATOR.md",
+              GOOD_CHARTER + "\n| cap | " + "y" * 120 + " | act [D:tag-t] |\n")
+        probs = []
+        vp.check_charter(self.dir, probs)
+        self.assertFalse(any("char line" in p for p in probs), probs)
+
+    def test_charter_byte_ceiling_fires(self):
+        filler = "\n".join(f"r{i} [D:tag-f] " + "z" * 90 for i in range(95))
+        write(self.dir / "templates" / "OPERATOR.md", GOOD_CHARTER + "\n" + filler)
+        probs = []
+        vp.check_charter(self.dir, probs)
+        self.assertTrue(any("ceiling" in p for p in probs), probs)
 
     # --- 13. workflow tier namespace: KNOWN_TIERS == resolver TIER_NAMES (F07) ---
     # A workflow must accept every tier the resolver may emit, else forwarding
