@@ -51,7 +51,11 @@ const KNOWN_TIERS = ["JUDGMENT", "IMPLEMENT", "MECHANICAL", "RECON"];
 const A = (() => {
   if (typeof args === "string") {
     const t = args.trim();
-    if (t.startsWith("{") || t.startsWith("[")) {
+    // `"` too, not just `{`/`[`: the tool JSON-encodes a passed scalar, so a
+    // bare target path arrives as the 14 characters `"docs/x.md"` — quotes
+    // included. Without this branch those quotes survived into `target` and
+    // went out in every lens prompt as part of the path (PR review, Copilot).
+    if (t.startsWith("{") || t.startsWith("[") || t.startsWith('"')) {
       try { return JSON.parse(t); } catch { return args; }
     }
     return args; // bare string — the artifact path

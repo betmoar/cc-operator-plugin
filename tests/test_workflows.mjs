@@ -183,6 +183,21 @@ const { result: partialRev } = await run(WF("review.js"), {},
 ok((partialRev.deadLenses ?? []).join() === "quality",
   "review: the dead lens is named in the RESULT, not only the log");
 
+// The Workflow tool JSON-encodes a passed scalar, so a bare target path
+// arrives as `"docs/x.md"` — quotes included. They used to survive into
+// `target` and ship in every lens prompt as part of the path.
+const { rt: quotedRt } = await run(WF("review.js"), JSON.stringify("docs/x.md"), everyLens);
+const lensPrompt = quotedRt.calls.find((c) => c.label.startsWith("lens:")).prompt;
+ok(lensPrompt.includes("ARTIFACT: docs/x.md\n"),
+  "review: a JSON-encoded bare target is unwrapped, not passed with its quotes");
+// A plain (un-encoded) path must still work, and invalid JSON must not throw.
+const { rt: plainRt } = await run(WF("review.js"), "docs/y.md", everyLens);
+ok(plainRt.calls.find((c) => c.label.startsWith("lens:")).prompt.includes("ARTIFACT: docs/y.md\n"),
+  "review: a plain bare target still passes through unchanged");
+const { rt: junkRt } = await run(WF("review.js"), '"unterminated', everyLens);
+ok(junkRt.calls.find((c) => c.label.startsWith("lens:")).prompt.includes('ARTIFACT: "unterminated'),
+  "review: unparseable JSON degrades to the raw string, no throw");
+
 // ── plan: decomposition + vet classification ────────────────────────────────
 console.log("-- Case: plan.js vet classification (blocked / needs-info / clear)");
 // Stub decompose to return 2 tasks; vet lenses return feasible/testable/issues.

@@ -108,11 +108,24 @@ way. None of it is loaded by the plugin at runtime; the validator reads only
 `templates/`, `scripts/`, `hooks/`, `agents/`, and the manifests.
 
 - `docs/spec/chief-operator-spec.md` — the original design spec (D1–D6, the
-  seams); the charter's `[DOC:spec-*]` citation tags resolve to it.
+  seams); most of the charter's `[DOC:spec-*]` citation tags resolve to it.
+  **Local-only:** `docs/spec/` is gitignored wholesale (`docs/spec/.gitignore`
+  is a bare `*`); the four files that ship were force-added. This one is not,
+  because it quotes the prior project's evidence base — the same material 0.3.0
+  deliberately removed from the tree. A fresh clone does not get it.
 - `docs/spec/concurrent-sessions.md` — the 0.4.0 design: the field report, the
   ownership proposal, and `Implemented (0.4.0)` amendments recording where the
   shipped code diverged from the proposal. Its line numbers are 0.3.0-relative
   and say so. Also the honest register of what a green suite does **not** prove.
+  **Local-only**, same as above.
+- Consequence, and it is not small: of the charter's 24 `[DOC:spec-*]` tags,
+  **22 point into those two untracked files** (`D2`×5, `D4`×4, `D6`×3,
+  `D1.5`×3, `concurrent`×3, plus `D1.2`, `D1.6`, `D5`, `O8`). Only `spec-wf`
+  and `spec-unk` resolve in a fresh clone. `check_charter` counts tags and
+  requires ≥1 per section; it never resolves a tag to a file, so the build
+  stays green either way. Treat a dangling `[DOC:spec-*]` in a clean checkout as expected, not as
+  charter rot — and if you need the rationale, it is in the maintainer's local
+  tree or the git history, not in the clone.
 - `docs/PLAYBOOK.md` — the executable procedures (adding a guard, adding a
   reader, touching the lock), each derived from a bug that happened here.
 - `docs/audits/audit-2026-07-27-{findings,handoff}.md` — the departing-architect

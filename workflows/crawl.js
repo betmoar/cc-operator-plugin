@@ -29,7 +29,9 @@ const KNOWN_TIERS = ["JUDGMENT", "IMPLEMENT", "MECHANICAL", "RECON"];
 const A = (() => {
   if (typeof args === "string") {
     const t = args.trim();
-    if (t.startsWith("{") || t.startsWith("[")) {
+    // `"` too: the tool JSON-encodes a passed scalar, so a bare string arrives
+    // with its quotes attached. Kept identical to review.js's normalizer.
+    if (t.startsWith("{") || t.startsWith("[") || t.startsWith('"')) {
       try { return JSON.parse(t); } catch { return args; }
     }
     return args;

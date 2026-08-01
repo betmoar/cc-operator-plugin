@@ -1353,6 +1353,29 @@ check "literal override: scout re-tiered, no other seat lost" \
 rm -rf "$RP"
 
 ########################################################################
+echo "-- Case: ops-render --check probes without writing"
+# --check is a documented user-facing branch (commands/tiers.md: "Use before
+# render to catch a typo'd or dead id") that no test invoked. It renders to a
+# temp dir, probes each distinct NON-claude id against cc-proxy, and refuses on
+# a failed probe. claude-* ids are harness-served and skipped, so an all-claude
+# config passes with no proxy running at all.
+CKP="$(newproj)"; mkdir -p "$CKP/.operator"
+printf 'MECHANICAL=glm-5-turbo\n' > "$CKP/.operator/tiers.env"
+CKOUT="$( cd "$CKP" && RENDERENV --check 2>&1 )"; CKRC=$?
+check "--check refuses when a model id fails the liveness probe" \
+  "$([ "$CKRC" -ne 0 ] && printf '%s' "$CKOUT" | grep -q 'probe FAILED' && echo 0 || echo 1)"
+check "--check writes nothing to .claude/agents/" \
+  "$([ ! -d "$CKP/.claude" ] && echo 0 || echo 1)"
+check "--check skips harness-served claude-* ids (no proxy needed for them)" \
+  "$(printf '%s' "$CKOUT" | grep -q 'claude-opus-5: skipped' && echo 0 || echo 1)"
+# All-claude config: nothing to probe, so it passes against a dead port.
+printf 'MECHANICAL=claude-haiku-4-5-20251001\n' > "$CKP/.operator/tiers.env"
+CKOUT2="$( cd "$CKP" && RENDERENV --check 2>&1 )"; CK2RC=$?
+check "--check passes when every id is harness-served" \
+  "$([ "$CK2RC" -eq 0 ] && printf '%s' "$CKOUT2" | grep -q 'check passed' && echo 0 || echo 1)"
+rm -rf "$CKP"
+
+########################################################################
 echo "-- Case: ops-render splices into a CRLF template (F29)"
 # The awk splice anchors its frontmatter delimiters on /^---$/, which `---\r`
 # does NOT match. Pre-fix, a CRLF template made infm never set, so EVERY
