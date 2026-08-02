@@ -134,6 +134,11 @@ load_file() { # load_file <path> <source-label>
   local lc=0 name val
   while IFS= read -r -n 512 line || [ -n "$line" ]; do
     lc=$((lc + 1)); [ "$lc" -le 200 ] || die "$1: more than 200 lines — refusing"
+    # Same guard as ops-tiers.sh: a chunk filling the 512 cap was truncated
+    # mid-line, and its tail would be classified as a fresh line — turning the
+    # comment check positional and letting a long comment smuggle a live
+    # seat→tier binding past it (review panel, 2026-08-02).
+    [ "${#line}" -lt 512 ] || die "$1: line $lc exceeds 512 chars — refusing (a tiers.env line is well under 80)"
     case "$line" in ''|'#'*) continue ;; esac
     [ "$line" != "${line%%=*}" ] || die "$1: malformed line (want NAME=VALUE): $line"
     name="${line%%=*}"; val="${line#*=}"

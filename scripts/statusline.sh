@@ -261,4 +261,11 @@ if [ "$MINE" -gt 0 ] || [ "$FOREIGN" -gt 0 ]; then
   printf '%s]' "$OUT"
   SEP=" "
 fi
-[ -n "$WFSEG" ] && printf '%s%s' "${SEP:-}" "$WFSEG"
+# `&&` alone would make an empty WFSEG the script's failing last command: the
+# op[ segment rendered but the statusline exited 1, and a renderer that fails
+# is one cc-status may drop. Explicit `if` keeps the exit status 0 (review
+# panel, 2026-08-02 — main exits 0 here, this branch regressed it).
+if [ -n "$WFSEG" ]; then
+  printf '%s%s' "${SEP:-}" "$WFSEG"
+fi
+exit 0

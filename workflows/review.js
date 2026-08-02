@@ -131,7 +131,7 @@ const target = (() => {
   // whole review surface rather than a stringified array.
   return paths.length === 1 ? paths[0].trim() : paths.map((p) => p.trim()).join(", ");
 })();
-// doneMeans is the same class of input as target and gets the same guard. It
+// F41: doneMeans is the same class of input as target and gets the same guard. It
 // was unvalidated where target now is: `{doneMeans:{x:1}}` rendered
 // "TASK TEXT: [object Object]" into the spec and testability prompts — the
 // silent-wrong failure F37 fixed on `target`, on the adjacent field F38 had

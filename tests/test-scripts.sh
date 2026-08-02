@@ -1059,6 +1059,20 @@ P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
 check "no open tasks → renders nothing (the bar stays clean)" \
   "$([ -z "$(render SESS-A "$P")" ] && echo 0 || echo 1)"
 
+# Exit status is part of the renderer contract, not just its stdout: cc-status
+# may drop a renderer that fails. A trailing `[ -n "$WFSEG" ] && printf ...`
+# made an EMPTY wf segment the script's failing last command, so the common
+# case (tasks open, no workflow running) printed op[1] and exited 1 — main
+# exits 0 on the same payload (review panel, 2026-08-02). No prior case
+# asserted the exit code, which is why it regressed silently.
+sljson SESS-A "$P" | "$BASH_ABS" "$SL" >/dev/null 2>&1
+check "statusline exits 0 with nothing to render" "$?"
+SLEXITP="$(newproj)"; ( cd "$SLEXITP" && bash "$INIT" >/dev/null 2>&1 )
+printf 'session_id: SESS-A\n' > "$SLEXITP/.operator/pending/exit-probe"
+SLEXITOUT="$(sljson SESS-A "$SLEXITP" | "$BASH_ABS" "$SL" 2>/dev/null)"; SLEXITRC=$?
+check "statusline exits 0 when the op[ segment renders but no workflow is live" \
+  "$([ "$SLEXITRC" -eq 0 ] && printf '%s' "$SLEXITOUT" | grep -q 'op\[' && echo 0 || echo 1)"
+
 ( cd "$P" && bash "$TASK" T-1 --owner SESS-A >/dev/null 2>&1 )
 ( cd "$P" && bash "$TASK" T-2 --owner SESS-B >/dev/null 2>&1 )
 ( cd "$P" && bash "$TASK" T-3 --owner SESS-B >/dev/null 2>&1 )
@@ -1214,6 +1228,24 @@ CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$SEATENV" \
   CC_PROXY_PORT=1 "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" --show >/dev/null 2>&1; SEATBADRC=$?
 check "a seat line with an unknown tier VALUE still dies in the resolver" \
   "$([ "$SEATBADRC" -ne 0 ] && echo 0 || echo 1)"
+
+# A COMMENT longer than the 512-char read cap used to smuggle a live tier
+# binding past the comment check: `read -n 512` truncates mid-line and the
+# remainder arrives next iteration as a fresh "line", classified on its own.
+# Measured pre-fix: `#` + 511 x's + `MECHANICAL=glm-evil` resolved MECHANICAL
+# to glm-evil at exit 0 — a silent mis-route from a line the author had
+# commented OUT. Both readers of this file carry the guard.
+LONGENV="$(mktemp "${TMPDIR:-/tmp}/opstest-long.XXXXXX")"
+{ printf '#'; awk 'BEGIN{while(i++<511)printf "x"}'; printf 'MECHANICAL=glm-evil\n'; } > "$LONGENV"
+LONGOUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$LONGENV" \
+  CC_PROXY_PORT=1 "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" 2>/dev/null)"; LONGRC=$?
+check "an over-long comment cannot smuggle a tier binding past the resolver" \
+  "$([ "$LONGRC" -ne 0 ] && ! printf '%s' "$LONGOUT" | grep -q 'glm-evil' && echo 0 || echo 1)"
+CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$LONGENV" \
+  "$BASH_ABS" "$SCRIPTS/ops-render.sh" --show >/dev/null 2>&1; LONGRENDRC=$?
+check "the renderer carries the same over-long-line guard as the resolver" \
+  "$([ "$LONGRENDRC" -ne 0 ] && echo 0 || echo 1)"
+rm -f "$LONGENV"
 rm -f "$SEATENV"
 
 ########################################################################

@@ -397,6 +397,7 @@ const noDmRt = (await run(WF("review.js"), "docs/x.md", everyLens)).rt;
 ok(!noDmRt.calls.some((c) => /TASK TEXT:\s*\n/.test(c.prompt)),
   "review: an absent doneMeans emits no empty TASK TEXT header");
 
+// ── F41: doneMeans is validated like target ─────────────────────────────────
 // doneMeans gets target's guard: it was unvalidated where target now is, so a
 // non-string rendered "TASK TEXT: [object Object]" into the two lenses that
 // ask about it — silent-wrong, the class F37 fixed one field over.

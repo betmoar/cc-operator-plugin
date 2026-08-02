@@ -83,6 +83,14 @@ load_file() { # load_file <path> <source-label>
   local lc=0
   while IFS= read -r -n 512 line || [ -n "$line" ]; do
     lc=$((lc + 1)); [ "$lc" -le 200 ] || die "$1: more than 200 lines — refusing"
+    # A chunk that FILLS the cap was truncated mid-line: the remainder arrives
+    # next iteration as a fresh "line" and is classified independently. That
+    # made the comment check positional rather than semantic — `#` + 511 chars
+    # + `MECHANICAL=glm-evil` parsed the tail as a live assignment and silently
+    # repointed a tier at exit 0 (review panel, 2026-08-02). A real tier line
+    # is well under 80 chars, so hitting 512 is malformed by definition. Die
+    # instead of parsing a fragment; ops-render.sh carries the same guard.
+    [ "${#line}" -lt 512 ] || die "$1: line $lc exceeds 512 chars — refusing (a tier line is well under 80)"
     case "$line" in ''|'#'*) continue ;; esac
     name="${line%%=*}"; val="${line#*=}"
     [ "$name" != "$line" ] || die "$1: malformed line (want NAME=model-id): $line"
