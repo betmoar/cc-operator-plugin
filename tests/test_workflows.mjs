@@ -346,8 +346,8 @@ ok(deadConv?.error && /converge agent died/.test(deadConv.error),
 ok(Array.isArray(deadConv?.directions) && deadConv.directions.length === 4,
   "brainstorm: dead-converge error carries the surviving directions");
 
-// ── F33: an array target must review what was passed, or fail loud ──────────
-console.log("-- Case: review.js multi-path target (F33)");
+// ── F37: an array target must review what was passed, or fail loud ──────────
+console.log("-- Case: review.js multi-path target (F37)");
 // meta.whenToUse promises "Pass the artifact path(s)" and the normalizer
 // explicitly JSON-parses a leading `[`, but `typeof A === "string"` then fell
 // through to the "the working diff" default: the panel reviewed something
@@ -373,8 +373,8 @@ const objArrRt = (await run(WF("review.js"), { target: ["docs/x.md", "docs/y.md"
 ok(objArrRt.calls.find((c) => c.label.startsWith("lens:")).prompt.includes("docs/y.md"),
   "review: args.target as an array is honored, same as the bare form");
 
-// ── F34: the lenses that ask about the task text must RECEIVE it ────────────
-console.log("-- Case: review.js lens context (F34)");
+// ── F38: the lenses that ask about the task text must RECEIVE it ────────────
+console.log("-- Case: review.js lens context (F38)");
 // spec asks "what the task text asked for" and testability asks "for each
 // stated requirement" — but doneMeans went only to the adversarial seat, so
 // both were structurally forced into op-reviewer.md's NEEDS_CONTEXT branch.
@@ -386,7 +386,7 @@ const byLens = Object.fromEntries(
   dmRt.calls.filter((c) => c.label.startsWith("lens:")).map((c) => [c.label.slice(5), c.prompt]));
 for (const k of ["spec", "testability"]) {
   ok(byLens[k].includes("DONEMEANS_SENTINEL"),
-    `review: the ${k} lens receives the task text it asks about (F34)`);
+    `review: the ${k} lens receives the task text it asks about (F38)`);
 }
 for (const k of ["quality", "correctness"]) {
   ok(!byLens[k].includes("DONEMEANS_SENTINEL"),
@@ -397,8 +397,22 @@ const noDmRt = (await run(WF("review.js"), "docs/x.md", everyLens)).rt;
 ok(!noDmRt.calls.some((c) => /TASK TEXT:\s*\n/.test(c.prompt)),
   "review: an absent doneMeans emits no empty TASK TEXT header");
 
-// ── F35: a malformed verdict is not a passing verdict ───────────────────────
-console.log("-- Case: review.js malformed adversarial verdict (F35)");
+// doneMeans gets target's guard: it was unvalidated where target now is, so a
+// non-string rendered "TASK TEXT: [object Object]" into the two lenses that
+// ask about it — silent-wrong, the class F37 fixed one field over.
+for (const badDm of [{ x: 1 }, ["a"], 42, true]) {
+  await throws(() => run(WF("review.js"), { target: "docs/x.md", doneMeans: badDm }, everyLens),
+    `review: doneMeans=${JSON.stringify(badDm)} throws rather than stringifying into the prompt`);
+}
+// Whitespace-only is absence, not a header: an empty TASK TEXT starves the
+// same two lenses it was meant to feed.
+const wsDmRt = (await run(WF("review.js"),
+  { target: "docs/x.md", doneMeans: "   \n  " }, everyLens)).rt;
+ok(!wsDmRt.calls.some((c) => /TASK TEXT:/.test(c.prompt)),
+  "review: a whitespace-only doneMeans is treated as absent, not as an empty header");
+
+// ── F39: a malformed verdict is not a passing verdict ───────────────────────
+console.log("-- Case: review.js malformed adversarial verdict (F39)");
 // F32 made `adversarial == null` fail closed, but a NON-null malformed object
 // ({} or {verdict:"MAYBE"}) still yielded blocked:false — the same value a
 // CONFIRMED produces. The fix leaned entirely on the harness turning schema
@@ -414,8 +428,8 @@ const refuted = (await run(WF("review.js"), "docs/x.md",
 ok(refuted.blocked === true && refuted.unverified === undefined,
   "review: REFUTED blocks but is NOT unverified (a real verdict was returned)");
 
-// ── F36: meta must not misstate what a dispatch costs ───────────────────────
-console.log("-- Case: review.js cost contract (F36)");
+// ── F40: meta must not misstate what a dispatch costs ───────────────────────
+console.log("-- Case: review.js cost contract (F40)");
 // meta advertised "narrow lenses at cheap tiers" while 2 of 5 dispatch at
 // JUDGMENT — the cost shown in the tool picker was wrong. Assert the text
 // against the LENSES table itself so the two cannot drift apart again.
@@ -429,7 +443,21 @@ const metaBlock = metaSrc.slice(0, metaSrc.indexOf("};"));
 // not say "cheap tiers" flatly either.
 const unhedgedCheap = /(?<!most |mixed )(?:at |, )cheap tiers(?! and)/.test(metaBlock);
 ok(judgmentLenses > 0 && /judgment/i.test(metaBlock) && !unhedgedCheap,
-  "review: meta does not claim 'cheap tiers' while lenses dispatch at JUDGMENT (F36)");
+  "review: meta does not claim 'cheap tiers' while lenses dispatch at JUDGMENT (F40)");
+
+// The check above is the SHAPE half of the contract and was the whole of it
+// until a review panel repro'd the gap: flipping `correctness` to JUDGMENT
+// makes 3 of 5 lenses judgment-tier while meta still advertises "two", and the
+// suite stayed green at 63/63. `judgmentLenses > 0` is the only table-derived
+// assertion there, so the COUNT meta states was free to go stale. Bind the
+// spelled number in meta to the table, and "most" to the actual majority.
+const NUMBER_WORD = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6 };
+const mechanicalLenses = (metaSrc.match(/tier:\s*MECHANICAL/g) ?? []).length;
+const claimedJudgment = metaBlock.match(/\b(one|two|three|four|five|six)\b\s+at\s+judgment\s+tier/i);
+ok(claimedJudgment != null && NUMBER_WORD[claimedJudgment[1].toLowerCase()] === judgmentLenses,
+  `review: meta's judgment-lens COUNT matches the LENSES table (F40; meta says ${claimedJudgment?.[1] ?? "nothing"}, table has ${judgmentLenses})`);
+ok(!/\bmost at cheap tiers\b/.test(metaBlock) || mechanicalLenses > judgmentLenses,
+  `review: meta's "most at cheap tiers" holds against the table (F40; ${mechanicalLenses} cheap vs ${judgmentLenses} judgment)`);
 
 console.log(`\n== summary: ${pass} passed, ${fail} failed ==`);
 if (fail > 0) process.exit(1);
