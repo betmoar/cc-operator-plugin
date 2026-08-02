@@ -304,8 +304,19 @@ lock_release() {
 sentinel_owner() { # sentinel_owner <id> → stamped session_id ("" if none/invalid)
   local f="$OPDIR/pending/$1" line owner="" n=0
   [ -f "$f" ] || return 0
+  # NUL pre-scan, same rationale as ops-stop-hook.sh (F46): bash cannot see a
+  # NUL in a variable, and `read -n` stops at one on bash 3.2, so a NUL-padded
+  # chunk passes the length guard and its tail smuggles an owner. Degrade to
+  # unowned rather than dying — this is a reader.
+  if IFS= read -r -d '' -n 512 _nulprobe < "$f" 2>/dev/null && [ "${#_nulprobe}" -lt 512 ]; then
+    printf '%s' ""
+    return 0
+  fi
   while IFS= read -r -n 512 line || [ -n "$line" ]; do
     n=$((n+1)); [ "$n" -le 20 ] || break   # owner is line 1 by construction
+    # Cap-filling chunk → truncated mid-line; its tail would be matched as a
+    # fresh line and smuggle an owner. Mirrors ops-stop-hook.sh (F45).
+    [ "${#line}" -lt 512 ] || { owner=""; break; }
     case "$line" in
       "session_id: "*) owner="${line#session_id: }"; break ;;
     esac

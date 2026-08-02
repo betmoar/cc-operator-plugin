@@ -306,9 +306,19 @@ for ID in ${IDS+"${IDS[@]}"}; do
   # and opened_at is echoed into the Stop hook's foreign-task report — where a
   # bare CR carriage-returns the terminal mid-line and eats the operator's
   # guidance. A CRLF sentinel is an ordinary checkout artifact. (Audit F04.)
+  # NUL pre-scan (F46): bash drops NULs so no $line test can see one, and bash
+  # 3.2's `read -n` stops AT a NUL — a padded chunk passes the length guard and
+  # its tail is matched as a fresh line, smuggling a prior owner. Treat the
+  # whole body as unusable; the fields below stay empty and are regenerated.
+  if IFS= read -r -d '' -n 512 _nulprobe < "$F" 2>/dev/null && [ "${#_nulprobe}" -lt 512 ]; then
+    PREV=""; OPENED=""; CWDLINE=""
+  else
   n=0
   while IFS= read -r -n 512 line || [ -n "$line" ]; do
     n=$((n+1)); [ "$n" -le 20 ] || break
+    # Cap-filling chunk → truncated mid-line; its tail would be matched as a
+    # fresh line and smuggle a prior owner. Mirrors ops-stop-hook.sh (F45).
+    [ "${#line}" -lt 512 ] || { PREV=""; break; }
     line="${line%$'\r'}"
     case "$line" in
       "session_id: "*) PREV="${line#session_id: }" ;;
@@ -316,6 +326,7 @@ for ID in ${IDS+"${IDS[@]}"}; do
       "cwd: "*)        CWDLINE="$line" ;;
     esac
   done < "$F"
+  fi
 
   # Rewrite via a temp file + mv so a crash mid-write cannot leave a sentinel
   # that parses as unowned (which would silently widen the block to everyone).

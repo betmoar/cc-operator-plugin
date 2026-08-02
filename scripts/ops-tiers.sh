@@ -80,6 +80,26 @@ load_file() { # load_file <path> <source-label>
   # unbounded read and gets slurped whole — the same class documented for the
   # Stop hook. -n caps each line at 512 chars (a tier line is well under 80);
   # the outer cap bounds a runaway file.
+  # A NUL anywhere in the file is fatal BEFORE the parse loop, and it has to be
+  # checked here rather than inside it: bash cannot hold a NUL in a variable at
+  # all (it silently drops them), so no test on $line can ever see one — a
+  # `case "$line" in *$'\0'*)` reads plausible and is vacuously TRUE, because
+  # $'\0' expands to the empty string and the pattern degenerates to `**`. That
+  # exact mistake was written and caught here: it rejected every valid config
+  # while appearing to fix the bug (2026-08-02). `read -d ''` returns 0 only if
+  # it actually reached a NUL, which is the one builtin-only way to detect one.
+  #
+  # Why it matters (F46): ${#line} counts CHARACTERS after bash drops NULs while
+  # the -n cap is enforced on BYTES, and bash 3.2's `read -n` stops AT a NUL. So
+  # `#` + 100 NULs + 411 x + `MECHANICAL=glm-evil` yields a 1-char first chunk
+  # that sails past the length guard, and the tail parses as a live assignment —
+  # the F42 smuggle again, through the door the char/byte mismatch leaves open.
+  # Measured on bash 3.2.57 (the version this repo targets); invisible on 5.3,
+  # which is why the suite was green. A tiers.env is text: a NUL means
+  # truncation or a binary blob, never a config someone wrote.
+  if IFS= read -r -d '' -n 512 _nulprobe < "$1" && [ "${#_nulprobe}" -lt 512 ]; then
+    die "$1: contains a NUL byte — refusing (tiers.env is text, not a binary blob)"
+  fi
   local lc=0
   while IFS= read -r -n 512 line || [ -n "$line" ]; do
     lc=$((lc + 1)); [ "$lc" -le 200 ] || die "$1: more than 200 lines — refusing"

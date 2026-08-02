@@ -22,6 +22,20 @@ SSHOOK="$SCRIPTS/ops-sessionstart-hook.sh"
 # Absolute bash so a restricted PATH (case 5) governs only the hook's INTERNAL
 # command lookups (jq/python3), not the launch of bash itself.
 BASH_ABS="$(command -v bash)"
+# The OLDEST bash on the box, for cases whose bug only exists there. This suite
+# otherwise runs whatever `command -v bash` finds — on macOS a Homebrew 5.x —
+# while the shipped scripts use `#!/usr/bin/env bash` and this repo explicitly
+# targets bash 3.2 (ops-tiers.sh, ops-render.sh, ops-adopt.sh all say so). That
+# gap is not hypothetical: F46 (a NUL-padded sentinel/config smuggling an owner
+# past the length guard) is EXPLOITABLE on 3.2 and IMPOSSIBLE on 5.3, so the
+# whole suite was green while system bash was vulnerable. Cases marked with
+# BASH_OLD run against /bin/bash when it is older, and fall back otherwise.
+BASH_OLD="$BASH_ABS"
+if [ -x /bin/bash ]; then
+  _obv="$(/bin/bash -c 'echo ${BASH_VERSINFO[0]}' 2>/dev/null || echo 9)"
+  _nbv="$("$BASH_ABS" -c 'echo ${BASH_VERSINFO[0]}' 2>/dev/null || echo 9)"
+  [ "$_obv" -lt "$_nbv" ] && BASH_OLD=/bin/bash
+fi
 
 PASS=0
 FAIL=0
@@ -534,6 +548,34 @@ for body in 'session_id: ' 'session_id: a|b' 'session_id: .hidden' 'garbage'; do
   run_hook stop-session-b.json "$P"
   check "degenerate body [$body] fails CLOSED (exit 2)" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
 done
+# TRUNCATION-RECLASSIFICATION: a sentinel body is ONE physical line of padding
+# followed by `session_id: EVIL`. `read -n 512` truncates mid-line and the tail
+# arrives next iteration as a fresh "line", matched on its own — so an unowned
+# sentinel (blocks) reads as FOREIGN (waves the stop through). That is the
+# fail-OPEN inversion PLAYBOOK step 2 forbids, reached without our CLIs ever
+# writing the file. Two vectors: filling the 512 cap, and a NUL (bash 3.2's
+# `read -n` stops AT one, so the padding need not reach 512 — and ${#line}
+# cannot see it, because bash drops NULs from variables entirely).
+for vec in pad512 nulpad; do
+  rm -f "$P"/.operator/pending/*
+  if [ "$vec" = pad512 ]; then
+    python3 -c "import sys; open(sys.argv[1],'wb').write(b'x'*512+b'session_id: EVIL\\n')" "$P/.operator/pending/T-SMUG"
+  else
+    python3 -c "import sys; open(sys.argv[1],'wb').write(b'x'+b'\\0'*100+b'x'*411+b'session_id: EVIL\\n')" "$P/.operator/pending/T-SMUG"
+  fi
+  # Under the OLDEST bash: the nulpad vector only exists there (F46).
+  printf '{"session_id":"SESS-B","cwd":"%s"}' "$P" | "$BASH_OLD" "$HOOK" >/dev/null 2>&1; SMRC=$?
+  check "a one-line [$vec] sentinel cannot smuggle an owner — fails CLOSED (exit 2)" \
+    "$([ "$SMRC" -eq 2 ] && echo 0 || echo 1)"
+done
+# The guard must not break the path it sits on: a GENUINE foreign sentinel is
+# still reported and still non-blocking.
+rm -f "$P"/.operator/pending/*
+printf 'session_id: OTHER\ncwd: /x\nopened_at: 2026-08-02T00:00:00Z\n' > "$P/.operator/pending/T-FGN"
+run_hook stop-session-a.json "$P"
+check "a genuine foreign sentinel still does NOT block (guard did not overreach)" \
+  "$([ "$HRC" -eq 0 ] && echo 0 || echo 1)"
+
 # WHITESPACE in an owner is the subtlest disarm: the hook compares the stamped
 # owner byte-for-byte against the payload session id, so " SESS-A" can never
 # equal any real session — the task is FOREIGN forever, and foreign never
@@ -1245,6 +1287,24 @@ CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$LONGENV" \
   "$BASH_ABS" "$SCRIPTS/ops-render.sh" --show >/dev/null 2>&1; LONGRENDRC=$?
 check "the renderer carries the same over-long-line guard as the resolver" \
   "$([ "$LONGRENDRC" -ne 0 ] && echo 0 || echo 1)"
+# A NUL is the same smuggle by a shorter road, and only on the bash the repo
+# TARGETS: bash 3.2's `read -n` stops AT a NUL, so `#` + 100 NULs + 411 x +
+# `MECHANICAL=glm-evil` yields a 1-CHAR first chunk that sails past the length
+# guard, and the tail parses as a live assignment. ${#line} cannot catch it
+# (bash drops NULs from variables entirely), and it is invisible on bash 5.3 —
+# which is why the suite was green while system bash was exploitable. The
+# probe must also not misfire on a NUL-free file that merely fills the cap.
+NULENV="$(mktemp "${TMPDIR:-/tmp}/opstest-nul.XXXXXX")"
+python3 -c "import sys; open(sys.argv[1],'wb').write(b'#'+b'\\0'*100+b'x'*411+b'MECHANICAL=glm-evil\\n')" "$NULENV"
+NULOUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$NULENV" \
+  CC_PROXY_PORT=1 "$BASH_OLD" "$SCRIPTS/ops-tiers.sh" 2>/dev/null)"; NULRC=$?
+check "a NUL-padded comment cannot smuggle a tier binding (resolver)" \
+  "$([ "$NULRC" -ne 0 ] && ! printf '%s' "$NULOUT" | grep -q 'glm-evil' && echo 0 || echo 1)"
+CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$NULENV" \
+  "$BASH_OLD" "$SCRIPTS/ops-render.sh" --show >/dev/null 2>&1; NULRENDRC=$?
+check "the renderer carries the same NUL guard as the resolver" \
+  "$([ "$NULRENDRC" -ne 0 ] && echo 0 || echo 1)"
+rm -f "$NULENV"
 rm -f "$LONGENV"
 rm -f "$SEATENV"
 

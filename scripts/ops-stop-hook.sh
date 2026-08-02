@@ -140,8 +140,30 @@ done
 sentinel_owner() { # sentinel_owner <path> → "owner|opened_at"
   local line owner="" opened="" n=0
   [ -f "$1" ] || return 0
+  # A NUL is checked BEFORE the loop: bash cannot hold one in a variable (it
+  # drops them silently), so no test on $line can ever see one — the
+  # plausible-looking `case "$line" in *$'\0'*)` is vacuously TRUE, because
+  # $'\0' is the empty string and the pattern degenerates to `**`. That mistake
+  # was written and caught here (2026-08-02). `read -d ''` returns 0 only if it
+  # truly reached a NUL. It matters because bash 3.2's `read -n` stops AT a NUL,
+  # so a NUL-padded chunk passes the length guard and its tail is matched as a
+  # fresh line — smuggling an owner. Degrade to unowned = blocks. (F46)
+  if IFS= read -r -d '' -n 512 _nulprobe < "$1" 2>/dev/null && [ "${#_nulprobe}" -lt 512 ]; then
+    printf '%s' ""
+    return 0
+  fi
   while IFS= read -r -n 512 line || [ -n "$line" ]; do
     n=$((n+1)); [ "$n" -le 20 ] || break
+    # A chunk that FILLS the cap was truncated mid-line: its tail arrives next
+    # iteration as a fresh "line" and is matched independently, so one physical
+    # line of padding + `session_id: EVIL` claimed ownership and flipped this
+    # sentinel from unowned (blocks) to foreign (waves the stop through) —
+    # exactly the inversion PLAYBOOK step 2 forbids. On bash 3.2 `read -n` also
+    # stops at a NUL, so a padded line need not even reach 512 bytes. Our CLIs
+    # write `session_id:` on line 1 and every line well under 512, so a
+    # cap-filling chunk cannot be ours: stop reading and leave owner unset,
+    # which degrades to "" = unowned = blocks everyone. Fail closed (F45).
+    [ "${#line}" -lt 512 ] || { owner=""; opened=""; break; }
     case "$line" in
       "session_id: "*) owner="${line#session_id: }" ;;
       "opened_at: "*)  opened="${line#opened_at: }" ;;

@@ -113,8 +113,24 @@ done
 sentinel_owner() { # sentinel_owner <path> → owner ("" = unowned)
   local line owner="" n=0
   [ -f "$1" ] || return 0
+  # A NUL is checked BEFORE the loop: bash cannot hold one in a variable (it
+  # drops them silently), so no test on $line can ever see one — the
+  # plausible-looking `case "$line" in *$'\0'*)` is vacuously TRUE, because
+  # $'\0' is the empty string and the pattern degenerates to `**`. That mistake
+  # was written and caught here (2026-08-02). `read -d ''` returns 0 only if it
+  # truly reached a NUL. It matters because bash 3.2's `read -n` stops AT a NUL,
+  # so a NUL-padded chunk passes the length guard and its tail is matched as a
+  # fresh line — smuggling an owner. Degrade to unowned = blocks. (F46)
+  if IFS= read -r -d '' -n 512 _nulprobe < "$1" 2>/dev/null && [ "${#_nulprobe}" -lt 512 ]; then
+    printf '%s' ""
+    return 0
+  fi
   while IFS= read -r -n 512 line || [ -n "$line" ]; do
     n=$((n+1)); [ "$n" -le 20 ] || break     # owner is line 1 by construction
+    # Cap-filling chunk → truncated mid-line; its tail would be matched as a
+    # fresh line and smuggle an owner. Mirrors ops-stop-hook.sh (F45): unset
+    # owner = unowned = counted as MINE-blocking, not waved through as foreign.
+    [ "${#line}" -lt 512 ] || { owner=""; break; }
     case "$line" in "session_id: "*) owner="${line#session_id: }"; break ;; esac
   done < "$1" 2>/dev/null
   owner="${owner%$'\r'}"                     # a CRLF checkout must not misclassify

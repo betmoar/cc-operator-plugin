@@ -131,6 +131,16 @@ seat_add brainstorm MECHANICAL default
 # ops-tiers.sh already parses the tier kind the same way; this reuses that shape.
 load_file() { # load_file <path> <source-label>
   [ -f "$1" ] || return 0
+  # Mirrors ops-tiers.sh (F46): a NUL is checked BEFORE the loop, because bash
+  # cannot hold one in a variable — no test on $line can see it, and the
+  # plausible-looking `case "$line" in *$'\0'*)` is vacuously true ($'\0' is the
+  # empty string, so the pattern is `**`) and rejects every valid config.
+  # `read -d ''` returns 0 only if it truly reached a NUL. Needed because bash
+  # 3.2's `read -n` stops AT a NUL, so a NUL-padded chunk passes the length
+  # guard and its tail parses as a live seat binding.
+  if IFS= read -r -d '' -n 512 _nulprobe < "$1" && [ "${#_nulprobe}" -lt 512 ]; then
+    die "$1: contains a NUL byte — refusing (tiers.env is text, not a binary blob)"
+  fi
   local lc=0 name val
   while IFS= read -r -n 512 line || [ -n "$line" ]; do
     lc=$((lc + 1)); [ "$lc" -le 200 ] || die "$1: more than 200 lines — refusing"
