@@ -1,45 +1,55 @@
 # Spec — input-axis token compressor (PostToolUse hook)
 
-Status: **SPEC ONLY — no implementation exists, and this architecture did not
-survive review (2026-08-02).** Verified: `grep -rln 'compress' scripts/ workflows/
-hooks/ templates/ commands/` → 0 files.
+Status: **IMPLEMENTED (2026-08-02)** — `scripts/ops-compress.mjs`, wired as a
+PostToolUse hook in `hooks/hooks.json`, guarded by
+`validate_plugin.check_compressor`, covered by `tests/test_compress.mjs` (53
+cases, one per invariant).
 
 **Extends:** `2026-07-29-workflow-orchestration-design.md` §7 — this is that
-design's *input* axis, the half its context diet left unfinished. The output axis
-(charter caps, workflows costing nothing until invoked) shipped there.
+design's *input* axis. The output axis (charter caps, workflows costing nothing
+until invoked) shipped there; §7 is now complete.
 
-> ### ⚠ Do not implement as written — read this first
->
-> A 5-direction brainstorm panel (8 agents, 2026-08-02) explored where the
-> compression boundary should live. **All five directions independently declined
-> the PostToolUse-hook architecture this document specifies.** Two findings are
-> fatal to the spec as written, both verified against the tree:
->
-> 1. **No PostToolUse hook exists.** `hooks/hooks.json` declares `SessionStart`
->    and `Stop` only. This is a new event class, not an extension. Everything
->    downstream of that choice is therefore unbuilt scaffolding: invariants
->    I1/I3/I5, the dedup state store, `MIN_SHRINK`, the ten `CC_OPERATOR_COMPRESS_*`
->    env vars, and the replay-test matrix.
-> 2. **The evidence-gate carve-out (I2) protects a path the code already blocks.**
->    `ops-verdict.sh:check_cell` (:45-52) refuses any evidence containing a
->    newline, so bulk output can never reach a ledger cell. Any design premised on
->    "the operator pastes a large dump into the verdict CLI" describes an
->    impossible flow.
->
-> **The open question that decides whether this spec has a successor at all:**
-> is uncompressed tool output a CORRECTNESS problem for the evidence gate (a
-> verdict recorded from output the operator can no longer see verbatim), or only
-> a token-COST problem? If cost-only, the honest resolution is to ship nothing
-> mechanical and close this spec. If correctness, it needs a fresh spec — the
-> alternatives the panel ranked above this one are an `ops-spill.sh` CLI
-> installed into `.operator/bin/` (the seam `ops-init.sh` already provides) with
-> either a MAY or a MANDATED charter rule, or a charter-only input-hygiene rule.
-> Panel constraints worth carrying into any successor: `templates/OPERATOR.md` is
-> at exactly 150/150 lines and 8309/9000 bytes, so any new charter rule must
-> delete an existing line in the same commit; `CLAUDE_SESSION_ID` is not in the
-> Bash tool env, so a session-scoped spill path needs an explicit `--owner`-style
-> argument; and `.operator/.gitignore` is written only when absent, so already-
-> initialized projects would not gain a spill-directory exclusion.
+### Why it was built, measured rather than assumed (2026-08-02)
+
+The decision to build was gated on a measurement, not on the spec's assertion.
+Across 10 sessions of this project's own transcripts, 2340 `tool_result` blocks,
+2,215,751 chars in context:
+
+| | |
+|---|---|
+| blocks over the 8000-char threshold | **35 — 1.5% of blocks** |
+| share of all in-context chars they carry | **25.1%** |
+| one-time elide saving | 197,272 chars ≈ 49 K tokens (8.9%) |
+| **re-billed** chars (a block is re-sent every turn until reset) | 809,809,530 |
+| **saving on the re-billed axis** | **102,015,025 chars ≈ 12.6%** |
+
+Median block: 265 chars; mean 946. That skew is what makes the 8000 threshold
+right — it touches 35 blocks and leaves 2305 alone. Two honest caveats: the
+re-billing figure ignores prompt caching, so the absolute number is an upper
+bound (the 12.6% *ratio* is what carries); and 4 chars/token is the usual rule
+of thumb, not a measurement on this corpus.
+
+A correctness motive was considered and **rejected**: the maintainer confirmed
+the compressor was always specified for throughput and cost, not to protect the
+evidence gate from falsification. I2 is therefore a safety property of a
+cost-motivated feature, not its justification — which is exactly why I2.3
+(spill-and-cite) is non-negotiable rather than optional.
+
+### Review history worth keeping
+
+A 5-direction brainstorm panel (8 agents, 2026-08-02) unanimously declined this
+document's PostToolUse architecture, on the grounds that no such hook existed in
+the plugin. **That objection was wrong**, and the record should say so: the
+event and its `updatedToolOutput` field are both documented and supported
+(docs.claude.com/en/docs/claude-code/hooks). The panel reasoned from the
+plugin's own `hooks.json` (SessionStart + Stop) rather than the harness
+contract, and the operator relayed that conclusion without checking the docs.
+The panel's *other* findings held and are reflected in the implementation:
+`check_cell` already refuses newlines in an evidence cell (so I2's ledger
+protection is about `cat`/`grep` of the FILE, which is what I2.2 covers), the
+charter's 150-line cap forced a same-commit reflow of the EVIDENCE GATE section,
+and `.operator/.gitignore` is written only when absent — so `ops-init.sh` now
+appends the compressor exclusions idempotently on upgrade.
 
 The reference implementation named below is Chisle's
 `hooks/chisle-compress-output.js` (read directly from github.com/JayPokale/Chisle;

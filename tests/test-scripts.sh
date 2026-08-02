@@ -32,7 +32,10 @@ BASH_ABS="$(command -v bash)"
 # BASH_OLD run against /bin/bash when it is older, and fall back otherwise.
 BASH_OLD="$BASH_ABS"
 if [ -x /bin/bash ]; then
+  # shellcheck disable=SC2016  # ${BASH_VERSINFO} must be expanded by the CHILD
+  # bash being probed, not by this one — that is the entire point of the probe.
   _obv="$(/bin/bash -c 'echo ${BASH_VERSINFO[0]}' 2>/dev/null || echo 9)"
+  # shellcheck disable=SC2016
   _nbv="$("$BASH_ABS" -c 'echo ${BASH_VERSINFO[0]}' 2>/dev/null || echo 9)"
   [ "$_obv" -lt "$_nbv" ] && BASH_OLD=/bin/bash
 fi

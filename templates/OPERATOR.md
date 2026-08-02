@@ -106,17 +106,17 @@ output where possible), the budget (time/cost/iteration), and the caps
 ## EVIDENCE GATE
 
 A row without evidence is FAIL by definition; assertions are not evidence —
-command output, diffs, and reviewer verdict lines are [D:CHART-def]. Opening a
-tracked task drops a sentinel: run `.operator/bin/ops-task.sh <task-id> --owner
-<your-session-id>` — SessionStart tells you that id; always pass it, or the
-sentinel blocks every concurrent session [DOC:spec-concurrent].
-`.operator/bin/ops-verdict.sh <id> <criterion> <evidence> <PASS|FAIL> --owner
-<id>` appends the row and clears that sentinel — it is the single writer to
-VERDICTS.md [DOC:spec-D4]. The Stop hook blocks session end while any sentinel
-**you own** is pending; another session's tasks are reported, never yours to
-close [DOC:spec-concurrent]. A legitimately blocked task ends honestly via
-`.operator/bin/ops-verdict.sh <id> --defer "<reason>"`, which writes a
-DEFERRED-VERDICT line to DECISIONS.md and clears the sentinel [DOC:spec-D4].
+command output, diffs, and reviewer verdict lines are [D:CHART-def]. Open a
+tracked task with `.operator/bin/ops-task.sh <task-id> --owner <session-id>`
+(SessionStart names that id; always pass it, or the sentinel blocks every
+session) [DOC:spec-concurrent]. `.operator/bin/ops-verdict.sh <id> <criterion>
+<evidence> <PASS|FAIL> --owner <id>` appends the row and clears that sentinel —
+the single writer to VERDICTS.md [DOC:spec-D4]. Stop is blocked while a sentinel
+**you own** is pending; others' are reported, never yours to close. A blocked
+task ends honestly via `--defer "<reason>"`, writing DEFERRED-VERDICT to
+DECISIONS.md [DOC:spec-D4]. Evidence from output marked `[full output spilled
+to …]` MUST cite that spill path: the compressor elided the middle
+[DOC:spec-compress].
 
 ## HANDOFF
 

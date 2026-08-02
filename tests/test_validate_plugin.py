@@ -86,13 +86,22 @@ def make_good_tree(root):
                 "type": "command",
                 "command": 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-sessionstart-hook.sh"',
             }]}],
+            "PostToolUse": [{"matcher": "Bash", "hooks": [{
+                "type": "command",
+                "command": 'node "${CLAUDE_PLUGIN_ROOT}/scripts/ops-compress.mjs"',
+            }]}],
         }
     }))
     write(root / ".claude-plugin" / "statusline.json", json.dumps({
         "name": "cc-operator", "render": "scripts/statusline.sh", "order": 30,
     }))
-    for s in ("ops-init.sh", "ops-sessionstart-hook.sh"):
-        write(root / "scripts" / s, "#!/usr/bin/env bash\nset -eu\necho ok\n")
+    write(root / "scripts" / "ops-init.sh", "#!/usr/bin/env bash\nset -eu\necho ok\n")
+    # SessionStart clears the compressor's session-scoped artifacts; the guard
+    # checks for both directory names, so the stub must carry them.
+    write(root / "scripts" / "ops-sessionstart-hook.sh",
+          "#!/usr/bin/env bash\nset -eu\n"
+          "rm -rf \"$cwd/.operator/.compress-spill\" \"$cwd/.operator/.compress-state\"\n"
+          "echo ok\n")
     # The readers/CLIs need bodies that satisfy the byte-bound, guard-parity and
     # lock-parity checks — a bare `echo ok` stub fails all three.
     guards = ("check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
@@ -152,6 +161,22 @@ def make_good_tree(root):
           ROUTABLE_STUB +
           '# stub renderer\n'
           'while IFS= read -r -n 256 line; do :; done\n')
+    # The compressor is hook-wired, so the good tree must carry it or
+    # check_compressor fires. A stub is not enough: the guard byte-checks the
+    # exclusion sets and the pinned defaults, which is the whole point of it.
+    write(root / "scripts" / "ops-compress.mjs",
+          'export const DEFAULTS = {\n'
+          '  SCRUB_MIN: 1024, MAX_CHARS: 8000, HEAD_BYTES: 6144, TAIL_BYTES: 4096,\n'
+          '  LINE_CHARS: 400, SALVAGE_LINES: 12, MIN_SHRINK: 64,\n'
+          '};\n'
+          'const NEVER_COMPRESS = new Set(["Read", "Edit", "Write", "NotebookEdit"]);\n'
+          'const MCP = "mcp__";\n'
+          'const LOSSLESS_ONLY = new Set(["Agent"]);\n'
+          'const LEDGER_PATHS = [".operator/VERDICTS.md", ".operator/DECISIONS.md",\n'
+          '  ".operator/verdicts.d/"];\n'
+          'const GATE_CLIS = ["ops-verdict.sh", "ops-task.sh", "ops-adopt.sh"];\n'
+          'const SALVAGE_RE = /error|fail|not ok/i;\n')
+
     # The renderer splices a model: id into each template; default.tmpl must
     # carry a model: line or check_render_templates fires.
     write(root / "agents" / "_templates" / "default.tmpl",

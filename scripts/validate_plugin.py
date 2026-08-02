@@ -981,6 +981,87 @@ def check_commands(root, problems):
                 f"blocked-start bug)")
 
 
+def check_compressor(root, problems):
+    """The input-axis compressor's carve-outs, per spec I1/I2 (Validator guardrails §2).
+
+    The compressor is the only component that REWRITES what the model reads, so
+    its exclusion lists are load-bearing in a way ordinary config is not: drop
+    `Read` from the allowlist and the model edits against text it never saw;
+    drop a ledger path and a mid-body elision of PASS rows falsifies the exact
+    artifact this plugin exists to protect. Both lists are therefore byte-checked
+    here rather than trusted to review.
+    """
+    comp = root / "scripts" / "ops-compress.mjs"
+    hooks = root / "hooks" / "hooks.json"
+    if not comp.exists():
+        problems.append("scripts/ops-compress.mjs is missing (hooks.json wires a PostToolUse hook at that path)")
+        return
+    src = comp.read_text(encoding="utf-8")
+
+    # 1. hooks.json actually wires it, via ${CLAUDE_PLUGIN_ROOT} like every other hook.
+    if hooks.exists():
+        import json as _json
+        try:
+            hj = _json.loads(hooks.read_text(encoding="utf-8")).get("hooks", {})
+        except Exception:
+            hj = {}
+        post = hj.get("PostToolUse")
+        if not post:
+            problems.append("hooks/hooks.json: no PostToolUse entry — the compressor is dead code without it")
+        else:
+            blob = _json.dumps(post)
+            if "ops-compress.mjs" not in blob:
+                problems.append("hooks/hooks.json: PostToolUse does not point at ops-compress.mjs")
+            if "${CLAUDE_PLUGIN_ROOT}" not in blob:
+                problems.append("hooks/hooks.json: PostToolUse command lacks ${CLAUDE_PLUGIN_ROOT} (a bare path resolves only inside this repo)")
+
+    # 2a. I1 — the never-compress set. These break exact-match editing if elided.
+    for tool in ("Read", "Edit", "Write", "NotebookEdit"):
+        if f'"{tool}"' not in src:
+            problems.append(f"ops-compress.mjs: `{tool}` is not named in the exclusion set (I1 — eliding it breaks exact-match edits)")
+    if "mcp__" not in src:
+        problems.append("ops-compress.mjs: `mcp__*` exclusion is missing (I1 — the payload carries no read-only indicator)")
+    if "Agent" not in src:
+        problems.append("ops-compress.mjs: `Agent` is not named (I1 — lossless tiers MAY apply, elide MUST NOT)")
+
+    # 2b. I2.2 — the ledger paths, byte-checked. Fixed strings, not regex: a
+    # metachar in a path would silently widen the match.
+    for pth in (".operator/VERDICTS.md", ".operator/DECISIONS.md", ".operator/verdicts.d/"):
+        if pth not in src:
+            problems.append(f"ops-compress.mjs: ledger path `{pth}` missing from the I2.2 carve-out — a mature ledger crosses the elide threshold and mid-body elision falsifies it")
+
+    # 2c. I2.1 — the gate CLIs, tied to the SAME install set ops-init.sh ships
+    # and CHARTER_REQUIRED_CLIS tracks, so adding a fourth CLI cannot silently
+    # leave the compressor carve-out behind.
+    for cli in CHARTER_REQUIRED_CLIS:
+        if cli not in src:
+            problems.append(f"ops-compress.mjs: gate CLI `{cli}` missing from the I2.1 carve-out (must track ops-init.sh's install set)")
+
+    # 3. I3/I4/I5 structural markers: the pinned defaults must be present and
+    # exact. "A test against a tilde is not a test" applies to the guard too.
+    for k, v in (("MAX_CHARS", "8000"), ("HEAD_BYTES", "6144"), ("TAIL_BYTES", "4096"),
+                 ("MIN_SHRINK", "64"), ("SCRUB_MIN", "1024"), ("LINE_CHARS", "400"),
+                 ("SALVAGE_LINES", "12")):
+        if not re.search(rf"{k}:\s*{v}\b", src):
+            problems.append(f"ops-compress.mjs: pinned default {k}={v} is missing or changed — the replay test asserts these exact numbers")
+    # Read the SALVAGE_RE literal, not the file: `not ok` also appears in the
+    # comment explaining why it must be there, so a prose-level `in src` check
+    # passes while the regex itself has lost the alternative. Proven: deleting
+    # `|not ok` from the pattern left a substring check green (2026-08-02).
+    _sal = re.search(r"const SALVAGE_RE\s*=\s*\n?\s*/(.+?)/[gimsuy]*;", src, re.S)
+    if not _sal:
+        problems.append("ops-compress.mjs: SALVAGE_RE literal not found — check_compressor cannot verify the salvage alternatives")
+    elif "not ok" not in _sal.group(1):
+        problems.append("ops-compress.mjs: SALVAGE_RE omits TAP's `not ok` — a TAP failure contains no error WORD, so a FAIL would be elided into a recorded PASS")
+    # SessionStart must clear both artifact trees (I2.3 + the dedup contract).
+    ss = (root / "scripts" / "ops-sessionstart-hook.sh")
+    if ss.exists():
+        sst = ss.read_text(encoding="utf-8")
+        for d in (".compress-spill", ".compress-state"):
+            if d not in sst:
+                problems.append(f"ops-sessionstart-hook.sh: does not clear `{d}` — a stale dedup hash after a compact collapses output the model can no longer see")
+
+
 # The registry, in run order. Both main() and the test suite iterate THIS —
 # a hand-copied second list is how three guardrails (reader bounds, guard
 # parity, lock parity) ended up running in the build but not in the test that
@@ -998,6 +1079,7 @@ CHECKS = (
     check_reader_bounds,
     check_platform_idioms,
     check_guard_parity,
+    check_compressor,
     check_lock_parity,
     check_resolver_renderer_parity,
     check_workflows,

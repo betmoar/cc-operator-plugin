@@ -38,8 +38,25 @@ if [ ! -f "$OPDIR/.gitignore" ]; then
 .lock/
 .lock.reclaim/
 .adopt.*
+# Compressor ephemera: session-scoped spills + dedup hashes, wiped on every
+# SessionStart. Spilled output is a RECOVERY aid, not evidence — the ledger row
+# is the evidence, and it cites the spill by path.
+.compress-spill/
+.compress-state/
 EOF
-  echo "created $OPDIR/.gitignore (lock ephemera)"
+  echo "created $OPDIR/.gitignore (lock + compressor ephemera)"
+fi
+
+# An ALREADY-initialized project has a .gitignore without the compressor lines
+# (the block above only writes when the file is absent), so spills would show up
+# as untracked noise and could be swept in by an over-broad `git add` — the same
+# failure F05 fixed for stale locks. Append idempotently.
+if [ -f "$OPDIR/.gitignore" ] && ! grep -q '^\.compress-spill/$' "$OPDIR/.gitignore" 2>/dev/null; then
+  {
+    printf '# Compressor ephemera (added by upgrade): session-scoped, wiped on SessionStart.\n'
+    printf '.compress-spill/\n.compress-state/\n'
+  } >> "$OPDIR/.gitignore"
+  echo "updated $OPDIR/.gitignore (compressor ephemera)"
 fi
 
 # Per-session verdict fragments (verdicts.d/<owner>.md) exist so two branches
