@@ -1,9 +1,50 @@
 # Spec — input-axis token compressor (PostToolUse hook)
 
-Status: **SPEC ONLY — no implementation exists.** This is the boundary contract that
-must be written (it is) and reviewed before a line of hook code is. The reference
-implementation is Chisle's `hooks/chisle-compress-output.js` (read directly from
-github.com/JayPokale/Chisle; zero-dependency, zero-LLM, deterministic).
+Status: **SPEC ONLY — no implementation exists, and this architecture did not
+survive review (2026-08-02).** Verified: `grep -rln 'compress' scripts/ workflows/
+hooks/ templates/ commands/` → 0 files.
+
+**Extends:** `2026-07-29-workflow-orchestration-design.md` §7 — this is that
+design's *input* axis, the half its context diet left unfinished. The output axis
+(charter caps, workflows costing nothing until invoked) shipped there.
+
+> ### ⚠ Do not implement as written — read this first
+>
+> A 5-direction brainstorm panel (8 agents, 2026-08-02) explored where the
+> compression boundary should live. **All five directions independently declined
+> the PostToolUse-hook architecture this document specifies.** Two findings are
+> fatal to the spec as written, both verified against the tree:
+>
+> 1. **No PostToolUse hook exists.** `hooks/hooks.json` declares `SessionStart`
+>    and `Stop` only. This is a new event class, not an extension. Everything
+>    downstream of that choice is therefore unbuilt scaffolding: invariants
+>    I1/I3/I5, the dedup state store, `MIN_SHRINK`, the ten `CC_OPERATOR_COMPRESS_*`
+>    env vars, and the replay-test matrix.
+> 2. **The evidence-gate carve-out (I2) protects a path the code already blocks.**
+>    `ops-verdict.sh:check_cell` (:45-52) refuses any evidence containing a
+>    newline, so bulk output can never reach a ledger cell. Any design premised on
+>    "the operator pastes a large dump into the verdict CLI" describes an
+>    impossible flow.
+>
+> **The open question that decides whether this spec has a successor at all:**
+> is uncompressed tool output a CORRECTNESS problem for the evidence gate (a
+> verdict recorded from output the operator can no longer see verbatim), or only
+> a token-COST problem? If cost-only, the honest resolution is to ship nothing
+> mechanical and close this spec. If correctness, it needs a fresh spec — the
+> alternatives the panel ranked above this one are an `ops-spill.sh` CLI
+> installed into `.operator/bin/` (the seam `ops-init.sh` already provides) with
+> either a MAY or a MANDATED charter rule, or a charter-only input-hygiene rule.
+> Panel constraints worth carrying into any successor: `templates/OPERATOR.md` is
+> at exactly 150/150 lines and 8309/9000 bytes, so any new charter rule must
+> delete an existing line in the same commit; `CLAUDE_SESSION_ID` is not in the
+> Bash tool env, so a session-scoped spill path needs an explicit `--owner`-style
+> argument; and `.operator/.gitignore` is written only when absent, so already-
+> initialized projects would not gain a spill-directory exclusion.
+
+The reference implementation named below is Chisle's
+`hooks/chisle-compress-output.js` (read directly from github.com/JayPokale/Chisle;
+zero-dependency, zero-LLM, deterministic). It remains a good reference for the
+*mechanism*; the disagreement is about the *boundary*, not the algorithm.
 
 ## Why
 

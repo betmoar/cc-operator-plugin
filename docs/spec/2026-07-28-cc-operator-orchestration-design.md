@@ -1,8 +1,18 @@
 # cc-operator as orchestration layer — design
 
 **Date:** 2026-07-28
-**Status:** approved design, not yet implemented
-**Target:** cc-operator 0.5.0 (from 0.4.0) · cc-agents 0.2.0 → retired · cc-proxy 0.4.0 unchanged
+**Status:** **SUPERSEDED (2026-07-29) — never implemented, and deliberately not to be.**
+Replaced by `2026-07-29-workflow-orchestration-design.md`, which measured two of
+this document's central constraints FALSE (see that spec's §2). Read this only as
+history: it records the reasoning the 07-29 design had to overturn.
+**Target (obsolete):** cc-operator 0.5.0 (from 0.4.0) · cc-agents 0.2.0 → retired · cc-proxy 0.4.0 unchanged
+
+> **Do not implement this document.** Its two headline artifacts do not exist and
+> must not be built: `tiers.toml` (0 references in the tree — the shipped config
+> is `tiers.env`, parsed by `scripts/ops-tiers.sh`) and the `granularity` setting
+> (0 references; `scripts/ops-tier.sh`, singular, was never created either). The
+> shipped seat model comes from the 07-29 design and `scripts/ops-render.sh`.
+> Verified 2026-08-02: `grep -rn 'tiers.toml\|granularity' scripts/ templates/ commands/` → 0.
 
 ---
 

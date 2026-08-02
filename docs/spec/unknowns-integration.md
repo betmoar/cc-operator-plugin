@@ -1,8 +1,24 @@
 # Spec — unknowns integration (cc-unknowns folded into the operator)
 
 **Date:** 2026-07-31
-**Status:** approved design, implemented
+**Status:** **IMPLEMENTED — verified 2026-08-02.**
+**Extends:** `2026-07-29-workflow-orchestration-design.md`. Not an independent
+track: the 6 techniques below are *routing claims* about the workflows that
+design shipped, and the 3 new ones are charter rules layered on its seat model.
 **Source:** cc-unknowns-plugin `skills/surfacing-unknowns` (retired into this plugin)
+
+### Verification (2026-08-02, not inherited from the header)
+
+Each claim below was checked against the tree rather than trusted:
+
+- 6 routed techniques → owners exist: `workflows/brainstorm.js` carries the
+  `blindspots` agent (:150), the `references` lens (:161) and the N `direction`
+  agents; `workflows/plan.js` carries decompose (:73) + per-task vet (:103);
+  `workflows/review.js` carries the adversarial seat (:276).
+- 3 new techniques + reframe-stop → charter rules present at
+  `templates/OPERATOR.md:86-90` (fuzzy → interview; build departures →
+  Deviations in DECISIONS.md; Thought/Action/Observation trace; a
+  reframe-invalidating unknown → STOP and propose it).
 
 ## Why
 

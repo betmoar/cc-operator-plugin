@@ -1,10 +1,32 @@
 # cc-operator as workflow orchestrator — design
 
 **Date:** 2026-07-29
-**Status:** proposed. Supersedes `2026-07-28-cc-operator-orchestration-design.md`,
-whose two central constraints were measured false (see §2).
+**Status:** **IMPLEMENTED** (core), with two retirements outstanding — see the
+ledger below. This is the LIVE design for the orchestration layer; it supersedes
+`2026-07-28-cc-operator-orchestration-design.md`, whose two central constraints
+were measured false (see §2).
 **Target:** cc-operator 0.5.0 · cc-agents retired · superpowers reduced to non-overlap
 · cc-proxy unchanged
+**Extended by:** `unknowns-integration.md` (discovery techniques → charter +
+workflow routing, implemented) and `input-axis-compressor.md` (context diet §7's
+input axis, spec-only). Both are extensions of THIS design, not independent
+tracks — the diet argument in §7 is what the compressor spec sets out to finish.
+
+### Implementation ledger (verified 2026-08-02, `feat/orchestration-layer`)
+
+| § | Deliverable | State |
+|---|---|---|
+| 3 | seat model without a renderer | shipped — `agents/op-*.md`, `scripts/ops-render.sh` |
+| 4 | review as a workflow | shipped — `workflows/review.js` (+ brainstorm, plan, crawl) |
+| 5 | the gate boundary (workflows never touch the gate) | shipped — operator opens/closes from the main tree |
+| 6.1 | cc-agents retired | **NOT DONE** — still installed (`~/.claude/plugins/data/cc-agents-*`) |
+| 6.2 | superpowers reduced to non-overlap (~66 KB) | **NOT DONE** — no removal performed |
+| 7 | context diet, output axis | shipped — charter caps, workflow bodies cost nothing until invoked |
+| 7 | context diet, input axis | **NOT DONE** — see `input-axis-compressor.md` (spec only) |
+
+> The two retirements are environment changes outside this repository (they
+> uninstall or trim other plugins), so they are the maintainer's call to make,
+> not something a build gate can enforce from here.
 
 ---
 
