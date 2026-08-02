@@ -346,6 +346,21 @@ ok(deadConv?.error && /converge agent died/.test(deadConv.error),
 ok(Array.isArray(deadConv?.directions) && deadConv.directions.length === 4,
   "brainstorm: dead-converge error carries the surviving directions");
 
+// brainstorm: the BLINDSPOTS scan dies → must not launder into `[]` ("nothing
+// to account for"). The whole point of the lens is to surface existing
+// abstractions the design would duplicate; a dead scan returning a clean empty
+// omits all of them silently. Same F31/F32 class, and the adjacent `references`
+// lens already signals via .catch+log — blindspots was the one direct agent()
+// in divergence with no null guard (pr-review silent-failure hunt, 2026-08-03).
+// Stub every lens LIVE except blindspots: a dead blindspots must surface an
+// error even when everything else succeeds.
+const { result: deadBlind } = await run(WF("brainstorm.js"), { topic: "t", noReferences: true },
+  Object.fromEntries([1, 2, 3, 4].map((i) =>
+    [`direction ${i}/4`, { stance: "s", sketch: "k", tradeoffs: [], yagnis: "y" }])
+    .concat([["converge", { ranked: [], sharedConstraints: [], openQuestions: [] }]])));
+ok(deadBlind?.error && /blindspots agent died/.test(deadBlind.error),
+  "brainstorm: dead blindspots → error return, not findings:[] masquerading as 'nothing to account for'");
+
 // ── F37: an array target must review what was passed, or fail loud ──────────
 console.log("-- Case: review.js multi-path target (F37)");
 // meta.whenToUse promises "Pass the artifact path(s)" and the normalizer

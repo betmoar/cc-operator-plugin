@@ -147,14 +147,30 @@ const BLINDSPOTS = {
     },
   },
 };
-const blindspots = await agent(
+// A dead blindspots agent must not read as "no blindspots found" — that is
+// byte-identical to `[]`, so the converge prompt and the returned bundle would
+// silently omit every existing abstraction and near-duplicate the scan exists
+// to surface, with no signal the lens failed. This is the F31/F32 dead-agent
+// class, fixed for converge (:233), crawl merge, and review lenses — blindspots
+// was the one direct `await agent()` in divergence with no null guard. The
+// adjacent `references` lens below signals via .catch+log; this one now signals
+// the same way, by surfacing the death rather than laundering it.
+const blindspotsRaw = await agent(
   `Blindspot scan: find what ALREADY EXISTS in this codebase that a design for the topic ` +
     `would duplicate, collide with, or ignorantly rebuild. Existing abstractions, conventions, ` +
     `near-duplicates, hidden constraints. Cite path:line for each.\n\nTOPIC: ${topic}\n\n` +
     `CODEBASE CONTEXT:\n${ctx}\n\n` +
     `You are read-only. Report findings; do not propose a design.`,
   { agentType: "cc-operator:op-scout", model: RECON, effort: "low", label: "blindspots", phase: "Diverge", schema: BLINDSPOTS },
-).then((r) => r?.findings ?? []);
+);
+if (blindspotsRaw == null) {
+  return {
+    error: "blindspots agent died — directions below are intact but the existing-code scan " +
+      "did not run; re-diverge to retry it (a missing blindspot is worse than a missing direction)",
+    topic,
+  };
+}
+const blindspots = blindspotsRaw.findings ?? [];
 
 // (c) reference search — the "unknown knowns" from outside this repo. Kept
 // optional/short; the operator can drop it by passing args.noReferences.
