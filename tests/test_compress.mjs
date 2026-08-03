@@ -188,6 +188,24 @@ if (sm) {
     "the spill holds stdout too (the spill is the combined output elide cut, not stdout alone)");
 }
 
+// ── spill is VERBATIM — pre-scrub, lossless (finding 6) ─────────────────────
+console.log("-- Case: spill is the verbatim pre-scrub original, not the scrubbed text");
+// spill(text) after scrub collapses repeats and strips ANSI — a lossy transform
+// that broke "verbatim original" (I2.3) in a second dimension. The spill must
+// hold what the tool PRODUCED, byte-identical, so a cited artifact is
+// recoverable. Construct output scrub WOULD mutate: 9 identical lines + ANSI.
+const repeatLine = "same line\n".repeat(9);
+const ansiLine = "\x1b[31mred\x1b[0m and text\n";
+const noisy = repeatLine + ansiLine + "z".repeat(10000);
+const verbatimRes = run({ ...bash(noisy), tool_input: { command: "npm test" } });
+const vm = verbatimRes.hookSpecificOutput.updatedToolOutput.stdout.match(/\.operator\/\.compress-spill\/[^\s\]]+/);
+ok(vm != null, "noisy output elides and cites the spill");
+if (vm) {
+  const spillContent = fs.readFileSync(path.join(TMP, vm[0]), "utf8");
+  ok(spillContent === noisy,
+    "the spill is BYTE-IDENTICAL to the original (repeats uncollapsed, ANSI intact — not the scrubbed form)");
+}
+
 // ── kill switches ───────────────────────────────────────────────────────────
 console.log("-- Case: kill switches are honored");
 ok(run({ ...bash(big), tool_input: { command: "npm test" } }, { CC_OPERATOR_COMPRESS: "0" }) === null,

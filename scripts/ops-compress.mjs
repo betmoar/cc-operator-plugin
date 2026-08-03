@@ -269,19 +269,20 @@ export function compress(payload, opts = {}) {
       }
     }
 
+    // Snapshot the combined output (stdout + folded stderr) BEFORE scrub mutates
+    // it. The spill contract (I2.3, the comment at spill()) is "verbatim
+    // original" — collapsing repeats and stripping ANSI is a lossy transform, so
+    // spilling the scrubbed `text` broke it in a second dimension: the operator
+    // citing the spill could no longer recover byte-identical output. The F50
+    // fix (spilling `text` not `original`) fixed the stderr loss but inherited
+    // this scrub loss. Spill the pre-scrub snapshot; elide the scrubbed text
+    // (pr-review finding 6, 2026-08-03).
+    const combined = text;
     if (env.CC_OPERATOR_COMPRESS_SCRUB !== "0" && text.length > K.SCRUB_MIN) text = scrub(text);
 
     let spillPath = null;
     if (elidable && text.length > K.MAX_CHARS) {
-      // Spill the SAME string elide is about to cut. `text` carries stdout AND
-      // the folded stderr (line 259); `original` was stdout alone. Spilling
-      // `original` lost stderr entirely — and rebuild() below blanks it — so a
-      // Bash failure landing on stderr vanished from both the model's view and
-      // the spill, breaking the "verbatim original" contract I2.3 names. The
-      // charter citation rule (OPERATOR.md) is meaningless for the failure case
-      // it exists for if the spill does not hold what was cut (pr-review,
-      // 2026-08-03). The marker cites the path; the path must hold everything.
-      spillPath = spill(text, {
+      spillPath = spill(combined, {
         cwd, session: payload.session_id, toolUseId: payload.tool_use_id, keep: DEFAULTS.SPILL_KEEP,
       });
       text = elide(text, K);

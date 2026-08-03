@@ -1033,10 +1033,6 @@ class ResolverRendererParityTest(unittest.TestCase):
         self.assertEqual(probs, [])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class CompressorGuardTest(unittest.TestCase):
     """check_compressor must catch DRIFT, not just confirm presence. F48's
     lesson: a substring check that matches a comment or bare declaration passes
@@ -1067,29 +1063,74 @@ class CompressorGuardTest(unittest.TestCase):
     def test_mcp_exclusion_deletion_fires(self):
         src = re.sub(r'if\s*\(tool\.startsWith\(\s*"mcp__"\s*\)\s*\)\s*return null;',
                      '', self._real_comp, count=1)
-        self.assertTrue(any("mcp__" in p and "APPLIED" in p for p in self._probs(src)),
+        self.assertTrue(any("mcp__" in p for p in self._probs(src)),
                         self._probs(src))
+
+    def test_mcp_exclusion_noop_body_fires(self):
+        # A neutered body `{ /* no-op */ }` skips the exclusion without deleting
+        # the call site — a bare call-site check passes. The guard now requires
+        # the `return null` body (pr-review, 2026-08-03).
+        src = self._real_comp.replace(
+            'if (tool.startsWith("mcp__")) return null;',
+            'if (tool.startsWith("mcp__")) { /* no-op */ }', 1)
+        self.assertTrue(any("mcp__" in p for p in self._probs(src)), self._probs(src))
 
     def test_never_compress_emptied_fires(self):
         src = re.sub(r'NEVER_COMPRESS\s*=\s*new Set\(\s*\[[^\]]*\]',
                      'const NEVER_COMPRESS = new Set([]', self._real_comp, count=1)
-        self.assertTrue(any("Read" in p and "APPLIED" in p for p in self._probs(src)),
+        self.assertTrue(any("NEVER_COMPRESS" in p for p in self._probs(src)),
                         self._probs(src))
+
+    def test_never_compress_partial_drain_fires(self):
+        # The realistic drift: someone drops ONE name (NotebookEdit) but leaves
+        # the rest. The first draft's hardcoded-"Read" literal check passed this
+        # because Read stayed — NotebookEdit silently became elidable. Per-tool
+        # now (pr-review, 2026-08-03).
+        src = self._real_comp.replace(
+            '"Read", "Edit", "Write", "NotebookEdit"',
+            '"Read", "Edit", "Write" /* dropped NotebookEdit */', 1)
+        probs = self._probs(src)
+        self.assertTrue(any("NotebookEdit" in p for p in probs), probs)
+
+    def test_never_compress_noop_body_fires(self):
+        src = self._real_comp.replace(
+            'if (NEVER_COMPRESS.has(tool)) return null;',
+            'if (NEVER_COMPRESS.has(tool)) { /* no-op */ }', 1)
+        self.assertTrue(any("return null" in p for p in self._probs(src)), self._probs(src))
 
     def test_agent_set_emptied_fires(self):
         src = re.sub(r'LOSSLESS_ONLY\s*=\s*new Set\(\s*\[[^\]]*\]',
                      'const LOSSLESS_ONLY = new Set([]', self._real_comp, count=1)
-        self.assertTrue(any("Agent" in p and "APPLIED" in p for p in self._probs(src)),
+        self.assertTrue(any("Agent" in p for p in self._probs(src)),
                         self._probs(src))
 
     def test_carveout_applications_deleted_fires(self):
-        src = re.sub(r'if\s*\(LEDGER_PATHS\.some.*?\n\s*if\s*\(GATE_CLIS\.some.*',
-                     '', self._real_comp, count=1, flags=re.S)
+        # Delete both .some() lines by line (a two-line literal replace, not a
+        # greedy .* to EOF that truncates the file — the first draft's regex
+        # deleted 3.6KB and produced a non-parsing mutant).
+        src = self._real_comp.replace(
+            '    if (LEDGER_PATHS.some((p) => cmd.includes(p))) return null;\n'
+            '    if (GATE_CLIS.some((c) => cmd.includes(c))) return null;\n', '', 1)
         probs = self._probs(src)
-        self.assertTrue(any("LEDGER_PATHS.some" in p for p in probs), probs)
-        self.assertTrue(any("GATE_CLIS.some" in p for p in probs), probs)
+        self.assertTrue(any("return null" in p for p in probs), probs)
+
+    def test_carveout_noop_body_fires(self):
+        src = self._real_comp.replace(
+            'if (LEDGER_PATHS.some((p) => cmd.includes(p))) return null;',
+            'if (LEDGER_PATHS.some((p) => cmd.includes(p))) { /* no-op */ }', 1)
+        self.assertTrue(any("return null" in p for p in self._probs(src)), self._probs(src))
+
+    def test_ledger_path_dropped_from_literal_fires(self):
+        # Dropping a path from the array (not the .some call) — the first draft
+        # only checked `.some(` existed, so a dropped path passed.
+        src = self._real_comp.replace('  ".operator/DECISIONS.md",\n', '', 1)
+        self.assertTrue(any("DECISIONS" in p for p in self._probs(src)), self._probs(src))
 
     def test_salvage_tap_alternative_dropped_fires(self):
         src = re.sub(r'\|not ok', '', self._real_comp, count=1)
         self.assertTrue(any("SALVAGE_RE omits" in p for p in self._probs(src)),
                         self._probs(src))
+
+
+if __name__ == "__main__":
+    unittest.main()

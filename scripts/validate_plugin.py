@@ -1015,34 +1015,54 @@ def check_compressor(root, problems):
             if "${CLAUDE_PLUGIN_ROOT}" not in blob:
                 problems.append("hooks/hooks.json: PostToolUse command lacks ${CLAUDE_PLUGIN_ROOT} (a bare path resolves only inside this repo)")
 
-    # 2a. I1 — the never-compress set. These break exact-match editing if
-    # elided. F48's lesson applies here in full: each name ALSO appears in a
-    # comment, so an `in src` substring check passes while the guard that
-    # applies it is deleted. Check the CALL SITE (NEVER_COMPRESS.has(tool)),
-    # not the declaration. check_workflows already uses this shape for
-    # ROUTABLE/BAD_CHARSET (declaration + call site); this mirrors it.
-    for tool in ("Read", "Edit", "Write", "NotebookEdit"):
-        if not re.search(rf'NEVER_COMPRESS\.has\(\s*tool\s*\)|"{tool}"\s*[,)]', src) or \
-           not re.search(r'NEVER_COMPRESS\s*=\s*new Set\([^)]*"Read"', src):
-            problems.append(f"ops-compress.mjs: `{tool}` is never APPLIED — check the NEVER_COMPRESS.has(tool) call site, not just the declaration (F48: a name in a comment or array literal does not mean it is enforced)")
-    if not re.search(r'tool\.startsWith\(\s*"mcp__"\s*\)', src):
-        problems.append("ops-compress.mjs: `mcp__*` exclusion is not APPLIED — a startsWith(\"mcp__\") call site is missing (the name appears in a comment; F48)")
-    if not re.search(r'LOSSLESS_ONLY\.has\(\s*tool\s*\)', src) or \
-       not re.search(r'LOSSLESS_ONLY\s*=\s*new Set\(\s*\[[^\]]*"Agent"', src):
-        problems.append("ops-compress.mjs: `Agent` lossless-only is not APPLIED — both a LOSSLESS_ONLY.has(tool) call site AND \"Agent\" in the set literal are required (emptying the set makes Agent elidable; F48)")
+    # Strip // comments so a regex cannot match prose that merely mentions a
+    # pattern (the inverse of F48: a call site written ABOUT in a comment would
+    # satisfy a call-site check while the real call site is gone). Line comments
+    # only — block comments are rare in this file and would need a different
+    # treatment; the line strip closes the documented vector.
+    code = "\n".join(
+        ln for ln in src.split("\n")
+        if not ln.lstrip().startswith("//")
+    ).strip()
 
-    # 2b/2c. I2.1/I2.2 — the evidence-gate carve-out. The PATHS and CLIS must be
-    # both DECLARED and APPLIED. The worst F48 mutation here was deleting both
-    # .some() applications while the validator stayed green because it checked
-    # only that the arrays contained the strings. That is the whole carve-out
-    # gone — the exact falsification I2 exists to prevent — with the guard
-    # reporting it present.
+    # 2a. I1 — the never-compress set. These break exact-match editing if
+    # elided. F48's lesson, now applied correctly: EACH name must be both in the
+    # set LITERAL and reach a `return null` via the .has(tool) call site. The
+    # first draft of this check hardcoded "Read" in the literal clause, so
+    # dropping Edit/Write/NotebookEdit left the validator green — those tools
+    # silently became elidable (pr-review, 2026-08-03). Per-tool now.
+    for tool in ("Read", "Edit", "Write", "NotebookEdit"):
+        if not re.search(rf'NEVER_COMPRESS\s*=\s*new Set\([^)]*"{tool}"', code):
+            problems.append(f"ops-compress.mjs: `{tool}` is not in the NEVER_COMPRESS set literal (dropping it makes the tool elidable — I1; F48)")
+        if not re.search(r'NEVER_COMPRESS\.has\(\s*tool\s*\)\s*\)\s*return null', code):
+            problems.append("ops-compress.mjs: NEVER_COMPRESS.has(tool) call site missing a `return null` body (a neutered body skips the exclusion — F48)")
+            break  # one missing call site is the same defect for all four
+    # mcp__ exclusion: the call site must have a return-null body, not a no-op.
+    if not re.search(r'tool\.startsWith\(\s*"mcp__"\s*\)\s*\)\s*return null', code):
+        problems.append("ops-compress.mjs: `mcp__*` exclusion is missing or has no `return null` body (a no-op body skips the exclusion — F48)")
+    # Agent lossless-only: both the call site AND "Agent" in the literal.
+    if not re.search(r'LOSSLESS_ONLY\.has\(\s*tool\s*\)', code) or \
+       not re.search(r'LOSSLESS_ONLY\s*=\s*new Set\(\s*\[[^\]]*"Agent"', code):
+        problems.append("ops-compress.mjs: `Agent` lossless-only is not both declared (\"Agent\" in set) AND applied (LOSSLESS_ONLY.has(tool)); F48")
+
+    # 2b/2c. I2.1/I2.2 — the evidence-gate carve-out. Each PATH/CLI must be in
+    # its array literal AND the .some() call must carry `return null` (a neutered
+    # `.some(() => false)` would otherwise pass a bare `.some(` check). The first
+    # draft checked only that the arrays contained the strings AND a bare
+    # `.some(` — which a comment or a neutered body defeated.
     for pth in (".operator/VERDICTS.md", ".operator/DECISIONS.md", ".operator/verdicts.d/"):
-        if pth not in src or not re.search(r'LEDGER_PATHS\.some\(', src):
-            problems.append(f"ops-compress.mjs: ledger path `{pth}` carve-out is not both declared AND applied (LEDGER_PATHS.some() missing — F48)")
+        if not re.search(rf'LEDGER_PATHS\s*=\s*\[[^\]]*{re.escape(pth)}', code):
+            problems.append(f"ops-compress.mjs: ledger path `{pth}` is not in the LEDGER_PATHS literal (dropping it falsifies the carve-out — I2.2; F48)")
     for cli in CHARTER_REQUIRED_CLIS:
-        if cli not in src or not re.search(r'GATE_CLIS\.some\(', src):
-            problems.append(f"ops-compress.mjs: gate CLI `{cli}` carve-out is not both declared AND applied (GATE_CLIS.some() missing — F48)")
+        if not re.search(rf'GATE_CLIS\s*=\s*\[[^\]]*"{cli}"', code):
+            problems.append(f"ops-compress.mjs: gate CLI `{cli}` is not in the GATE_CLIS literal (I2.1; F48)")
+    # The .some() bodies must carry `return null` on the same line. A bare
+    # `.some(` check passes a neutered `.some(() => false)`; requiring the
+    # return-null body on the line means a no-op body fails. Same-line because
+    # the shipped form is a one-liner `if (X.some(...)) return null;`.
+    if not re.search(r'LEDGER_PATHS\.some\(.*\)\s*\)\s*return null', code) or \
+       not re.search(r'GATE_CLIS\.some\(.*\)\s*\)\s*return null', code):
+        problems.append("ops-compress.mjs: the I2 carve-out .some() call sites are missing `return null` bodies (neutered bodies skip the carve-out — F48)")
 
     # 3. I3/I4/I5 structural markers: the pinned defaults must be present and
     # exact. "A test against a tilde is not a test" applies to the guard too.
