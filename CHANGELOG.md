@@ -30,8 +30,8 @@ rounds F07–F58.
 - **Input-axis token compressor** (`scripts/ops-compress.mjs` + PostToolUse
   hook): allowlist-only scrub/dedup/elide of re-billed tool output, with
   verbatim pre-scrub spill files and an evidence-gate carve-out
-  (ledger/CLI output is never compressed). Spec:
-  `docs/spec/input-axis-compressor.md`.
+  (ledger/CLI output is never compressed). Design rationale lives in the
+  maintainer's local `docs/spec/` (gitignored — not shipped in a clone).
 - **Workflow progress on the statusline**: `wf done/started` from the run
   journal, with unbalanced-journal liveness so long dispatches don't flap
   the segment (F58).
@@ -69,7 +69,8 @@ rounds F07–F58.
 ## [0.4.0] - 2026-07-27
 
 Concurrent sessions in one working tree no longer trap each other. Field report
-and design: `docs/spec/concurrent-sessions.md`.
+and design rationale live in the maintainer's local `docs/spec/` (gitignored —
+not shipped in a clone).
 
 ### Changed
 - **BREAKING (behavioral)** — Task sentinels now carry an owner
