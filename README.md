@@ -5,10 +5,13 @@ materializes an operating charter, an append-only evidence ledger, and a
 Stop-hook completion gate into a project, so "done" means *evidenced*, not
 asserted.
 
-It is the operator layer that composes with the
-[`cc-unknowns`](https://github.com/betmoar/cc-unknowns-plugin) discovery skill:
-`cc-unknowns` surfaces what you don't know before building; `cc-operator` gates
-what you claim after.
+Discovery is built in: the charter's **Discovery discipline** (formerly the
+separate [`cc-unknowns`](https://github.com/betmoar/cc-unknowns-plugin)
+plugin, folded in as of 0.5.0 and retired) surfaces what you don't know
+before building — interview, blindspot pass, plan vetting, adversarial
+pre-done — and the evidence gate gates what you claim after. Sole external
+dependency: [cc-proxy](https://github.com/betmoar/cc-proxy-plugin) for
+non-Anthropic model routing.
 
 ## What it installs into a project
 
