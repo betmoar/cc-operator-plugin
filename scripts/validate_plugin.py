@@ -1039,8 +1039,17 @@ def check_compressor(root, problems):
     # pattern lives inside a string, so a false strip cannot green a broken file
     # — it can only redden a weird-but-correct one, which is the safe direction.
     code = re.sub(r"/\*.*?\*/", "", src, flags=re.DOTALL)
+    # Strip TRAILING line comments too, not just whole comment lines: a call
+    # site deleted and its pattern relocated into a trailing comment
+    # (`const _x = 1; // NEVER_COMPRESS.has(tool)) return null`) left the real
+    # guard gone while the regex still matched the comment text (full-PR panel,
+    # finding 5b). `//` inside a string or a regex literal (e.g. a URL, or the
+    # `/\/\//` idiom) is not a comment, but no guarded pattern lives after a
+    # `//` in a string here, and a false strip can only redden a correct file,
+    # never green a broken one — the safe direction, same as the block strip.
     code = "\n".join(
-        ln for ln in code.split("\n")
+        re.sub(r"//.*$", "", ln)
+        for ln in code.split("\n")
         if not ln.lstrip().startswith("//")
     ).strip()
 
@@ -1056,6 +1065,20 @@ def check_compressor(root, problems):
         if not re.search(r'NEVER_COMPRESS\.has\(\s*tool\s*\)\s*\)\s*return null', code):
             problems.append("ops-compress.mjs: NEVER_COMPRESS.has(tool) call site missing a `return null` body (a neutered body skips the exclusion — F48)")
             break  # one missing call site is the same defect for all four
+    # 2a'. ELIDABLE is the allowlist that DECIDES what gets elided; the first
+    # draft of this check never looked at it, so a maintainer could add a
+    # never-compress tool to ELIDABLE and (paired with a weakened NEVER_COMPRESS)
+    # elide a Read (full-PR panel, finding 5a). The load-bearing invariant is
+    # DISJOINTNESS: no NEVER_COMPRESS tool may appear in the ELIDABLE literal.
+    # Pin that directly rather than the membership list (which is free to grow).
+    elidable_decl = re.search(r'ELIDABLE\s*=\s*new Set\(\s*\[([^\]]*)\]', code)
+    if not elidable_decl:
+        problems.append("ops-compress.mjs: no `ELIDABLE = new Set([…])` literal found (the allowlist that decides what is elided — I1)")
+    else:
+        elidable_names = set(re.findall(r'"([^"]+)"', elidable_decl.group(1)))
+        for banned in ("Read", "Edit", "Write", "NotebookEdit"):
+            if banned in elidable_names:
+                problems.append(f"ops-compress.mjs: `{banned}` is in the ELIDABLE allowlist — a never-compress tool must never be elidable (I1; F48; panel 5a)")
     # mcp__ exclusion: the call site must have a return-null body, not a no-op.
     if not re.search(r'tool\.startsWith\(\s*"mcp__"\s*\)\s*\)\s*return null', code):
         problems.append("ops-compress.mjs: `mcp__*` exclusion is missing or has no `return null` body (a no-op body skips the exclusion — F48)")

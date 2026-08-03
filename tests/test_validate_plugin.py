@@ -173,6 +173,7 @@ def make_good_tree(root):
           '  SCRUB_MIN: 1024, MAX_CHARS: 8000, HEAD_BYTES: 6144, TAIL_BYTES: 4096,\n'
           '  LINE_CHARS: 400, SALVAGE_LINES: 12, MIN_SHRINK: 64,\n'
           '};\n'
+          'const ELIDABLE = new Set(["Bash", "WebFetch", "WebSearch", "Grep", "Glob"]);\n'
           'const NEVER_COMPRESS = new Set(["Read", "Edit", "Write", "NotebookEdit"]);\n'
           'const LOSSLESS_ONLY = new Set(["Agent"]);\n'
           'const LEDGER_PATHS = [".operator/VERDICTS.md", ".operator/DECISIONS.md",\n'
@@ -1183,6 +1184,27 @@ class CompressorGuardTest(unittest.TestCase):
             '/* if (NEVER_COMPRESS.has(tool)) return null; */', 1)
         probs = self._probs(src)
         self.assertTrue(any("return null" in p for p in probs), probs)
+
+    def test_callsite_in_trailing_line_comment_fires(self):
+        # F48 class through a TRAILING // comment: delete the real call site and
+        # relocate its text into a trailing comment on a dead line, so the guard
+        # is gone but the pattern survives (full-PR panel, finding 5b). Caught
+        # only if the strip removes trailing comments, not just whole-line ones.
+        src = self._real_comp.replace(
+            'if (NEVER_COMPRESS.has(tool)) return null;',
+            'const _x = 1; // NEVER_COMPRESS.has(tool)) return null;', 1)
+        probs = self._probs(src)
+        self.assertTrue(any("return null" in p for p in probs), probs)
+
+    def test_never_compress_tool_in_elidable_fires(self):
+        # ELIDABLE is the allowlist that decides what gets elided; the first
+        # draft never checked it, so a never-compress tool could be added to it
+        # (full-PR panel, finding 5a). The invariant is disjointness.
+        src = self._real_comp.replace(
+            '"Bash", "WebFetch", "WebSearch", "Grep", "Glob"',
+            '"Bash", "WebFetch", "WebSearch", "Grep", "Glob", "Read"', 1)
+        probs = self._probs(src)
+        self.assertTrue(any("ELIDABLE" in p for p in probs), probs)
 
     def test_salvage_tap_alternative_dropped_fires(self):
         src = re.sub(r'\|not ok', '', self._real_comp, count=1)
