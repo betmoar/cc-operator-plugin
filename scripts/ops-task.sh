@@ -115,12 +115,17 @@ else
   # unblocked. Two components disagreeing about what a task is, silently off
   # (P1, found by the review-panel pilot 2026-07-29). Distinguish: only a
   # pre-existing REGULAR FILE is a legit already-open; anything else is a
-  # fault we refuse rather than misreport.
-  if [ -f "$OPDIR/pending/$ID" ]; then
+  # fault we refuse rather than misreport. The `-L` test is load-bearing:
+  # `-f` FOLLOWS symlinks, so a symlink→regular file reads as "already open"
+  # (exit 0) without it — and ops-adopt.sh's `mv "$TMP" "$F"` then follows that
+  # symlink and overwrites its target OUTSIDE .operator/pending/, a
+  # path-traversal/data-exposure surface via a planted sentinel (Copilot
+  # 2026-08-03, final review). A symlink is never a sentinel we wrote.
+  if [ -f "$OPDIR/pending/$ID" ] && [ ! -L "$OPDIR/pending/$ID" ]; then
     echo "already open: $ID (ownership unchanged — use ops-adopt.sh to re-stamp)"
     exit 0
   else
-    die "cannot create sentinel $OPDIR/pending/$ID (a non-regular entry or unwritable path already exists there) — remove it or choose another id"
+    die "cannot create sentinel $OPDIR/pending/$ID (a non-regular entry, symlink, or unwritable path already exists there) — remove it or choose another id"
   fi
 fi
 

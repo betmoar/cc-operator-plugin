@@ -138,15 +138,22 @@ load_file() { # load_file <path> <source-label>
   # `read -d ''` returns 0 only if it truly reached a NUL. Needed because bash
   # 3.2's `read -n` stops AT a NUL, so a NUL-padded chunk passes the length
   # guard and its tail parses as a live seat binding.
-  # The probe LOOPS over the whole file (Copilot 2026-08-03: a single probe left
-  # NULs past byte 512 undetected). It runs in a LC_ALL=C subshell so BOTH -n
-  # and ${#} count bytes — a locale prefix on `read` alone leaves ${#} counting
-  # characters, and a multibyte comment then false-positives as a NUL.
-  if ! (LC_ALL=C
+  # The probe LOOPS over the file but is BOUNDED at 40 chunks (20KB) — mirroring
+  # ops-tiers.sh and the Stop hook's sentinel parser (F59). A single probe left
+  # NULs past byte 512 undetected (Copilot 2026-08-03), so the loop must walk
+  # more than one chunk; but an UNcapped loop walks a newline-less multi-MB
+  # tiers.env end-to-end and stalls the renderer — measured 4.0s on 64MB
+  # (Copilot 2026-08-03, final review). 40 chunks bounds that stall while keeping
+  # late-NUL detection within a real config's size (<1KB); exceeding it is
+  # malformed → fail closed. LC_ALL=C subshell so BOTH -n and ${#} count bytes —
+  # a locale prefix on `read` alone leaves ${#} counting characters, and a
+  # multibyte comment then false-positives as a NUL.
+  if ! (LC_ALL=C _np=0
         while IFS= read -r -d '' -n 512 _nulprobe; do
+          _np=$((_np + 1)); [ "$_np" -le 40 ] || exit 1
           [ "${#_nulprobe}" -eq 512 ] || exit 1
-        done < "$1"); then
-    die "$1: contains a NUL byte — refusing (tiers.env is text, not a binary blob)"
+        done < "$1") 2>/dev/null; then
+    die "$1: contains a NUL byte or exceeds 20KB — refusing (tiers.env is text, not a binary blob)"
   fi
   # LC_ALL=C so `read -n` (bytes on bash 3.2) and `${#line}` (chars in the
   # parent locale) agree on BYTES — a multibyte comment otherwise slips the

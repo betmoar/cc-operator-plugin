@@ -425,6 +425,31 @@ def check_reader_bounds(root, problems):
             problems.append(
                 f"scripts/{name}: expected >={expected} byte-bounded read(s), "
                 f"found {bounded} — a reader lost its bound")
+        # The NUL probe (`read -r -d '' -n 512`) must be BOUNDED by a chunk
+        # counter, not loop the whole file. An uncapped probe still detects a
+        # late NUL but walks a newline-less multi-MB file end-to-end first —
+        # measured 4.0s on a 64MB tiers.env (Copilot 2026-08-03), defeating the
+        # bounded-reader guarantee this check exists to enforce. The Stop hook
+        # established the canonical capped form (F59); this keeps tiers/render
+        # from drifting back to the uncapped loop. The `-n 512` inside the
+        # probe is itself a `read -r -n \d+`, so it is already counted above as
+        # a bounded read; here we additionally require the cap to accompany it.
+        nul_probes = [
+            i for i, ln in enumerate(code)
+            if re.search(r"read -r -d '' -n \d+ _nulprobe", ln)
+        ]
+        for i in nul_probes:
+            # The counter + cap must appear within the same probe block (the
+            # few lines from the `while` to the chunk-size check). A probe
+            # without a `_np` counter in that window is uncapped.
+            window = "\n".join(code[i:i + 4])
+            if "_np" not in window or "le 40" not in window:
+                problems.append(
+                    f"scripts/{name}: NUL probe at code line {i + 1} has no "
+                    f"chunk cap (_np … le 40) — an uncapped `read -d ''` loop "
+                    f"walks a multi-MB file end-to-end and stalls the reader "
+                    f"(see ops-stop-hook.sh sentinel_owner for the canonical "
+                    f"bounded form)")
 
 
 def check_platform_idioms(root, problems):

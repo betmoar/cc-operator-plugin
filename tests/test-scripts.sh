@@ -236,6 +236,23 @@ check "ops-task does not claim a directory is 'already open'" "$([ "$DRC" -ne 0 
 ln -s /nonexistent "$P2/.operator/pending/T-DEAD"
 ( cd "$P2" && ./.operator/bin/ops-task.sh T-DEAD --owner SESS-A >/dev/null 2>&1 ); LRC=$?
 check "ops-task refuses to open over a dangling symlink (non-zero exit)" "$([ "$LRC" -ne 0 ] && echo 0 || echo 1)"
+# symlink TO A REGULAR FILE (Copilot 2026-08-03, final review): unlike the
+# dangling case, `-f` FOLLOWS this symlink and reads TRUE, so the old guard
+# reported it as "already open" and exited 0. The exposure is downstream —
+# ops-adopt.sh's `mv "$TMP" "$F"` follows the symlink and overwrites the
+# target OUTSIDE .operator/pending/. A symlink is never a sentinel we wrote;
+# `-L` must reject it.
+_TGT="$(mktemp "${TMPDIR:-/tmp}/opstest-symlink.XXXXXX")"
+printf 'session_id: attacker\n' > "$_TGT"
+ln -s "$_TGT" "$P2/.operator/pending/T-LIVE"
+( cd "$P2" && ./.operator/bin/ops-task.sh T-LIVE --owner SESS-A >/dev/null 2>&1 ); SLRC=$?
+( cd "$P2" && ./.operator/bin/ops-task.sh T-LIVE --owner SESS-A 2>&1 ) | grep -qi "already open" && echo "FAIL: ops-task falsely reports a symlink-to-regular as already open" >&2
+check "ops-task refuses a symlink-to-regular as 'already open' (non-zero exit, -L guard)" \
+  "$([ "$SLRC" -ne 0 ] && echo 0 || echo 1)"
+# and the link target must be UNTOUCHED — no write leaked through the symlink
+check "the symlink's outside target was not overwritten by the refusal" \
+  "$([ "$(cat "$_TGT")" = "session_id: attacker" ] && echo 0 || echo 1)"
+rm -f "$_TGT"
 # a legit already-open task (a real sentinel file) must STILL report already
 # open and exit 0 — the fix must not break the genuine O_EXCL path
 ( cd "$P2" && ./.operator/bin/ops-task.sh T-REAL --owner SESS-A >/dev/null 2>&1 )
@@ -1342,6 +1359,30 @@ CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$LATENULENV" \
 check "the renderer's NUL probe also loops the whole file" \
   "$([ "$LATERENDRC" -ne 0 ] && echo 0 || echo 1)"
 rm -f "$LATENULENV"
+# The probe is now BOUNDED at 40 chunks (20KB): a newline-less multi-MB
+# tiers.env (no NUL) must die FAST, not loop the whole file. Before the cap
+# this measured 4.0s on a 64MB file (Copilot 2026-08-03, final review) — the
+# probe defeated the bounded-reader guarantee check_reader_bounds enforces. A
+# 2MB file is enough to exceed the 20KB cap by 100x while keeping the test
+# fast; gate on a wall-clock budget so a regression that drops the cap (back
+# to a 4s+ stall) is caught, not just the exit code.
+BIGENV="$(mktemp "${TMPDIR:-/tmp}/opstest-big.XXXXXX")"
+python3 -c "import sys; open(sys.argv[1],'wb').write(b'x'*(2*1024*1024)+b'\nMECHANICAL=glm-evil\n')" "$BIGENV"
+_start=$(date +%s)
+BIGOUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$BIGENV" \
+  CC_PROXY_PORT=1 "$BASH_OLD" "$SCRIPTS/ops-tiers.sh" 2>/dev/null)"; BIGRC=$?
+_elapsed=$(( $(date +%s) - _start ))
+check "a newline-less multi-MB tiers.env dies (probe is bounded, not whole-file)" \
+  "$([ "$BIGRC" -ne 0 ] && ! printf '%s' "$BIGOUT" | grep -q 'glm-evil' && echo 0 || echo 1)"
+check "the bounded probe rejects a multi-MB file fast (<5s, was 4.0s+ uncapped on 64MB)" \
+  "$([ "$_elapsed" -lt 5 ] && echo 0 || echo 1)"
+_start=$(date +%s)
+CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$BIGENV" \
+  "$BASH_OLD" "$SCRIPTS/ops-render.sh" --show >/dev/null 2>&1; BIGRENDRC=$?
+_elapsed=$(( $(date +%s) - _start ))
+check "the renderer's probe is also bounded (rejects multi-MB fast, <5s)" \
+  "$([ "$BIGRENDRC" -ne 0 ] && [ "$_elapsed" -lt 5 ] && echo 0 || echo 1)"
+rm -f "$BIGENV"
 # A MULTIBYTE comment smuggles the same way through the char/byte-mismatched
 # LENGTH guard (not the NUL probe): on BASH_OLD `read -n 512` fills 512 BYTES
 # while `${#line}` counts CHARACTERS under a UTF-8 locale, so `#`+'é'×255+`A`

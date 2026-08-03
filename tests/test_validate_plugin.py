@@ -459,6 +459,45 @@ class ValidatorTest(unittest.TestCase):
         probs = self.bounds_problems()
         self.assertTrue(any("unbounded `read -r`" in p for p in probs), probs)
 
+    # The NUL probe (`read -r -d '' -n 512`) MUST carry a chunk cap (_np … le
+    # 40). An uncapped probe still detects a late NUL but walks a newline-less
+    # multi-MB tiers.env end-to-end first — 4.0s on 64MB (Copilot 2026-08-03).
+    # These two mutation tests pin the parity the F59 fix established for the
+    # hook but left tiers/render drifting on.
+
+    _CAPPED_PROBE = (
+        "  if ! (LC_ALL=C _np=0\n"
+        "        while IFS= read -r -d '' -n 512 _nulprobe; do\n"
+        "          _np=$((_np + 1)); [ \"$_np\" -le 40 ] || exit 1\n"
+        "          [ \"${#_nulprobe}\" -eq 512 ] || exit 1\n"
+        "        done < \"$1\") 2>/dev/null; then die x; fi\n")
+    _UNCAPPED_PROBE = (
+        "  if ! (LC_ALL=C\n"
+        "        while IFS= read -r -d '' -n 512 _nulprobe; do\n"
+        "          [ \"${#_nulprobe}\" -eq 512 ] || exit 1\n"
+        "        done < \"$1\"); then die x; fi\n")
+
+    def test_capped_nul_probe_passes(self):
+        write(self.dir / "scripts" / "ops-tiers.sh",
+              "#!/usr/bin/env bash\n"
+              "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
+              + self._CAPPED_PROBE)
+        probs = []
+        vp.check_reader_bounds(self.dir, probs)
+        self.assertEqual([p for p in probs if "chunk cap" in p], [])
+
+    def test_uncapped_nul_probe_fires(self):
+        # The exact drift F59 prevented: a probe that loops whole-file with no
+        # _np counter. It still has `read -r -n 512` (counts as byte-bounded
+        # above), so only the new chunk-cap check catches the missing bound.
+        write(self.dir / "scripts" / "ops-render.sh",
+              "#!/usr/bin/env bash\n"
+              "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
+              + self._UNCAPPED_PROBE)
+        probs = []
+        vp.check_reader_bounds(self.dir, probs)
+        self.assertTrue(any("chunk cap" in p for p in probs), probs)
+
     def test_comments_mentioning_read_do_not_fire(self):
         # A checker that fires on its own documentation trains the maintainer to
         # ignore the build. This exact bug was introduced and caught in the audit.
