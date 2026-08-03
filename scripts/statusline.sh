@@ -208,6 +208,23 @@ glob_newest_live_journal() { # glob_newest_live_journal <session> [live_sec]
   done
   shopt -u nullglob
   local now; now="$(date +%s 2>/dev/null || echo 0)"
+  # UNBALANCED journal (more started than result lines) = a dispatch is in
+  # flight, and mtime silence proves nothing: agents can flush their transcript
+  # in coarse bursts, and a measured live run (2026-08-03, GLM shards) went
+  # >110s with the whole dir untouched — the 90s window declared it dead and
+  # the segment flapped off and back mid-run. A wrong "gone" is the same lie as
+  # a wrong number. So: unbalanced extends the window to STALL_SEC. It cannot
+  # replace the mtime check entirely, because errored agents never write a
+  # result line (observed same day: both shards died on a rate limit) — an
+  # unbalanced journal is also the signature of a run that FAILED and will
+  # never balance, so without the backstop it would render forever.
+  # Counting uses grep like the caller's done/started count; on a stripped
+  # PATH both greps fail the same way and we degrade to the plain 90s window.
+  local stall="${STALL_SEC:-900}" ns=0 nr=0
+  ns="$(grep -c '"type":"started"' "$newest" 2>/dev/null)" || ns="${ns:-0}"
+  nr="$(grep -c '"type":"result"' "$newest" 2>/dev/null)" || nr="${nr:-0}"
+  case "$ns$nr" in *[!0-9]*) ns=0; nr=0 ;; esac
+  [ "$ns" -gt "$nr" ] && [ "$stall" -gt "$live" ] 2>/dev/null && live="$stall"
   if [ $((now - nmtime)) -le "$live" ]; then printf '%s' "$newest"; fi
 }
 

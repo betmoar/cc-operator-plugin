@@ -1595,6 +1595,31 @@ backdate "$WFDIR/agent-live.jsonl"
 check "quiet journal + stale agent transcript → no wf segment" \
   "$([ -z "$(render "$WFSESS" "$WFPROJ")" ] && echo 0 || echo 1)"
 rm -f "$WFDIR/agent-live.jsonl"
+# UNBALANCED journal (started>result) = a dispatch in flight; mtime silence
+# proves nothing (a measured GLM run went >110s with the whole dir untouched —
+# the 90s window declared it dead and the segment flapped off mid-run,
+# 2026-08-03). Quiet-but-unbalanced stays live up to STALL_SEC (default 900).
+agequiet() { # agequiet <path> <seconds-ago>
+  python3 -c "import os,sys,time; t=time.time()-int(sys.argv[2]); os.utime(sys.argv[1],(t,t))" "$1" "$2"
+}
+mkjournal 12 5
+agequiet "$WFDIR/journal.jsonl" 300
+check "unbalanced journal quiet 300s → STILL live (dispatch in flight, no flap)" \
+  "$([ "$(render "$WFSESS" "$WFPROJ")" = "wf 5/12" ] && echo 0 || echo 1)"
+# ...but a BALANCED journal (started==result: run finished) keeps the tight
+# 90s window — a completed run must clear the bar promptly, not linger 15min.
+mkjournal 5 5
+agequiet "$WFDIR/journal.jsonl" 300
+check "balanced journal quiet 300s → no wf segment (finished runs clear fast)" \
+  "$([ -z "$(render "$WFSESS" "$WFPROJ")" ] && echo 0 || echo 1)"
+# ...and unbalanced past STALL_SEC is genuinely dead (errored agents never
+# write a result line — observed same day: both shards died on a rate limit —
+# so an unbalanced journal is ALSO the signature of a failed run; without this
+# backstop it would render forever).
+mkjournal 12 5
+agequiet "$WFDIR/journal.jsonl" 1200
+check "unbalanced journal quiet past STALL_SEC (1200s) → no wf segment (failed-run backstop)" \
+  "$([ -z "$(render "$WFSESS" "$WFPROJ")" ] && echo 0 || echo 1)"
 # Missing journal entirely → nothing (the fail-toward-silence default).
 : > "$WFDIR/journal.jsonl"   # empty: zero started → no ratio
 check "empty journal (0 started) → no wf segment" \
