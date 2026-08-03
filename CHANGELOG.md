@@ -9,6 +9,63 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-03
+
+The orchestration layer: tier-routed workflows as the operator's dispatch
+primitives, an input-axis token compressor, and the guard/audit hardening
+rounds F07–F58.
+
+### Added
+
+- **Four workflows** (`workflows/*.js`) as orchestration primitives — review
+  panel (narrow lenses → adversarial verifier, REFUTED is a hard stop),
+  brainstorm (divergent directions + blindspot scan + references), plan
+  (TDD decomposition with parallel vetting), and crawl (sharded corpus
+  digest). All args-normalized, tier-guarded, and covered by an execution
+  test suite (`tests/test_workflows.mjs`).
+- **Layered tier system**: `ops-tiers.sh` resolves tier→model bindings from
+  user/project `tiers.env` (charset + cc-proxy-routability guarded);
+  `ops-render.sh` renders project-layer agents so plain Agent dispatch can
+  run on configured models; `/cc-operator:tiers` wraps both.
+- **Input-axis token compressor** (`scripts/ops-compress.mjs` + PostToolUse
+  hook): allowlist-only scrub/dedup/elide of re-billed tool output, with
+  verbatim pre-scrub spill files and an evidence-gate carve-out
+  (ledger/CLI output is never compressed). Spec:
+  `docs/spec/input-axis-compressor.md`.
+- **Workflow progress on the statusline**: `wf done/started` from the run
+  journal, with unbalanced-journal liveness so long dispatches don't flap
+  the segment (F58).
+- **Discovery discipline** folded into the charter (interview, blindspot
+  pass, plan vetting, adversarial pre-done) and the cc-agents specialists
+  absorbed as rendered seats.
+- **Validator checks** for the new surface: workflows, commands, compressor
+  guards, resolver↔renderer parity, render templates, reader byte-bounds.
+
+### Fixed
+
+- **Gate hardening F42–F57**: sentinel owner smuggling via NUL/over-long
+  lines, the late-NUL bypass of the 512-byte probe (whole-file loop, both
+  parsers), over-long tiers.env line smuggling, and the check_compressor
+  vacuous-guard class (per-tool set literals, block-comment stripping,
+  spill stderr + verbatim contract).
+- **Dead-agent honesty F31/F32/F49**: a dead lens, terminal, or blindspots
+  agent surfaces as an error carrying the surviving work — never laundered
+  into an empty-but-clean result.
+- **Review workflow F33–F41**: array targets, starved lenses, malformed
+  verdict handling, doneMeans validation, honest cost accounting bound to
+  the LENSES table.
+- **Statusline F12/F26/F28/F44/F58**: corrupt bar on done=0, stat-flavor
+  probe (GNU/BSD), renderer exit status, transcript-mtime liveness, and the
+  mid-run liveness flap.
+
+### Changed
+
+- CLAUDE.md slimmed: landmine narratives moved to `docs/LANDMINES.md`,
+  playbook procedures to `docs/PLAYBOOK.md`; charter byte-bounded with
+  per-section citation floors.
+- 0.3.0's removed dev artifacts stay removed; spec headers now carry honest
+  implementation status.
+
 ## [0.4.0] - 2026-07-27
 
 Concurrent sessions in one working tree no longer trap each other. Field report

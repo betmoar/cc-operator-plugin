@@ -142,3 +142,6 @@ way. None of it is loaded by the plugin at runtime; the validator reads only
   opt-in at the mechanism level — nothing forces a sentinel to be opened.
   `ops-task.sh` (0.3.0) makes opening one-command and auditable, but does not
   close the hole. Documented limitation, not a bug.
+
+## Operator
+@OPERATOR.md — it is this session's operating charter.
