@@ -13,7 +13,9 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 The orchestration layer: tier-routed workflows as the operator's dispatch
 primitives, an input-axis token compressor, and the guard/audit hardening
-rounds F07–F58.
+rounds F07–F65 (a full-PR adversarial panel in the final stretch surfaced
+three live exploits that closed the door on late-NUL and multibyte smuggling,
+plus the unbounded-probe stall).
 
 ### Added
 
@@ -39,15 +41,36 @@ rounds F07–F58.
   pass, plan vetting, adversarial pre-done) and the cc-agents specialists
   absorbed as rendered seats.
 - **Validator checks** for the new surface: workflows, commands, compressor
-  guards, resolver↔renderer parity, render templates, reader byte-bounds.
+  guards, resolver↔renderer parity, render templates, reader byte-bounds, and
+  (F64) NUL-probe chunk-cap parity across every sentinel/config reader.
+- **Plain-English handout** (`docs/HANDOUT.md`): an end-user matrix of the
+  four tiers, seven agents, four workflows, and three commands, with an
+  ELI5 walkthrough of solo vs orchestrated mode and the evidence gate.
 
 ### Fixed
 
 - **Gate hardening F42–F57**: sentinel owner smuggling via NUL/over-long
-  lines, the late-NUL bypass of the 512-byte probe (whole-file loop, both
-  parsers), over-long tiers.env line smuggling, and the check_compressor
-  vacuous-guard class (per-tool set literals, block-comment stripping,
-  spill stderr + verbatim contract).
+  lines, and the over-long tiers.env line smuggling class.
+- **Full-PR adversarial panel F59–F65** — three live exploits repro'd with
+  commands, all closed and mutation-verified:
+  - **F59** — late-NUL owner smuggling: a single 512-byte NUL probe left every
+    NUL past byte 512 undetected, so padding + NUL + `session_id: EVIL`
+    claimed ownership and flipped a sentinel from blocking to waved-through.
+    All four parsers now loop the probe whole-file, bounded at 40 chunks.
+  - **F60** — `check_workflows` guard-application checks read a comment-stripped
+    view, so a trailing `//` could neuter the `BAD_CHARSET`/`ROUTABLE` call.
+  - **F61** — dangling `docs/spec/` refs in the changelog (fresh-clone honesty).
+  - **F62** — a multibyte comment bypassed the 512 line-cap on bash 3.2
+    (`read -n` counts bytes, `${#}` counts chars); parse loops now run `LC_ALL=C`.
+  - **F63** — `check_compressor` pinned `ELIDABLE` disjoint from
+    `NEVER_COMPRESS` and stripped trailing `//` comments (the vacuous-guard
+    class, with per-tool set literals and block-comment stripping).
+  - **F64** — the NUL probe in `ops-tiers.sh`/`ops-render.sh` looped whole-file
+    with no chunk cap, stalling the resolver 4.0s on a 64MB newline-less
+    `tiers.env`; now bounded (4.0s → 0.01s), enforced by `check_reader_bounds`.
+  - **F65** — `ops-task.sh`'s O_EXCL guard used `[ -f ]`, which follows
+    symlinks: a symlink→regular read as "already open", and downstream `mv`
+    would overwrite the target outside `pending/`; now guarded by `[ ! -L ]`.
 - **Dead-agent honesty F31/F32/F49**: a dead lens, terminal, or blindspots
   agent surfaces as an error carrying the surviving work — never laundered
   into an empty-but-clean result.
