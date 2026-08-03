@@ -4,6 +4,7 @@ one contract at a time and assert the specific failure surfaces.
 """
 import json
 import pathlib
+import re
 import shutil
 import sys
 import tempfile
@@ -162,20 +163,30 @@ def make_good_tree(root):
           '# stub renderer\n'
           'while IFS= read -r -n 256 line; do :; done\n')
     # The compressor is hook-wired, so the good tree must carry it or
-    # check_compressor fires. A stub is not enough: the guard byte-checks the
-    # exclusion sets and the pinned defaults, which is the whole point of it.
+    # check_compressor fires. The guard checks CALL SITES (F48: a name in a
+    # comment or bare declaration is not enforcement), so the stub carries both
+    # the declarations AND the .has()/.some() applications a real compress()
+    # would apply — anything less and the guard's call-site checks fire on the
+    # fixture itself.
     write(root / "scripts" / "ops-compress.mjs",
           'export const DEFAULTS = {\n'
           '  SCRUB_MIN: 1024, MAX_CHARS: 8000, HEAD_BYTES: 6144, TAIL_BYTES: 4096,\n'
           '  LINE_CHARS: 400, SALVAGE_LINES: 12, MIN_SHRINK: 64,\n'
           '};\n'
           'const NEVER_COMPRESS = new Set(["Read", "Edit", "Write", "NotebookEdit"]);\n'
-          'const MCP = "mcp__";\n'
           'const LOSSLESS_ONLY = new Set(["Agent"]);\n'
           'const LEDGER_PATHS = [".operator/VERDICTS.md", ".operator/DECISIONS.md",\n'
           '  ".operator/verdicts.d/"];\n'
           'const GATE_CLIS = ["ops-verdict.sh", "ops-task.sh", "ops-adopt.sh"];\n'
-          'const SALVAGE_RE = /error|fail|not ok/i;\n')
+          'const SALVAGE_RE = /error|fail|not ok/i;\n'
+          'function compress(tool, cmd) {\n'
+          '  if (NEVER_COMPRESS.has(tool)) return null;\n'
+          '  if (tool.startsWith("mcp__")) return null;\n'
+          '  const losslessOnly = LOSSLESS_ONLY.has(tool);\n'
+          '  if (LEDGER_PATHS.some((p) => cmd.includes(p))) return null;\n'
+          '  if (GATE_CLIS.some((c) => cmd.includes(c))) return null;\n'
+          '  return losslessOnly;\n'
+          '}\n')
 
     # The renderer splices a model: id into each template; default.tmpl must
     # carry a model: line or check_render_templates fires.
@@ -1024,3 +1035,61 @@ class ResolverRendererParityTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CompressorGuardTest(unittest.TestCase):
+    """check_compressor must catch DRIFT, not just confirm presence. F48's
+    lesson: a substring check that matches a comment or bare declaration passes
+    while the enforcement is deleted. Each test builds the shared good tree,
+    overwrites ops-compress.mjs with a MUTATED copy of the real file, and
+    asserts check_compressor fires on that mutation.
+    """
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        make_good_tree(self.dir)
+        self._real_comp = (pathlib.Path(__file__).resolve().parent.parent /
+                           "scripts" / "ops-compress.mjs").read_text(encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _probs(self, mutated_src):
+        write(self.dir / "scripts" / "ops-compress.mjs", mutated_src)
+        probs = []
+        vp.check_compressor(self.dir, probs)
+        return probs
+
+    def test_shipped_compressor_is_clean(self):
+        self.assertEqual(self._probs(self._real_comp), [],
+                         "the shipped ops-compress.mjs must pass check_compressor clean")
+
+    def test_mcp_exclusion_deletion_fires(self):
+        src = re.sub(r'if\s*\(tool\.startsWith\(\s*"mcp__"\s*\)\s*\)\s*return null;',
+                     '', self._real_comp, count=1)
+        self.assertTrue(any("mcp__" in p and "APPLIED" in p for p in self._probs(src)),
+                        self._probs(src))
+
+    def test_never_compress_emptied_fires(self):
+        src = re.sub(r'NEVER_COMPRESS\s*=\s*new Set\(\s*\[[^\]]*\]',
+                     'const NEVER_COMPRESS = new Set([]', self._real_comp, count=1)
+        self.assertTrue(any("Read" in p and "APPLIED" in p for p in self._probs(src)),
+                        self._probs(src))
+
+    def test_agent_set_emptied_fires(self):
+        src = re.sub(r'LOSSLESS_ONLY\s*=\s*new Set\(\s*\[[^\]]*\]',
+                     'const LOSSLESS_ONLY = new Set([]', self._real_comp, count=1)
+        self.assertTrue(any("Agent" in p and "APPLIED" in p for p in self._probs(src)),
+                        self._probs(src))
+
+    def test_carveout_applications_deleted_fires(self):
+        src = re.sub(r'if\s*\(LEDGER_PATHS\.some.*?\n\s*if\s*\(GATE_CLIS\.some.*',
+                     '', self._real_comp, count=1, flags=re.S)
+        probs = self._probs(src)
+        self.assertTrue(any("LEDGER_PATHS.some" in p for p in probs), probs)
+        self.assertTrue(any("GATE_CLIS.some" in p for p in probs), probs)
+
+    def test_salvage_tap_alternative_dropped_fires(self):
+        src = re.sub(r'\|not ok', '', self._real_comp, count=1)
+        self.assertTrue(any("SALVAGE_RE omits" in p for p in self._probs(src)),
+                        self._probs(src))

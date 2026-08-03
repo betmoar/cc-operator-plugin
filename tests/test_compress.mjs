@@ -166,6 +166,28 @@ ok(second !== null && /identical|unchanged|repeat/i.test(second.hookSpecificOutp
 ok(run({ ...dedupPayload, session_id: undefined }) !== null,
   "dedup is skipped when the payload carries no session_id (never crashes on it)");
 
+// ── spill holds the VERBATIM original INCLUDING stderr ──────────────────────
+console.log("-- Case: spill preserves stderr, not just stdout (I2.3 verbatim contract)");
+// F50: spill(original) lost stderr because `original` was stdout alone while
+// elide cut stdout+stderr. For a Bash failure landing on stderr, the verbatim
+// artifact vanished from BOTH the model's view and the spill — breaking the
+// citation contract for exactly the FAIL case it exists to protect. Proven by
+// reproduction before the fix: spill held 1560 B of a 36589-B combined output.
+const stderrBig = "x".repeat(2000);
+const stderrMid = "not ok 99 - the failing test\n" + "z".repeat(20000);
+const stderrRes = run({ ...bash(stderrBig, { stderr: stderrMid }), tool_input: { command: "npm test" } });
+const stderrOut = stderrRes.hookSpecificOutput.updatedToolOutput.stdout;
+const sm = stderrOut.match(/\.operator\/\.compress-spill\/[^\s\]]+/);
+ok(sm != null, "a Bash result with bulky stderr elides and cites the spill");
+if (sm) {
+  const spillFile = path.join(TMP, sm[0]);
+  const spillContent = fs.readFileSync(spillFile, "utf8");
+  ok(spillContent.includes("not ok 99 - the failing test"),
+    "the spill holds the stderr middle (the failing-test line survives verbatim)");
+  ok(spillContent.includes(stderrBig),
+    "the spill holds stdout too (the spill is the combined output elide cut, not stdout alone)");
+}
+
 // ── kill switches ───────────────────────────────────────────────────────────
 console.log("-- Case: kill switches are honored");
 ok(run({ ...bash(big), tool_input: { command: "npm test" } }, { CC_OPERATOR_COMPRESS: "0" }) === null,

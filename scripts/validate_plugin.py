@@ -1015,27 +1015,34 @@ def check_compressor(root, problems):
             if "${CLAUDE_PLUGIN_ROOT}" not in blob:
                 problems.append("hooks/hooks.json: PostToolUse command lacks ${CLAUDE_PLUGIN_ROOT} (a bare path resolves only inside this repo)")
 
-    # 2a. I1 — the never-compress set. These break exact-match editing if elided.
+    # 2a. I1 — the never-compress set. These break exact-match editing if
+    # elided. F48's lesson applies here in full: each name ALSO appears in a
+    # comment, so an `in src` substring check passes while the guard that
+    # applies it is deleted. Check the CALL SITE (NEVER_COMPRESS.has(tool)),
+    # not the declaration. check_workflows already uses this shape for
+    # ROUTABLE/BAD_CHARSET (declaration + call site); this mirrors it.
     for tool in ("Read", "Edit", "Write", "NotebookEdit"):
-        if f'"{tool}"' not in src:
-            problems.append(f"ops-compress.mjs: `{tool}` is not named in the exclusion set (I1 — eliding it breaks exact-match edits)")
-    if "mcp__" not in src:
-        problems.append("ops-compress.mjs: `mcp__*` exclusion is missing (I1 — the payload carries no read-only indicator)")
-    if "Agent" not in src:
-        problems.append("ops-compress.mjs: `Agent` is not named (I1 — lossless tiers MAY apply, elide MUST NOT)")
+        if not re.search(rf'NEVER_COMPRESS\.has\(\s*tool\s*\)|"{tool}"\s*[,)]', src) or \
+           not re.search(r'NEVER_COMPRESS\s*=\s*new Set\([^)]*"Read"', src):
+            problems.append(f"ops-compress.mjs: `{tool}` is never APPLIED — check the NEVER_COMPRESS.has(tool) call site, not just the declaration (F48: a name in a comment or array literal does not mean it is enforced)")
+    if not re.search(r'tool\.startsWith\(\s*"mcp__"\s*\)', src):
+        problems.append("ops-compress.mjs: `mcp__*` exclusion is not APPLIED — a startsWith(\"mcp__\") call site is missing (the name appears in a comment; F48)")
+    if not re.search(r'LOSSLESS_ONLY\.has\(\s*tool\s*\)', src) or \
+       not re.search(r'LOSSLESS_ONLY\s*=\s*new Set\(\s*\[[^\]]*"Agent"', src):
+        problems.append("ops-compress.mjs: `Agent` lossless-only is not APPLIED — both a LOSSLESS_ONLY.has(tool) call site AND \"Agent\" in the set literal are required (emptying the set makes Agent elidable; F48)")
 
-    # 2b. I2.2 — the ledger paths, byte-checked. Fixed strings, not regex: a
-    # metachar in a path would silently widen the match.
+    # 2b/2c. I2.1/I2.2 — the evidence-gate carve-out. The PATHS and CLIS must be
+    # both DECLARED and APPLIED. The worst F48 mutation here was deleting both
+    # .some() applications while the validator stayed green because it checked
+    # only that the arrays contained the strings. That is the whole carve-out
+    # gone — the exact falsification I2 exists to prevent — with the guard
+    # reporting it present.
     for pth in (".operator/VERDICTS.md", ".operator/DECISIONS.md", ".operator/verdicts.d/"):
-        if pth not in src:
-            problems.append(f"ops-compress.mjs: ledger path `{pth}` missing from the I2.2 carve-out — a mature ledger crosses the elide threshold and mid-body elision falsifies it")
-
-    # 2c. I2.1 — the gate CLIs, tied to the SAME install set ops-init.sh ships
-    # and CHARTER_REQUIRED_CLIS tracks, so adding a fourth CLI cannot silently
-    # leave the compressor carve-out behind.
+        if pth not in src or not re.search(r'LEDGER_PATHS\.some\(', src):
+            problems.append(f"ops-compress.mjs: ledger path `{pth}` carve-out is not both declared AND applied (LEDGER_PATHS.some() missing — F48)")
     for cli in CHARTER_REQUIRED_CLIS:
-        if cli not in src:
-            problems.append(f"ops-compress.mjs: gate CLI `{cli}` missing from the I2.1 carve-out (must track ops-init.sh's install set)")
+        if cli not in src or not re.search(r'GATE_CLIS\.some\(', src):
+            problems.append(f"ops-compress.mjs: gate CLI `{cli}` carve-out is not both declared AND applied (GATE_CLIS.some() missing — F48)")
 
     # 3. I3/I4/I5 structural markers: the pinned defaults must be present and
     # exact. "A test against a tilde is not a test" applies to the guard too.

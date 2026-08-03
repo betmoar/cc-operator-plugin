@@ -273,7 +273,15 @@ export function compress(payload, opts = {}) {
 
     let spillPath = null;
     if (elidable && text.length > K.MAX_CHARS) {
-      spillPath = spill(original, {
+      // Spill the SAME string elide is about to cut. `text` carries stdout AND
+      // the folded stderr (line 259); `original` was stdout alone. Spilling
+      // `original` lost stderr entirely — and rebuild() below blanks it — so a
+      // Bash failure landing on stderr vanished from both the model's view and
+      // the spill, breaking the "verbatim original" contract I2.3 names. The
+      // charter citation rule (OPERATOR.md) is meaningless for the failure case
+      // it exists for if the spill does not hold what was cut (pr-review,
+      // 2026-08-03). The marker cites the path; the path must hold everything.
+      spillPath = spill(text, {
         cwd, session: payload.session_id, toolUseId: payload.tool_use_id, keep: DEFAULTS.SPILL_KEEP,
       });
       text = elide(text, K);

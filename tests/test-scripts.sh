@@ -570,6 +570,18 @@ for vec in pad512 nulpad; do
   printf '{"session_id":"SESS-B","cwd":"%s"}' "$P" | "$BASH_OLD" "$HOOK" >/dev/null 2>&1; SMRC=$?
   check "a one-line [$vec] sentinel cannot smuggle an owner — fails CLOSED (exit 2)" \
     "$([ "$SMRC" -eq 2 ] && echo 0 || echo 1)"
+
+  # NOTE on the writer parsers (ops-verdict, ops-adopt): they carry the same
+  # F45/F46 guard, but it is BELT-AND-BRACES there, not load-bearing. A smuggled
+  # `session_id: ../../PWNED` parsed from the body reaches FRAG_OWNER only when
+  # no --owner is given — but check_bare_name (run on every owner before it
+  # becomes a fragment FILENAME) already refuses '/', so the traversal is
+  # blocked by an existing, proven guard regardless of F45/F46. Disabling the
+  # verdict F45 guard leaves the smuggle blocked (verified 2026-08-03), so a
+  # case asserting it would be vacuous — it passes with the guard off. The
+  # stop-hook reader above is where the guard IS load-bearing: it has no
+  # downstream bare-name check, so the smuggle reaches the mine/foreign
+  # partition directly. (pr-review test-coverage finding #3.)
 done
 # The guard must not break the path it sits on: a GENUINE foreign sentinel is
 # still reported and still non-blocking.
