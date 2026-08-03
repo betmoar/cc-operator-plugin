@@ -148,7 +148,26 @@ sentinel_owner() { # sentinel_owner <path> → "owner|opened_at"
   # truly reached a NUL. It matters because bash 3.2's `read -n` stops AT a NUL,
   # so a NUL-padded chunk passes the length guard and its tail is matched as a
   # fresh line — smuggling an owner. Degrade to unowned = blocks. (F46)
-  if IFS= read -r -d '' -n 512 _nulprobe < "$1" 2>/dev/null && [ "${#_nulprobe}" -lt 512 ]; then
+  # Probe the WHOLE file for a NUL, not just the first 512 bytes: a single-shot
+  # probe left a NUL past byte 512 undetected, so a padded sentinel smuggled a
+  # foreign owner and flipped unowned→foreign, opening the Stop gate (measured
+  # on bash 3.2: NUL at byte 656 → owner=EVIL, exit 0). Loop in a LC_ALL=C
+  # subshell so BOTH -n and ${#} count BYTES — a bare read prefix leaves ${#}
+  # counting characters, and a multibyte first chunk then false-positives a
+  # NUL. `read -d ''` returns 0 only on a NUL or a full 512-byte fill; EOF
+  # returns non-zero, so the final partial chunk never trips it. (F55 applied to
+  # the sentinel parsers; the config readers got it in 22791dc, these did not.)
+  # BOUNDED whole-file probe: cap at 40 chunks (20KB) so a 64MB newline-less
+  # sentinel cannot stall the scan (the single-shot form was O(1) but missed a
+  # NUL past byte 512). A real sentinel is one chunk; exceeding the cap means
+  # the file is not ours → fail closed (exit 1 → unowned → blocks), which also
+  # bounds where a late NUL can hide. A short chunk (NUL or a genuine <512 EOF)
+  # exits 1 too; a full 512-byte chunk continues. EOF ends the loop cleanly.
+  if ! (LC_ALL=C _np=0
+        while IFS= read -r -d '' -n 512 _nulprobe; do
+          _np=$((_np + 1)); [ "$_np" -le 40 ] || exit 1
+          [ "${#_nulprobe}" -eq 512 ] || exit 1
+        done < "$1") 2>/dev/null; then
     printf '%s' ""
     return 0
   fi

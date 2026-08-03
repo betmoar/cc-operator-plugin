@@ -121,7 +121,15 @@ sentinel_owner() { # sentinel_owner <path> → owner ("" = unowned)
   # truly reached a NUL. It matters because bash 3.2's `read -n` stops AT a NUL,
   # so a NUL-padded chunk passes the length guard and its tail is matched as a
   # fresh line — smuggling an owner. Degrade to unowned = blocks. (F46)
-  if IFS= read -r -d '' -n 512 _nulprobe < "$1" 2>/dev/null && [ "${#_nulprobe}" -lt 512 ]; then
+  # Whole-file NUL probe in a LC_ALL=C subshell (F55): the single-shot form
+  # missed a NUL past byte 512, smuggling a foreign owner that flips the bar
+  # from blocking to foreign. Bytes for both -n and ${#}, EOF exits non-zero so
+  # the trailing partial chunk never false-positives. Mirror of the Stop hook.
+  if ! (LC_ALL=C _np=0
+        while IFS= read -r -d '' -n 512 _nulprobe; do
+          _np=$((_np + 1)); [ "$_np" -le 40 ] || exit 1
+          [ "${#_nulprobe}" -eq 512 ] || exit 1
+        done < "$1") 2>/dev/null; then
     printf '%s' ""
     return 0
   fi

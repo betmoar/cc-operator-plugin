@@ -559,14 +559,20 @@ done
 # writing the file. Two vectors: filling the 512 cap, and a NUL (bash 3.2's
 # `read -n` stops AT one, so the padding need not reach 512 — and ${#line}
 # cannot see it, because bash drops NULs from variables entirely).
-for vec in pad512 nulpad; do
+for vec in pad512 nulpad latenul; do
   rm -f "$P"/.operator/pending/*
   if [ "$vec" = pad512 ]; then
     python3 -c "import sys; open(sys.argv[1],'wb').write(b'x'*512+b'session_id: EVIL\\n')" "$P/.operator/pending/T-SMUG"
-  else
+  elif [ "$vec" = nulpad ]; then
     python3 -c "import sys; open(sys.argv[1],'wb').write(b'x'+b'\\0'*100+b'x'*411+b'session_id: EVIL\\n')" "$P/.operator/pending/T-SMUG"
+  else
+    # latenul: the NUL sits PAST byte 512 with every physical line under the cap,
+    # so the single-shot 512-byte probe missed it and the sub-cap lines slipped
+    # the pad512 guard too — the full-PR panel's score-92 exploit (owner=EVIL,
+    # exit 0 on bash 3.2). The fix loops the probe over the whole file.
+    python3 -c "import sys; open(sys.argv[1],'wb').write(b'\\n'.join(b'p'*100 for _ in range(6))+b'\\n'+b'q'*50+b'\\0'+b'r'*50+b'\\nsession_id: EVIL\\n')" "$P/.operator/pending/T-SMUG"
   fi
-  # Under the OLDEST bash: the nulpad vector only exists there (F46).
+  # Under the OLDEST bash: the nul vectors only exist there (F46).
   printf '{"session_id":"SESS-B","cwd":"%s"}' "$P" | "$BASH_OLD" "$HOOK" >/dev/null 2>&1; SMRC=$?
   check "a one-line [$vec] sentinel cannot smuggle an owner — fails CLOSED (exit 2)" \
     "$([ "$SMRC" -eq 2 ] && echo 0 || echo 1)"

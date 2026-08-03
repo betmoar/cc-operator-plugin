@@ -310,7 +310,14 @@ for ID in ${IDS+"${IDS[@]}"}; do
   # 3.2's `read -n` stops AT a NUL — a padded chunk passes the length guard and
   # its tail is matched as a fresh line, smuggling a prior owner. Treat the
   # whole body as unusable; the fields below stay empty and are regenerated.
-  if IFS= read -r -d '' -n 512 _nulprobe < "$F" 2>/dev/null && [ "${#_nulprobe}" -lt 512 ]; then
+  # Probe the WHOLE file in a LC_ALL=C subshell (F55): a single-shot probe left
+  # a NUL past byte 512 undetected. Bytes for both -n and ${#}; EOF exits
+  # non-zero so the trailing partial chunk never false-positives.
+  if ! (LC_ALL=C _np=0
+        while IFS= read -r -d '' -n 512 _nulprobe; do
+          _np=$((_np + 1)); [ "$_np" -le 40 ] || exit 1
+          [ "${#_nulprobe}" -eq 512 ] || exit 1
+        done < "$F") 2>/dev/null; then
     PREV=""; OPENED=""; CWDLINE=""
   else
   n=0

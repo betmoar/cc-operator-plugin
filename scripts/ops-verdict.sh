@@ -308,7 +308,15 @@ sentinel_owner() { # sentinel_owner <id> → stamped session_id ("" if none/inva
   # NUL in a variable, and `read -n` stops at one on bash 3.2, so a NUL-padded
   # chunk passes the length guard and its tail smuggles an owner. Degrade to
   # unowned rather than dying — this is a reader.
-  if IFS= read -r -d '' -n 512 _nulprobe < "$f" 2>/dev/null && [ "${#_nulprobe}" -lt 512 ]; then
+  # Whole-file NUL probe in a LC_ALL=C subshell (F55): a single-shot probe left
+  # a NUL past byte 512 undetected, letting a padded sentinel smuggle a foreign
+  # owner. Bytes for both -n and ${#}; EOF exits non-zero so the trailing
+  # partial chunk never false-positives. Mirror of the Stop hook's parser.
+  if ! (LC_ALL=C _np=0
+        while IFS= read -r -d '' -n 512 _nulprobe; do
+          _np=$((_np + 1)); [ "$_np" -le 40 ] || exit 1
+          [ "${#_nulprobe}" -eq 512 ] || exit 1
+        done < "$f") 2>/dev/null; then
     printf '%s' ""
     return 0
   fi
