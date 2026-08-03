@@ -148,7 +148,11 @@ load_file() { # load_file <path> <source-label>
         done < "$1"); then
     die "$1: contains a NUL byte — refusing (tiers.env is text, not a binary blob)"
   fi
-  local lc=0 name val
+  # LC_ALL=C so `read -n` (bytes on bash 3.2) and `${#line}` (chars in the
+  # parent locale) agree on BYTES — a multibyte comment otherwise slips the
+  # 512-cap guard and smuggles a seat binding (F42/F46 class; mirror of the
+  # ops-tiers.sh fix, full-PR panel). Seat names and tiers are ASCII.
+  local lc=0 name val LC_ALL=C
   while IFS= read -r -n 512 line || [ -n "$line" ]; do
     lc=$((lc + 1)); [ "$lc" -le 200 ] || die "$1: more than 200 lines — refusing"
     # Same guard as ops-tiers.sh: a chunk filling the 512 cap was truncated

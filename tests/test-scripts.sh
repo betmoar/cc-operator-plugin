@@ -1342,6 +1342,30 @@ CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$LATENULENV" \
 check "the renderer's NUL probe also loops the whole file" \
   "$([ "$LATERENDRC" -ne 0 ] && echo 0 || echo 1)"
 rm -f "$LATENULENV"
+# A MULTIBYTE comment smuggles the same way through the char/byte-mismatched
+# LENGTH guard (not the NUL probe): on BASH_OLD `read -n 512` fills 512 BYTES
+# while `${#line}` counts CHARACTERS under a UTF-8 locale, so `#`+'é'×255+`A`
+# (512 bytes = 257 chars) passes `< 512` and its truncated tail parses as a
+# live assignment. Full-PR panel, score 85. The parse loop now runs LC_ALL=C
+# so both count bytes. Forced UTF-8 locale + BASH_OLD, where the mismatch lives.
+UTF8ENV="$(mktemp "${TMPDIR:-/tmp}/opstest-utf8.XXXXXX")"
+python3 -c "import sys; open(sys.argv[1],'wb').write(('#'+'é'*255+'A').encode()+b'\\nMECHANICAL=glm-evil\\n')" "$UTF8ENV"
+UTF8OUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$UTF8ENV" \
+  CC_PROXY_PORT=1 LC_ALL=en_US.UTF-8 "$BASH_OLD" "$SCRIPTS/ops-tiers.sh" 2>/dev/null)"; UTF8RC=$?
+check "a multibyte comment cannot smuggle a tier binding past the length guard (resolver)" \
+  "$([ "$UTF8RC" -ne 0 ] && ! printf '%s' "$UTF8OUT" | grep -q 'glm-evil' && echo 0 || echo 1)"
+CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$UTF8ENV" \
+  LC_ALL=en_US.UTF-8 "$BASH_OLD" "$SCRIPTS/ops-render.sh" --show >/dev/null 2>&1; UTF8RENDRC=$?
+check "the renderer carries the same multibyte length guard as the resolver" \
+  "$([ "$UTF8RENDRC" -ne 0 ] && echo 0 || echo 1)"
+# ...and a LEGITIMATE short UTF-8 comment still parses (guard did not overreach).
+OKUTF8="$(mktemp "${TMPDIR:-/tmp}/opstest-okutf8.XXXXXX")"
+printf '# \xc3\xa9clair config\nMECHANICAL=glm-4.7\n' > "$OKUTF8"
+OKOUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$OKUTF8" \
+  CC_PROXY_PORT=1 LC_ALL=en_US.UTF-8 "$BASH_OLD" "$SCRIPTS/ops-tiers.sh" 2>/dev/null)"; OKRC=$?
+check "a short multibyte comment still resolves (length guard did not overreach)" \
+  "$([ "$OKRC" -eq 0 ] && printf '%s' "$OKOUT" | grep -q 'glm-4.7' && echo 0 || echo 1)"
+rm -f "$UTF8ENV" "$OKUTF8"
 rm -f "$NULENV"
 rm -f "$LONGENV"
 rm -f "$SEATENV"

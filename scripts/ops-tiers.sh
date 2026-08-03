@@ -112,7 +112,16 @@ load_file() { # load_file <path> <source-label>
         done < "$1"); then
     die "$1: contains a NUL byte — refusing (tiers.env is text, not a binary blob)"
   fi
-  local lc=0
+  # LC_ALL=C for the whole parse loop so `read -n` (a BYTE cap on bash 3.2) and
+  # `${#line}` (a CHARACTER count in the parent locale) agree on BYTES. Without
+  # it a multibyte comment defeats the cap-fill guard below: a 512-BYTE line of
+  # 'é'×255 measures 257 CHARS, passes `< 512`, and its truncated tail
+  # `MECHANICAL=glm-evil` parses as a live assignment at exit 0 (full-PR panel,
+  # bash 3.2 under en_US.UTF-8 — the same F42/F46 class the NUL probe above got
+  # LC_ALL=C for in F55, missed here). Tier names and model ids are ASCII
+  # (charset-guarded); comments are skipped — C-locale parsing changes nothing
+  # legitimate.
+  local lc=0 LC_ALL=C
   while IFS= read -r -n 512 line || [ -n "$line" ]; do
     lc=$((lc + 1)); [ "$lc" -le 200 ] || die "$1: more than 200 lines — refusing"
     # A chunk that FILLS the cap was truncated mid-line: the remainder arrives
