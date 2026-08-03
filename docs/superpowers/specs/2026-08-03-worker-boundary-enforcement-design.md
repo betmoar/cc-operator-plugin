@@ -88,6 +88,11 @@ PASS verdict row cites the output):
 |---|---|---|---|
 | C1 | unclaimed-change | a touched file is not in the claimed list | "did Y, said X" |
 | C2 | phantom-claim | a claimed file has no actual change | "reported done, touched nothing" |
+
+Path matching (all three checks alike): a claimed or protected path ending in
+`/` matches by prefix; any other path matches exactly. So `CHANGED: tests/`
+is satisfied by a diff touching `tests/test-scripts.sh`, and the protected
+set's `tests/` covers every file under it.
 | C3 | gate-trespass | any touched path is under the protected set, without `--gate-task` | worker editing its own grader |
 
 Exit non-zero on any failed check, naming it. Protected set (literal in the
@@ -137,7 +142,14 @@ extensions:
 ```
 
 **Single-writer discipline preserved**: the mark is written by
-`ops-verdict.sh --mark-handoff --owner <sid>` — a new flag on the existing
+`ops-verdict.sh --mark-handoff --owner <sid>` — the owner is REQUIRED
+non-empty and passes `check_owner_name` (an empty sid would write an unowned
+mark, which under the partition would clear *every* session's deviations — a
+privilege inversion; refused at the CLI). Symmetrically, the hook IGNORES a
+HANDOFF-MARK whose sid tag is missing or empty: marks fail *closed* (never
+clear more than their owner), the opposite polarity from deviations (which
+fail *open*-to-blocking when untagged) — both err toward blocking. A new
+flag on the existing
 single writer, inside the same `lock_acquire`/`lock_release` critical section
 its `--defer` path already uses for DECISIONS.md writes. The handoff command
 (`commands/handoff.md`) invokes it; its `allowed-tools` gains the
@@ -167,7 +179,12 @@ unpresented* (fail toward the honest warning) — the reader is byte-bounded
 
 This makes the hook the first DECISIONS.md parser in the plugin: PLAYBOOK's
 "adding a reader" procedure gains the entry, and `check_reader_bounds` covers
-the new read sites.
+the new read sites. One bound differs from the sentinel readers and the plan
+must set it explicitly: sentinel parsers stop at line 20 (owner is line 1 by
+construction), but DEVIATION/HANDOFF-MARK lines are position-arbitrary, so
+this is a whole-file scan needing an aggregate cap (line count and/or total
+bytes) — most acutely in the statusline mirror, which runs on the ~300ms
+render timer.
 
 **Statusline mirror** (coupling-table obligation: the bar renders the same
 partition the hook runs, or it lies): a dim `dev[N]` segment counts
@@ -201,9 +218,11 @@ brainstorm/crawl/plan is **op-author** (`agents/op-author.md`: tools include
 Write, Edit, Bash), dispatched as a nominally read-only lens at
 `workflows/brainstorm.js:118` (direction lenses), `brainstorm.js:244`
 (converge), `crawl.js:191` (merge), and `plan.js:142` (decompose). The
-genuinely write-free seat *files* are op-scout, op-reviewer, op-brainstorm —
-but op-brainstorm is dispatched by no workflow today, and op-crawler /
-op-verifier carry Bash (shell-write capable). Consequence: the tree check
+genuinely write-free seat *files* are op-scout and op-brainstorm (no Bash) —
+op-brainstorm is dispatched by no workflow today, and op-crawler /
+op-reviewer / op-verifier all carry Bash (shell-write capable, identical
+frontmatter: `tools: Read, Grep, Glob, Bash` + `disallowedTools: Write,
+Edit, NotebookEdit`). Consequence: the tree check
 treats **every** workflow run as needing `--expect-clean` rather than
 trusting any seat classification. Seat definition files stay unchanged; they
 are capability declarations, not enforcement.
@@ -229,7 +248,12 @@ paraphrase.* No code for either.
   (hook ↔ statusline ↔ the `[sid:]` tag convention — three readers of one
   rule); PLAYBOOK reader-procedure entry for DECISIONS.md;
   `ops-verdict.sh --mark-handoff` joins the lock/fragment row;
-  `commands/handoff.md` allowed-tools row.
+  `commands/handoff.md` allowed-tools row; **`templates/DECISIONS-header.md`
+  kind enum gains `HANDOFF-MARK`** (the shipped enum does not include it —
+  without this edit the new kind is illegal under the template this design
+  claims to build on), and the plan adds a `check_decisions_schema` pin in
+  the `check_ledger_schema` pattern so the now-parsed schema cannot drift
+  green (today only the VERDICTS header is pinned).
 - Stage 3: dispatch-procedure prose (charter or PLAYBOOK) ↔ the
   `--expect-clean` flag; verifier prompt target in `workflows/review.js`.
 
