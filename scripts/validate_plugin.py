@@ -681,6 +681,19 @@ def check_workflows(root, problems):
         rel = f"workflows/{f.name}"
         text = f.read_text(encoding="utf-8")
 
+        # A comment-stripped view for the APPLICATION checks (`X.test(`): a call
+        # site moved into a comment must not satisfy the "is it applied" regex
+        # while the real guard is gone — the F48/F57 class, demonstrated live
+        # against this very check by the full-PR panel (commenting both .test
+        # call sites in review.js left the validator green while an unroutable,
+        # quote-bearing id reached agent()). Strip block then line comments,
+        # exactly as check_compressor does (F57). The DECLARATION checks below
+        # still run on raw `text`: a commented-out `const ROUTABLE = …` should
+        # trip its own "not found" branch, which is already correct.
+        code = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+        code = "\n".join(ln for ln in code.split("\n")
+                         if not ln.lstrip().startswith("//"))
+
         # (b) meta is the first statement. The harness requires `export const
         # meta = {…}` as the first statement and a pure literal — a computed
         # meta is rejected at launch. Check the anchor, not the object body (the
@@ -722,7 +735,7 @@ def check_workflows(root, problems):
                     f"shape; a divergent regex either over-accepts (silent "
                     f"mis-route) or under-accepts (rejects valid ids)")
 
-        if not re.search(r"ROUTABLE\.test\s*\(", text):
+        if not re.search(r"ROUTABLE\.test\s*\(", code):
             problems.append(
                 f"{rel}: ROUTABLE is declared but never applied — a tier must be "
                 f"checked with `ROUTABLE.test(id)` inside the tier-resolution loop "
@@ -757,7 +770,7 @@ def check_workflows(root, problems):
                     f"a divergent regex either lets whitespace/quotes through or "
                     f"rejects valid bracket-marked ids like `glm-5.2[1m]`")
 
-        if not re.search(r"BAD_CHARSET\.test\s*\(", text):
+        if not re.search(r"BAD_CHARSET\.test\s*\(", code):
             problems.append(
                 f"{rel}: BAD_CHARSET is declared but never applied — the "
                 f"declaration alone guards nothing; it must be checked with "

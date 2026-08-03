@@ -626,6 +626,27 @@ class ValidatorTest(unittest.TestCase):
               .replace(" || BAD_CHARSET.test(id)", ""))
         self.assertFires("no `const BAD_CHARSET")
 
+    def test_workflow_line_comment_neuters_routable_fires(self):
+        # F48/F57 class, demonstrated live against check_workflows by the
+        # full-PR panel: a `.test(` call site moved into a comment satisfied the
+        # raw-text application regex while the real guard was gone. The
+        # declaration stays intact, so only the application check can catch it —
+        # and only if it reads a comment-stripped view. `//` form.
+        write(self.dir / "workflows" / "review.js",
+              self._wf("review").replace(
+                  "!ROUTABLE.test(id) || ",
+                  "/* !ROUTABLE.test(id) || */ false || "))
+        self.assertFires("ROUTABLE is declared but never applied")
+
+    def test_workflow_block_comment_neuters_bad_charset_fires(self):
+        # Same class through the OTHER comment syntax — block comments are an
+        # idiom in the workflows, so the strip must handle /* */ too (F57).
+        write(self.dir / "workflows" / "review.js",
+              self._wf("review").replace(
+                  "|| BAD_CHARSET.test(id)",
+                  "/* || BAD_CHARSET.test(id) */"))
+        self.assertFires("BAD_CHARSET is declared but never applied")
+
     def test_workflow_parity_holds_on_good_tree(self):
         # make_good_tree writes two workflows with identical ROUTABLE/BAD_CHARSET.
         probs = []
