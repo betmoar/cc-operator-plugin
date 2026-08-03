@@ -164,10 +164,12 @@ const blindspotsRaw = await agent(
   { agentType: "cc-operator:op-scout", model: RECON, effort: "low", label: "blindspots", phase: "Diverge", schema: BLINDSPOTS },
 );
 if (blindspotsRaw == null) {
+  log("blindspots agent died — returning directions without a blindspot scan");
   return {
     error: "blindspots agent died — directions below are intact but the existing-code scan " +
       "did not run; re-diverge to retry it (a missing blindspot is worse than a missing direction)",
     topic,
+    directions,
   };
 }
 const blindspots = blindspotsRaw.findings ?? [];

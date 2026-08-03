@@ -1319,6 +1319,23 @@ CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$NULENV" \
   "$BASH_OLD" "$SCRIPTS/ops-render.sh" --show >/dev/null 2>&1; NULRENDRC=$?
 check "the renderer carries the same NUL guard as the resolver" \
   "$([ "$NULRENDRC" -ne 0 ] && echo 0 || echo 1)"
+# A single 512-byte probe closed the door only at the front of the file: a NUL
+# at byte 829 (short comment lines, then `pad\0tail`, then the binding) passed
+# the probe and resolved MECHANICAL=glm-evil with exit 0 (Copilot 2026-08-03,
+# measured before the loop fix). The probe must walk the WHOLE file. Also on
+# BASH_OLD: same char/byte read -n behavior the front-NUL case pins.
+LATENULENV="$(mktemp "${TMPDIR:-/tmp}/opstest-latenul.XXXXXX")"
+python3 -c "import sys; open(sys.argv[1],'wb').write(
+  b'\\n'.join(b'# ' + b'x'*100 for _ in range(8)) + b'\\n# pad\\0tail\\nMECHANICAL=glm-evil\\n')" "$LATENULENV"
+LATEOUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$LATENULENV" \
+  CC_PROXY_PORT=1 "$BASH_OLD" "$SCRIPTS/ops-tiers.sh" 2>/dev/null)"; LATERC=$?
+check "a NUL past the first 512 bytes is still fatal (resolver probe loops the whole file)" \
+  "$([ "$LATERC" -ne 0 ] && ! printf '%s' "$LATEOUT" | grep -q 'glm-evil' && echo 0 || echo 1)"
+CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$LATENULENV" \
+  "$BASH_OLD" "$SCRIPTS/ops-render.sh" --show >/dev/null 2>&1; LATERENDRC=$?
+check "the renderer's NUL probe also loops the whole file" \
+  "$([ "$LATERENDRC" -ne 0 ] && echo 0 || echo 1)"
+rm -f "$LATENULENV"
 rm -f "$NULENV"
 rm -f "$LONGENV"
 rm -f "$SEATENV"

@@ -138,7 +138,14 @@ load_file() { # load_file <path> <source-label>
   # `read -d ''` returns 0 only if it truly reached a NUL. Needed because bash
   # 3.2's `read -n` stops AT a NUL, so a NUL-padded chunk passes the length
   # guard and its tail parses as a live seat binding.
-  if IFS= read -r -d '' -n 512 _nulprobe < "$1" && [ "${#_nulprobe}" -lt 512 ]; then
+  # The probe LOOPS over the whole file (Copilot 2026-08-03: a single probe left
+  # NULs past byte 512 undetected). It runs in a LC_ALL=C subshell so BOTH -n
+  # and ${#} count bytes — a locale prefix on `read` alone leaves ${#} counting
+  # characters, and a multibyte comment then false-positives as a NUL.
+  if ! (LC_ALL=C
+        while IFS= read -r -d '' -n 512 _nulprobe; do
+          [ "${#_nulprobe}" -eq 512 ] || exit 1
+        done < "$1"); then
     die "$1: contains a NUL byte — refusing (tiers.env is text, not a binary blob)"
   fi
   local lc=0 name val

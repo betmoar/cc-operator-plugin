@@ -360,6 +360,9 @@ const { result: deadBlind } = await run(WF("brainstorm.js"), { topic: "t", noRef
     .concat([["converge", { ranked: [], sharedConstraints: [], openQuestions: [] }]])));
 ok(deadBlind?.error && /blindspots agent died/.test(deadBlind.error),
   "brainstorm: dead blindspots → error return, not findings:[] masquerading as 'nothing to account for'");
+ok(Array.isArray(deadBlind?.directions) && deadBlind.directions.length === 4,
+  "brainstorm: the dead-blindspots error return carries the computed directions " +
+  "(the message says 'directions below are intact' — they must actually be below)");
 
 // ── F37: an array target must review what was passed, or fail loud ──────────
 console.log("-- Case: review.js multi-path target (F37)");

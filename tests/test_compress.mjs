@@ -206,6 +206,24 @@ if (vm) {
     "the spill is BYTE-IDENTICAL to the original (repeats uncollapsed, ANSI intact — not the scrubbed form)");
 }
 
+// ── a FAILED spill must be marked, not silent (pr-review 2026-08-03) ────────
+console.log("-- Case: spill failure leaves an explicit TRUNCATED marker, not silence");
+// spill() returns null on any write failure (disk full, perms). Elided text
+// with no marker is indistinguishable from complete output — the I2.3
+// falsification class through the failure path. Force the failure by pointing
+// cwd at a regular FILE, so mkdirSync inside spill() throws.
+const badCwd = path.join(TMP, "not-a-dir");
+fs.writeFileSync(badCwd, "");
+const failRes = compress({ ...bash("y".repeat(50000)), tool_input: { command: "npm test" } },
+  { env: {}, cwd: badCwd });
+{
+  const failOut = failRes?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
+  ok(/TRUNCATED and the spill to disk FAILED/.test(failOut),
+    "elided output whose spill failed carries the explicit failure marker");
+  ok(!/full output spilled to/.test(failOut),
+    "a failed spill never cites a spill file that does not exist");
+}
+
 // ── kill switches ───────────────────────────────────────────────────────────
 console.log("-- Case: kill switches are honored");
 ok(run({ ...bash(big), tool_input: { command: "npm test" } }, { CC_OPERATOR_COMPRESS: "0" }) === null,

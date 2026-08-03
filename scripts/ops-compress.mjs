@@ -286,7 +286,13 @@ export function compress(payload, opts = {}) {
         cwd, session: payload.session_id, toolUseId: payload.tool_use_id, keep: DEFAULTS.SPILL_KEEP,
       });
       text = elide(text, K);
-      if (spillPath) text += `\n[full output spilled to ${spillPath} — evidence quoted from this output MUST cite that file]`;
+      // A failed spill must not read as a complete output: elided text with no
+      // marker is indistinguishable from short text that was never touched —
+      // the I2.3 falsification class through the failure path (pr-review
+      // finding, 2026-08-03). Mark the failure explicitly instead.
+      text += spillPath
+        ? `\n[full output spilled to ${spillPath} — evidence quoted from this output MUST cite that file]`
+        : `\n[output TRUNCATED and the spill to disk FAILED — no full copy exists; re-run the command if the elided middle matters]`;
     }
 
     // I4 — never credit savings the harness refused to apply.

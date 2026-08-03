@@ -1126,6 +1126,43 @@ class CompressorGuardTest(unittest.TestCase):
         src = self._real_comp.replace('  ".operator/DECISIONS.md",\n', '', 1)
         self.assertTrue(any("DECISIONS" in p for p in self._probs(src)), self._probs(src))
 
+    def test_never_compress_read_dropped_fires(self):
+        # Drop Read ITSELF — the tool the first draft hardcoded. If the per-tool
+        # loop ever regresses to a hardcoded name, this is the drop that stays
+        # green longest, so it is the strongest regression pin for F48.
+        src = self._real_comp.replace(
+            '"Read", "Edit", "Write", "NotebookEdit"',
+            '"Edit", "Write", "NotebookEdit"', 1)
+        probs = self._probs(src)
+        self.assertTrue(any('`Read`' in p for p in probs), probs)
+
+    def test_gate_cli_dropped_from_literal_fires(self):
+        # Same partial-drain class as NEVER_COMPRESS, on the GATE_CLIS side:
+        # drop one CLI, leave the other two and the .some() call intact
+        # (pr-review, 2026-08-03 — the literal had no per-entry drop test).
+        src = self._real_comp.replace(', "ops-adopt.sh"', '', 1)
+        probs = self._probs(src)
+        self.assertTrue(any("ops-adopt.sh" in p for p in probs), probs)
+
+    def test_lossless_only_callsite_neutered_fires(self):
+        # The literal test (agent_set_emptied) has a call-site counterpart
+        # everywhere else; this is LOSSLESS_ONLY's. Remove the .has(tool) use
+        # while "Agent" stays in the set (pr-review, 2026-08-03).
+        src = self._real_comp.replace(
+            'LOSSLESS_ONLY.has(tool)', 'false /* neutered */', 1)
+        probs = self._probs(src)
+        self.assertTrue(any("LOSSLESS_ONLY" in p for p in probs), probs)
+
+    def test_callsite_in_block_comment_fires(self):
+        # The F48 class through the OTHER comment syntax: the first strip was
+        # `//`-only, so a call site moved into /* */ still matched every guard
+        # regex (pr-review, 2026-08-03). Comment out the real call site.
+        src = self._real_comp.replace(
+            'if (NEVER_COMPRESS.has(tool)) return null;',
+            '/* if (NEVER_COMPRESS.has(tool)) return null; */', 1)
+        probs = self._probs(src)
+        self.assertTrue(any("return null" in p for p in probs), probs)
+
     def test_salvage_tap_alternative_dropped_fires(self):
         src = re.sub(r'\|not ok', '', self._real_comp, count=1)
         self.assertTrue(any("SALVAGE_RE omits" in p for p in self._probs(src)),

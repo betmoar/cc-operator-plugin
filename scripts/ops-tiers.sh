@@ -97,7 +97,19 @@ load_file() { # load_file <path> <source-label>
   # Measured on bash 3.2.57 (the version this repo targets); invisible on 5.3,
   # which is why the suite was green. A tiers.env is text: a NUL means
   # truncation or a binary blob, never a config someone wrote.
-  if IFS= read -r -d '' -n 512 _nulprobe < "$1" && [ "${#_nulprobe}" -lt 512 ]; then
+  # The probe LOOPS over the whole file (Copilot 2026-08-03: a single 512-byte
+  # probe left every NUL past byte 512 undetected — measured: a NUL at byte 829
+  # followed by MECHANICAL=glm-evil resolved with exit 0). `read -d ''` returns
+  # 0 only on reaching a NUL or filling the -n cap; EOF returns non-zero, so the
+  # final partial chunk never false-positives. The whole probe runs in a
+  # LC_ALL=C subshell so BOTH -n and ${#} count bytes — a prefix on `read`
+  # alone leaves ${#} counting characters in the parent locale, and a multibyte
+  # comment then reads <512 chars from a full 512-byte chunk and false-positives
+  # (measured: 'é'×400 comment died as a NUL under en_US.UTF-8).
+  if ! (LC_ALL=C
+        while IFS= read -r -d '' -n 512 _nulprobe; do
+          [ "${#_nulprobe}" -eq 512 ] || exit 1
+        done < "$1"); then
     die "$1: contains a NUL byte — refusing (tiers.env is text, not a binary blob)"
   fi
   local lc=0

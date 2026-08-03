@@ -1015,13 +1015,19 @@ def check_compressor(root, problems):
             if "${CLAUDE_PLUGIN_ROOT}" not in blob:
                 problems.append("hooks/hooks.json: PostToolUse command lacks ${CLAUDE_PLUGIN_ROOT} (a bare path resolves only inside this repo)")
 
-    # Strip // comments so a regex cannot match prose that merely mentions a
+    # Strip comments so a regex cannot match prose that merely mentions a
     # pattern (the inverse of F48: a call site written ABOUT in a comment would
-    # satisfy a call-site check while the real call site is gone). Line comments
-    # only — block comments are rare in this file and would need a different
-    # treatment; the line strip closes the documented vector.
+    # satisfy a call-site check while the real call site is gone). BOTH syntaxes:
+    # the first draft stripped `//` lines only, and a call site moved into a
+    # /* */ block still satisfied every guard regex — the same F48 class through
+    # the other comment syntax, and block comments are an existing idiom in this
+    # file (pr-review, 2026-08-03). The non-greedy DOTALL sub is not a JS lexer
+    # (a string literal containing `/*` would confuse it), but no guarded
+    # pattern lives inside a string, so a false strip cannot green a broken file
+    # — it can only redden a weird-but-correct one, which is the safe direction.
+    code = re.sub(r"/\*.*?\*/", "", src, flags=re.DOTALL)
     code = "\n".join(
-        ln for ln in src.split("\n")
+        ln for ln in code.split("\n")
         if not ln.lstrip().startswith("//")
     ).strip()
 
