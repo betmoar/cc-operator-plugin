@@ -454,6 +454,54 @@ if [ "${1:-}" = "--reconcile" ]; then
   exit 0
 fi
 
+# --- mark-handoff path (no task-id) -----------------------------------------
+# Stage 2 of worker-boundary enforcement: an operator-taken decision can reach
+# session end unpresented because the Stop hook only checks sentinels. A
+# HANDOFF-MARK line clears (for the owning session) every DEVIATION recorded
+# before it — the operator has presented them. The hook partitions on the same
+# mine/unowned-vs-foreign rule it uses for sentinels; a mark is positioned in
+# the file AFTER the deviations it clears (file position, not timestamp).
+#
+# --owner is REQUIRED and non-empty: an empty sid would write an unowned mark,
+# which under the partition clears EVERY session's deviations — a privilege
+# inversion. check_owner_name rejects it here. The mark's sid tag is the
+# load-bearing cell; the engagement cell is display-only.
+#
+# Written UNDER the lock, inside the same critical section --defer uses for
+# DECISIONS.md writes — so a concurrent verdict/defer cannot interleave.
+if [ "${1:-}" = "--mark-handoff" ]; then
+  shift
+  MOWNER=""
+  MENG="handoff"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --owner)
+        [ $# -ge 2 ] || die "--owner requires a session id"
+        [ -z "$MOWNER" ] || die "--owner given more than once"
+        MOWNER="$2"; shift 2 ;;
+      --owner=*)
+        [ -z "$MOWNER" ] || die "--owner given more than once"
+        MOWNER="${1#--owner=}"; shift ;;
+      --engagement)
+        [ $# -ge 2 ] || die "--engagement requires a value"
+        MENG="$2"; shift 2 ;;
+      --engagement=*)
+        MENG="${1#--engagement=}"; shift ;;
+      *) die "unknown option '$1' (usage: ops-verdict.sh --mark-handoff --owner <sid> [--engagement <name>])" ;;
+    esac
+  done
+  [ -n "$MOWNER" ] || die "--mark-handoff requires --owner <sid> (an empty sid would write an unowned mark clearing every session's deviations)"
+  check_owner_name "$MOWNER"
+  check_cell "engagement" "$MENG"
+  [ -f "$DECISIONS" ] || die "missing $DECISIONS — run ops-init.sh first"
+  lock_acquire
+  printf '%s | %s | HANDOFF-MARK | [sid:%s] %s | handoff presented\n' \
+    "$(date +%F)" "$MENG" "$MOWNER" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$DECISIONS"
+  lock_release
+  echo "marked handoff for session $MOWNER (DECISIONS.md HANDOFF-MARK appended)"
+  exit 0
+fi
+
 # --- Argument parse ----------------------------------------------------------
 # --owner may appear anywhere; everything else keeps its positional meaning.
 OWNER=""

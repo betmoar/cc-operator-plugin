@@ -51,7 +51,16 @@ Recurring judgement call — three CLIs validate names, and they must agree.
 
 ## Decision procedure: adding a reader of a file
 
-Any new code that reads a sentinel, a fragment, or a ledger.
+Any new code that reads a sentinel, a fragment, a ledger, or DECISIONS.md.
+
+> **DECISIONS.md (stage 2 deviation gate)** is now a parsed ledger too: the Stop
+> hook's `scan_deviations` and the statusline's `scan_deviations_bar` both read
+> it whole-file, byte-bounded per line, fail per the polarity split documented
+> in `ops-stop-hook.sh` (hook fails CLOSED on cap/corrupt; the bar fails toward
+> SILENCE — a bar never blocks). A new DECISIONS.md reader inherits every rule
+> below PLUS the position-based mark-clears-deviation scan. Both readers are
+> re-implementations (the sandbox-free statusline and the hook cannot share
+> code); change the partition in one and the other must move with it.
 
 1. **Treat the content as untrusted.** These are ordinary files. `git merge`,
    `git checkout`, a hand-edit, a truncated write, and a stray binary can all

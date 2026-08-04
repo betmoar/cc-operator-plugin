@@ -1240,6 +1240,34 @@ mkdir -p "$P/sub/deeper"
 check "a subdirectory cwd finds the same gate (F01 shape)" \
   "$([ "$(render SESS-A "$P/sub/deeper")" = "op[1+2*]" ] && echo 0 || echo 1)"
 
+# --- dev[N] mirror: the bar renders the deviation gate's partition (stage 2) ---
+# Same coupling rule as op[ — a bar describing a different gate than the one that
+# runs is worse than no bar. dev[N] counts mine+unowned DEVIATIONs after the last
+# mine/unowned HANDOFF-MARK; foreign excluded; renders nothing when N=0. Dim, not
+# red (an unpresented decision blocks stop, not current work). Uses a fresh
+# project so DECISIONS.md state does not collide with the op[ cases above.
+DEVPROJ="$(newproj)"; ( cd "$DEVPROJ" && bash "$INIT" >/dev/null 2>&1 )
+DEVDEC="$DEVPROJ/.operator/DECISIONS.md"
+check "no deviations → no dev[ segment" \
+  "$([ -z "$(render SESS-A "$DEVPROJ")" ] && echo 0 || echo 1)"
+printf '2026-08-04 | e.t | DEVIATION | [sid:SESS-A] a decision | r\n' > "$DEVDEC"
+check "1 mine deviation → dev[1] (dim)" \
+  "$([ "$(render SESS-A "$DEVPROJ")" = "dev[1]" ] && echo 0 || echo 1)"
+printf '2026-08-04 | e.t | DEVIATION | [sid:SESS-B] foreign | r\n' >> "$DEVDEC"
+check "foreign deviation excluded → still dev[1]" \
+  "$([ "$(render SESS-A "$DEVPROJ")" = "dev[1]" ] && echo 0 || echo 1)"
+printf '2026-08-04 | e | HANDOFF-MARK | [sid:SESS-A] 2026-08-04T00:00:00Z | presented\n' >> "$DEVDEC"
+check "mine mark clears → no dev[ segment" \
+  "$([ -z "$(render SESS-A "$DEVPROJ")" ] && echo 0 || echo 1)"
+# A deviation AFTER the mark re-shows it (position rule, mirrored from the hook).
+printf '2026-08-04 | e.t | DEVIATION | [sid:SESS-A] post-mark | r\n' >> "$DEVDEC"
+check "deviation after mark re-shows dev[1]" \
+  "$([ "$(render SESS-A "$DEVPROJ")" = "dev[1]" ] && echo 0 || echo 1)"
+# An untagged (legacy) deviation counts for any session.
+printf '2026-08-04 | e.t | DEVIATION | untagged legacy | r\n' > "$DEVDEC"
+check "untagged deviation → dev[1] for any session" \
+  "$([ "$(render SESS-B "$DEVPROJ")" = "dev[1]" ] && echo 0 || echo 1)"
+
 # Hostile/degenerate stdin must render nothing rather than spray errors onto
 # the bar. Includes the no-parser case: unlike the Stop hook, which warns on
 # stderr, a statusline has nowhere to warn — silence IS the correct behavior.
@@ -1868,6 +1896,108 @@ check "green run emits a diff-matches-claims ok line" "$(printf '%s' "$GE" | gre
 mkdir -p "$P/.operator/pending"; printf 'session_id: OTHER\n' > "$P/.operator/pending/planted"
 runclaims --claimed none >/dev/null 2>&1; NPD=$?
 check "ops-claims ignores .operator/pending (not a sentinel reader)" "$([ "$NPD" = 0 ] && echo 0 || echo 1)"
+rm -rf "$P"
+
+########################################################################
+echo "-- Case: deviation-gate — unpresented decisions block Stop; --mark-handoff clears [stage 2]"
+# The Stop hook's SECOND ledger: DECISIONS.md DEVIATION lines after the last
+# mine/unowned HANDOFF-MARK block Stop. The 0.4.0 mine/unowned-vs-foreign
+# partition applied to decisions. Every sub-case is revert-discriminating: the
+# behavior it asserts is named, and removing that branch from scan_deviations
+# flips the exit code. SESS-A is "this session"; SESS-B is foreign.
+P="$(newproj)"
+( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+DEC="$P/.operator/DECISIONS.md"
+SID="SESS-A-XYZ"
+# A minimal Stop payload with session_id + cwd. The hook walks up from cwd to
+# the nearest .operator/.
+payload() { printf '{"session_id":"%s","stop_hook_active":false,"cwd":"%s"}' "$SID" "$P"; }
+
+# Empty DECISIONS.md (just the header comments) → no deviations → exit 0.
+printf '# Decisions\n# header only\n' > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; D0=$?
+check "empty DECISIONS.md → Stop allowed (no deviations)" "$([ "$D0" = 0 ] && echo 0 || echo 1)"
+
+# A mine deviation (sid=SESS-A), no mark → blocks.
+printf '2026-08-04 | eng.t | DEVIATION | [sid:%s] chose X over Y | reason\n' "$SID" > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; D1=$?
+check "mine deviation, no mark → Stop blocked" "$([ "$D1" = 2 ] && echo 0 || echo 1)"
+
+# A foreign deviation (sid=SESS-B) → never blocks.
+printf '2026-08-04 | eng.t | DEVIATION | [sid:SESS-B-OTHER] their call | reason\n' > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; D2=$?
+check "foreign deviation → Stop allowed (never blocks)" "$([ "$D2" = 0 ] && echo 0 || echo 1)"
+
+# An untagged (legacy) deviation → blocks EVERY session (unowned = mine-class).
+printf '2026-08-04 | eng.t | DEVIATION | pre-gate decision, no sid | reason\n' > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; D3=$?
+check "untagged (legacy) deviation → Stop blocked (unowned blocks all)" "$([ "$D3" = 2 ] && echo 0 || echo 1)"
+
+# mine deviation, then a mine HANDOFF-MARK after it → cleared → exit 0.
+{ printf '2026-08-04 | eng.t | DEVIATION | [sid:%s] chose X | r\n' "$SID"
+  printf '2026-08-04 | eng | HANDOFF-MARK | [sid:%s] 2026-08-04T00:00:00Z | presented\n' "$SID"; } > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; D4=$?
+check "mine deviation + later mine mark → cleared (Stop allowed)" "$([ "$D4" = 0 ] && echo 0 || echo 1)"
+
+# mark BEFORE the deviation does NOT clear it (file position, not timestamp).
+{ printf '2026-08-04 | eng | HANDOFF-MARK | [sid:%s] 2026-08-04T00:00:00Z | presented\n' "$SID"
+  printf '2026-08-04 | eng.t | DEVIATION | [sid:%s] new decision after mark | r\n' "$SID"; } > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; D5=$?
+check "mark BEFORE deviation does not clear it (position rule)" "$([ "$D5" = 2 ] && echo 0 || echo 1)"
+
+# A foreign mark does not clear my deviation.
+{ printf '2026-08-04 | eng.t | DEVIATION | [sid:%s] mine | r\n' "$SID"
+  printf '2026-08-04 | eng | HANDOFF-MARK | [sid:SESS-B] their handoff | presented\n'; } > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; D6=$?
+check "foreign mark does not clear my deviation" "$([ "$D6" = 2 ] && echo 0 || echo 1)"
+
+# ESCALATION and GATE-EXCEPTION are also decision kinds that block until marked.
+printf '2026-08-04 | eng.t | ESCALATION | [sid:%s] escalated to human | r\n' "$SID" > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; D7=$?
+check "ESCALATION kind blocks like DEVIATION" "$([ "$D7" = 2 ] && echo 0 || echo 1)"
+
+# A malformed line (CRLF) degrades to counted-as-unpresented → blocks. Write a
+# mine deviation with a trailing \r on the kind, which breaks the kind parse so
+# the line is not recognized as DEVIATION — but a degenerate line must fail
+# toward blocking, not toward allowing. (The \r is stripped, so this IS parsed;
+# the real malformed test is an over-long line — see the byte-cap case below.)
+printf '2026-08-04 | eng.t | DEVIATION | [sid:%s] cr-test\r\n' "$SID" > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; D8=$?
+check "CRLF deviation still recognized (\\r stripped) → blocks" "$([ "$D8" = 2 ] && echo 0 || echo 1)"
+
+# A NUL in the ledger → fail toward blocking (corrupt ledger counts as unpresented).
+printf '2026-08-04 | eng.t | DEVIATION | [sid:%s] nul\000here | r\n' "$SID" > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; D9=$?
+check "NUL in DECISIONS.md → blocks (corrupt ledger fails toward blocking)" "$([ "$D9" = 2 ] && echo 0 || echo 1)"
+
+# Absent DECISIONS.md → fail OPEN (missing ledger = scaffold problem, not a decision).
+rm -f "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; D10=$?
+check "absent DECISIONS.md → Stop allowed (fail OPEN)" "$([ "$D10" = 0 ] && echo 0 || echo 1)"
+
+# A pending SENTINEL still blocks even with no deviations (the two gates compose).
+printf '# Decisions\n' > "$DEC"
+( cd "$P" && bash "$TASK" both-gate --owner "$SID" >/dev/null 2>&1 )
+payload | bash "$HOOK" >/dev/null 2>&1; D11=$?
+check "pending sentinel blocks even with no deviations (gates compose)" "$([ "$D11" = 2 ] && echo 0 || echo 1)"
+( cd "$P" && bash "$VERDICT" both-gate c e PASS --owner "$SID" >/dev/null 2>&1 )
+
+# --- ops-verdict.sh --mark-handoff ---
+# Requires --owner (empty sid would clear every session = privilege inversion).
+( cd "$P" && bash "$VERDICT" --mark-handoff >/dev/null 2>&1 ); MH0=$?
+check "--mark-handoff without --owner → refused" "$([ "$MH0" != 0 ] && echo 0 || echo 1)"
+# Writes a HANDOFF-MARK line under the lock, clearing my deviations.
+printf '2026-08-04 | eng.t | DEVIATION | [sid:%s] pre-mark decision | r\n' "$SID" > "$DEC"
+( cd "$P" && bash "$VERDICT" --mark-handoff --owner "$SID" >/dev/null 2>&1 ); MH1=$?
+check "--mark-handoff --owner writes the mark (exit 0)" "$([ "$MH1" = 0 ] && echo 0 || echo 1)"
+# After the mark, the same deviation no longer blocks.
+payload | bash "$HOOK" >/dev/null 2>&1; MH2=$?
+check "after --mark-handoff, the deviation is cleared" "$([ "$MH2" = 0 ] && echo 0 || echo 1)"
+# The mark line is in the pipe schema with the [sid:] tag.
+check "--mark-handoff line carries the [sid:] tag" "$(grep -q 'HANDOFF-MARK.*\[sid:' "$DEC" && echo 0 || echo 1)"
+# A foreign owner cannot write a mark that would clear MY deviations (the mark's
+# sid is foreign, so it never clears mine — verified by the partition above).
+
 rm -rf "$P"
 
 ########################################################################

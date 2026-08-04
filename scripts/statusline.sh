@@ -259,6 +259,56 @@ for f in "$OPDIR/pending"/*; do
 done
 shopt -u nullglob
 
+# --- unpresented deviations: mirror of the deviation gate (stage 2) -----------
+# The bar renders the SAME partition the Stop hook blocks on: mine + unowned
+# DEVIATION lines after the last mine-or-unowned HANDOFF-MARK. A bar counting a
+# different set than the gate is worse than no bar (the coupling-table rule).
+# This is the statusline's SECOND ledger reader (after sentinel_owner) and a
+# DELIBERATE re-implementation, not a shared module — the sandbox-free statusline
+# and the hook cannot import each other. Same bounded-reader rules: byte-bounded
+# per line, whole-file with a fail-toward-silence aggregate cap (a wrong count is
+# worse than none — the opposite polarity from the hook, which fails toward
+# blocking; the bar never blocks, it only informs).
+#
+# Dim, not red: an unpresented deviation blocks STOP, not current work. Renders
+# nothing when the count is 0 (the common case) or the ledger is absent.
+DEVMINE=0
+scan_deviations_bar() { # scan_deviations_bar <decisions-path> <this-session>
+  local f="$1" sess="$2" line kind what n=0 bytes=0
+  [ -f "$f" ] && [ ! -L "$f" ] || return 0
+  if ! (LC_ALL=C _dp=0
+        while IFS= read -r -d '' -n 512 _dprobe; do
+          _dp=$((_dp + 1)); [ "$_dp" -le 4096 ] || exit 1
+          [ "${#_dprobe}" -eq 512 ] || exit 1
+        done < "$f") 2>/dev/null; then
+    return 0           # NUL/corrupt ledger: fail toward silence (bar never blocks)
+  fi
+  while IFS= read -r -n 512 line || [ -n "$line" ]; do
+    n=$((n+1)); [ "$n" -le 20000 ] || return 0
+    bytes=$((bytes + ${#line} + 1)); [ "$bytes" -le 2097152 ] || return 0
+    [ "${#line}" -lt 512 ] || return 0
+    line="${line%$'\r'}"
+    case "$line" in *" | "*) ;; *) continue ;; esac
+    kind="${line#* | }"; kind="${kind#* | }"; kind="${kind%% | *}"
+    what="${line#* | }"; what="${what#* | }"; what="${what#* | }"; what="${what%% | *}"
+    case "$kind" in
+      DEVIATION|ESCALATION|GATE-EXCEPTION)
+        case "$what" in
+          "[sid:$sess]"*) DEVMINE=$((DEVMINE + 1)) ;;   # mine/unowned → counts
+          "[sid:"*) : ;;                                # foreign → never counts
+          *) DEVMINE=$((DEVMINE + 1)) ;;
+        esac ;;
+      HANDOFF-MARK)
+        case "$what" in
+          "[sid:$sess]"*) DEVMINE=0 ;;                  # mine/unowned → clears
+          "[sid:"*) : ;;                                # foreign → no effect
+          *) DEVMINE=0 ;;
+        esac ;;
+    esac
+  done < "$f"
+}
+[ -n "$OPDIR" ] && scan_deviations_bar "$OPDIR/DECISIONS.md" "$SESSION"
+
 # An operator project with nothing open AND no live workflow renders nothing.
 # The bar is for states that change what you do next; the defaults are not news.
 RED=$'\033[31m'; DIM=$'\033[2m'; RESET=$'\033[0m'
@@ -292,7 +342,7 @@ if [ -n "$SESSION" ]; then
   fi
 fi
 
-[ "$MINE" -gt 0 ] || [ "$FOREIGN" -gt 0 ] || [ -n "$WFSEG" ] || exit 0
+[ "$MINE" -gt 0 ] || [ "$FOREIGN" -gt 0 ] || [ "$DEVMINE" -gt 0 ] || [ -n "$WFSEG" ] || exit 0
 
 # Red only when YOUR stop is actually blocked — the one genuinely actionable
 # state. Foreign tasks are dim: worth seeing (that visibility is what made the
@@ -305,6 +355,13 @@ if [ "$MINE" -gt 0 ] || [ "$FOREIGN" -gt 0 ]; then
   [ "$MINE" -gt 0 ] && OUT="${OUT}${RED}${MINE}${RESET}" || OUT="${OUT}0"
   [ "$FOREIGN" -gt 0 ] && OUT="${OUT}${DIM}+${FOREIGN}*${RESET}"
   printf '%s]' "$OUT"
+  SEP=" "
+fi
+# dev[N] — dim (an unpresented decision blocks stop, not current work). Mirrors
+# the deviation gate's mine+unowned-after-last-mark count; foreign excluded.
+# Renders only when N>0; dev[0] is the common case and is noise.
+if [ "$DEVMINE" -gt 0 ]; then
+  printf '%s%sdev[%s]%s' "${SEP:-}" "$DIM" "$DEVMINE" "$RESET"
   SEP=" "
 fi
 # `&&` alone would make an empty WFSEG the script's failing last command: the

@@ -9,6 +9,22 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+### Added — worker-boundary enforcement (stage 2 of 3)
+
+- The deviation gate: an operator-taken decision can no longer reach session end
+  unpresented. The Stop hook now blocks iff a DEVIATION owned by this session —
+  or by nobody — appears after the last mine/unowned HANDOFF-MARK in
+  `DECISIONS.md` (file position, not timestamp). Foreign deviations report, never
+  block. A whole-file scan, fail-CLOSED on a 2MiB cap; absent/corrupt polarity is
+  deliberately split (absent → open, NUL/over-long → block).
+- `ops-verdict.sh --mark-handoff --owner <sid>` writes the clearing mark under
+  the existing ledger lock; `--owner` is required (an empty sid would clear every
+  session). `commands/handoff.md` gains the verdict-CLI grant.
+- The statusline gains a dim `dev[N]` mirror of the deviation partition.
+- `check_decisions_schema` pins the DECISIONS-header kind enum (incl HANDOFF-MARK)
+  and requires both readers to reference it (F30). 22 bash cases (gate + mirror)
+  + 2 pytest mutation tests, revert-discrimination proven.
+
 ### Added — worker-boundary enforcement (stage 1 of 3; spec `docs/spec/2026-08-03-worker-boundary-enforcement-design.md`)
 
 The worker seam's guarantees move from prompt-deep to code-deep, porting SSSF's

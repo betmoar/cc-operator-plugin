@@ -37,6 +37,8 @@ GOOD_STATUSLINE = (
     "#!/usr/bin/env bash\n"
     "[ ! -L \"$1\" ] || exit 0\n"
     "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
+    "# deviation-gate mirror: a second bounded read of DECISIONS.md (HANDOFF-MARK)\n"
+    "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
     "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]*) owner=\"\" ;; esac\n")
 
 GOOD_LOCK_BLOCK = (
@@ -64,6 +66,9 @@ def make_good_tree(root):
     write(root / "templates" / "OPERATOR.md", GOOD_CHARTER)
     write(root / "templates" / "VERDICTS-header.md",
           "# Verdicts\n" + vp.VERDICTS_HEADER + "\n|---|---|---|---|\n")
+    write(root / "templates" / "DECISIONS-header.md",
+          "# Decisions — append-only, one line per entry\n"
+          "# <ISO-date> | <engagement.task> | <" + vp.DECISIONS_KINDS + "> | <what> | <why>\n")
     for name, model in (("op-author", "opus"),
                         ("op-mechanic", "sonnet"),
                         ("op-reviewer", "opus")):
@@ -113,12 +118,15 @@ def make_good_tree(root):
     nolink = "[ ! -L \"$1\" ] || exit 0\n"
     write(root / "scripts" / "ops-stop-hook.sh",
           "#!/usr/bin/env bash\n" + nolink + bounded +
+          "# deviation gate: a second bounded read of DECISIONS.md (HANDOFF-MARK)\n"
+          "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
           "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]*) owner=\"\" ;; esac\n")
     write(root / "scripts" / "ops-task.sh",
           "#!/usr/bin/env bash\n" + guards + nolink)
     write(root / "scripts" / "ops-verdict.sh",
           "#!/usr/bin/env bash\n" + guards + nolink + bounded +
           "while IFS= read -r -n 512 row; do :; done < \"$frag\"\n" +
+          "# --mark-handoff writes a HANDOFF-MARK line under the lock\n" +
           GOOD_LOCK_BLOCK)
     write(root / "scripts" / "ops-adopt.sh",
           "#!/usr/bin/env bash\n" + guards + nolink + bounded + GOOD_LOCK_BLOCK)
@@ -316,6 +324,24 @@ class ValidatorTest(unittest.TestCase):
               "# V\n| Gate | Criterion | Evidence (cmd) | PASS/FAIL |\n")
         self.assertFires("byte-match")
 
+    # --- decisions schema (stage 2: the deviation gate parses this enum) ---
+    def test_decisions_kind_enum_drift_fires(self):
+        # Drop HANDOFF-MARK from the enum — a presented decision would then read
+        # as unpresented forever. check_decisions_schema pins the whole enum.
+        write(self.dir / "templates" / "DECISIONS-header.md",
+              "# Decisions\n"
+              "# <d> | <e> | <DEVIATION|ESCALATION|DECISION|DEFERRED-VERDICT> | <w> | <y>\n")
+        self.assertFires("kind enum drifted")
+
+    def test_decisions_reader_missing_handoff_mark_fires(self):
+        # A deviation-gate reader that never matches HANDOFF-MARK never clears —
+        # the enum is declared but the consumer drifted (F30 call-site half).
+        write(self.dir / "scripts" / "ops-stop-hook.sh",
+              "#!/usr/bin/env bash\n[ ! -L \"$1\" ] || exit 0\n"
+              "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
+              "while IFS= read -r -n 512 dline; do :; done < \"$dec\"\n")
+        self.assertFires("does not reference HANDOFF-MARK")
+
     # --- 6. agents ---
     def test_agent_missing_model(self):
         p = self.dir / "agents" / "op-author.md"
@@ -433,6 +459,8 @@ class ValidatorTest(unittest.TestCase):
             "#!/usr/bin/env bash\n"
             "[ ! -L \"$1\" ] || exit 0\n"
             "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
+            "# deviation gate: second bounded read of DECISIONS.md (HANDOFF-MARK)\n"
+            "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
             "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]*) owner=\"\" ;; esac\n")
         good_verdict = (
             "#!/usr/bin/env bash\n"

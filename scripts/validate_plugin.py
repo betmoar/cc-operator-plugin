@@ -249,6 +249,41 @@ def check_ledger_schema(root, problems):
             f"{VERDICTS_HEADER!r} (schema must byte-match the proven ledger)")
 
 
+# The DECISIONS-header kind enum — must include HANDOFF-MARK (stage 2). The hook
+# and statusline now PARSE this schema (the deviation gate), so a drifted enum
+# can no longer pass green while the readers disagree. Pin the literal AND require
+# both readers to reference the HANDOFF-MARK kind (F30: the enum AND its consumers).
+DECISIONS_KINDS = (
+    "DEVIATION|ESCALATION|GATE-EXCEPTION|DECISION|DEFERRED-VERDICT|HANDOFF-MARK")
+
+
+def check_decisions_schema(root, problems):
+    d = root / "templates" / "DECISIONS-header.md"
+    if not d.is_file():
+        problems.append("templates/DECISIONS-header.md: missing")
+        return
+    if DECISIONS_KINDS not in d.read_text(encoding="utf-8"):
+        problems.append(
+            f"templates/DECISIONS-header.md: kind enum drifted — expected "
+            f"{DECISIONS_KINDS!r}. The deviation gate (stage 2) parses this "
+            f"schema; a missing HANDOFF-MARK makes every handoff-clear read as "
+            f"an unpresented decision (F30: pin the enum, not a copy)")
+    # Both deviation-gate readers must know the HANDOFF-MARK kind: a reader that
+    # never checks for it treats a mark as ordinary prose and never clears — the
+    # enum is declared but the consumer drifted (the F30 call-site half). The
+    # verdict CLI writes it; the hook + statusline read it.
+    for name in ("ops-stop-hook.sh", "statusline.sh", "ops-verdict.sh"):
+        p = root / "scripts" / name
+        if not p.is_file():
+            continue  # missing-file is already reported by check_scripts
+        if "HANDOFF-MARK" not in p.read_text(encoding="utf-8"):
+            problems.append(
+                f"scripts/{name}: does not reference HANDOFF-MARK — the "
+                f"deviation gate's clearing mark is in the enum but this reader "
+                f"never matches it, so a presented decision reads as unpresented "
+                f"forever (F30: the enum AND its consumers must agree)")
+
+
 def check_agents(root, problems):
     agents_dir = root / "agents"
     files = sorted(agents_dir.glob("*.md")) if agents_dir.is_dir() else []
@@ -382,7 +417,7 @@ def check_reader_bounds(root, problems):
     still applied to one of four readers. Now it fails the build instead.
     """
     readers = {
-        "ops-stop-hook.sh": 1,   # sentinel_owner
+        "ops-stop-hook.sh": 2,   # sentinel_owner + the DECISIONS.md deviation scan
         "ops-verdict.sh": 2,     # sentinel_owner + the --reconcile fragment loop
         "ops-adopt.sh": 1,       # the inline sentinel parse
         # The statusline segment renders on a ~300ms timer, which makes it the
@@ -390,7 +425,7 @@ def check_reader_bounds(root, problems):
         # per turn-end or per command. Measured on one 64MB newline-less
         # sentinel: 0.014s bounded vs 6.20s per parse unbounded, i.e. a
         # permanently wedged status bar rather than a slow one.
-        "statusline.sh": 1,      # sentinel_owner
+        "statusline.sh": 2,      # sentinel_owner + the DECISIONS.md deviation scan
         # The tier-config resolver reads a file under .operator/ (untrusted — a
         # merge or checkout can produce it). Same hazard class as the others:
         # a newline-less multi-MB tiers.env is one "line" to an unbounded read.
@@ -448,13 +483,15 @@ def check_reader_bounds(root, problems):
             # few lines from the `while` to the chunk-size check), and the
             # cap's VALUE is parsed and bounded — the first version substring-
             # matched "le 40", which `-le 400000` (effectively uncapped)
-            # satisfies (same review). The ceiling is 200 chunks (100KB): the
-            # config parse loops' own legal maximum (200 lines × 512 bytes).
-            # Sentinel probes use 40; anything above 200 no longer bounds the
-            # probe to legal-input scale and is treated as uncapped.
+            # satisfies (same review). Two file classes, two legal scales:
+            # sentinel/config probes cap at 40 chunks (20KB — the owner is line
+            # 1); the DECISIONS.md deviation scans cap at 4096 (2MB — the ledger
+            # is append-forever, bounded by DECISIONS_MAX_BYTES). The ceiling is
+            # 8192 (4MB): above the largest legitimate probe, below the
+            # effectively-uncapped `le 400000` that defeats the bound.
             window = "\n".join(code[i:i + 4])
             cap = re.search(r"-le (\d+)\b", window)
-            if not cap or int(cap.group(1)) > 200:
+            if not cap or int(cap.group(1)) > 8192:
                 problems.append(
                     f"scripts/{name}: NUL probe at code line {i + 1} has no "
                     f"chunk cap (a counter with `-le N`, N<=200) — an uncapped "
@@ -1253,6 +1290,7 @@ CHECKS = (
     check_changelog,
     check_charter,
     check_ledger_schema,
+    check_decisions_schema,
     check_agents,
     check_render_templates,
     check_hook,

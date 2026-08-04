@@ -1,7 +1,7 @@
 ---
 description: Run when ending an operated engagement or session — to produce the structured operator→human handoff before you stop or hand off.
 argument-hint: []
-allowed-tools: Bash(git:*), Read, Write
+allowed-tools: Bash(git:*), Bash(.operator/bin/ops-verdict.sh:*), Read, Write
 ---
 
 Produce the six-section operator→human handoff. Source every claim from
