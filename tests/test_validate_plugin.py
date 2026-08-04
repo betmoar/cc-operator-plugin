@@ -469,7 +469,8 @@ class ValidatorTest(unittest.TestCase):
 
     # The NUL probe (`read -r -d '' -n 512`) MUST carry a chunk cap (_np … le
     # 40). An uncapped probe still detects a late NUL but walks a newline-less
-    # multi-MB tiers.env end-to-end first — 4.0s on 64MB (Copilot 2026-08-03).
+    # multi-MB tiers.env end-to-end first — 66-70s on 64MB vs 0.11s capped
+    # (bash 3.2.57, 2026-08-04; the 4.0s first cited is wrong by ~15x).
     # These two mutation tests pin the parity the F59 fix established for the
     # hook but left tiers/render drifting on.
 

@@ -1405,8 +1405,11 @@ check "the renderer's NUL probe also loops the whole file" \
 rm -f "$LATENULENV"
 # The probe is now BOUNDED at 200 chunks (100KB): a newline-less multi-MB
 # tiers.env (no NUL) must die FAST, not loop the whole file. Before the cap
-# this measured 4.0s on a 64MB file (Copilot 2026-08-03, final review) — the
-# probe defeated the bounded-reader guarantee check_reader_bounds enforces.
+# this measured 66-70s on a 64MB file vs 0.11s capped (bash 3.2.57,
+# 2026-08-04) — the probe defeated the bounded-reader guarantee
+# check_reader_bounds enforces. (The 4.0s originally cited from the F64
+# report is wrong by ~15x; it was copied into five files before anyone
+# re-measured. A load-bearing number with no owner rots exactly this way.)
 # The fixture must be 16MB, not 2MB: with the cap reverted, 2MB completed in
 # 2.4s on bash 3.2 — UNDER the 5s budget, so both assertions passed against
 # the broken code (code-review of f4cae1a, 2026-08-04; PLAYBOOK "prove it
@@ -1420,7 +1423,7 @@ BIGOUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$BIGENV
 _elapsed=$(( $(date +%s) - _start ))
 check "a newline-less multi-MB tiers.env dies (probe is bounded, not whole-file)" \
   "$([ "$BIGRC" -ne 0 ] && ! printf '%s' "$BIGOUT" | grep -q 'glm-evil' && echo 0 || echo 1)"
-check "the bounded probe rejects a multi-MB file fast (<5s, was 4.0s+ uncapped on 64MB)" \
+check "the bounded probe rejects a multi-MB file fast (<5s; 64MB uncapped is 66-70s)" \
   "$([ "$_elapsed" -lt 5 ] && echo 0 || echo 1)"
 _start=$(date +%s)
 CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$BIGENV" \

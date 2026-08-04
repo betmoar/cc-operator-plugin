@@ -428,7 +428,8 @@ def check_reader_bounds(root, problems):
         # The NUL probe (`read -r -d '' -n 512`) must be BOUNDED by a chunk
         # counter, not loop the whole file. An uncapped probe still detects a
         # late NUL but walks a newline-less multi-MB file end-to-end first —
-        # measured 4.0s on a 64MB tiers.env (Copilot 2026-08-03), defeating the
+        # measured 66-70s on a 64MB tiers.env vs 0.11s capped (bash 3.2.57,
+        # 2026-08-04 — the 4.0s first cited is wrong by ~15x), defeating the
         # bounded-reader guarantee this check exists to enforce. The Stop hook
         # established the canonical capped form (F59); this keeps tiers/render
         # from drifting back to the uncapped loop. The `-n 512` inside the

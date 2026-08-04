@@ -9,8 +9,18 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-08-04
+
 ### Fixed
 
+- **A load-bearing measurement was wrong by ~15x, in five files.** The F64
+  chunk-cap fix was justified by "4.0s on a 64MB `tiers.env`", a figure taken
+  from the original report and copied verbatim into `ops-tiers.sh`,
+  `ops-render.sh`, `validate_plugin.py`, both test files, and this changelog
+  without anyone re-running it. Re-measured on bash 3.2.57: **66-70s uncapped
+  vs 0.11s capped**, corroborated by two independent verifier runs (61s, 62s).
+  The fix was right; the number defending it was not. Corrected everywhere,
+  each site now naming the bash version and date it was measured on.
 - **Symlink sentinels are now rejected at every read site, not just the
   opener (F66).** F65's `-L` guard covered only `ops-task.sh`'s create path; a
   symlink planted in `.operator/pending/` was still adopted by `ops-adopt.sh`
@@ -88,8 +98,10 @@ plus the unbounded-probe stall).
     `NEVER_COMPRESS` and stripped trailing `//` comments (the vacuous-guard
     class, with per-tool set literals and block-comment stripping).
   - **F64** — the NUL probe in `ops-tiers.sh`/`ops-render.sh` looped whole-file
-    with no chunk cap, stalling the resolver 4.0s on a 64MB newline-less
-    `tiers.env`; now bounded (4.0s → 0.01s), enforced by `check_reader_bounds`.
+    with no chunk cap, stalling the resolver ~66s on a 64MB newline-less
+    `tiers.env`; now bounded (66s → 0.11s), enforced by `check_reader_bounds`.
+    (The 4.0s figure this entry originally carried was wrong by ~15x —
+    re-measured 2026-08-04 on bash 3.2.57; see the 0.5.1 entry.)
   - **F65** — `ops-task.sh`'s O_EXCL guard used `[ -f ]`, which follows
     symlinks: a symlink→regular read as "already open", and downstream `mv`
     would overwrite the target outside `pending/`; now guarded by `[ ! -L ]`.

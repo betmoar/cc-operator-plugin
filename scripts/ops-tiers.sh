@@ -102,10 +102,14 @@ load_file() { # load_file <path> <source-label>
   # 2026-08-03: a NUL at byte 829 followed by MECHANICAL=glm-evil resolved with
   # exit 0), so the loop must walk more than one chunk; but a loop with NO cap
   # walks a newline-less multi-MB tiers.env end-to-end before the parse loop's
-  # line-cap can reject it — measured 4.0s on a 64MB file (Copilot 2026-08-03,
-  # final review). The probe then stalls tier resolution on untrusted project
-  # config, defeating the bounded-reader guarantee check_reader_bounds exists
-  # to enforce. 200 chunks is the parse loop's own legal maximum (200 lines ×
+  # line-cap can reject it — measured 66-70s on a 64MB file, vs 0.11s capped
+  # (bash 3.2.57, 2026-08-04; two independent verifier runs read 61s and 62s.
+  # The 4.0s originally cited from the F64 report is wrong by ~15x and was
+  # propagated into five files before anyone re-measured it — a load-bearing
+  # number nobody owned). The probe then stalls tier resolution on untrusted
+  # project config, defeating the bounded-reader guarantee that
+  # check_reader_bounds exists to enforce. 200 chunks is the parse loop's own
+  # legal maximum (200 lines ×
   # 512 bytes incl. newline): the first cap was 40 chunks (20KB), which
   # rejected a comment-heavy config the parse loop itself considers valid
   # (code-review of f4cae1a, 2026-08-04). Exceeding the parse loop's max is
