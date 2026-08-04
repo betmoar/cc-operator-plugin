@@ -142,8 +142,9 @@ load_file() { # load_file <path> <source-label>
   # mirroring ops-tiers.sh. A single probe left NULs past byte 512 undetected
   # (Copilot 2026-08-03), so the loop must walk more than one chunk; but an
   # UNcapped loop walks a newline-less multi-MB tiers.env end-to-end and
-  # stalls the renderer — measured 4.0s on 64MB (Copilot 2026-08-03, final
-  # review). 200 chunks is the parse loop's own legal maximum (200 lines × 512
+  # stalls the renderer — measured 66-70s on 64MB vs 0.11s capped (bash
+  # 3.2.57, 2026-08-04; the 4.0s from the F64 report is wrong by ~15x).
+  # 200 chunks is the parse loop's own legal maximum (200 lines × 512
   # bytes); the first cap (40 chunks) rejected comment-heavy configs the parse
   # loop accepts (code-review of f4cae1a, 2026-08-04). Exceeding it is
   # malformed → fail closed. LC_ALL=C subshell so BOTH -n and ${#} count bytes —

@@ -112,6 +112,10 @@ done
 # here, which would silently make every sentinel parse as unowned.
 sentinel_owner() { # sentinel_owner <path> → owner ("" = unowned)
   local line owner="" n=0
+  # LC_ALL=C so the byte-bounded read + ${#} count BYTES not characters (a
+  # multibyte-locale pad would otherwise smuggle a foreign owner past the cap
+  # guard — review finding 2026-08-04). Safe: this runs in a $(...) subshell.
+  LC_ALL=C
   # A symlink is never a sentinel our CLIs wrote (F65): `-f` alone FOLLOWS it,
   # so a planted link would read its target's session_id: and render as
   # foreign. Degrade to unowned → counted as MINE-blocking — the bar mirrors
@@ -259,6 +263,79 @@ for f in "$OPDIR/pending"/*; do
 done
 shopt -u nullglob
 
+# --- unpresented deviations: mirror of the deviation gate (stage 2) -----------
+# The bar renders the SAME partition the Stop hook blocks on: mine + unowned
+# DEVIATION lines after the last mine-or-unowned HANDOFF-MARK. A bar counting a
+# different set than the gate is worse than no bar (the coupling-table rule).
+#
+# STRATEGY DIFFERS FROM THE HOOK (CR5, code-review 2026-08-04): the bar renders
+# on a ~300ms timer, and the hook's whole-file scan is O(n) in an append-forever
+# ledger — measured 0.4s at 3000 lines, blowing the render budget. The bar uses a
+# REVERSE TAIL scan: read the last ~256 lines and walk them backwards, counting
+# mine/unowned deviations, STOPPING at the first mine/unowned mark (it clears
+# everything before it). That is O(tail), not O(n). The hook stays whole-file
+# fail-closed (it is the gate; accuracy beats latency there). The bar's accuracy
+# is approximate when the active deviations exceed the tail window — but the bar
+# is informational (fails toward silence, never blocks), and the hook still gates
+# exactly. `tail` is an external, but the bar already uses `grep` for the wf
+# segment; the gate (the Stop hook) bans externals, the mirror does not.
+#
+# Dim, not red: an unpresented deviation blocks STOP, not current work. Renders
+# nothing when the count is 0 (the common case) or the ledger is absent.
+DEVMINE=0
+scan_deviations_bar() { # scan_deviations_bar <decisions-path> <this-session>
+  local f="$1" sess="$2" line kind what i
+  # LC_ALL=C so the bounded reads and ${#} count BYTES not characters (Copilot
+  # review, 2026-08-04): in a multibyte locale a 512-char chunk can be 2048
+  # bytes, weakening the byte bound. Safe to set without restore: every segment
+  # this statusline renders (op[/dev[/wf, ANSI codes, path strings from
+  # charset-restricted bare-name sentinel filenames) is ASCII, so the byte
+  # locale does not change its output.
+  LC_ALL=C
+  [ -f "$f" ] && [ ! -L "$f" ] || return 0
+  # Reject a NUL/corrupt ledger up front (fail toward silence). The tail scan
+  # below would otherwise parse garbage; a corrupt ledger must not render a count.
+  if ! (LC_ALL=C _dp=0
+        while IFS= read -r -d '' -n 512 _dprobe; do
+          _dp=$((_dp + 1)); [ "$_dp" -le 4096 ] || exit 1
+          [ "${#_dprobe}" -eq 512 ] || exit 1
+        done < "$f") 2>/dev/null; then
+    return 0
+  fi
+  # Read the last ~256 lines into an array (tail is O(tail) seek, not a full
+  # read), then walk backwards. The mark-clears rule means a single mark from the
+  # end terminates the count — early exit, bounded parse.
+  local _lines=()
+  while IFS= read -r -n 512 line; do _lines+=("$line"); done < <(tail -n 256 "$f" 2>/dev/null)
+  [ "${#_lines[@]}" -gt 0 ] || return 0
+  i=${#_lines[@]}
+  while [ "$i" -gt 0 ]; do
+    i=$((i - 1))
+    line="${_lines[i]}"
+    line="${line%$'\r'}"
+    case "$line" in *" | "*) ;; *) continue ;; esac
+    kind="${line#* | }"; kind="${kind#* | }"; kind="${kind%% | *}"
+    what="${line#* | }"; what="${what#* | }"; what="${what#* | }"; what="${what%% | *}"
+    case "$kind" in
+      DEVIATION|ESCALATION|GATE-EXCEPTION)
+        case "$what" in
+          "[sid:$sess]"*) DEVMINE=$((DEVMINE + 1)) ;;   # mine/unowned → counts
+          "[sid:"*) : ;;                                # foreign → never counts
+          *) DEVMINE=$((DEVMINE + 1)) ;;
+        esac ;;
+      HANDOFF-MARK)
+        # Walking backwards, the FIRST mine/unowned mark we hit is the last one
+        # in file order — it clears everything before it. Stop counting.
+        case "$what" in
+          "[sid:$sess]"*) return 0 ;;                   # mine/unowned → clears, stop
+          "[sid:"*) : ;;                                # foreign → no effect, keep walking
+          *) return 0 ;;
+        esac ;;
+    esac
+  done
+}
+[ -n "$OPDIR" ] && scan_deviations_bar "$OPDIR/DECISIONS.md" "$SESSION"
+
 # An operator project with nothing open AND no live workflow renders nothing.
 # The bar is for states that change what you do next; the defaults are not news.
 RED=$'\033[31m'; DIM=$'\033[2m'; RESET=$'\033[0m'
@@ -292,7 +369,7 @@ if [ -n "$SESSION" ]; then
   fi
 fi
 
-[ "$MINE" -gt 0 ] || [ "$FOREIGN" -gt 0 ] || [ -n "$WFSEG" ] || exit 0
+[ "$MINE" -gt 0 ] || [ "$FOREIGN" -gt 0 ] || [ "$DEVMINE" -gt 0 ] || [ -n "$WFSEG" ] || exit 0
 
 # Red only when YOUR stop is actually blocked — the one genuinely actionable
 # state. Foreign tasks are dim: worth seeing (that visibility is what made the
@@ -305,6 +382,13 @@ if [ "$MINE" -gt 0 ] || [ "$FOREIGN" -gt 0 ]; then
   [ "$MINE" -gt 0 ] && OUT="${OUT}${RED}${MINE}${RESET}" || OUT="${OUT}0"
   [ "$FOREIGN" -gt 0 ] && OUT="${OUT}${DIM}+${FOREIGN}*${RESET}"
   printf '%s]' "$OUT"
+  SEP=" "
+fi
+# dev[N] — dim (an unpresented decision blocks stop, not current work). Mirrors
+# the deviation gate's mine+unowned-after-last-mark count; foreign excluded.
+# Renders only when N>0; dev[0] is the common case and is noise.
+if [ "$DEVMINE" -gt 0 ]; then
+  printf '%s%sdev[%s]%s' "${SEP:-}" "$DIM" "$DEVMINE" "$RESET"
   SEP=" "
 fi
 # `&&` alone would make an empty WFSEG the script's failing last command: the

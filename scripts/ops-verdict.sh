@@ -303,6 +303,10 @@ lock_release() {
 # only the Stop hook; this reader and two others kept the unbounded form.)
 sentinel_owner() { # sentinel_owner <id> → stamped session_id ("" if none/invalid)
   local f="$OPDIR/pending/$1" line owner="" n=0
+  # LC_ALL=C so the byte-bounded read + ${#} count BYTES not characters (a
+  # multibyte-locale pad would otherwise smuggle a foreign owner past the cap
+  # guard — review finding 2026-08-04). Safe: this runs in a $(...) subshell.
+  LC_ALL=C
   # A symlink is never a sentinel our CLIs wrote (F65): `-f` alone FOLLOWS it,
   # so a link planted in pending/ would read its target's session_id: as a
   # valid owner. Degrade to unowned — fails closed, like every other
@@ -451,6 +455,55 @@ if [ "${1:-}" = "--reconcile" ]; then
   else
     echo "reconciled: $added row(s) restored to $VERDICTS from $FRAGDIR/"
   fi
+  exit 0
+fi
+
+# --- mark-handoff path (no task-id) -----------------------------------------
+# Stage 2 of worker-boundary enforcement: an operator-taken decision can reach
+# session end unpresented because the Stop hook only checks sentinels. A
+# HANDOFF-MARK line clears (for the owning session) every DEVIATION recorded
+# before it — the operator has presented them. The hook partitions on the same
+# mine/unowned-vs-foreign rule it uses for sentinels; a mark is positioned in
+# the file AFTER the deviations it clears (file position, not timestamp).
+#
+# --owner is REQUIRED and non-empty: an empty sid would write an unowned mark,
+# which under the partition clears EVERY session's deviations — a privilege
+# inversion. The explicit `[ -n "$MOWNER" ]` guard below rejects empty;
+# check_owner_name then rejects malformed (whitespace/slash/dot) owners. The
+# mark's sid tag is the load-bearing cell; the engagement cell is display-only.
+#
+# Written UNDER the lock, inside the same critical section --defer uses for
+# DECISIONS.md writes — so a concurrent verdict/defer cannot interleave.
+if [ "${1:-}" = "--mark-handoff" ]; then
+  shift
+  MOWNER=""
+  MENG="handoff"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --owner)
+        [ $# -ge 2 ] || die "--owner requires a session id"
+        [ -z "$MOWNER" ] || die "--owner given more than once"
+        MOWNER="$2"; shift 2 ;;
+      --owner=*)
+        [ -z "$MOWNER" ] || die "--owner given more than once"
+        MOWNER="${1#--owner=}"; shift ;;
+      --engagement)
+        [ $# -ge 2 ] || die "--engagement requires a value"
+        MENG="$2"; shift 2 ;;
+      --engagement=*)
+        MENG="${1#--engagement=}"; shift ;;
+      *) die "unknown option '$1' (usage: ops-verdict.sh --mark-handoff --owner <sid> [--engagement <name>])" ;;
+    esac
+  done
+  [ -n "$MOWNER" ] || die "--mark-handoff requires --owner <sid> (an empty sid would write an unowned mark clearing every session's deviations)"
+  check_owner_name "$MOWNER"
+  check_cell "engagement" "$MENG"
+  [ -f "$DECISIONS" ] || die "missing $DECISIONS — run ops-init.sh first"
+  lock_acquire
+  printf '%s | %s | HANDOFF-MARK | [sid:%s] %s | handoff presented\n' \
+    "$(date +%F)" "$MENG" "$MOWNER" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$DECISIONS"
+  lock_release
+  echo "marked handoff for session $MOWNER (DECISIONS.md HANDOFF-MARK appended)"
   exit 0
 fi
 

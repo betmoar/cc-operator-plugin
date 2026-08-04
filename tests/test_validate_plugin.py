@@ -37,6 +37,8 @@ GOOD_STATUSLINE = (
     "#!/usr/bin/env bash\n"
     "[ ! -L \"$1\" ] || exit 0\n"
     "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
+    "# deviation-gate mirror: a second bounded read of DECISIONS.md (HANDOFF-MARK)\n"
+    "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
     "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]*) owner=\"\" ;; esac\n")
 
 GOOD_LOCK_BLOCK = (
@@ -64,6 +66,9 @@ def make_good_tree(root):
     write(root / "templates" / "OPERATOR.md", GOOD_CHARTER)
     write(root / "templates" / "VERDICTS-header.md",
           "# Verdicts\n" + vp.VERDICTS_HEADER + "\n|---|---|---|---|\n")
+    write(root / "templates" / "DECISIONS-header.md",
+          "# Decisions — append-only, one line per entry\n"
+          "# <ISO-date> | <engagement.task> | <" + vp.DECISIONS_KINDS + "> | <what> | <why>\n")
     for name, model in (("op-author", "opus"),
                         ("op-mechanic", "sonnet"),
                         ("op-reviewer", "opus")):
@@ -113,15 +118,28 @@ def make_good_tree(root):
     nolink = "[ ! -L \"$1\" ] || exit 0\n"
     write(root / "scripts" / "ops-stop-hook.sh",
           "#!/usr/bin/env bash\n" + nolink + bounded +
+          "# deviation gate: a second bounded read of DECISIONS.md (HANDOFF-MARK)\n"
+          "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
           "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]*) owner=\"\" ;; esac\n")
     write(root / "scripts" / "ops-task.sh",
           "#!/usr/bin/env bash\n" + guards + nolink)
     write(root / "scripts" / "ops-verdict.sh",
           "#!/usr/bin/env bash\n" + guards + nolink + bounded +
           "while IFS= read -r -n 512 row; do :; done < \"$frag\"\n" +
+          "# --mark-handoff writes a HANDOFF-MARK line under the lock\n" +
           GOOD_LOCK_BLOCK)
     write(root / "scripts" / "ops-adopt.sh",
           "#!/usr/bin/env bash\n" + guards + nolink + bounded + GOOD_LOCK_BLOCK)
+    # ops-claims.sh: a fourth gate CLI. check_claims pins its PROTECTED literal
+    # and requires matches_protected applied to $p — the stub carries both so
+    # the good tree is clean (and the check_claims mutation tests stub it out
+    # of compliance deliberately).
+    write(root / "scripts" / "ops-claims.sh",
+          "#!/usr/bin/env bash\n"
+          'PROTECTED="scripts/validate_plugin.py tests/ .operator/bin/ hooks/ '
+          'scripts/ops-*.sh scripts/statusline.sh"\n'
+          "matches_protected() { :; }\n"
+          'for p in $ACTUAL; do matches_protected "$p"; done\n')
     write(root / "scripts" / "statusline.sh", GOOD_STATUSLINE)
     # Every shipped slash command: frontmatter the harness registers it by,
     # and plugin-root script paths (a bare scripts/ path resolves only inside
@@ -182,7 +200,7 @@ def make_good_tree(root):
           'const LOSSLESS_ONLY = new Set(["Agent"]);\n'
           'const LEDGER_PATHS = [".operator/VERDICTS.md", ".operator/DECISIONS.md",\n'
           '  ".operator/verdicts.d/"];\n'
-          'const GATE_CLIS = ["ops-verdict.sh", "ops-task.sh", "ops-adopt.sh"];\n'
+          'const GATE_CLIS = ["ops-verdict.sh", "ops-task.sh", "ops-adopt.sh", "ops-claims.sh"];\n'
           'const SALVAGE_RE = /error|fail|not ok/i;\n'
           'function compress(tool, cmd) {\n'
           '  if (NEVER_COMPRESS.has(tool)) return null;\n'
@@ -306,6 +324,24 @@ class ValidatorTest(unittest.TestCase):
               "# V\n| Gate | Criterion | Evidence (cmd) | PASS/FAIL |\n")
         self.assertFires("byte-match")
 
+    # --- decisions schema (stage 2: the deviation gate parses this enum) ---
+    def test_decisions_kind_enum_drift_fires(self):
+        # Drop HANDOFF-MARK from the enum — a presented decision would then read
+        # as unpresented forever. check_decisions_schema pins the whole enum.
+        write(self.dir / "templates" / "DECISIONS-header.md",
+              "# Decisions\n"
+              "# <d> | <e> | <DEVIATION|ESCALATION|DECISION|DEFERRED-VERDICT> | <w> | <y>\n")
+        self.assertFires("kind enum drifted")
+
+    def test_decisions_reader_missing_handoff_mark_fires(self):
+        # A deviation-gate reader that never matches HANDOFF-MARK never clears —
+        # the enum is declared but the consumer drifted (F30 call-site half).
+        write(self.dir / "scripts" / "ops-stop-hook.sh",
+              "#!/usr/bin/env bash\n[ ! -L \"$1\" ] || exit 0\n"
+              "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
+              "while IFS= read -r -n 512 dline; do :; done < \"$dec\"\n")
+        self.assertFires("does not reference HANDOFF-MARK")
+
     # --- 6. agents ---
     def test_agent_missing_model(self):
         p = self.dir / "agents" / "op-author.md"
@@ -423,6 +459,8 @@ class ValidatorTest(unittest.TestCase):
             "#!/usr/bin/env bash\n"
             "[ ! -L \"$1\" ] || exit 0\n"
             "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
+            "# deviation gate: second bounded read of DECISIONS.md (HANDOFF-MARK)\n"
+            "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
             "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]*) owner=\"\" ;; esac\n")
         good_verdict = (
             "#!/usr/bin/env bash\n"
@@ -469,7 +507,8 @@ class ValidatorTest(unittest.TestCase):
 
     # The NUL probe (`read -r -d '' -n 512`) MUST carry a chunk cap (_np … le
     # 40). An uncapped probe still detects a late NUL but walks a newline-less
-    # multi-MB tiers.env end-to-end first — 4.0s on 64MB (Copilot 2026-08-03).
+    # multi-MB tiers.env end-to-end first — 66-70s on 64MB vs 0.11s capped
+    # (bash 3.2.57, 2026-08-04; the 4.0s first cited is wrong by ~15x).
     # These two mutation tests pin the parity the F59 fix established for the
     # hook but left tiers/render drifting on.
 
@@ -1298,6 +1337,112 @@ class CompressorGuardTest(unittest.TestCase):
     def test_salvage_tap_alternative_dropped_fires(self):
         src = re.sub(r'\|not ok', '', self._real_comp, count=1)
         self.assertTrue(any("SALVAGE_RE omits" in p for p in self._probs(src)),
+                        self._probs(src))
+
+
+class ClaimsGuardTest(unittest.TestCase):
+    """check_claims must catch DRIFT, not just confirm presence. F30's lesson:
+    four-way copy parity is insufficient (uniform drift reads as "in parity").
+    So the protected-set literal is pinned to a canonical value AND its
+    application (matches_protected on $p) is required. Each test mutates the
+    real ops-claims.sh and asserts check_claims fires.
+    """
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        make_good_tree(self.dir)
+        self._real = (pathlib.Path(__file__).resolve().parent.parent /
+                      "scripts" / "ops-claims.sh").read_text(encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _probs(self, mutated_src):
+        write(self.dir / "scripts" / "ops-claims.sh", mutated_src)
+        probs = []
+        vp.check_claims(self.dir, probs)
+        return probs
+
+    def test_good_claims_is_clean(self):
+        self.assertEqual(self._probs(self._real), [])
+
+    def test_protected_path_dropped_fires(self):
+        # Drop scripts/statusline.sh from the literal — the F66 amendment. A
+        # checker matching only the whole literal would not name it; the token
+        # check does (drop it and the parser-weakening path re-opens).
+        src = self._real.replace(" scripts/statusline.sh", "", 1)
+        probs = self._probs(src)
+        self.assertTrue(any("statusline.sh" in p for p in probs), probs)
+
+    def test_protected_literal_drift_fires(self):
+        # Replace the whole literal with a different set — two ideas of "the grader".
+        src = re.sub(r'^PROTECTED=".*"$',
+                     'PROTECTED="only/one/path"', self._real, count=1, flags=re.MULTILINE)
+        self.assertTrue(any("drifted" in p for p in self._probs(src)),
+                        self._probs(src))
+
+    def test_literal_missing_fires(self):
+        src = re.sub(r'^PROTECTED=".*"$\n', '', self._real, count=1,
+                     flags=re.MULTILINE)
+        self.assertTrue(any("PROTECTED literal not found" in p
+                            for p in self._probs(src)), self._probs(src))
+
+    def test_callsite_neutered_fires(self):
+        # The literal is declared but matches_protected is not applied to $p
+        # (the F30 call-site half: a declaration alone guards nothing). Replace
+        # the call site with `false` so no code line carries both the matcher
+        # name and $p — a declaration alone guards nothing.
+        src = self._real.replace('if matches_protected "$p"; then',
+                                 'if false; then', 1)
+        self.assertTrue(any("not applied" in p for p in self._probs(src)),
+                        self._probs(src))
+
+    def test_callsite_renamed_fires(self):
+        # Rename the matcher: the literal stays, but nothing calls it — same
+        # class as commenting it out. A check that only grepped the matcher's
+        # definition would pass.
+        src = self._real.replace("matches_protected", "matches_safe", 10)
+        self.assertTrue(any("not applied" in p for p in self._probs(src)),
+                        self._probs(src))
+
+
+class InstallSetParityTest(unittest.TestCase):
+    """check_install_set_parity: the .operator/bin install set is declared in
+    ops-init.sh AND ops-sessionstart-hook.sh. A CLI in one and not the other
+    means upgraded projects never receive it (CR4). Each test mutates the real
+    ops-init.sh install loop and asserts the check fires.
+    """
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        make_good_tree(self.dir)
+        self._real_init = (pathlib.Path(__file__).resolve().parent.parent /
+                           "scripts" / "ops-init.sh").read_text(encoding="utf-8")
+        # check_install_set_parity reads BOTH install files; make_good_tree's
+        # ops-sessionstart-hook.sh stub lacks the upgrade loop, so write the real
+        # one (the check only inspects the install-loop literal, not behavior).
+        self._real_ssh = (pathlib.Path(__file__).resolve().parent.parent /
+                          "scripts" / "ops-sessionstart-hook.sh").read_text(encoding="utf-8")
+        write(self.dir / "scripts" / "ops-sessionstart-hook.sh", self._real_ssh)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _probs(self, mutated_init):
+        write(self.dir / "scripts" / "ops-init.sh", mutated_init)
+        probs = []
+        vp.check_install_set_parity(self.dir, probs)
+        return probs
+
+    def test_good_parity_is_clean(self):
+        self.assertEqual(self._probs(self._real_init), [])
+
+    def test_init_adds_a_cli_not_in_sessionstart_fires(self):
+        # Add a fifth CLI to ops-init's install loop that sessionstart lacks.
+        src = self._real_init.replace(
+            "ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh",
+            "ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh ops-future.sh", 1)
+        self.assertTrue(any("install-set drift" in p for p in self._probs(src)),
                         self._probs(src))
 
 

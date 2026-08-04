@@ -51,7 +51,16 @@ Recurring judgement call — three CLIs validate names, and they must agree.
 
 ## Decision procedure: adding a reader of a file
 
-Any new code that reads a sentinel, a fragment, or a ledger.
+Any new code that reads a sentinel, a fragment, a ledger, or DECISIONS.md.
+
+> **DECISIONS.md (stage 2 deviation gate)** is now a parsed ledger too: the Stop
+> hook's `scan_deviations` and the statusline's `scan_deviations_bar` both read
+> it whole-file, byte-bounded per line, fail per the polarity split documented
+> in `ops-stop-hook.sh` (hook fails CLOSED on cap/corrupt; the bar fails toward
+> SILENCE — a bar never blocks). A new DECISIONS.md reader inherits every rule
+> below PLUS the position-based mark-clears-deviation scan. Both readers are
+> re-implementations (the sandbox-free statusline and the hook cannot share
+> code); change the partition in one and the other must move with it.
 
 1. **Treat the content as untrusted.** These are ordinary files. `git merge`,
    `git checkout`, a hand-edit, a truncated write, and a stray binary can all
@@ -318,3 +327,51 @@ to its delete/write path as a data-loss surface:
   lines (after validating the tier VALUE); `ops-render.sh` consumes both. A new
   line kind must be taught to BOTH parsers in the same commit, with a test
   feeding it to each (F15 — the scaffold's own example killed the resolver).
+
+---
+
+## Worker-boundary enforcement (F-A1/F-A2/F-A3/F-A6/F-A13, 2026-08-04)
+
+The worker seam is where guarantees were prompt-deep: read-only seats and
+grader integrity relied on tool lists and dispatch text. `ops-claims.sh` makes
+the evidence gate verify claims mechanically, and the dispatch packet's REPORT
+line now carries `CHANGED:` for it to check. Procedures when you dispatch:
+
+1. **The packet's REPORT carries `CHANGED: <paths>|none`.** On a DONE report,
+   run `.operator/bin/ops-claims.sh --claimed "<paths>" [--since <dispatch-sha>]`.
+   It emits one evidence line per check (C1 unclaimed-change, C2 phantom-claim,
+   C3 gate-trespass) and the PASS verdict row cites the green output. A row
+   without the claims check is, like a row without evidence, FAIL by definition.
+2. **The standing FORBIDDEN default is gate files** (`scripts/validate_plugin.py`,
+   `tests/`, `.operator/bin/`, `hooks/`, `scripts/ops-*.sh`, `scripts/statusline.sh`):
+   off-limits to an implementer unless the task IS the gate, in which case pass
+   `--gate-task`. The F48 class (vacuous guards) shipped four times by the
+   maintainer; a worker weakening the validator would be harder to catch.
+3. **After any read-only or workflow dispatch, run `ops-claims.sh --expect-clean`.**
+   A read-only seat is a tool-list claim, not an enforced boundary: op-author
+   (the dominant lens seat) and every Bash-carrying seat (crawler/reviewer/
+   verifier) can write via shell. Drift is a FAIL-shaped finding logged before
+   any other action (F-A1). The check treats EVERY workflow run as needing it —
+   no seat is trusted.
+4. **A fix after a green gate re-runs the gate; the verdict cites the post-fix
+   run (F-A6).** A green result predating the change is stale.
+5. **A worker-authored commit message uses the worker's own report sentence,
+   never operator paraphrase (F-A13).** Reusing one agent's sentence for
+   another's diff is how a commit log starts lying.
+
+`check_claims` pins the protected-set literal AND its application (F30: pinned
+to a canonical literal and applied at a call site — copy parity alone is
+insufficient). `ops-claims.sh` does NOT read `.operator/pending/` (it reads git
+state), so it is neither a sentinel reader nor a `check_guard_parity` site.
+
+6. **The deviation gate's `[sid:]` tag and `--mark-handoff`.** When you log a
+   DEVIATION/ESCALATION/GATE-EXCEPTION in DECISIONS.md, prefix the what-cell with
+   `[sid:<your-session-id>]` (the id SessionStart names). Tagged deviations block
+   only YOUR Stop; untagged (legacy) ones block EVERY session (the unowned =
+   blocks-all rule, mirroring sentinels). Presenting a handoff clears them via
+   `.operator/bin/ops-verdict.sh --mark-handoff --owner <sid>` — a HANDOFF-MARK
+   positioned in the file AFTER the deviations it clears. The Stop hook's
+   `scan_deviations` and the statusline's `scan_deviations_bar` re-implement the
+   same mine/unowned-vs-foreign partition; the hook fails CLOSED on cap/corrupt,
+   the bar fails toward SILENCE (different strategies by design — the bar uses a
+   reverse-tail scan for the 300ms budget, the hook whole-file for accuracy).

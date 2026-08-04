@@ -72,7 +72,7 @@ CHARTER_SECTION_ORDER = [
 VERDICTS_HEADER = "| Gate | Criterion | Evidence | PASS/FAIL |"
 # The .operator/bin install set (ops-init.sh) — every one must be named in the
 # charter by its project-relative path.
-CHARTER_REQUIRED_CLIS = ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh")
+CHARTER_REQUIRED_CLIS = ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh", "ops-claims.sh")
 AGENT_MODEL_ALIASES = ("opus", "sonnet", "haiku")
 
 
@@ -249,6 +249,41 @@ def check_ledger_schema(root, problems):
             f"{VERDICTS_HEADER!r} (schema must byte-match the proven ledger)")
 
 
+# The DECISIONS-header kind enum — must include HANDOFF-MARK (stage 2). The hook
+# and statusline now PARSE this schema (the deviation gate), so a drifted enum
+# can no longer pass green while the readers disagree. Pin the literal AND require
+# both readers to reference the HANDOFF-MARK kind (F30: the enum AND its consumers).
+DECISIONS_KINDS = (
+    "DEVIATION|ESCALATION|GATE-EXCEPTION|DECISION|DEFERRED-VERDICT|HANDOFF-MARK")
+
+
+def check_decisions_schema(root, problems):
+    d = root / "templates" / "DECISIONS-header.md"
+    if not d.is_file():
+        problems.append("templates/DECISIONS-header.md: missing")
+        return
+    if DECISIONS_KINDS not in d.read_text(encoding="utf-8"):
+        problems.append(
+            f"templates/DECISIONS-header.md: kind enum drifted — expected "
+            f"{DECISIONS_KINDS!r}. The deviation gate (stage 2) parses this "
+            f"schema; a missing HANDOFF-MARK makes every handoff-clear read as "
+            f"an unpresented decision (F30: pin the enum, not a copy)")
+    # Both deviation-gate readers must know the HANDOFF-MARK kind: a reader that
+    # never checks for it treats a mark as ordinary prose and never clears — the
+    # enum is declared but the consumer drifted (the F30 call-site half). The
+    # verdict CLI writes it; the hook + statusline read it.
+    for name in ("ops-stop-hook.sh", "statusline.sh", "ops-verdict.sh"):
+        p = root / "scripts" / name
+        if not p.is_file():
+            continue  # missing-file is already reported by check_scripts
+        if "HANDOFF-MARK" not in p.read_text(encoding="utf-8"):
+            problems.append(
+                f"scripts/{name}: does not reference HANDOFF-MARK — the "
+                f"deviation gate's clearing mark is in the enum but this reader "
+                f"never matches it, so a presented decision reads as unpresented "
+                f"forever (F30: the enum AND its consumers must agree)")
+
+
 def check_agents(root, problems):
     agents_dir = root / "agents"
     files = sorted(agents_dir.glob("*.md")) if agents_dir.is_dir() else []
@@ -354,7 +389,7 @@ def check_hook(root, problems):
 
 def check_scripts(root, problems):
     for name in ("ops-init.sh", "ops-verdict.sh", "ops-task.sh",
-                 "ops-adopt.sh", "ops-stop-hook.sh",
+                 "ops-adopt.sh", "ops-claims.sh", "ops-stop-hook.sh",
                  "ops-sessionstart-hook.sh", "statusline.sh", "ops-tiers.sh",
                  "ops-render.sh"):
         p = root / "scripts" / name
@@ -382,7 +417,7 @@ def check_reader_bounds(root, problems):
     still applied to one of four readers. Now it fails the build instead.
     """
     readers = {
-        "ops-stop-hook.sh": 1,   # sentinel_owner
+        "ops-stop-hook.sh": 2,   # sentinel_owner + the DECISIONS.md deviation scan
         "ops-verdict.sh": 2,     # sentinel_owner + the --reconcile fragment loop
         "ops-adopt.sh": 1,       # the inline sentinel parse
         # The statusline segment renders on a ~300ms timer, which makes it the
@@ -390,7 +425,7 @@ def check_reader_bounds(root, problems):
         # per turn-end or per command. Measured on one 64MB newline-less
         # sentinel: 0.014s bounded vs 6.20s per parse unbounded, i.e. a
         # permanently wedged status bar rather than a slow one.
-        "statusline.sh": 1,      # sentinel_owner
+        "statusline.sh": 2,      # sentinel_owner + the dev[N] reverse-tail scan
         # The tier-config resolver reads a file under .operator/ (untrusted — a
         # merge or checkout can produce it). Same hazard class as the others:
         # a newline-less multi-MB tiers.env is one "line" to an unbounded read.
@@ -428,7 +463,8 @@ def check_reader_bounds(root, problems):
         # The NUL probe (`read -r -d '' -n 512`) must be BOUNDED by a chunk
         # counter, not loop the whole file. An uncapped probe still detects a
         # late NUL but walks a newline-less multi-MB file end-to-end first —
-        # measured 4.0s on a 64MB tiers.env (Copilot 2026-08-03), defeating the
+        # measured 66-70s on a 64MB tiers.env vs 0.11s capped (bash 3.2.57,
+        # 2026-08-04 — the 4.0s first cited is wrong by ~15x), defeating the
         # bounded-reader guarantee this check exists to enforce. The Stop hook
         # established the canonical capped form (F59); this keeps tiers/render
         # from drifting back to the uncapped loop. The `-n 512` inside the
@@ -447,19 +483,22 @@ def check_reader_bounds(root, problems):
             # few lines from the `while` to the chunk-size check), and the
             # cap's VALUE is parsed and bounded — the first version substring-
             # matched "le 40", which `-le 400000` (effectively uncapped)
-            # satisfies (same review). The ceiling is 200 chunks (100KB): the
-            # config parse loops' own legal maximum (200 lines × 512 bytes).
-            # Sentinel probes use 40; anything above 200 no longer bounds the
-            # probe to legal-input scale and is treated as uncapped.
+            # satisfies (same review). Two file classes, two legal scales:
+            # sentinel/config probes cap at 40 chunks (20KB — the owner is line
+            # 1); the DECISIONS.md deviation scans cap at 4096 (2MB — the ledger
+            # is append-forever, bounded by DECISIONS_MAX_BYTES). The ceiling is
+            # 8192 (4MB): above the largest legitimate probe, below the
+            # effectively-uncapped `le 400000` that defeats the bound.
             window = "\n".join(code[i:i + 4])
             cap = re.search(r"-le (\d+)\b", window)
-            if not cap or int(cap.group(1)) > 200:
+            if not cap or int(cap.group(1)) > 8192:
+                got = cap.group(1) if cap else "none"
                 problems.append(
                     f"scripts/{name}: NUL probe at code line {i + 1} has no "
-                    f"chunk cap (a counter with `-le N`, N<=200) — an uncapped "
-                    f"`read -d ''` loop walks a multi-MB file end-to-end and "
-                    f"stalls the reader (see ops-stop-hook.sh sentinel_owner "
-                    f"for the canonical bounded form)")
+                    f"chunk cap (a counter with `-le N`, N<=8192; got {got}) — "
+                    f"an uncapped `read -d ''` loop walks a multi-MB file "
+                    f"end-to-end and stalls the reader (see ops-stop-hook.sh "
+                    f"sentinel_owner for the canonical bounded form)")
 
 
 def check_platform_idioms(root, problems):
@@ -564,6 +603,88 @@ def check_guard_parity(root, problems):
                 f"planted symlink in pending/, laundering an entry our CLIs "
                 f"never wrote into a trusted sentinel (F65/F66; the guard "
                 f"must live at every reader, see docs/PLAYBOOK.md)")
+
+
+def check_claims(root, problems):
+    r"""ops-claims.sh protected-set parity (F30 lesson + F-A2).
+
+    The C3 gate-trespass check ("the builder cannot edit its own grader") only
+    means anything if the protected set is BOTH declared AND applied. F30 proved
+    that four-way copy parity is insufficient: uniform drift reads as "in parity"
+    while four files are identically broken. So, like the tier-namespace check,
+    the literal is pinned to a canonical value AND its application at a call site
+    is required. Drop a protected path from the literal, or neuter the call site
+    (comment it out / rename the matcher), and the build fails.
+
+    `statusline.sh` is in the set per the F66 amendment: it is a full sentinel
+    reader bound by gate semantics, so a worker weakening its parser re-opens a
+    laundering path invisibly — and no prior glob covered it.
+    """
+    p = root / "scripts" / "ops-claims.sh"
+    if not p.is_file():
+        return  # missing-file is already reported by check_scripts
+    text = p.read_text(encoding="utf-8")
+    # The canonical protected set — must byte-match the PROTECTED= literal in
+    # ops-claims.sh. A divergence here is two different ideas of "the grader".
+    literal = re.search(r'^PROTECTED="(.*)"$', text, re.MULTILINE)
+    canonical = ("scripts/validate_plugin.py tests/ .operator/bin/ hooks/ "
+                 "scripts/ops-*.sh scripts/statusline.sh")
+    if not literal:
+        problems.append(
+            "scripts/ops-claims.sh: PROTECTED literal not found — the "
+            "gate-trespass protected set must be a single declared literal "
+            "(F-A2: the builder cannot edit its own grader)")
+    elif literal.group(1) != canonical:
+        problems.append(
+            f"scripts/ops-claims.sh: PROTECTED literal drifted — expected "
+            f"{canonical!r}, got {literal.group(1)!r}. A divergence is two "
+            f"different ideas of 'the grader' (drop a path and the gate no "
+            f"longer protects it; F30: pin the literal, not a copy)")
+    # The literal must be APPLIED — a `matches_protected` call inside a real
+    # check, not just declared. A comment-only or renamed matcher passes a
+    # grep on the literal while guarding nothing (the F30 call-site half).
+    # CODE lines only: the script discusses the protected set at length in
+    # comments, and a checker firing on its own docs trains ignore.
+    code = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
+    if not any("matches_protected" in ln and "$p" in ln for ln in code):
+        problems.append(
+            "scripts/ops-claims.sh: matches_protected is not applied to the "
+            "touched paths — the PROTECTED literal is declared but not used; "
+            "a gate-trespass check that never runs guards nothing (F30: pin "
+            "the literal AND its application)")
+    # statusline.sh must be in the literal — it is the F66 amendment and the
+    # one a prior glob missed. Match the token, not the whole literal, so a
+    # reordering stays free but dropping it fires.
+    if "statusline.sh" not in (literal.group(1) if literal else ""):
+        problems.append(
+            "scripts/ops-claims.sh: PROTECTED omits scripts/statusline.sh — "
+            "it is a full sentinel reader (F66); leaving it out re-opens a "
+            "parser-weakening laundering path")
+
+
+def check_install_set_parity(root, problems):
+    r"""The .operator/bin install set is now declared in TWO files: ops-init.sh
+    (the authoritative install on /cc-operator:start) and ops-sessionstart-hook.sh
+    (the automated upgrade path). A fifth CLI added to one and not the other ships
+    green — every upgraded project silently never receives it (CR4, code-review
+    2026-08-04). This is the F30 shape the repo's check_claims docstring argues
+    against. Pin the two literals equal.
+    """
+    pat = re.compile(r'for _?tool in (ops-verdict\.sh ops-task\.sh ops-adopt\.sh[^;]*)')
+    sets = {}
+    for name in ("ops-init.sh", "ops-sessionstart-hook.sh"):
+        p = root / "scripts" / name
+        if not p.is_file():
+            continue
+        m = pat.search(p.read_text(encoding="utf-8"))
+        sets[name] = m.group(1).strip() if m else None
+    a, b = sets.get("ops-init.sh"), sets.get("ops-sessionstart-hook.sh")
+    if a and b and a != b:
+        problems.append(
+            f"install-set drift: ops-init.sh installs [{a}] but "
+            f"ops-sessionstart-hook.sh upgrades [{b}] — a CLI in one and not the "
+            f"other means upgraded projects never receive it (CR4; the two lists "
+            f"must stay equal)")
 
 
 def check_lock_parity(root, problems):
@@ -1195,6 +1316,7 @@ CHECKS = (
     check_changelog,
     check_charter,
     check_ledger_schema,
+    check_decisions_schema,
     check_agents,
     check_render_templates,
     check_hook,
@@ -1202,6 +1324,8 @@ CHECKS = (
     check_reader_bounds,
     check_platform_idioms,
     check_guard_parity,
+    check_claims,
+    check_install_set_parity,
     check_compressor,
     check_lock_parity,
     check_resolver_renderer_parity,

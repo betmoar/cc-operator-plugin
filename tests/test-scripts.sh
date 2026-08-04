@@ -17,6 +17,7 @@ VERDICT="$SCRIPTS/ops-verdict.sh"
 HOOK="$SCRIPTS/ops-stop-hook.sh"
 TASK="$SCRIPTS/ops-task.sh"
 ADOPT="$SCRIPTS/ops-adopt.sh"
+CLAIMS="$SCRIPTS/ops-claims.sh"
 SSHOOK="$SCRIPTS/ops-sessionstart-hook.sh"
 
 # Absolute bash so a restricted PATH (case 5) governs only the hook's INTERNAL
@@ -374,7 +375,73 @@ check "sessionstart hook emits additionalContext with the id" "$(printf '%s' "$S
 Q="$(newproj)"
 SSQ="$(sed "s|<tmp>|$Q|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"; SSQRC=$?
 check "sessionstart hook silent outside operator projects" "$([ "$SSQRC" -eq 0 ] && [ -z "$SSQ" ] && echo 0 || echo 1)"
-rm -rf "$Q" "$P"
+# SessionStart ensures the compressor ephemera are git-ignored: a target project
+# whose .operator/.gitignore predates the compressor would otherwise show
+# .compress-spill/ as dirty state the moment the PostToolUse compressor fires
+# (user-reported 2026-08-04). The hook appends the lines idempotently.
+GIP="$(newproj)"; ( cd "$GIP" && bash "$INIT" >/dev/null 2>&1 )
+# Strip the compressor lines to simulate a pre-compressor gitignore.
+printf '# legacy\n.lock/\n' > "$GIP/.operator/.gitignore"
+sed "s|<tmp>|$GIP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
+check "sessionstart ensures .compress-spill/ is git-ignored" \
+  "$(grep -q '^\.compress-spill/$' "$GIP/.operator/.gitignore" && echo 0 || echo 1)"
+check "sessionstart ensures .compress-state/ is git-ignored" \
+  "$(grep -q '^\.compress-state/$' "$GIP/.operator/.gitignore" && echo 0 || echo 1)"
+# Idempotent: a second fire does not duplicate the block.
+sed "s|<tmp>|$GIP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
+check "sessionstart gitignore-ensure is idempotent (no duplicate block)" \
+  "$( [ "$(grep -c '^\.compress-spill/$' "$GIP/.operator/.gitignore")" = 1 ] && echo 0 || echo 1)"
+rm -rf "$Q" "$P" "$GIP"
+
+# --- automated upgrade path (version-gated bin/ refresh, 2026-08-04) ----------
+# ops-init stamps the installed version; SessionStart refreshes bin/ when the
+# running plugin's version differs. A project on an OLD operator keeps its old
+# bin/ CLIs until /cc-operator:start re-runs — but SessionStart fires every
+# session, so the new ops-claims.sh / --mark-handoff land automatically.
+UP="$(newproj)"; ( cd "$UP" && bash "$INIT" >/dev/null 2>&1 )
+# The plugin's current version (single-read, avoids nested-quote escaping).
+PLUGIN_VER="$(grep -m1 '"version"' "$REPO/.claude-plugin/plugin.json" \
+             | sed 's/.*"version".*:.*"\([^"]*\)".*/\1/')"
+# ops-init stamps the version from the plugin's plugin.json.
+check "ops-init stamps .operator/.version from plugin.json" \
+  "$([ -f "$UP/.operator/.version" ] && [ -n "$(cat "$UP/.operator/.version")" ] && echo 0 || echo 1)"
+# Simulate an OLD project: stale stamp + a stale bin/ CLI marker.
+printf '0.1.0-old\n' > "$UP/.operator/.version"
+printf '#!/usr/bin/env bash\necho STALE\n' > "$UP/.operator/bin/ops-verdict.sh"
+rm -f "$UP/.operator/bin/ops-claims.sh"   # old operator had no ops-claims.sh
+sed "s|<tmp>|$UP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
+# After the upgrade fire, bin/ops-verdict.sh is refreshed from the plugin copy...
+check "sessionstart refreshes a stale bin/ CLI on version change" \
+  "$(cmp -s "$UP/.operator/bin/ops-verdict.sh" "$VERDICT" && echo 0 || echo 1)"
+# ...and the stamp now matches the plugin version.
+check "sessionstart re-stamps .version after upgrade" \
+  "$([ "$(cat "$UP/.operator/.version")" = "$PLUGIN_VER" ] && echo 0 || echo 1)"
+# ops-claims.sh now exists (it didn't on old operator) — the upgrade installs it.
+check "sessionstart upgrade installs the new ops-claims.sh" \
+  "$([ -f "$UP/.operator/bin/ops-claims.sh" ] && echo 0 || echo 1)"
+# A second fire (version now matches) does NOT re-copy — steady-state is cheap.
+_pre="$(wc -c < "$UP/.operator/bin/ops-verdict.sh")"
+sed "s|<tmp>|$UP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
+check "sessionstart is a no-op when the version matches (steady-state)" \
+  "$( [ "$(wc -c < "$UP/.operator/bin/ops-verdict.sh")" = "$_pre" ] && echo 0 || echo 1)"
+# CR3: a FAILED copy must NOT advance the stamp (a truncated CLI + "current"
+# stamp would never retry). Make bin/ unwritable so cp fails; the old stamp
+# stays, so the next session retries.
+printf '0.1.0-old\n' > "$UP/.operator/.version"   # force an upgrade attempt
+chmod 000 "$UP/.operator/bin" 2>/dev/null
+sed "s|<tmp>|$UP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
+check "a failed upgrade copy does NOT advance the stamp (retry next session)" \
+  "$([ "$(cat "$UP/.operator/.version")" = "0.1.0-old" ] && echo 0 || echo 1)"
+chmod 755 "$UP/.operator/bin" 2>/dev/null
+# CR3: bin/ is CREATED if absent (a project with .operator/ but no bin/ must not
+# stamp itself current while installing nothing).
+UP2="$(newproj)"; ( cd "$UP2" && bash "$INIT" >/dev/null 2>&1 )
+rm -rf "$UP2/.operator/bin"
+printf '0.1.0-old\n' > "$UP2/.operator/.version"
+sed "s|<tmp>|$UP2|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
+check "upgrade creates .operator/bin/ if absent" \
+  "$([ -d "$UP2/.operator/bin" ] && [ -f "$UP2/.operator/bin/ops-claims.sh" ] && echo 0 || echo 1)"
+rm -rf "$UP" "$UP2"
 
 ########################################################################
 echo "-- Case 9: migration safety — an unowned sentinel blocks EVERY session"
@@ -620,12 +687,20 @@ done
 # writing the file. Two vectors: filling the 512 cap, and a NUL (bash 3.2's
 # `read -n` stops AT one, so the padding need not reach 512 — and ${#line}
 # cannot see it, because bash drops NULs from variables entirely).
-for vec in pad512 nulpad latenul; do
+for vec in pad512 nulpad latenul utf8pad; do
   rm -f "$P"/.operator/pending/*
   if [ "$vec" = pad512 ]; then
     python3 -c "import sys; open(sys.argv[1],'wb').write(b'x'*512+b'session_id: EVIL\\n')" "$P/.operator/pending/T-SMUG"
   elif [ "$vec" = nulpad ]; then
     python3 -c "import sys; open(sys.argv[1],'wb').write(b'x'+b'\\0'*100+b'x'*411+b'session_id: EVIL\\n')" "$P/.operator/pending/T-SMUG"
+  elif [ "$vec" = utf8pad ]; then
+    # 512 multibyte chars (é = 2 bytes) = 1024 bytes. In a UTF-8 locale `read -n
+    # 512` and ${#line} count CHARACTERS, so this 1024-byte line reads as ONE
+    # 512-char chunk that never trips the <512 cap guard — and `session_id: EVIL`
+    # on the next line smuggles a foreign owner (unowned→foreign, fail-OPEN).
+    # The fix sets LC_ALL=C in the parser so both count BYTES (review finding
+    # 2026-08-04). Reproducible on bash 3.2 with a UTF-8 locale.
+    python3 -c "import sys; open(sys.argv[1],'wb').write(('é'*512+'session_id: EVIL\\n').encode('utf-8'))" "$P/.operator/pending/T-SMUG"
   else
     # latenul: the NUL sits PAST byte 512 with every physical line under the cap,
     # so the single-shot 512-byte probe missed it and the sub-cap lines slipped
@@ -634,7 +709,19 @@ for vec in pad512 nulpad latenul; do
     python3 -c "import sys; open(sys.argv[1],'wb').write(b'\\n'.join(b'p'*100 for _ in range(6))+b'\\n'+b'q'*50+b'\\0'+b'r'*50+b'\\nsession_id: EVIL\\n')" "$P/.operator/pending/T-SMUG"
   fi
   # Under the OLDEST bash: the nul vectors only exist there (F46).
-  printf '{"session_id":"SESS-B","cwd":"%s"}' "$P" | "$BASH_OLD" "$HOOK" >/dev/null 2>&1; SMRC=$?
+  # The utf8pad vector only exercises the multibyte-counting path under a UTF-8
+  # locale; find one, else run default (the LC_ALL=C fix makes the parser
+  # locale-independent, so it blocks either way, but only a UTF-8 locale proves
+  # the fix is what's blocking).
+  _utfloc=""
+  if [ "$vec" = utf8pad ]; then
+    _utfloc="$(locale -a 2>/dev/null | grep -m1 'UTF-8' || true)"
+  fi
+  if [ -n "$_utfloc" ]; then
+    printf '{"session_id":"SESS-B","cwd":"%s"}' "$P" | LC_ALL="$_utfloc" "$BASH_OLD" "$HOOK" >/dev/null 2>&1; SMRC=$?
+  else
+    printf '{"session_id":"SESS-B","cwd":"%s"}' "$P" | "$BASH_OLD" "$HOOK" >/dev/null 2>&1; SMRC=$?
+  fi
   check "a one-line [$vec] sentinel cannot smuggle an owner — fails CLOSED (exit 2)" \
     "$([ "$SMRC" -eq 2 ] && echo 0 || echo 1)"
 
@@ -1239,6 +1326,34 @@ mkdir -p "$P/sub/deeper"
 check "a subdirectory cwd finds the same gate (F01 shape)" \
   "$([ "$(render SESS-A "$P/sub/deeper")" = "op[1+2*]" ] && echo 0 || echo 1)"
 
+# --- dev[N] mirror: the bar renders the deviation gate's partition (stage 2) ---
+# Same coupling rule as op[ — a bar describing a different gate than the one that
+# runs is worse than no bar. dev[N] counts mine+unowned DEVIATIONs after the last
+# mine/unowned HANDOFF-MARK; foreign excluded; renders nothing when N=0. Dim, not
+# red (an unpresented decision blocks stop, not current work). Uses a fresh
+# project so DECISIONS.md state does not collide with the op[ cases above.
+DEVPROJ="$(newproj)"; ( cd "$DEVPROJ" && bash "$INIT" >/dev/null 2>&1 )
+DEVDEC="$DEVPROJ/.operator/DECISIONS.md"
+check "no deviations → no dev[ segment" \
+  "$([ -z "$(render SESS-A "$DEVPROJ")" ] && echo 0 || echo 1)"
+printf '2026-08-04 | e.t | DEVIATION | [sid:SESS-A] a decision | r\n' > "$DEVDEC"
+check "1 mine deviation → dev[1] (dim)" \
+  "$([ "$(render SESS-A "$DEVPROJ")" = "dev[1]" ] && echo 0 || echo 1)"
+printf '2026-08-04 | e.t | DEVIATION | [sid:SESS-B] foreign | r\n' >> "$DEVDEC"
+check "foreign deviation excluded → still dev[1]" \
+  "$([ "$(render SESS-A "$DEVPROJ")" = "dev[1]" ] && echo 0 || echo 1)"
+printf '2026-08-04 | e | HANDOFF-MARK | [sid:SESS-A] 2026-08-04T00:00:00Z | presented\n' >> "$DEVDEC"
+check "mine mark clears → no dev[ segment" \
+  "$([ -z "$(render SESS-A "$DEVPROJ")" ] && echo 0 || echo 1)"
+# A deviation AFTER the mark re-shows it (position rule, mirrored from the hook).
+printf '2026-08-04 | e.t | DEVIATION | [sid:SESS-A] post-mark | r\n' >> "$DEVDEC"
+check "deviation after mark re-shows dev[1]" \
+  "$([ "$(render SESS-A "$DEVPROJ")" = "dev[1]" ] && echo 0 || echo 1)"
+# An untagged (legacy) deviation counts for any session.
+printf '2026-08-04 | e.t | DEVIATION | untagged legacy | r\n' > "$DEVDEC"
+check "untagged deviation → dev[1] for any session" \
+  "$([ "$(render SESS-B "$DEVPROJ")" = "dev[1]" ] && echo 0 || echo 1)"
+
 # Hostile/degenerate stdin must render nothing rather than spray errors onto
 # the bar. Includes the no-parser case: unlike the Stop hook, which warns on
 # stderr, a statusline has nowhere to warn — silence IS the correct behavior.
@@ -1405,8 +1520,11 @@ check "the renderer's NUL probe also loops the whole file" \
 rm -f "$LATENULENV"
 # The probe is now BOUNDED at 200 chunks (100KB): a newline-less multi-MB
 # tiers.env (no NUL) must die FAST, not loop the whole file. Before the cap
-# this measured 4.0s on a 64MB file (Copilot 2026-08-03, final review) — the
-# probe defeated the bounded-reader guarantee check_reader_bounds enforces.
+# this measured 66-70s on a 64MB file vs 0.11s capped (bash 3.2.57,
+# 2026-08-04) — the probe defeated the bounded-reader guarantee
+# check_reader_bounds enforces. (The 4.0s originally cited from the F64
+# report is wrong by ~15x; it was copied into five files before anyone
+# re-measured. A load-bearing number with no owner rots exactly this way.)
 # The fixture must be 16MB, not 2MB: with the cap reverted, 2MB completed in
 # 2.4s on bash 3.2 — UNDER the 5s budget, so both assertions passed against
 # the broken code (code-review of f4cae1a, 2026-08-04; PLAYBOOK "prove it
@@ -1420,7 +1538,7 @@ BIGOUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$BIGENV
 _elapsed=$(( $(date +%s) - _start ))
 check "a newline-less multi-MB tiers.env dies (probe is bounded, not whole-file)" \
   "$([ "$BIGRC" -ne 0 ] && ! printf '%s' "$BIGOUT" | grep -q 'glm-evil' && echo 0 || echo 1)"
-check "the bounded probe rejects a multi-MB file fast (<5s, was 4.0s+ uncapped on 64MB)" \
+check "the bounded probe rejects a multi-MB file fast (<5s; 64MB uncapped is 66-70s)" \
   "$([ "$_elapsed" -lt 5 ] && echo 0 || echo 1)"
 _start=$(date +%s)
 CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$BIGENV" \
@@ -1758,6 +1876,365 @@ check "unbalanced journal quiet past STALL_SEC (1200s) → no wf segment (failed
 check "empty journal (0 started) → no wf segment" \
   "$([ -z "$(render "$WFSESS" "$WFPROJ")" ] && echo 0 || echo 1)"
 rm -rf "$HOME/.claude/projects/wftestproj"
+
+########################################################################
+echo "-- Case: ops-claims verifies diff-matches-claims (C1/C2/C3) + expect-clean [F-A3/F-A2/F-A1]"
+# A fresh project with a base commit, then staged/unstaged/untracked changes.
+# ops-claims reads git state, so each sub-case mutates the tree and reads the
+# exit code + stdout. Every sub-case here is revert-discriminating: the check
+# it exercises is named in its fail message, and removing that check from
+# ops-claims.sh flips the asserted exit code.
+P="$(newproj)"
+( cd "$P" && git init -q && git config user.email t@t && git config user.name t )
+printf 'a\n' > "$P/a.txt"; printf 'b\n' > "$P/b.txt"
+mkdir "$P/tests"; printf 'x\n' > "$P/tests/t.sh"
+( cd "$P" && git add -A && git commit -qm base )
+# The base sha is the dispatch anchor: --since is mandatory (CR2), so every
+# --claimed call passes it. Capture once.
+BASE_SHA="$(cd "$P" && git rev-parse HEAD)"
+runclaims() { ( cd "$P" && bash "$CLAIMS" "$@" ); }   # → exit code, stdout on fd1
+# clean_tree: revert ALL changes (staged + unstaged + untracked) to the current
+# HEAD so each sub-case starts from a known-clean base. `git checkout .` alone
+# misses STAGED changes (a `git rm`/`git mv` stages), so reset --hard + clean.
+# State leaks between sub-cases are a real bug class — a case that passes
+# against leftover state proves nothing. Also refreshes SINCE_SHA to the current
+# HEAD (the --since anchor for working-tree cases); committed cases re-capture.
+clean_tree() {
+  ( cd "$P" && git reset -q --hard HEAD >/dev/null 2>&1 && git clean -qfd )
+  SINCE_SHA="$(cd "$P" && git rev-parse HEAD)"
+}
+
+# C1 green: claim exactly the one touched path.
+printf 'a2\n' > "$P/a.txt"
+runclaims --since "$BASE_SHA" --claimed "a.txt" >/dev/null 2>&1; C1G=$?
+check "C1 green: claim matches the single touched path" "$([ "$C1G" = 0 ] && echo 0 || echo 1)"
+
+# C1 fail: an unclaimed touched path (b.txt modified, not claimed). Capture the
+# NAMING before reverting — the output line exists only while b.txt is dirty.
+printf 'b2\n' > "$P/b.txt"
+C1OUT="$(runclaims --since "$BASE_SHA" --claimed "a.txt" 2>/dev/null)"; C1F=$?
+clean_tree
+check "C1 fail: touched-but-unclaimed path → non-zero" "$([ "$C1F" != 0 ] && echo 0 || echo 1)"
+check "C1 fail names 'unclaimed-change'" "$(printf '%s' "$C1OUT" | grep -q unclaimed-change && echo 0 || echo 1)"
+
+# C2 fail: a claimed path with no actual change (phantom-claim). Clean tree,
+# claim a.txt + c.txt — neither is changed → both phantom.
+C2OUT="$(runclaims --since "$BASE_SHA" --claimed "a.txt c.txt" 2>/dev/null)"; C2F=$?
+check "C2 fail: claimed-but-untouched path → non-zero" "$([ "$C2F" != 0 ] && echo 0 || echo 1)"
+check "C2 fail names 'phantom-claim'" "$(printf '%s' "$C2OUT" | grep -q phantom-claim && echo 0 || echo 1)"
+
+# C2 green with a directory-prefix claim: 'tests/' satisfied by tests/t.sh.
+# tests/ is a PROTECTED path, so this needs --gate-task or C3 (rightly) fails it.
+printf 'y\n' >> "$P/tests/t.sh"
+runclaims --since "$BASE_SHA" --claimed "tests/" --gate-task >/dev/null 2>&1; C2D=$?
+check "C2 green: dir-prefix claim 'tests/' satisfied by tests/t.sh" "$([ "$C2D" = 0 ] && echo 0 || echo 1)"
+
+# C3 fail: a touched protected path (tests/) without --gate-task.
+C3OUT="$(runclaims --since "$BASE_SHA" --claimed "tests/" 2>/dev/null)"; C3F=$?
+check "C3 fail: protected path touched without --gate-task → non-zero" "$([ "$C3F" != 0 ] && echo 0 || echo 1)"
+check "C3 fail names 'gate-trespass'" "$(printf '%s' "$C3OUT" | grep -q gate-trespass && echo 0 || echo 1)"
+
+# C3 pass: same tree, --gate-task authorizes the gate edit.
+runclaims --since "$BASE_SHA" --claimed "tests/" --gate-task >/dev/null 2>&1; C3P=$?
+check "C3 pass: protected path allowed with --gate-task" "$([ "$C3P" = 0 ] && echo 0 || echo 1)"
+clean_tree
+
+# CHANGED: none — clean working tree, no claims, no trespass.
+runclaims --since "$BASE_SHA" --claimed none >/dev/null 2>&1; CNG=$?
+check "CHANGED none: clean tree, no claims → exit 0" "$([ "$CNG" = 0 ] && echo 0 || echo 1)"
+
+# T3: --expect-clean + --claimed combined — the real dispatch shape (a clean
+# read-only seat, operator still verifies claims). --expect-clean passes, then
+# the script falls through to C1/C2/C3. A PHANTOM claim must still fire C2 even
+# on a clean tree (the reviewer mutated the fall-through exit 0 and the suite
+# stayed green). Clean tree + a claimed-but-untouched path → C2 phantom.
+runclaims --since "$BASE_SHA" --expect-clean --claimed "nonexistent.txt" >/dev/null 2>&1; ECPC=$?
+check "--expect-clean + --claimed: phantom claim still fires C2 on a clean tree" \
+  "$([ "$ECPC" != 0 ] && echo 0 || echo 1)"
+
+# --expect-clean green: tree empty apart from .operator/ (none here).
+runclaims --expect-clean >/dev/null 2>&1; ECG=$?
+check "--expect-clean green on a clean tree" "$([ "$ECG" = 0 ] && echo 0 || echo 1)"
+
+# --expect-clean fail: a stray file beyond .operator/.
+printf 'z\n' > "$P/stray.txt"
+runclaims --expect-clean >/dev/null 2>&1; ECF=$?
+check "--expect-clean fail on a stray non-ledger file" "$([ "$ECF" != 0 ] && echo 0 || echo 1)"
+clean_tree
+
+# --expect-clean exempts .operator/ ledger paths: scaffold + a verdict row, then
+# expect-clean must still pass (a verdict is a normal side-effect of a dispatch).
+( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+printf 'row\n' >> "$P/.operator/VERDICTS.md"
+runclaims --expect-clean >/dev/null 2>&1; ECL=$?
+check "--expect-clean exempts .operator/ ledger paths" "$([ "$ECL" = 0 ] && echo 0 || echo 1)"
+
+# Untracked detection: an untracked file is an actual change caught by C1.
+clean_tree
+printf 'u\n' > "$P/untracked.txt"
+runclaims --since "$BASE_SHA" --claimed "a.txt" >/dev/null 2>&1; UNC=$?
+check "untracked file detected as an actual change (C1)" "$([ "$UNC" != 0 ] && echo 0 || echo 1)"
+
+# Charset/traversal discipline on --claimed: '..' traversal is rejected.
+runclaims --since "$BASE_SHA" --claimed "../etc" >/dev/null 2>&1; TRV=$?
+check "claimed '..' traversal is rejected" "$([ "$TRV" != 0 ] && echo 0 || echo 1)"
+# '|' in a claimed path is rejected (would break the list contract).
+runclaims --since "$BASE_SHA" --claimed "a.txt|injected" >/dev/null 2>&1; PIP=$?
+check "claimed '|' is rejected" "$([ "$PIP" != 0 ] && echo 0 || echo 1)"
+
+# CR2: --since is MANDATORY (a HEAD default made a committed gate-trespass
+# invisible). Without --since, the gate must die loud, not default to HEAD.
+runclaims --claimed none >/dev/null 2>&1; NOSINCE=$?
+check "--since is mandatory (absent → die, no HEAD default)" "$([ "$NOSINCE" != 0 ] && echo 0 || echo 1)"
+# And the reason it's mandatory: a worker that COMMITS its change must NOT evade
+# the diff. Commit a.txt's modification since base, claim none → C1 catches it.
+clean_tree
+printf 'a2\n' > "$P/a.txt"
+( cd "$P" && git add -A && git commit -qm second )
+runclaims --since "$BASE_SHA" --claimed none >/dev/null 2>&1; COMMIT=$?
+check "a COMMITTED change since base is caught (--since <base>, not HEAD)" "$([ "$COMMIT" != 0 ] && echo 0 || echo 1)"
+clean_tree
+
+# --- adversarial cases (REFUTED review 2026-08-04): the F-A2 attack surface ---
+# These reproduce each must-resolve finding the review caught. Every one is the
+# exact shape that evaded the first version; they MUST stay green or the parse
+# has regressed back to word-split / pathname-expansion.
+clean_tree
+
+# C3 must fire on a DELETED gate CLI — the exact F-A2 attack. The first version's
+# `for pat in $PROTECTED` pathname-expanded, so a deleted file matched nothing.
+mkdir -p "$P/scripts"
+printf 'stub\n' > "$P/scripts/ops-verdict.sh"
+( cd "$P" && git add -A && git commit -qm gatefiles >/dev/null 2>&1 )
+# Working-tree deletion: the file was committed, now rm it. git diff HEAD and
+# porcelain both report the path as deleted/removed — the pattern must catch it.
+rm -f "$P/scripts/ops-verdict.sh"
+DELVIEW="$(cd "$P" && git status --porcelain --untracked-files=all scripts/ops-verdict.sh)"
+DELOUT="$(runclaims --since "$BASE_SHA" --claimed 'scripts/ops-verdict.sh' 2>/dev/null)"; DEL=$?
+check "F-A2 setup: the deleted gate CLI is in git's view" \
+  "$([ -n "$DELVIEW" ] && echo 0 || echo 1)"
+check "C3 fires on a DELETED gate CLI (F-A2 attack; pathname-expansion fix)" \
+  "$([ "$DEL" != 0 ] && echo 0 || echo 1)"
+check "deletion names 'gate-trespass'" \
+  "$(printf '%s' "$DELOUT" | grep -q gate-trespass && echo 0 || echo 1)"
+clean_tree
+
+# Combined status codes must not glue the XY chars to the path (REFUTED #2). An
+# earlier allowlist missed AM/AD/MD/RD/T/etc., so "{item AM feature.txt}" — a
+# garbage item that defeats C1/C3 and the ledger exemption. These reproduce the
+# exact shapes the verifier caught.
+# AM: staged-add then working-modify. Claim it → must be green (one real path).
+printf 'a\n' > "$P/feature.txt"; ( cd "$P" && git add feature.txt >/dev/null 2>&1 )
+printf 'b\n' >> "$P/feature.txt"
+AMOUT="$(runclaims --since "$SINCE_SHA" --claimed 'feature.txt' 2>/dev/null)"; AM=$?
+check "AM (added+modified) claimed → green, not a glued 'AM feature.txt' item" \
+  "$([ "$AM" = 0 ] && printf '%s' "$AMOUT" | grep -qv '{item AM' && echo 0 || echo 1)"
+clean_tree
+
+# AD: staged-add then working-DELETE of a gate CLI — the C3-evasion repro. The
+# status is 'AD scripts/ops-verdict.sh' (index-only; not in git diff HEAD), so
+# porcelain is the only source, and the glued 'AD ' must be stripped for C3.
+printf 'evil\n' > "$P/scripts/ops-verdict.sh"
+( cd "$P" && git add scripts/ops-verdict.sh >/dev/null 2>&1 )
+rm -f "$P/scripts/ops-verdict.sh"
+ADOUT="$(runclaims --since "$SINCE_SHA" --claimed 'scripts/ops-verdict.sh' 2>/dev/null)"; AD=$?
+check "AD (added+deleted gate CLI) fires C3 gate-trespass" \
+  "$([ "$AD" != 0 ] && printf '%s' "$ADOUT" | grep -q gate-trespass && echo 0 || echo 1)"
+clean_tree
+
+# A STAGED ledger write must stay exempt from --expect-clean. The glued-prefix
+# bug made '{item AM .operator/...}' fail the ledger-path exemption.
+( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+printf 'row\n' >> "$P/.operator/DECISIONS.md"; ( cd "$P" && git add .operator/DECISIONS.md >/dev/null 2>&1 )
+printf 'more\n' >> "$P/.operator/DECISIONS.md"
+runclaims --expect-clean >/dev/null 2>&1; STEC=$?
+check "staged ledger write stays exempt from --expect-clean (no glued AM)" \
+  "$([ "$STEC" = 0 ] && echo 0 || echo 1)"
+clean_tree
+
+# A path WITH A SPACE is one item, not shredded. The first version word-split
+# `my file.txt` into `my` + `file.txt`. Untracked (so porcelain -z must carry it).
+printf 'x\n' > "$P/my file.txt"
+SCOUT="$(runclaims --since "$SINCE_SHA" --claimed none 2>/dev/null)"
+check "path with a space is one unclaimed-change item (not shredded)" \
+  "$(printf '%s' "$SCOUT" | grep -q '{item my file.txt}' && echo 0 || echo 1)"
+clean_tree
+
+# A bad --since ref is rejected, not silently degraded to "no changes" (which
+# would false-green a committed gate-trespass). The first version swallowed it.
+printf 'a2\n' > "$P/a.txt"
+runclaims --claimed none --since not-a-real-ref-xyz >/dev/null 2>&1; BADS=$?
+check "invalid --since ref is rejected (no silent false-green)" "$([ "$BADS" != 0 ] && echo 0 || echo 1)"
+clean_tree
+
+# A renamed file: git mv yields a rename entry. The first version parsed
+# 'R old -> new' into a garbage '->' item. Both old and new must be seen as
+# changes (a renamed gate CLI must not evade C3).
+mkdir -p "$P/hooks"; printf 'orig\n' > "$P/hooks/h.sh"
+( cd "$P" && git add -A && git commit -qm hookbase >/dev/null 2>&1 )
+( cd "$P" && git mv hooks/h.sh hooks/renamed.sh >/dev/null 2>&1 )
+MVVIEW="$(cd "$P" && git status --porcelain --untracked-files=all hooks/)"
+MVOUT="$(runclaims --since "$SINCE_SHA" --claimed 'hooks/' --gate-task 2>/dev/null)"; MV=$?
+check "F-A2 rename setup: the rename is in git's view" \
+  "$([ -n "$MVVIEW" ] && echo 0 || echo 1)"
+check "rename: hooks/ claimed + --gate-task → green (both paths recognized)" "$([ "$MV" = 0 ] && echo 0 || echo 1)"
+check "rename does not emit a garbage '->' item" \
+  "$(printf '%s' "$MVOUT" | grep -qv '{item ->}' && echo 0 || echo 1)"
+clean_tree
+
+# Untracked file inside an UNTRACKED directory: --untracked-files=all must see
+# the file, not just the dir. (No --untracked-files=all → only 'docs/'.)
+mkdir -p "$P/docs/new"; printf 'm\n' > "$P/docs/new/a.md"
+runclaims --since "$SINCE_SHA" --claimed "docs/new/a.md" >/dev/null 2>&1; UTD=$?
+check "untracked file in untracked dir is matched (--untracked-files=all)" "$([ "$UTD" = 0 ] && echo 0 || echo 1)"
+clean_tree
+
+# Leading-dot claimed path is rejected (the first version's comment promised it,
+# the code did not implement it — review REFUTED, doc/code divergence).
+runclaims --since "$SINCE_SHA" --claimed ".hidden" >/dev/null 2>&1; DOT=$?
+check "leading-dot claimed path rejected (doc/code divergence fix)" "$([ "$DOT" != 0 ] && echo 0 || echo 1)"
+
+# Green run emits the SSSF 'what was verified' evidence line.
+GE="$(runclaims --since "$SINCE_SHA" --claimed none 2>/dev/null)"
+check "green run emits a diff-matches-claims ok line" "$(printf '%s' "$GE" | grep -q 'diff-matches-claims} ok' && echo 0 || echo 1)"
+
+# ops-claims does NOT read pending/ (not a sentinel reader): confirm it carries
+# no sentinel-reader code path by checking it ignores a planted sentinel.
+mkdir -p "$P/.operator/pending"; printf 'session_id: OTHER\n' > "$P/.operator/pending/planted"
+runclaims --since "$SINCE_SHA" --claimed none >/dev/null 2>&1; NPD=$?
+check "ops-claims ignores .operator/pending (not a sentinel reader)" "$([ "$NPD" = 0 ] && echo 0 || echo 1)"
+rm -rf "$P"
+
+########################################################################
+echo "-- Case: deviation-gate — unpresented decisions block Stop; --mark-handoff clears [stage 2]"
+# The Stop hook's SECOND ledger: DECISIONS.md DEVIATION lines after the last
+# mine/unowned HANDOFF-MARK block Stop. The 0.4.0 mine/unowned-vs-foreign
+# partition applied to decisions. Every sub-case is revert-discriminating: the
+# behavior it asserts is named, and removing that branch from scan_deviations
+# flips the exit code. SESS-A is "this session"; SESS-B is foreign.
+P="$(newproj)"
+( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+DEC="$P/.operator/DECISIONS.md"
+SID="SESS-A-XYZ"
+# A minimal Stop payload with session_id + cwd. The hook walks up from cwd to
+# the nearest .operator/.
+payload() { printf '{"session_id":"%s","stop_hook_active":false,"cwd":"%s"}' "$SID" "$P"; }
+
+# Empty DECISIONS.md (just the header comments) → no deviations → exit 0.
+printf '# Decisions\n# header only\n' > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; D0=$?
+check "empty DECISIONS.md → Stop allowed (no deviations)" "$([ "$D0" = 0 ] && echo 0 || echo 1)"
+
+# A mine deviation (sid=SESS-A), no mark → blocks.
+printf '2026-08-04 | eng.t | DEVIATION | [sid:%s] chose X over Y | reason\n' "$SID" > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; D1=$?
+check "mine deviation, no mark → Stop blocked" "$([ "$D1" = 2 ] && echo 0 || echo 1)"
+
+# A foreign deviation (sid=SESS-B) → never blocks.
+printf '2026-08-04 | eng.t | DEVIATION | [sid:SESS-B-OTHER] their call | reason\n' > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; D2=$?
+check "foreign deviation → Stop allowed (never blocks)" "$([ "$D2" = 0 ] && echo 0 || echo 1)"
+
+# An untagged (legacy) deviation → blocks EVERY session (unowned = mine-class).
+printf '2026-08-04 | eng.t | DEVIATION | pre-gate decision, no sid | reason\n' > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; D3=$?
+check "untagged (legacy) deviation → Stop blocked (unowned blocks all)" "$([ "$D3" = 2 ] && echo 0 || echo 1)"
+
+# mine deviation, then a mine HANDOFF-MARK after it → cleared → exit 0.
+{ printf '2026-08-04 | eng.t | DEVIATION | [sid:%s] chose X | r\n' "$SID"
+  printf '2026-08-04 | eng | HANDOFF-MARK | [sid:%s] 2026-08-04T00:00:00Z | presented\n' "$SID"; } > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; D4=$?
+check "mine deviation + later mine mark → cleared (Stop allowed)" "$([ "$D4" = 0 ] && echo 0 || echo 1)"
+
+# mark BEFORE the deviation does NOT clear it (file position, not timestamp).
+{ printf '2026-08-04 | eng | HANDOFF-MARK | [sid:%s] 2026-08-04T00:00:00Z | presented\n' "$SID"
+  printf '2026-08-04 | eng.t | DEVIATION | [sid:%s] new decision after mark | r\n' "$SID"; } > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; D5=$?
+check "mark BEFORE deviation does not clear it (position rule)" "$([ "$D5" = 2 ] && echo 0 || echo 1)"
+
+# A foreign mark does not clear my deviation.
+{ printf '2026-08-04 | eng.t | DEVIATION | [sid:%s] mine | r\n' "$SID"
+  printf '2026-08-04 | eng | HANDOFF-MARK | [sid:SESS-B] their handoff | presented\n'; } > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; D6=$?
+check "foreign mark does not clear my deviation" "$([ "$D6" = 2 ] && echo 0 || echo 1)"
+
+# ESCALATION and GATE-EXCEPTION are also decision kinds that block until marked.
+printf '2026-08-04 | eng.t | ESCALATION | [sid:%s] escalated to human | r\n' "$SID" > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; D7=$?
+check "ESCALATION kind blocks like DEVIATION" "$([ "$D7" = 2 ] && echo 0 || echo 1)"
+
+# A malformed line (CRLF) degrades to counted-as-unpresented → blocks. Write a
+# mine deviation with a trailing \r on the kind, which breaks the kind parse so
+# the line is not recognized as DEVIATION — but a degenerate line must fail
+# toward blocking, not toward allowing. (The \r is stripped, so this IS parsed;
+# the real malformed test is an over-long line — see the byte-cap case below.)
+printf '2026-08-04 | eng.t | DEVIATION | [sid:%s] cr-test\r\n' "$SID" > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; D8=$?
+check "CRLF deviation still recognized (\\r stripped) → blocks" "$([ "$D8" = 2 ] && echo 0 || echo 1)"
+
+# A NUL in the ledger → fail toward blocking (corrupt ledger counts as unpresented).
+printf '2026-08-04 | eng.t | DEVIATION | [sid:%s] nul\000here | r\n' "$SID" > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; D9=$?
+check "NUL in DECISIONS.md → blocks (corrupt ledger fails toward blocking)" "$([ "$D9" = 2 ] && echo 0 || echo 1)"
+
+# Absent DECISIONS.md → fail OPEN (missing ledger = scaffold problem, not a decision).
+rm -f "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; D10=$?
+check "absent DECISIONS.md → Stop allowed (fail OPEN)" "$([ "$D10" = 0 ] && echo 0 || echo 1)"
+
+# A pending SENTINEL still blocks even with no deviations (the two gates compose).
+printf '# Decisions\n' > "$DEC"
+( cd "$P" && bash "$TASK" both-gate --owner "$SID" >/dev/null 2>&1 )
+payload | bash "$HOOK" >/dev/null 2>&1; D11=$?
+check "pending sentinel blocks even with no deviations (gates compose)" "$([ "$D11" = 2 ] && echo 0 || echo 1)"
+( cd "$P" && bash "$VERDICT" both-gate c e PASS --owner "$SID" >/dev/null 2>&1 )
+
+# --- ops-verdict.sh --mark-handoff ---
+# Requires --owner (empty sid would clear every session = privilege inversion).
+( cd "$P" && bash "$VERDICT" --mark-handoff >/dev/null 2>&1 ); MH0=$?
+check "--mark-handoff without --owner → refused" "$([ "$MH0" != 0 ] && echo 0 || echo 1)"
+# Writes a HANDOFF-MARK line under the lock, clearing my deviations.
+printf '2026-08-04 | eng.t | DEVIATION | [sid:%s] pre-mark decision | r\n' "$SID" > "$DEC"
+( cd "$P" && bash "$VERDICT" --mark-handoff --owner "$SID" >/dev/null 2>&1 ); MH1=$?
+check "--mark-handoff --owner writes the mark (exit 0)" "$([ "$MH1" = 0 ] && echo 0 || echo 1)"
+# After the mark, the same deviation no longer blocks.
+payload | bash "$HOOK" >/dev/null 2>&1; MH2=$?
+check "after --mark-handoff, the deviation is cleared" "$([ "$MH2" = 0 ] && echo 0 || echo 1)"
+# The mark line is in the pipe schema with the [sid:] tag.
+check "--mark-handoff line carries the [sid:] tag" "$(grep -q 'HANDOFF-MARK.*\[sid:' "$DEC" && echo 0 || echo 1)"
+# A foreign owner cannot write a mark that would clear MY deviations (the mark's
+# sid is foreign, so it never clears mine — verified by the partition above).
+
+# --- T2: an UNOWNED HANDOFF-MARK clears every session (the third partition arm) ---
+# A mark with NO [sid:] tag is "unowned" and clears every session's deviations
+# (mirrors the unowned-sentinel rule). The reviewer mutated this branch to a no-op
+# and the suite stayed green — it is now asserted. Set up a mine deviation, clear
+# with an UNTAGGED mark, confirm Stop allowed.
+printf '2026-08-04 | e.t | DEVIATION | [sid:%s] mine | r\n' "$SID" > "$DEC"
+printf '2026-08-04 | e | HANDOFF-MARK | 2026-08-04T00:00:00Z | presented (no sid)\n' >> "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; UM=$?
+check "an untagged HANDOFF-MARK clears every session (third partition arm)" "$([ "$UM" = 0 ] && echo 0 || echo 1)"
+# And a DIFFERENT session is also cleared by the untagged mark.
+printf '{"session_id":"OTHER-SESS","stop_hook_active":false,"cwd":"%s"}' "$P" | bash "$HOOK" >/dev/null 2>&1; UM2=$?
+check "untagged mark clears a DIFFERENT session too (unowned = clears all)" "$([ "$UM2" = 0 ] && echo 0 || echo 1)"
+
+# --- T1: a SYMLINKED DECISIONS.md is not scanned (F65 class, both readers) -----
+# A planted symlink to an attacker file with a forged DEVIATION must NOT feed the
+# scan. The hook fails OPEN (absent-ledger class); the bar renders nothing.
+ATT="$(newproj)"; printf 'forged\n2026-08-04 | e.t | DEVIATION | [sid:%s] forged | r\n' "$SID" > "$ATT/forged-decisions"
+ln -s "$ATT/forged-decisions" "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; SYM=$?
+check "hook fails OPEN on a symlinked DECISIONS.md (not scanned)" "$([ "$SYM" = 0 ] && echo 0 || echo 1)"
+# The statusline mirror: a symlinked ledger renders no dev[N] segment.
+SYMSEG="$(printf '{"session_id":"%s","cwd":"%s","workspace":{"project_dir":"%s"}}' "$SID" "$P" "$P" \
+  | "$BASH_ABS" "$SCRIPTS/statusline.sh" 2>/dev/null | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g')"
+check "statusline renders no dev[ on a symlinked DECISIONS.md" \
+  "$(printf '%s' "$SYMSEG" | grep -q 'dev\[' || echo 0)"
+rm -f "$DEC" "$ATT"; rmdir "$ATT" 2>/dev/null || true
+# Restore a real (empty) DECISIONS.md for any later use.
+printf '# Decisions\n' > "$DEC"
+
+rm -rf "$P"
 
 ########################################################################
 echo "== summary: $PASS passed, $FAIL failed =="

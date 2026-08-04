@@ -9,8 +9,70 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-04
+
+### Added — worker-boundary enforcement (stage 3 of 3)
+
+- The F-A1 tree check is wired into the dispatch procedure (PLAYBOOK): after any
+  read-only/workflow dispatch returns, run `ops-claims.sh --expect-clean`; drift
+  is a FAIL-shaped finding. No seat is trusted (op-author is write-capable).
+- The review workflow's adversarial verifier gains a tree-check refutation target
+  — it confirms the working tree holds no changes beyond the reviewed artifact
+  (the verifier is an agent, so it can touch disk; a worker touching files
+  outside the artifact is a REFUTED basis).
+- PLAYBOOK rules F-A6 (a fix after a green gate re-runs the gate) and F-A13 (a
+  worker-authored commit uses the worker's own report sentence).
+- Also: the stage-1 REFUTED review's parse bugs fixed — `ops-claims.sh` now uses
+  porcelain `-z`/diff `-z` NUL-delimited parsing, `set -f` glob matching (a
+  deleted gate CLI no longer evades C3), validated `--since`, and
+  `--untracked-files=all`. 10 adversarial bash cases added.
+
+### Added — worker-boundary enforcement (stage 2 of 3)
+
+- The deviation gate: an operator-taken decision can no longer reach session end
+  unpresented. The Stop hook now blocks iff a DEVIATION owned by this session —
+  or by nobody — appears after the last mine/unowned HANDOFF-MARK in
+  `DECISIONS.md` (file position, not timestamp). Foreign deviations report, never
+  block. A whole-file scan, fail-CLOSED on a 2MiB cap; absent/corrupt polarity is
+  deliberately split (absent → open, NUL/over-long → block).
+- `ops-verdict.sh --mark-handoff --owner <sid>` writes the clearing mark under
+  the existing ledger lock; `--owner` is required (an empty sid would clear every
+  session). `commands/handoff.md` gains the verdict-CLI grant.
+- The statusline gains a dim `dev[N]` mirror of the deviation partition.
+- `check_decisions_schema` pins the DECISIONS-header kind enum (incl HANDOFF-MARK)
+  and requires both readers to reference it (F30). 22 bash cases (gate + mirror)
+  + 2 pytest mutation tests, revert-discrimination proven.
+
+### Added — worker-boundary enforcement (stage 1 of 3; spec `docs/spec/2026-08-03-worker-boundary-enforcement-design.md`)
+
+The worker seam's guarantees move from prompt-deep to code-deep, porting SSSF's
+enforcement layer (gap analysis F-A1/A2/A3) without its runtime.
+
+- `ops-claims.sh` — a fourth gate CLI: verifies a dispatch report's `CHANGED:`
+  line against the actual diff (C1 unclaimed-change, C2 phantom-claim) and
+  enforces "the builder cannot edit its own grader" (C3 gate-trespass over a
+  protected set, `--gate-task` to authorize). `--expect-clean` asserts a
+  read-only/workflow dispatch left no tree changes beyond `.operator/`.
+- `validate_plugin.check_claims` pins the protected-set literal AND its
+  application (F30: copy parity alone is insufficient).
+- The dispatch packet's REPORT carries `CHANGED:`; the charter's FORBIDDEN
+  default makes gate files off-limits to implementers unless the task IS the
+  gate. PLAYBOOK gains the worker-boundary procedure (F-A1/A6/A13).
+- Installed into `.operator/bin/` by `ops-init.sh`; joins `CHARTER_REQUIRED_CLIS`
+  and the compressor's `GATE_CLIS` carve-out.
+
+## [0.5.1] - 2026-08-04
+
 ### Fixed
 
+- **A load-bearing measurement was wrong by ~15x, in five files.** The F64
+  chunk-cap fix was justified by "4.0s on a 64MB `tiers.env`", a figure taken
+  from the original report and copied verbatim into `ops-tiers.sh`,
+  `ops-render.sh`, `validate_plugin.py`, both test files, and this changelog
+  without anyone re-running it. Re-measured on bash 3.2.57: **66-70s uncapped
+  vs 0.11s capped**, corroborated by two independent verifier runs (61s, 62s).
+  The fix was right; the number defending it was not. Corrected everywhere,
+  each site now naming the bash version and date it was measured on.
 - **Symlink sentinels are now rejected at every read site, not just the
   opener (F66).** F65's `-L` guard covered only `ops-task.sh`'s create path; a
   symlink planted in `.operator/pending/` was still adopted by `ops-adopt.sh`
@@ -88,8 +150,10 @@ plus the unbounded-probe stall).
     `NEVER_COMPRESS` and stripped trailing `//` comments (the vacuous-guard
     class, with per-tool set literals and block-comment stripping).
   - **F64** — the NUL probe in `ops-tiers.sh`/`ops-render.sh` looped whole-file
-    with no chunk cap, stalling the resolver 4.0s on a 64MB newline-less
-    `tiers.env`; now bounded (4.0s → 0.01s), enforced by `check_reader_bounds`.
+    with no chunk cap, stalling the resolver ~66s on a 64MB newline-less
+    `tiers.env`; now bounded (66s → 0.11s), enforced by `check_reader_bounds`.
+    (The 4.0s figure this entry originally carried was wrong by ~15x —
+    re-measured 2026-08-04 on bash 3.2.57; see the 0.5.1 entry.)
   - **F65** — `ops-task.sh`'s O_EXCL guard used `[ -f ]`, which follows
     symlinks: a symlink→regular read as "already open", and downstream `mv`
     would overwrite the target outside `pending/`; now guarded by `[ ! -L ]`.

@@ -139,6 +139,16 @@ done
 # use $( ), which is a subshell, so a side-effect variable would be discarded.
 sentinel_owner() { # sentinel_owner <path> → "owner|opened_at"
   local line owner="" opened="" n=0
+  # The line loop below bounds reads in BYTES (`read -n 512`, `${#line} < 512`).
+  # In a multibyte locale both count CHARACTERS: a 512-char UTF-8 pad (1024
+  # bytes) yields chunks of len 256 that never trip the cap guard, and a trailing
+  # `session_id: EVIL` is matched as a fresh line — smuggling a foreign owner and
+  # flipping unowned(blocks)→foreign(waves through): the exact inversion this
+  # gate exists to prevent (review CONFIRMED-attachment finding, 2026-08-04).
+  # This function always runs inside a `$(...)` subshell at its call sites, so
+  # scoping LC_ALL=C here cannot leak to the caller. The NUL probe above already
+  # does the same in its own subshell.
+  LC_ALL=C
   # A symlink is never a sentinel our CLIs wrote (F65): `-f` alone FOLLOWS it,
   # so a planted link would read its target's session_id: as a foreign owner
   # and wave the stop through. Degrade to unowned → BLOCKS everyone — the same
@@ -211,6 +221,115 @@ sentinel_owner() { # sentinel_owner <path> → "owner|opened_at"
   printf '%s|%s' "$owner" "$opened"
 }
 
+# --- unpresented deviations (stage 2: a second ledger the gate reads) ---------
+# DEVIATION lines in DECISIONS.md record operator-taken decisions; a HANDOFF-MARK
+# records that they were presented. The gate blocks Stop iff a DEVIATION owned by
+# THIS session — or owned by nobody — appears AFTER the last HANDOFF-MARK owned
+# by this session or nobody. Foreign deviations (and foreign marks) never block
+# and never clear: the 0.4.0 mine/unowned-vs-foreign partition applied to the
+# second ledger, identical in shape to the sentinel partition above.
+#
+# Polarity is DELIBERATELY OPPOSITE the sentinel default, and both are right:
+# an unreadable or absent DECISIONS.md FAILS OPEN (exit 0). A missing ledger is a
+# plugin/scaffold problem, not evidence of an unpresented decision — the same
+# reasoning as the no-parser fail-open at the top of this hook. Where an unowned
+# sentinel fails CLOSED (a real open task), an absent DECISIONS.md has no task
+# to enforce. A MALFORMED line (over-long, NUL, CRLF) degrades to counted-as-
+# unpresented (fail toward the honest warning): the reader is byte-bounded and a
+# degenerate line is not a trustworthy "presented" claim.
+#
+# The scan is WHOLE-FILE with an aggregate byte cap (fail-closed on cap):
+# DECISIONS.md is append-forever, unlike tiers.env whose cap could be sized to a
+# parse loop's legal max. There is no cap sized to "legal input" here, so a
+# fixed cap that waved a too-big file through would silently disable the gate on
+# exactly the ledger most likely to hold an unpresented decision. A too-big-to-
+# scan ledger is a real problem to surface, not hide. The cap is a safety bound
+# against pathological input, not a real constraint (cf. FRAG_MAX_BYTES).
+DECISIONS_MAX_BYTES=2097152   # 2 MiB — orders above any honest decisions ledger
+deviations_unpresented=0      # global: count of mine+unowned deviations after the last mark
+deviations_scan_failed=0      # global: 1 = file unreadable/absent (caller fails OPEN)
+scan_deviations() { # scan_deviations <decisions-path> <this-session>
+  local f="$1" sess="$2" line kind what n=0 bytes=0
+  # LC_ALL=C so read -n 512 and ${#line} count BYTES not characters (Copilot
+  # review, 2026-08-04): in a UTF-8 locale a 512-char chunk can be up to 2048
+  # bytes, evading the per-line cap and making the DECISIONS_MAX_BYTES accumulator
+  # ~4x looser than intended. Safe to set here: the function only does byte-level
+  # parsing, and the hook exits (ASCII output only) shortly after it runs.
+  LC_ALL=C
+  deviations_unpresented=0
+  deviations_scan_failed=0
+  [ -f "$f" ] || { deviations_scan_failed=1; return 0; }
+  # A symlinked DECISIONS.md is not a ledger our scaffold wrote: `-f` follows it,
+  # so a planted link would feed an attacker-chosen file to the scan. Treat as
+  # absent → fail OPEN (same as missing), never scan through a link (F65 class).
+  [ ! -L "$f" ] || { deviations_scan_failed=1; return 0; }
+  # Whole-file NUL probe, bounded (the sentinel parsers' canonical form): a NUL
+  # in the ledger means a merge artifact or stray binary, not decisions prose —
+  # degrade every line to counted-as-unpresented by failing the probe → the file
+  # is "not ours", and a not-ours ledger blocks (fail toward the honest warning).
+  if ! (LC_ALL=C _dp=0
+        while IFS= read -r -d '' -n 512 _dprobe; do
+          _dp=$((_dp + 1)); [ "$_dp" -le 4096 ] || exit 1
+          [ "${#_dprobe}" -eq 512 ] || exit 1
+        done < "$f") 2>/dev/null; then
+    deviations_unpresented=1   # a NUL/corrupt ledger: block (count as unpresented)
+    return 0
+  fi
+  # Single forward pass: a mine/unowned DEVIATION increments; a mine/unowned
+  # HANDOFF-MARK resets to 0 (it clears everything before it). At EOF the count
+  # is exactly the deviations after the last mark = the unpresented set.
+  while IFS= read -r -n 512 line || [ -n "$line" ]; do
+    n=$((n+1)); [ "$n" -le 20000 ] || { deviations_unpresented=1; return 0; }
+    # Aggregate BYTE cap (fail-closed): DECISIONS.md is append-forever, so no
+    # cap is sized to "legal input". A ledger past the cap is not scannable in
+    # the hook's budget — surface it as a block, not a silent pass. ${#line} is
+    # bytes here (LC_ALL=C is not set globally in this hot reader, but each line
+    # is ≤512 bytes by the -n bound regardless of locale, so the sum is a sound
+    # upper bound on bytes read).
+    bytes=$((bytes + ${#line} + 1))
+    [ "$bytes" -le "$DECISIONS_MAX_BYTES" ] || { deviations_unpresented=1; return 0; }
+    # A cap-filling chunk was truncated mid-line: its tail would parse as a fresh
+    # line and could forge a kind. Our scaffold writes short lines, so a 512-fill
+    # is not ours → count as unpresented (fail toward blocking). (F45 class.)
+    [ "${#line}" -lt 512 ] || { deviations_unpresented=1; return 0; }
+    line="${line%$'\r'}"      # a CRLF checkout must not change semantics
+    # A DECISIONS row is pipe-delimited: <date> | <eng.task> | <kind> | <what> | <why>
+    # Extract kind (field 3) and what (field 4) by splitting on " | " — a glob's
+    # `*` would consume the delimiter. Only kind+what matter; the sid lives in
+    # the what-cell as a leading [sid:<id>] tag.
+    case "$line" in
+      *" | "*) ;;
+      *) continue ;;            # not a ledger row (header comment, blank, prose)
+    esac
+    # field 3 (kind): strip the first TWO " | "-delimited cells (date, eng.task).
+    # Each `${var#* | }` strips one cell + its delimiter; two of them land on kind.
+    kind="${line#* | }"; kind="${kind#* | }"; kind="${kind%% | *}"
+    # field 4 (what): the cell holding the leading [sid:<id>] tag. Strip three
+    # cells, then cut at the next " | " so only the what-cell remains.
+    what="${line#* | }"; what="${what#* | }"; what="${what#* | }"; what="${what%% | *}"
+    case "$kind" in
+      DEVIATION|ESCALATION|GATE-EXCEPTION)
+        # mine = sid tag equals this session; unowned = no sid tag. Both block.
+        # A foreign sid tag (≠ session) never blocks. Foreign = report only, and
+        # the hook's stderr below does not enumerate these (they are the operator's
+        # own decisions, not another session's tasks to chase).
+        case "$what" in
+          "[sid:$sess]"*) : ;;                      # mine → counts
+          "[sid:"*) continue ;;                     # foreign → never blocks
+          *) : ;;                                   # unowned (no tag) → counts
+        esac
+        deviations_unpresented=$((deviations_unpresented + 1)) ;;
+      HANDOFF-MARK)
+        # Only a mine-or-unowned mark clears; a foreign mark clears nothing of mine.
+        case "$what" in
+          "[sid:$sess]"*) deviations_unpresented=0 ;;   # mine → clears
+          "[sid:"*) : ;;                                # foreign → no effect
+          *) deviations_unpresented=0 ;;                # unowned → clears
+        esac ;;
+    esac
+  done < "$f"
+}
+
 # --- enumerate pending sentinels (builtin glob; no `find` dependency) --------
 # Partition: blocking = mine + unowned; foreign = someone else's (report only).
 # A payload with no session_id makes every sentinel unowned → pre-0.4 behavior.
@@ -245,6 +364,14 @@ if [ -n "$foreign" ]; then
   echo "operator: $foreign_n pending verdict(s) owned by another session ($foreign) — not blocking." >&2
 fi
 
+# --- deviation gate: unpresented decisions block Stop (stage 2) ---------------
+# Runs alongside the sentinel check; either can block. scan_deviations sets
+# deviations_unpresented (mine+unowned deviations after the last mark) and
+# deviations_scan_failed (absent/unreadable ledger → fail OPEN). A session_id
+# of "" makes every DEVIATION unowned → every one blocks (pre-gate lines are
+# real unpresented decisions), mirroring the unowned-sentinel default.
+scan_deviations "$opdir/DECISIONS.md" "$session"
+
 if [ -n "$pending" ]; then
   # Name a path that resolves from the project cwd: ops-init installs the
   # verdict CLI at .operator/bin/. Fall back to this hook's own sibling (the
@@ -259,6 +386,24 @@ if [ -n "$pending" ]; then
     if [ -n "$script_dir" ]; then verdict_cmd="$script_dir/ops-verdict.sh"; fi
   fi
   echo "operator: pending verdict(s): $pending — run $verdict_cmd <id> <criterion> <evidence> <PASS|FAIL>, or --defer \"<reason>\"" >&2
+  exit 2
+fi
+
+# No pending sentinels — but unpresented deviations still block. Name the
+# clearing command (the verdict CLI's --mark-handoff, same path resolution as
+# above). deviations_scan_failed=1 means the ledger was absent/unreadable: fail
+# OPEN (a missing ledger is a scaffold problem, not an unpresented decision).
+if [ "$deviations_scan_failed" = 0 ] && [ "$deviations_unpresented" -gt 0 ]; then
+  verdict_cmd=".operator/bin/ops-verdict.sh"
+  if [ ! -f "$opdir/bin/ops-verdict.sh" ]; then
+    case "${BASH_SOURCE[0]}" in
+      */*) script_dir="${BASH_SOURCE[0]%/*}" ;;
+      *)   script_dir="." ;;
+    esac
+    script_dir="$(cd "$script_dir" 2>/dev/null && pwd)" || script_dir=""
+    if [ -n "$script_dir" ]; then verdict_cmd="$script_dir/ops-verdict.sh"; fi
+  fi
+  echo "operator: $deviations_unpresented unpresented decision(s) in DECISIONS.md — present them (/cc-operator:handoff or in your reply), then run $verdict_cmd --mark-handoff --owner <session-id>" >&2
   exit 2
 fi
 
