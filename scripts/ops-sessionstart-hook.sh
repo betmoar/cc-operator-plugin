@@ -87,14 +87,27 @@ _oldver=""
 # plugin.json, and a downgrade is still a change worth reflecting in bin/.
 if [ -n "$_newver" ] && [ "$_newver" != "$_oldver" ]; then
   # Refresh the bin/ CLIs the way ops-init does (always-refresh: generated
-  # artifacts tracking the installed plugin version). Missing source files are
-  # skipped (a partial plugin install must not abort the banner).
-  if [ -d "$_ssdir" ]; then
+  # artifacts tracking the installed plugin version). mkdir the bin/ dir first
+  # (ops-init does; without it a project whose .operator/bin was never created
+  # stamps itself current while installing nothing). Track whether EVERY copy
+  # succeeded and ONLY re-stamp then: a failed/truncated cp (ENOSPC, quota)
+  # must leave the OLD stamp so the next session retries — a partial refresh is
+  # retried, not silently kept as "current" with truncated CLIs (CR3/H2, code-
+  # review 2026-08-04). Best-effort for the banner; the stamp is the contract.
+  _upgrade_ok=1
+  if [ -d "$_ssdir" ] && mkdir -p "$cwd/.operator/bin" 2>/dev/null; then
     for _tool in ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh; do
       [ -f "$_ssdir/$_tool" ] || continue
-      cp "$_ssdir/$_tool" "$cwd/.operator/bin/$_tool" 2>/dev/null \
-        && chmod +x "$cwd/.operator/bin/$_tool" 2>/dev/null
+      if cp "$_ssdir/$_tool" "$cwd/.operator/bin/$_tool" 2>/dev/null \
+         && chmod +x "$cwd/.operator/bin/$_tool" 2>/dev/null; then
+        :
+      else
+        _upgrade_ok=0
+        echo "operator: warning — upgrade copy of $_tool failed; will retry next session" >&2
+      fi
     done
+  else
+    _upgrade_ok=0
   fi
   # Ensure the compressor-ephemera ignore lines (same upgrade-append ops-init
   # does) so a refreshed version's compressor does not dirty the tree.
@@ -105,9 +118,11 @@ if [ -n "$_newver" ] && [ "$_newver" != "$_oldver" ]; then
       printf '.compress-spill/\n.compress-state/\n'
     } >> "$_gi" 2>/dev/null
   fi
-  # Re-stamp LAST: a crash mid-refresh leaves the old stamp, so the next session
-  # retries the upgrade — a partial refresh is retried, not silently kept.
-  printf '%s\n' "$_newver" > "$_stamp" 2>/dev/null
+  # Re-stamp ONLY if every CLI copy succeeded. A failure leaves the old stamp →
+  # next session retries. (gitignore-ensure is best-effort and does not gate.)
+  if [ "$_upgrade_ok" = 1 ]; then
+    printf '%s\n' "$_newver" > "$_stamp" 2>/dev/null
+  fi
 fi
 
 # Compressor artifact cleanup (spec I2.3 + the dedup state contract). Both are

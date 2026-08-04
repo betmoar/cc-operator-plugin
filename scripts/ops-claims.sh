@@ -15,10 +15,14 @@
 #
 #   --claimed    the CHANGED: line from the dispatch packet (paths the worker
 #                reported touching). "none" means no paths were claimed.
-#   --since      changes are git diff + untracked since this ref. Defaults to
-#                HEAD (the operator records the dispatch sha in the packet; the
-#                mechanical default is HEAD, which compares against the last
-#                commit — fine for an uncommitted working-tree dispatch).
+#   --since      MANDATORY (with --claimed). Changes are git diff + untracked
+#                since this ref — the dispatch sha the operator records in the
+#                packet, so the diff is anchored BEFORE the dispatch. A HEAD
+#                default would make a worker that COMMITS its gate-trespass
+#                invisible (git diff HEAD compares against the worker's own
+#                commit) — the exact F-A2 attack (code-review CR2, 2026-08-04).
+#                Not required with --expect-clean alone (that reads porcelain,
+#                no diff range).
 #   --gate-task  authorizes edits to the protected set (the task IS the gate).
 #   --expect-clean (F-A1) asserts the working tree is empty apart from
 #                .operator/ ledger paths — the read-only-seat tree check, run
@@ -42,14 +46,18 @@ die() { echo "ops-claims: $1" >&2; exit 2; }
 
 NL="$(printf '\nx')"; NL="${NL%x}"
 
-# A temp file for the diff∪porcelain path stream (the union loop reads it twice).
+# Temp files for the diff∪porcelain path stream. _ACTUAL_TMP holds the raw union
+# (a path in both diff and porcelain appears twice); _DEDUPED_TMP holds the
+# first-occurrence-deduped stream the checks actually read. The dedup is NOT
+# cosmetic: a path in both streams would otherwise be emitted twice as an
+# evidence line and double-counted in the green-run path count (CR7, 2026-08-04).
 # mktemp is the one external beyond git (cf. ops-verdict.sh --reconcile); cleaned
-# on exit. Paths are newline-delimited here so they survive intact only because
-# porcelain_paths/diff -z already de-quoted them — a raw space is fine in this
-# file, it is the word-split ITERATION that would shred it, and we iterate with
-# `while IFS= read -r` (one path per line), never unquoted `$ACTUAL`.
+# on exit. Paths are newline-delimited; a raw space is fine because porcelain/diff
+# -z already de-quoted them, and we iterate with `while IFS= read -r` (one path
+# per line), never unquoted `$ACTUAL`.
 _ACTUAL_TMP="$(mktemp "${TMPDIR:-/tmp}/opsclaims.XXXXXX")"
-trap 'rm -f "$_ACTUAL_TMP"' EXIT
+_DEDUPED_TMP="$(mktemp "${TMPDIR:-/tmp}/opsclaims.XXXXXX")"
+trap 'rm -f "$_ACTUAL_TMP" "$_DEDUPED_TMP"' EXIT
 
 # --- protected set (F-A2: the builder cannot edit its own grader) ------------
 # A touched path matching any of these PATTERNS, without --gate-task, is
@@ -105,6 +113,7 @@ matches_claimed() {  # matches_claimed <path> <claimed-list> → 0 if claimed
       *)  [ "$p" = "$c" ] && { set +f; return 0; } ;;
     esac
   done
+  set +f        # a non-match must NOT leak noglob into the caller (CR1)
   return 1
 }
 
@@ -119,7 +128,7 @@ is_ledger_path() {  # is_ledger_path <path> → 0 if under .operator/
 
 # --- argument parse ----------------------------------------------------------
 CLAIMED=""
-SINCE="HEAD"
+SINCE=""
 GATE_TASK=0
 EXPECT_CLEAN=0
 while [ $# -gt 0 ]; do
@@ -138,7 +147,7 @@ while [ $# -gt 0 ]; do
       SINCE="${1#--since=}"; shift ;;
     --gate-task) GATE_TASK=1; shift ;;
     --expect-clean) EXPECT_CLEAN=1; shift ;;
-    -*) die "unknown option '$1' (usage: ops-claims.sh --claimed \"<paths>|none\" [--since <sha>] [--gate-task] [--expect-clean])" ;;
+    -*) die "unknown option '$1' (usage: ops-claims.sh --since <sha> --claimed \"<paths>|none\" [--gate-task] | --expect-clean)" ;;
     *) die "unexpected positional argument '$1'" ;;
   esac
 done
@@ -213,8 +222,16 @@ if [ "$EXPECT_CLEAN" = "1" ]; then
   [ -n "$CLAIMED" ] || exit 0
 fi
 
-# --- diff-vs-claims (C1/C2/C3) requires --claimed ----------------------------
-[ -n "$CLAIMED" ] || die "missing --claimed (usage: ops-claims.sh --claimed \"<paths>|none\" [--since <sha>] [--gate-task] [--expect-clean])"
+# --- diff-vs-claims (C1/C2/C3) requires --claimed AND --since ----------------
+# --since is MANDATORY (not defaulted): a HEAD default made a worker that
+# COMMITS its gate-trespass invisible — `git diff HEAD` compares against the
+# commit the worker just made, so every check passed on the exact F-A2 attack
+# (code-review CR2, 2026-08-04). The operator must record the dispatch sha in
+# the packet and pass it here, so the diff is anchored to BEFORE the dispatch,
+# not after the worker's commit. --expect-clean alone (no --claimed) needs no
+# --since: it reads porcelain, not a diff range.
+[ -n "$CLAIMED" ] || die "missing --claimed (usage: ops-claims.sh --since <sha> --claimed \"<paths>|none\" [--gate-task] | --expect-clean)"
+[ -n "$SINCE" ] || die "missing --since <sha> — a HEAD default would make a committed gate-trespass invisible (CR2); the operator records the dispatch sha and passes it here"
 
 # `none` is the "CHANGED: none" report: no paths claimed. Normalize to empty.
 [ "$CLAIMED" = "none" ] && CLAIMED=""
@@ -252,23 +269,41 @@ fi
 # Actual changes = tracked-changed-since-SINCE  ∪  untracked+unstaged.
 # `git diff --name-only -z` covers modified+staged+deleted since SINCE; porcelain
 # adds untracked (?? ) and unmerged, which diff omits. Both use -z (NUL-delimited)
-# so paths with spaces/quotes survive intact (review REFUTED, 2026-08-04). The
-# union is de-duped by a first-occurrence loop (bash 3.2 has no assoc arrays); a
-# duplicate would at most repeat an evidence line, so the dedup is cosmetic.
-ACTUAL=""
+# so paths with spaces/quotes survive intact (review REFUTED, 2026-08-04).
+#
+# A git FAILURE (corrupt index, filter error, ENOSPC) must NOT silently degrade to
+# "no changes" — that would false-PASS C3 on a committed gate-trespass (H1, code-
+# review 2026-08-04). So capture each git exit and die loud on non-zero, instead
+# of `2>/dev/null || true` swallowing it. rev-parse already validated --since is a
+# ref; this catches the failures rev-parse can't.
+git diff --name-only -z "$SINCE" 2>"$_ACTUAL_TMP.err" \
+  | while IFS= read -r -d '' _p || [ -n "$_p" ]; do printf '%s\n' "$_p"; done \
+  > "$_ACTUAL_TMP"
+_diff_rc=${PIPESTATUS[0]}
+if [ "$_diff_rc" -ne 0 ]; then
+  die "git diff --name-only '$SINCE' failed (exit $_diff_rc): $(cat "$_ACTUAL_TMP.err") — refusing (a diff failure must not silently pass the gate)"
+fi
+git status --porcelain -z --untracked-files=all 2>"$_ACTUAL_TMP.err" | porcelain_paths >> "$_ACTUAL_TMP"
+_status_rc=${PIPESTATUS[0]}
+if [ "$_status_rc" -ne 0 ]; then
+  die "git status --porcelain failed (exit $_status_rc): $(cat "$_ACTUAL_TMP.err") — refusing (a status failure must not silently pass the gate)"
+fi
+rm -f "$_ACTUAL_TMP.err"
+
+# De-dup the union (first occurrence wins; bash 3.2 has no assoc arrays) into
+# _DEDUPED_TMP — the stream the checks read. A path in BOTH diff and porcelain
+# (e.g. modified+staged) would otherwise be emitted twice and double-counted in
+# the green-run path count (CR7, 2026-08-04). _seen is global; _de_dup appends.
 _seen=""
-_de_dup() {  # _de_dup <path> — append to ACTUAL unless already seen
+_de_dup() {  # _de_dup <path> — write to _DEDUPED_TMP unless already seen
   [ -n "$1" ] || return 0
   case "$NL$_seen$NL" in
     *"$NL$1$NL"*) return 0 ;;
   esac
   _seen="${_seen:+$_seen$NL}$1"
-  ACTUAL="${ACTUAL:+$ACTUAL$NL}$1"
+  printf '%s\n' "$1" >> "$_DEDUPED_TMP"
 }
-git diff --name-only -z "$SINCE" 2>/dev/null \
-  | while IFS= read -r -d '' _p || [ -n "$_p" ]; do printf '%s\n' "$_p"; done \
-  > "$_ACTUAL_TMP"
-git status --porcelain -z --untracked-files=all 2>/dev/null | porcelain_paths >> "$_ACTUAL_TMP"
+: > "$_DEDUPED_TMP"
 while IFS= read -r line; do _de_dup "$line"; done < "$_ACTUAL_TMP"
 
 fails=0
@@ -285,7 +320,7 @@ if [ "$GATE_TASK" = "0" ]; then
       echo "{item $p} fail: gate-trespass — touched a protected (gate) path without --gate-task"
       fails=$((fails + 1))
     fi
-  done < "$_ACTUAL_TMP"
+  done < "$_DEDUPED_TMP"
 fi
 
 # C1 unclaimed-change: a touched file not in the claimed list. Ledger paths
@@ -297,7 +332,7 @@ while IFS= read -r p; do
     echo "{item $p} fail: unclaimed-change — touched but not in the claimed list"
     fails=$((fails + 1))
   fi
-done < "$_ACTUAL_TMP"
+done < "$_DEDUPED_TMP"
 
 # C2 phantom-claim: a claimed file with no actual change. "reported done,
 # touched nothing". A directory claim (tests/) is satisfied if ANY actual path
@@ -308,8 +343,8 @@ if [ -n "$CLAIMED" ]; then
   for c in $CLAIMED; do
     found=0
     case "$c" in
-      */) while IFS= read -r p; do case "$p" in "$c"*) found=1; break ;; esac; done < "$_ACTUAL_TMP" ;;
-      *)  while IFS= read -r p; do [ "$p" = "$c" ] && { found=1; break; }; done < "$_ACTUAL_TMP" ;;
+      */) while IFS= read -r p; do case "$p" in "$c"*) found=1; break ;; esac; done < "$_DEDUPED_TMP" ;;
+      *)  while IFS= read -r p; do [ "$p" = "$c" ] && { found=1; break; }; done < "$_DEDUPED_TMP" ;;
     esac
     if [ "$found" = 0 ]; then
       echo "{item $c} fail: phantom-claim — claimed but no actual change"
@@ -327,7 +362,7 @@ fi
 # Green: state what was verified (the SSSF "a green gate answers what did you
 # verify" shape). The operator's PASS verdict row cites these lines.
 n_actual=0
-while IFS= read -r _l; do [ -n "$_l" ] && n_actual=$((n_actual + 1)); done < "$_ACTUAL_TMP"
+while IFS= read -r _l; do [ -n "$_l" ] && n_actual=$((n_actual + 1)); done < "$_DEDUPED_TMP"
 if [ -n "$CLAIMED" ]; then
   echo "{item diff-matches-claims} ok: $n_actual changed path(s) all claimed; no phantom claims"
 else

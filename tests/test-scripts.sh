@@ -424,7 +424,24 @@ _pre="$(wc -c < "$UP/.operator/bin/ops-verdict.sh")"
 sed "s|<tmp>|$UP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
 check "sessionstart is a no-op when the version matches (steady-state)" \
   "$( [ "$(wc -c < "$UP/.operator/bin/ops-verdict.sh")" = "$_pre" ] && echo 0 || echo 1)"
-rm -rf "$UP"
+# CR3: a FAILED copy must NOT advance the stamp (a truncated CLI + "current"
+# stamp would never retry). Make bin/ unwritable so cp fails; the old stamp
+# stays, so the next session retries.
+printf '0.1.0-old\n' > "$UP/.operator/.version"   # force an upgrade attempt
+chmod 000 "$UP/.operator/bin" 2>/dev/null
+sed "s|<tmp>|$UP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
+check "a failed upgrade copy does NOT advance the stamp (retry next session)" \
+  "$([ "$(cat "$UP/.operator/.version")" = "0.1.0-old" ] && echo 0 || echo 1)"
+chmod 755 "$UP/.operator/bin" 2>/dev/null
+# CR3: bin/ is CREATED if absent (a project with .operator/ but no bin/ must not
+# stamp itself current while installing nothing).
+UP2="$(newproj)"; ( cd "$UP2" && bash "$INIT" >/dev/null 2>&1 )
+rm -rf "$UP2/.operator/bin"
+printf '0.1.0-old\n' > "$UP2/.operator/.version"
+sed "s|<tmp>|$UP2|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
+check "upgrade creates .operator/bin/ if absent" \
+  "$([ -d "$UP2/.operator/bin" ] && [ -f "$UP2/.operator/bin/ops-claims.sh" ] && echo 0 || echo 1)"
+rm -rf "$UP" "$UP2"
 
 ########################################################################
 echo "-- Case 9: migration safety — an unowned sentinel blocks EVERY session"
@@ -1872,51 +1889,58 @@ P="$(newproj)"
 printf 'a\n' > "$P/a.txt"; printf 'b\n' > "$P/b.txt"
 mkdir "$P/tests"; printf 'x\n' > "$P/tests/t.sh"
 ( cd "$P" && git add -A && git commit -qm base )
+# The base sha is the dispatch anchor: --since is mandatory (CR2), so every
+# --claimed call passes it. Capture once.
+BASE_SHA="$(cd "$P" && git rev-parse HEAD)"
 runclaims() { ( cd "$P" && bash "$CLAIMS" "$@" ); }   # → exit code, stdout on fd1
 # clean_tree: revert ALL changes (staged + unstaged + untracked) to the current
 # HEAD so each sub-case starts from a known-clean base. `git checkout .` alone
 # misses STAGED changes (a `git rm`/`git mv` stages), so reset --hard + clean.
 # State leaks between sub-cases are a real bug class — a case that passes
-# against leftover state proves nothing.
-clean_tree() { ( cd "$P" && git reset -q --hard HEAD >/dev/null 2>&1 && git clean -qfd ); }
+# against leftover state proves nothing. Also refreshes SINCE_SHA to the current
+# HEAD (the --since anchor for working-tree cases); committed cases re-capture.
+clean_tree() {
+  ( cd "$P" && git reset -q --hard HEAD >/dev/null 2>&1 && git clean -qfd )
+  SINCE_SHA="$(cd "$P" && git rev-parse HEAD)"
+}
 
 # C1 green: claim exactly the one touched path.
 printf 'a2\n' > "$P/a.txt"
-runclaims --claimed "a.txt" >/dev/null 2>&1; C1G=$?
+runclaims --since "$BASE_SHA" --claimed "a.txt" >/dev/null 2>&1; C1G=$?
 check "C1 green: claim matches the single touched path" "$([ "$C1G" = 0 ] && echo 0 || echo 1)"
 
 # C1 fail: an unclaimed touched path (b.txt modified, not claimed). Capture the
 # NAMING before reverting — the output line exists only while b.txt is dirty.
 printf 'b2\n' > "$P/b.txt"
-C1OUT="$(runclaims --claimed "a.txt" 2>/dev/null)"; C1F=$?
+C1OUT="$(runclaims --since "$BASE_SHA" --claimed "a.txt" 2>/dev/null)"; C1F=$?
 clean_tree
 check "C1 fail: touched-but-unclaimed path → non-zero" "$([ "$C1F" != 0 ] && echo 0 || echo 1)"
 check "C1 fail names 'unclaimed-change'" "$(printf '%s' "$C1OUT" | grep -q unclaimed-change && echo 0 || echo 1)"
 
 # C2 fail: a claimed path with no actual change (phantom-claim). Clean tree,
 # claim a.txt + c.txt — neither is changed → both phantom.
-C2OUT="$(runclaims --claimed "a.txt c.txt" 2>/dev/null)"; C2F=$?
+C2OUT="$(runclaims --since "$BASE_SHA" --claimed "a.txt c.txt" 2>/dev/null)"; C2F=$?
 check "C2 fail: claimed-but-untouched path → non-zero" "$([ "$C2F" != 0 ] && echo 0 || echo 1)"
 check "C2 fail names 'phantom-claim'" "$(printf '%s' "$C2OUT" | grep -q phantom-claim && echo 0 || echo 1)"
 
 # C2 green with a directory-prefix claim: 'tests/' satisfied by tests/t.sh.
 # tests/ is a PROTECTED path, so this needs --gate-task or C3 (rightly) fails it.
 printf 'y\n' >> "$P/tests/t.sh"
-runclaims --claimed "tests/" --gate-task >/dev/null 2>&1; C2D=$?
+runclaims --since "$BASE_SHA" --claimed "tests/" --gate-task >/dev/null 2>&1; C2D=$?
 check "C2 green: dir-prefix claim 'tests/' satisfied by tests/t.sh" "$([ "$C2D" = 0 ] && echo 0 || echo 1)"
 
 # C3 fail: a touched protected path (tests/) without --gate-task.
-C3OUT="$(runclaims --claimed "tests/" 2>/dev/null)"; C3F=$?
+C3OUT="$(runclaims --since "$BASE_SHA" --claimed "tests/" 2>/dev/null)"; C3F=$?
 check "C3 fail: protected path touched without --gate-task → non-zero" "$([ "$C3F" != 0 ] && echo 0 || echo 1)"
 check "C3 fail names 'gate-trespass'" "$(printf '%s' "$C3OUT" | grep -q gate-trespass && echo 0 || echo 1)"
 
 # C3 pass: same tree, --gate-task authorizes the gate edit.
-runclaims --claimed "tests/" --gate-task >/dev/null 2>&1; C3P=$?
+runclaims --since "$BASE_SHA" --claimed "tests/" --gate-task >/dev/null 2>&1; C3P=$?
 check "C3 pass: protected path allowed with --gate-task" "$([ "$C3P" = 0 ] && echo 0 || echo 1)"
 clean_tree
 
 # CHANGED: none — clean working tree, no claims, no trespass.
-runclaims --claimed none >/dev/null 2>&1; CNG=$?
+runclaims --since "$BASE_SHA" --claimed none >/dev/null 2>&1; CNG=$?
 check "CHANGED none: clean tree, no claims → exit 0" "$([ "$CNG" = 0 ] && echo 0 || echo 1)"
 
 # --expect-clean green: tree empty apart from .operator/ (none here).
@@ -1939,24 +1963,28 @@ check "--expect-clean exempts .operator/ ledger paths" "$([ "$ECL" = 0 ] && echo
 # Untracked detection: an untracked file is an actual change caught by C1.
 clean_tree
 printf 'u\n' > "$P/untracked.txt"
-runclaims --claimed "a.txt" >/dev/null 2>&1; UNC=$?
+runclaims --since "$BASE_SHA" --claimed "a.txt" >/dev/null 2>&1; UNC=$?
 check "untracked file detected as an actual change (C1)" "$([ "$UNC" != 0 ] && echo 0 || echo 1)"
 
 # Charset/traversal discipline on --claimed: '..' traversal is rejected.
-runclaims --claimed "../etc" >/dev/null 2>&1; TRV=$?
+runclaims --since "$BASE_SHA" --claimed "../etc" >/dev/null 2>&1; TRV=$?
 check "claimed '..' traversal is rejected" "$([ "$TRV" != 0 ] && echo 0 || echo 1)"
 # '|' in a claimed path is rejected (would break the list contract).
-runclaims --claimed "a.txt|injected" >/dev/null 2>&1; PIP=$?
+runclaims --since "$BASE_SHA" --claimed "a.txt|injected" >/dev/null 2>&1; PIP=$?
 check "claimed '|' is rejected" "$([ "$PIP" != 0 ] && echo 0 || echo 1)"
 
-# --since default is HEAD: a change present at HEAD but not in the working tree
-# is NOT an actual change. Commit a.txt's modification, then claim only HEAD
-# paths — clean working tree → CHANGED none is green. (Confirms --since=HEAD.)
-( cd "$P" && git checkout -q . && git clean -qfd )
+# CR2: --since is MANDATORY (a HEAD default made a committed gate-trespass
+# invisible). Without --since, the gate must die loud, not default to HEAD.
+runclaims --claimed none >/dev/null 2>&1; NOSINCE=$?
+check "--since is mandatory (absent → die, no HEAD default)" "$([ "$NOSINCE" != 0 ] && echo 0 || echo 1)"
+# And the reason it's mandatory: a worker that COMMITS its change must NOT evade
+# the diff. Commit a.txt's modification since base, claim none → C1 catches it.
+clean_tree
 printf 'a2\n' > "$P/a.txt"
 ( cd "$P" && git add -A && git commit -qm second )
-runclaims --claimed none >/dev/null 2>&1; SINCE=$?
-check "--since defaults to HEAD: committed change is not a working-tree change" "$([ "$SINCE" = 0 ] && echo 0 || echo 1)"
+runclaims --since "$BASE_SHA" --claimed none >/dev/null 2>&1; COMMIT=$?
+check "a COMMITTED change since base is caught (--since <base>, not HEAD)" "$([ "$COMMIT" != 0 ] && echo 0 || echo 1)"
+clean_tree
 
 # --- adversarial cases (REFUTED review 2026-08-04): the F-A2 attack surface ---
 # These reproduce each must-resolve finding the review caught. Every one is the
@@ -1973,7 +2001,7 @@ printf 'stub\n' > "$P/scripts/ops-verdict.sh"
 # porcelain both report the path as deleted/removed — the pattern must catch it.
 rm -f "$P/scripts/ops-verdict.sh"
 DELVIEW="$(cd "$P" && git status --porcelain --untracked-files=all scripts/ops-verdict.sh)"
-DELOUT="$(runclaims --claimed 'scripts/ops-verdict.sh' 2>/dev/null)"; DEL=$?
+DELOUT="$(runclaims --since "$BASE_SHA" --claimed 'scripts/ops-verdict.sh' 2>/dev/null)"; DEL=$?
 check "F-A2 setup: the deleted gate CLI is in git's view" \
   "$([ -n "$DELVIEW" ] && echo 0 || echo 1)"
 check "C3 fires on a DELETED gate CLI (F-A2 attack; pathname-expansion fix)" \
@@ -1989,7 +2017,7 @@ clean_tree
 # AM: staged-add then working-modify. Claim it → must be green (one real path).
 printf 'a\n' > "$P/feature.txt"; ( cd "$P" && git add feature.txt >/dev/null 2>&1 )
 printf 'b\n' >> "$P/feature.txt"
-AMOUT="$(runclaims --claimed 'feature.txt' 2>/dev/null)"; AM=$?
+AMOUT="$(runclaims --since "$SINCE_SHA" --claimed 'feature.txt' 2>/dev/null)"; AM=$?
 check "AM (added+modified) claimed → green, not a glued 'AM feature.txt' item" \
   "$([ "$AM" = 0 ] && printf '%s' "$AMOUT" | grep -qv '{item AM' && echo 0 || echo 1)"
 clean_tree
@@ -2000,7 +2028,7 @@ clean_tree
 printf 'evil\n' > "$P/scripts/ops-verdict.sh"
 ( cd "$P" && git add scripts/ops-verdict.sh >/dev/null 2>&1 )
 rm -f "$P/scripts/ops-verdict.sh"
-ADOUT="$(runclaims --claimed 'scripts/ops-verdict.sh' 2>/dev/null)"; AD=$?
+ADOUT="$(runclaims --since "$SINCE_SHA" --claimed 'scripts/ops-verdict.sh' 2>/dev/null)"; AD=$?
 check "AD (added+deleted gate CLI) fires C3 gate-trespass" \
   "$([ "$AD" != 0 ] && printf '%s' "$ADOUT" | grep -q gate-trespass && echo 0 || echo 1)"
 clean_tree
@@ -2018,7 +2046,7 @@ clean_tree
 # A path WITH A SPACE is one item, not shredded. The first version word-split
 # `my file.txt` into `my` + `file.txt`. Untracked (so porcelain -z must carry it).
 printf 'x\n' > "$P/my file.txt"
-SCOUT="$(runclaims --claimed none 2>/dev/null)"
+SCOUT="$(runclaims --since "$SINCE_SHA" --claimed none 2>/dev/null)"
 check "path with a space is one unclaimed-change item (not shredded)" \
   "$(printf '%s' "$SCOUT" | grep -q '{item my file.txt}' && echo 0 || echo 1)"
 clean_tree
@@ -2037,7 +2065,7 @@ mkdir -p "$P/hooks"; printf 'orig\n' > "$P/hooks/h.sh"
 ( cd "$P" && git add -A && git commit -qm hookbase >/dev/null 2>&1 )
 ( cd "$P" && git mv hooks/h.sh hooks/renamed.sh >/dev/null 2>&1 )
 MVVIEW="$(cd "$P" && git status --porcelain --untracked-files=all hooks/)"
-MVOUT="$(runclaims --claimed 'hooks/' --gate-task 2>/dev/null)"; MV=$?
+MVOUT="$(runclaims --since "$SINCE_SHA" --claimed 'hooks/' --gate-task 2>/dev/null)"; MV=$?
 check "F-A2 rename setup: the rename is in git's view" \
   "$([ -n "$MVVIEW" ] && echo 0 || echo 1)"
 check "rename: hooks/ claimed + --gate-task → green (both paths recognized)" "$([ "$MV" = 0 ] && echo 0 || echo 1)"
@@ -2048,23 +2076,23 @@ clean_tree
 # Untracked file inside an UNTRACKED directory: --untracked-files=all must see
 # the file, not just the dir. (No --untracked-files=all → only 'docs/'.)
 mkdir -p "$P/docs/new"; printf 'm\n' > "$P/docs/new/a.md"
-runclaims --claimed "docs/new/a.md" >/dev/null 2>&1; UTD=$?
+runclaims --since "$SINCE_SHA" --claimed "docs/new/a.md" >/dev/null 2>&1; UTD=$?
 check "untracked file in untracked dir is matched (--untracked-files=all)" "$([ "$UTD" = 0 ] && echo 0 || echo 1)"
 clean_tree
 
 # Leading-dot claimed path is rejected (the first version's comment promised it,
 # the code did not implement it — review REFUTED, doc/code divergence).
-runclaims --claimed ".hidden" >/dev/null 2>&1; DOT=$?
+runclaims --since "$SINCE_SHA" --claimed ".hidden" >/dev/null 2>&1; DOT=$?
 check "leading-dot claimed path rejected (doc/code divergence fix)" "$([ "$DOT" != 0 ] && echo 0 || echo 1)"
 
 # Green run emits the SSSF 'what was verified' evidence line.
-GE="$(runclaims --claimed none 2>/dev/null)"
+GE="$(runclaims --since "$SINCE_SHA" --claimed none 2>/dev/null)"
 check "green run emits a diff-matches-claims ok line" "$(printf '%s' "$GE" | grep -q 'diff-matches-claims} ok' && echo 0 || echo 1)"
 
 # ops-claims does NOT read pending/ (not a sentinel reader): confirm it carries
 # no sentinel-reader code path by checking it ignores a planted sentinel.
 mkdir -p "$P/.operator/pending"; printf 'session_id: OTHER\n' > "$P/.operator/pending/planted"
-runclaims --claimed none >/dev/null 2>&1; NPD=$?
+runclaims --since "$SINCE_SHA" --claimed none >/dev/null 2>&1; NPD=$?
 check "ops-claims ignores .operator/pending (not a sentinel reader)" "$([ "$NPD" = 0 ] && echo 0 || echo 1)"
 rm -rf "$P"
 
