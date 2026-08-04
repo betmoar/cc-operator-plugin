@@ -468,8 +468,9 @@ fi
 #
 # --owner is REQUIRED and non-empty: an empty sid would write an unowned mark,
 # which under the partition clears EVERY session's deviations — a privilege
-# inversion. check_owner_name rejects it here. The mark's sid tag is the
-# load-bearing cell; the engagement cell is display-only.
+# inversion. The explicit `[ -n "$MOWNER" ]` guard below rejects empty;
+# check_owner_name then rejects malformed (whitespace/slash/dot) owners. The
+# mark's sid tag is the load-bearing cell; the engagement cell is display-only.
 #
 # Written UNDER the lock, inside the same critical section --defer uses for
 # DECISIONS.md writes — so a concurrent verdict/defer cannot interleave.

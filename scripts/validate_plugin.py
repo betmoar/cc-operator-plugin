@@ -492,12 +492,13 @@ def check_reader_bounds(root, problems):
             window = "\n".join(code[i:i + 4])
             cap = re.search(r"-le (\d+)\b", window)
             if not cap or int(cap.group(1)) > 8192:
+                got = cap.group(1) if cap else "none"
                 problems.append(
                     f"scripts/{name}: NUL probe at code line {i + 1} has no "
-                    f"chunk cap (a counter with `-le N`, N<=200) — an uncapped "
-                    f"`read -d ''` loop walks a multi-MB file end-to-end and "
-                    f"stalls the reader (see ops-stop-hook.sh sentinel_owner "
-                    f"for the canonical bounded form)")
+                    f"chunk cap (a counter with `-le N`, N<=8192; got {got}) — "
+                    f"an uncapped `read -d ''` loop walks a multi-MB file "
+                    f"end-to-end and stalls the reader (see ops-stop-hook.sh "
+                    f"sentinel_owner for the canonical bounded form)")
 
 
 def check_platform_idioms(root, problems):
@@ -659,6 +660,31 @@ def check_claims(root, problems):
             "scripts/ops-claims.sh: PROTECTED omits scripts/statusline.sh — "
             "it is a full sentinel reader (F66); leaving it out re-opens a "
             "parser-weakening laundering path")
+
+
+def check_install_set_parity(root, problems):
+    r"""The .operator/bin install set is now declared in TWO files: ops-init.sh
+    (the authoritative install on /cc-operator:start) and ops-sessionstart-hook.sh
+    (the automated upgrade path). A fifth CLI added to one and not the other ships
+    green — every upgraded project silently never receives it (CR4, code-review
+    2026-08-04). This is the F30 shape the repo's check_claims docstring argues
+    against. Pin the two literals equal.
+    """
+    pat = re.compile(r'for _?tool in (ops-verdict\.sh ops-task\.sh ops-adopt\.sh[^;]*)')
+    sets = {}
+    for name in ("ops-init.sh", "ops-sessionstart-hook.sh"):
+        p = root / "scripts" / name
+        if not p.is_file():
+            continue
+        m = pat.search(p.read_text(encoding="utf-8"))
+        sets[name] = m.group(1).strip() if m else None
+    a, b = sets.get("ops-init.sh"), sets.get("ops-sessionstart-hook.sh")
+    if a and b and a != b:
+        problems.append(
+            f"install-set drift: ops-init.sh installs [{a}] but "
+            f"ops-sessionstart-hook.sh upgrades [{b}] — a CLI in one and not the "
+            f"other means upgraded projects never receive it (CR4; the two lists "
+            f"must stay equal)")
 
 
 def check_lock_parity(root, problems):
@@ -1299,6 +1325,7 @@ CHECKS = (
     check_platform_idioms,
     check_guard_parity,
     check_claims,
+    check_install_set_parity,
     check_compressor,
     check_lock_parity,
     check_resolver_renderer_parity,

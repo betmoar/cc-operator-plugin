@@ -363,3 +363,15 @@ line now carries `CHANGED:` for it to check. Procedures when you dispatch:
 to a canonical literal and applied at a call site — copy parity alone is
 insufficient). `ops-claims.sh` does NOT read `.operator/pending/` (it reads git
 state), so it is neither a sentinel reader nor a `check_guard_parity` site.
+
+6. **The deviation gate's `[sid:]` tag and `--mark-handoff`.** When you log a
+   DEVIATION/ESCALATION/GATE-EXCEPTION in DECISIONS.md, prefix the what-cell with
+   `[sid:<your-session-id>]` (the id SessionStart names). Tagged deviations block
+   only YOUR Stop; untagged (legacy) ones block EVERY session (the unowned =
+   blocks-all rule, mirroring sentinels). Presenting a handoff clears them via
+   `.operator/bin/ops-verdict.sh --mark-handoff --owner <sid>` — a HANDOFF-MARK
+   positioned in the file AFTER the deviations it clears. The Stop hook's
+   `scan_deviations` and the statusline's `scan_deviations_bar` re-implement the
+   same mine/unowned-vs-foreign partition; the hook fails CLOSED on cap/corrupt,
+   the bar fails toward SILENCE (different strategies by design — the bar uses a
+   reverse-tail scan for the 300ms budget, the hook whole-file for accuracy).

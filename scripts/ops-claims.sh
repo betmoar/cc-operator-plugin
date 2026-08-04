@@ -72,10 +72,10 @@ trap 'rm -f "$_ACTUAL_TMP" "$_DEDUPED_TMP"' EXIT
 # a deleted gate CLI (the exact F-A2 attack — `git rm scripts/ops-verdict.sh`)
 # matched nothing and evaded C3, and the match was CWD-relative. With `set -f`,
 # `for pat in $PROTECTED` only WORD-SPLITS (no glob expansion against disk), and
-# each token is then used as a `case` PATTERN — matching against the STRING $p,
-# never the filesystem. A deleted file still matches its pattern (review REFUTED,
-# 2026-08-04). This keeps ONE source (the literal); a hardcoded `case` would be a
-# second copy that drifts — the F30 trap.
+# each token is matched against the STRING $p — prefix via parameter expansion
+# for dir tokens, glob via `[[ == ]]` for the rest — never the filesystem. A
+# deleted file still matches its pattern (review REFUTED, 2026-08-04). This keeps
+# ONE source (the literal); a hardcoded `case` would drift — the F30 trap.
 #
 # statusline.sh is included per the F66 amendment: it is a full sentinel reader
 # bound by gate semantics (same -L/NUL/byte-bound obligations as the hook), so a
@@ -101,9 +101,11 @@ matches_protected() {  # matches_protected <path> → 0 if under the protected s
   return 1
 }
 
-# A claimed path ending in '/' matches by prefix; else exact. Same rule as the
-# protected set: "CHANGED: tests/" is satisfied by a diff touching tests/x. set -f
-# stops a claimed glob from pathname-expanding against the disk (review REFUTED).
+# A claimed path ending in '/' matches by prefix; else exact. UNLIKE the
+# protected set (which globs via [[ == ]]), claimed paths are LITERAL — the
+# CHANGED: contract is space-separated paths, not patterns, so a claimed glob is
+# the worker's error, never a pattern. set -f stops a claimed path that happens
+# to contain a glob char from pathname-expanding against the disk.
 matches_claimed() {  # matches_claimed <path> <claimed-list> → 0 if claimed
   local p="$1" c
   set -f

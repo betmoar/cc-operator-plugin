@@ -1406,5 +1406,45 @@ class ClaimsGuardTest(unittest.TestCase):
                         self._probs(src))
 
 
+class InstallSetParityTest(unittest.TestCase):
+    """check_install_set_parity: the .operator/bin install set is declared in
+    ops-init.sh AND ops-sessionstart-hook.sh. A CLI in one and not the other
+    means upgraded projects never receive it (CR4). Each test mutates the real
+    ops-init.sh install loop and asserts the check fires.
+    """
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        make_good_tree(self.dir)
+        self._real_init = (pathlib.Path(__file__).resolve().parent.parent /
+                           "scripts" / "ops-init.sh").read_text(encoding="utf-8")
+        # check_install_set_parity reads BOTH install files; make_good_tree's
+        # ops-sessionstart-hook.sh stub lacks the upgrade loop, so write the real
+        # one (the check only inspects the install-loop literal, not behavior).
+        self._real_ssh = (pathlib.Path(__file__).resolve().parent.parent /
+                          "scripts" / "ops-sessionstart-hook.sh").read_text(encoding="utf-8")
+        write(self.dir / "scripts" / "ops-sessionstart-hook.sh", self._real_ssh)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _probs(self, mutated_init):
+        write(self.dir / "scripts" / "ops-init.sh", mutated_init)
+        probs = []
+        vp.check_install_set_parity(self.dir, probs)
+        return probs
+
+    def test_good_parity_is_clean(self):
+        self.assertEqual(self._probs(self._real_init), [])
+
+    def test_init_adds_a_cli_not_in_sessionstart_fires(self):
+        # Add a fifth CLI to ops-init's install loop that sessionstart lacks.
+        src = self._real_init.replace(
+            "ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh",
+            "ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh ops-future.sh", 1)
+        self.assertTrue(any("install-set drift" in p for p in self._probs(src)),
+                        self._probs(src))
+
+
 if __name__ == "__main__":
     unittest.main()
