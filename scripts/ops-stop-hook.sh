@@ -139,6 +139,16 @@ done
 # use $( ), which is a subshell, so a side-effect variable would be discarded.
 sentinel_owner() { # sentinel_owner <path> → "owner|opened_at"
   local line owner="" opened="" n=0
+  # The line loop below bounds reads in BYTES (`read -n 512`, `${#line} < 512`).
+  # In a multibyte locale both count CHARACTERS: a 512-char UTF-8 pad (1024
+  # bytes) yields chunks of len 256 that never trip the cap guard, and a trailing
+  # `session_id: EVIL` is matched as a fresh line — smuggling a foreign owner and
+  # flipping unowned(blocks)→foreign(waves through): the exact inversion this
+  # gate exists to prevent (review CONFIRMED-attachment finding, 2026-08-04).
+  # This function always runs inside a `$(...)` subshell at its call sites, so
+  # scoping LC_ALL=C here cannot leak to the caller. The NUL probe above already
+  # does the same in its own subshell.
+  LC_ALL=C
   # A symlink is never a sentinel our CLIs wrote (F65): `-f` alone FOLLOWS it,
   # so a planted link would read its target's session_id: as a foreign owner
   # and wave the stop through. Degrade to unowned → BLOCKS everyone — the same

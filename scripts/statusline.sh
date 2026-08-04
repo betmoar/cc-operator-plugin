@@ -112,6 +112,10 @@ done
 # here, which would silently make every sentinel parse as unowned.
 sentinel_owner() { # sentinel_owner <path> → owner ("" = unowned)
   local line owner="" n=0
+  # LC_ALL=C so the byte-bounded read + ${#} count BYTES not characters (a
+  # multibyte-locale pad would otherwise smuggle a foreign owner past the cap
+  # guard — review finding 2026-08-04). Safe: this runs in a $(...) subshell.
+  LC_ALL=C
   # A symlink is never a sentinel our CLIs wrote (F65): `-f` alone FOLLOWS it,
   # so a planted link would read its target's session_id: and render as
   # foreign. Degrade to unowned → counted as MINE-blocking — the bar mirrors

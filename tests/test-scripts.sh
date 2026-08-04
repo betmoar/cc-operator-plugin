@@ -670,12 +670,20 @@ done
 # writing the file. Two vectors: filling the 512 cap, and a NUL (bash 3.2's
 # `read -n` stops AT one, so the padding need not reach 512 — and ${#line}
 # cannot see it, because bash drops NULs from variables entirely).
-for vec in pad512 nulpad latenul; do
+for vec in pad512 nulpad latenul utf8pad; do
   rm -f "$P"/.operator/pending/*
   if [ "$vec" = pad512 ]; then
     python3 -c "import sys; open(sys.argv[1],'wb').write(b'x'*512+b'session_id: EVIL\\n')" "$P/.operator/pending/T-SMUG"
   elif [ "$vec" = nulpad ]; then
     python3 -c "import sys; open(sys.argv[1],'wb').write(b'x'+b'\\0'*100+b'x'*411+b'session_id: EVIL\\n')" "$P/.operator/pending/T-SMUG"
+  elif [ "$vec" = utf8pad ]; then
+    # 512 multibyte chars (é = 2 bytes) = 1024 bytes. In a UTF-8 locale `read -n
+    # 512` and ${#line} count CHARACTERS, so this 1024-byte line reads as ONE
+    # 512-char chunk that never trips the <512 cap guard — and `session_id: EVIL`
+    # on the next line smuggles a foreign owner (unowned→foreign, fail-OPEN).
+    # The fix sets LC_ALL=C in the parser so both count BYTES (review finding
+    # 2026-08-04). Reproducible on bash 3.2 with a UTF-8 locale.
+    python3 -c "import sys; open(sys.argv[1],'wb').write(('é'*512+'session_id: EVIL\\n').encode('utf-8'))" "$P/.operator/pending/T-SMUG"
   else
     # latenul: the NUL sits PAST byte 512 with every physical line under the cap,
     # so the single-shot 512-byte probe missed it and the sub-cap lines slipped
@@ -684,7 +692,19 @@ for vec in pad512 nulpad latenul; do
     python3 -c "import sys; open(sys.argv[1],'wb').write(b'\\n'.join(b'p'*100 for _ in range(6))+b'\\n'+b'q'*50+b'\\0'+b'r'*50+b'\\nsession_id: EVIL\\n')" "$P/.operator/pending/T-SMUG"
   fi
   # Under the OLDEST bash: the nul vectors only exist there (F46).
-  printf '{"session_id":"SESS-B","cwd":"%s"}' "$P" | "$BASH_OLD" "$HOOK" >/dev/null 2>&1; SMRC=$?
+  # The utf8pad vector only exercises the multibyte-counting path under a UTF-8
+  # locale; find one, else run default (the LC_ALL=C fix makes the parser
+  # locale-independent, so it blocks either way, but only a UTF-8 locale proves
+  # the fix is what's blocking).
+  _utfloc=""
+  if [ "$vec" = utf8pad ]; then
+    _utfloc="$(locale -a 2>/dev/null | grep -m1 'UTF-8' || true)"
+  fi
+  if [ -n "$_utfloc" ]; then
+    printf '{"session_id":"SESS-B","cwd":"%s"}' "$P" | LC_ALL="$_utfloc" "$BASH_OLD" "$HOOK" >/dev/null 2>&1; SMRC=$?
+  else
+    printf '{"session_id":"SESS-B","cwd":"%s"}' "$P" | "$BASH_OLD" "$HOOK" >/dev/null 2>&1; SMRC=$?
+  fi
   check "a one-line [$vec] sentinel cannot smuggle an owner — fails CLOSED (exit 2)" \
     "$([ "$SMRC" -eq 2 ] && echo 0 || echo 1)"
 
