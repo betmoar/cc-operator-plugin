@@ -55,6 +55,19 @@ cwd="$(json_get cwd)"
 [ -n "$cwd" ] || cwd="$PWD"
 [ -d "$cwd/.operator" ] || exit 0
 
+# Compressor artifact cleanup (spec I2.3 + the dedup state contract). Both are
+# session-scoped ephemera, and both MUST be cleared on every SessionStart fire
+# INCLUDING `compact`: compaction can prune the prior output from context, and
+# "the content is already in context" is the dedup marker's entire
+# justification — a stale hash after a compact collapses output the model can no
+# longer see. A /clear rotates the session id, so old directories would
+# otherwise accumulate forever; the whole tree goes, not just this session's.
+# Best-effort by design: a cleanup failure must never cost the session its
+# banner, so every branch swallows and continues.
+for _cdir in "$cwd/.operator/.compress-spill" "$cwd/.operator/.compress-state"; do
+  [ -d "$_cdir" ] && rm -rf "$_cdir" 2>/dev/null
+done
+
 ctx="cc-operator: this session's id is ${session}. Pass --owner ${session} when opening or closing tracked tasks — .operator/bin/ops-task.sh <id> --owner ${session}, .operator/bin/ops-verdict.sh <id> ... --owner ${session}. Sentinels you open are then yours alone: the Stop hook blocks only on your own open tasks and reports other sessions' as informational. After a /clear your id changes — run .operator/bin/ops-adopt.sh --owner ${session} <id>... to re-claim tasks you are still working."
 
 if [ "$PARSER" = "jq" ]; then

@@ -22,6 +22,23 @@ SSHOOK="$SCRIPTS/ops-sessionstart-hook.sh"
 # Absolute bash so a restricted PATH (case 5) governs only the hook's INTERNAL
 # command lookups (jq/python3), not the launch of bash itself.
 BASH_ABS="$(command -v bash)"
+# The OLDEST bash on the box, for cases whose bug only exists there. This suite
+# otherwise runs whatever `command -v bash` finds — on macOS a Homebrew 5.x —
+# while the shipped scripts use `#!/usr/bin/env bash` and this repo explicitly
+# targets bash 3.2 (ops-tiers.sh, ops-render.sh, ops-adopt.sh all say so). That
+# gap is not hypothetical: F46 (a NUL-padded sentinel/config smuggling an owner
+# past the length guard) is EXPLOITABLE on 3.2 and IMPOSSIBLE on 5.3, so the
+# whole suite was green while system bash was vulnerable. Cases marked with
+# BASH_OLD run against /bin/bash when it is older, and fall back otherwise.
+BASH_OLD="$BASH_ABS"
+if [ -x /bin/bash ]; then
+  # shellcheck disable=SC2016  # ${BASH_VERSINFO} must be expanded by the CHILD
+  # bash being probed, not by this one — that is the entire point of the probe.
+  _obv="$(/bin/bash -c 'echo ${BASH_VERSINFO[0]}' 2>/dev/null || echo 9)"
+  # shellcheck disable=SC2016
+  _nbv="$("$BASH_ABS" -c 'echo ${BASH_VERSINFO[0]}' 2>/dev/null || echo 9)"
+  [ "$_obv" -lt "$_nbv" ] && BASH_OLD=/bin/bash
+fi
 
 PASS=0
 FAIL=0
@@ -194,12 +211,105 @@ Q="$(newproj)"
 ( cd "$Q" && bash "$TASK" T-1 >/dev/null 2>&1 ); QRC=$?
 check "ops-task refuses without .operator/" "$([ "$QRC" -ne 0 ] && echo 0 || echo 1)"
 rm -rf "$Q"
+
+echo "-- Case: ops-task does not claim a non-regular entry in pending/ is 'already open'"
+# A directory or dangling symlink in pending/ is not a task sentinel. The
+# opener's `>` redirection fails on it for a reason OTHER than O_EXCL/EEXIST,
+# but the old else-branch conflated every failure with "already open" and
+# exited 0 — while the Stop hook's `-f` guard refuses to count the entry, so
+# the session stopped with a task the operator believed was tracked. Two
+# components disagreeing about what counts as a task, failing OPEN: the
+# whole gate silently off (P1, found by the review-panel pilot 2026-07-29).
+# The fix distinguishes "a regular file already exists" (legit already-open,
+# ownership unchanged) from "the target is non-regular or unwritable" (a
+# fault: refuse, exit non-zero, and do NOT claim ownership is unchanged).
+P2="$(newproj)"; ( cd "$P2" && bash "$INIT" >/dev/null 2>&1 )
+# directory: the open must fail, not silently report "already open"
+mkdir -p "$P2/.operator/pending/T-DIR"
+( cd "$P2" && ./.operator/bin/ops-task.sh T-DIR --owner SESS-A >/dev/null 2>&1 ); DRC=$?
+check "ops-task refuses to open over a directory (non-zero exit)" "$([ "$DRC" -ne 0 ] && echo 0 || echo 1)"
+( cd "$P2" && ./.operator/bin/ops-task.sh T-DIR --owner SESS-A 2>&1 ) | grep -qi "already open" && echo "FAIL: ops-task falsely reports a directory as already open" >&2
+check "ops-task does not claim a directory is 'already open'" "$([ "$DRC" -ne 0 ] && echo 0 || echo 1)"
+# dangling symlink: same — the redirection fails (cannot overwrite existing
+# file, because the symlink target exists nowhere to write through), and the
+# old code reported it as already-open + exit 0
+ln -s /nonexistent "$P2/.operator/pending/T-DEAD"
+( cd "$P2" && ./.operator/bin/ops-task.sh T-DEAD --owner SESS-A >/dev/null 2>&1 ); LRC=$?
+check "ops-task refuses to open over a dangling symlink (non-zero exit)" "$([ "$LRC" -ne 0 ] && echo 0 || echo 1)"
+# symlink TO A REGULAR FILE (Copilot 2026-08-03, final review): unlike the
+# dangling case, `-f` FOLLOWS this symlink and reads TRUE, so the old guard
+# reported it as "already open" and exited 0 — presenting a planted entry as
+# live tracked work. (mv/rename(2) replaces a destination symlink itself and
+# never touches its target — measured 2026-08-04 — so the exposure is the
+# laundering, not a data overwrite.) A symlink is never a sentinel we wrote;
+# `-L` must reject it.
+_TGT="$(mktemp "${TMPDIR:-/tmp}/opstest-symlink.XXXXXX")"
+printf 'session_id: attacker\n' > "$_TGT"
+ln -s "$_TGT" "$P2/.operator/pending/T-LIVE"
+( cd "$P2" && ./.operator/bin/ops-task.sh T-LIVE --owner SESS-A >/dev/null 2>&1 ); SLRC=$?
+( cd "$P2" && ./.operator/bin/ops-task.sh T-LIVE --owner SESS-A 2>&1 ) | grep -qi "already open" && echo "FAIL: ops-task falsely reports a symlink-to-regular as already open" >&2
+check "ops-task refuses a symlink-to-regular as 'already open' (non-zero exit, -L guard)" \
+  "$([ "$SLRC" -ne 0 ] && echo 0 || echo 1)"
+# and the link target must be UNTOUCHED — no write leaked through the symlink
+check "the symlink's outside target was not overwritten by the refusal" \
+  "$([ "$(cat "$_TGT")" = "session_id: attacker" ] && echo 0 || echo 1)"
+rm -f "$_TGT"
+# a legit already-open task (a real sentinel file) must STILL report already
+# open and exit 0 — the fix must not break the genuine O_EXCL path
+( cd "$P2" && ./.operator/bin/ops-task.sh T-REAL --owner SESS-A >/dev/null 2>&1 )
+( cd "$P2" && ./.operator/bin/ops-task.sh T-REAL --owner SESS-B 2>&1 ); RRC=$?; ROUT=$?
+check "ops-task still reports a real sentinel as already open (exit 0)" "$([ "$RRC" -eq 0 ] && echo 0 || echo 1)"
+rm -rf "$P2"
+
 # pre-0.3 project (no bin/): block message falls back to the plugin's absolute copy
 rm -rf "$P/.operator/bin"
 : > "$P/.operator/pending/T-8"
 run_hook stop-basic.json "$P"
 check "no bin/: block message falls back to plugin-root absolute path" "$(printf '%s' "$HERR" | grep -q "$SCRIPTS/ops-verdict.sh" && echo 0 || echo 1)"
 rm -rf "$P"
+
+########################################################################
+echo "-- Case: a planted symlink sentinel is rejected by every reader"
+# The F65 -L guard first landed in ops-task.sh's opener only — the write site.
+# Every READ site kept plain `-f`, which FOLLOWS symlinks, so a symlink planted
+# in pending/ (malicious checkout, hostile merge) was accepted as a real
+# sentinel everywhere downstream: ops-adopt.sh adopted it and its rewrite
+# LAUNDERED it into a genuine regular-file sentinel the whole gate then
+# trusts; ops-verdict.sh closed it into VERDICTS.md as if the task had gone
+# through the O_EXCL create; the Stop hook and statusline read its target's
+# `session_id:` and, on a foreign id, waved the stop through / rendered it
+# foreign (code-review of f4cae1a, 2026-08-04). The rule, applied per
+# PLAYBOOK: a symlink is never a sentinel our CLIs wrote. Parsers degrade it
+# to "" = unowned = BLOCKS (fail closed); mutating CLIs refuse loudly.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+_SYT="$(mktemp "${TMPDIR:-/tmp}/opstest-symtgt.XXXXXX")"
+printf 'session_id: SESS-A\nopened_at: 2026-08-04T00:00:00Z\n' > "$_SYT"
+ln -s "$_SYT" "$P/.operator/pending/T-SYM"
+# adopt: must refuse, leave the symlink a symlink, and not touch the target
+( cd "$P" && bash "$ADOPT" --owner SESS-NEW T-SYM >/dev/null 2>&1 ); SYARC=$?
+check "adopt refuses a symlink sentinel (non-zero exit)" "$([ "$SYARC" -ne 0 ] && echo 0 || echo 1)"
+check "adopt did not launder the symlink into a regular sentinel" "$([ -L "$P/.operator/pending/T-SYM" ] && echo 0 || echo 1)"
+check "adopt left the symlink's target untouched" "$([ "$(head -1 "$_SYT")" = "session_id: SESS-A" ] && echo 0 || echo 1)"
+# verdict: must refuse — no ledger row, sentinel not cleared
+SYROWS0="$(wc -l < "$P/.operator/VERDICTS.md")"
+( cd "$P" && bash "$VERDICT" T-SYM crit ev PASS --owner SESS-A >/dev/null 2>&1 ); SYVRC=$?
+check "verdict refuses to close a symlink sentinel (non-zero exit)" "$([ "$SYVRC" -ne 0 ] && echo 0 || echo 1)"
+check "no ledger row was written for the symlink sentinel" "$([ "$(wc -l < "$P/.operator/VERDICTS.md")" -eq "$SYROWS0" ] && echo 0 || echo 1)"
+check "verdict did not clear the symlink sentinel" "$([ -L "$P/.operator/pending/T-SYM" ] && echo 0 || echo 1)"
+# defer: same refusal — it also clears sentinels
+( cd "$P" && bash "$VERDICT" T-SYM --defer "why" --owner SESS-A >/dev/null 2>&1 ); SYDRC=$?
+check "defer refuses a symlink sentinel (non-zero exit)" "$([ "$SYDRC" -ne 0 ] && echo 0 || echo 1)"
+# Stop hook: the target says SESS-A, but a symlink is not a claim of ownership
+# — it must read as UNOWNED, which blocks EVERY session (the same fail-closed
+# direction as a malformed body), never as SESS-A's foreign task.
+run_hook stop-session-b.json "$P"
+check "Stop hook blocks a bystander on a symlink sentinel (unowned, exit 2)" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+check "Stop hook does not attribute the symlink to the target's owner" "$(printf '%s' "$HERR" | grep -q 'owned by SESS-A' && echo 1 || echo 0)"
+# statusline: same partition — unowned counts as MINE-blocking, never foreign
+SYSL="$(printf '{"session_id":"SESS-B","cwd":"%s","workspace":{"project_dir":"%s"}}' "$P" "$P" \
+  | "$BASH_ABS" "$SCRIPTS/statusline.sh" 2>/dev/null | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g')"
+check "statusline counts a symlink sentinel as blocking, not foreign" "$([ "$SYSL" = "op[1]" ] && echo 0 || echo 1)"
+rm -f "$_SYT"; rm -rf "$P"
 
 ########################################################################
 echo "-- Case 7: ledger cell hygiene — refuse, never corrupt (single-writer schema)"
@@ -502,6 +612,52 @@ for body in 'session_id: ' 'session_id: a|b' 'session_id: .hidden' 'garbage'; do
   run_hook stop-session-b.json "$P"
   check "degenerate body [$body] fails CLOSED (exit 2)" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
 done
+# TRUNCATION-RECLASSIFICATION: a sentinel body is ONE physical line of padding
+# followed by `session_id: EVIL`. `read -n 512` truncates mid-line and the tail
+# arrives next iteration as a fresh "line", matched on its own — so an unowned
+# sentinel (blocks) reads as FOREIGN (waves the stop through). That is the
+# fail-OPEN inversion PLAYBOOK step 2 forbids, reached without our CLIs ever
+# writing the file. Two vectors: filling the 512 cap, and a NUL (bash 3.2's
+# `read -n` stops AT one, so the padding need not reach 512 — and ${#line}
+# cannot see it, because bash drops NULs from variables entirely).
+for vec in pad512 nulpad latenul; do
+  rm -f "$P"/.operator/pending/*
+  if [ "$vec" = pad512 ]; then
+    python3 -c "import sys; open(sys.argv[1],'wb').write(b'x'*512+b'session_id: EVIL\\n')" "$P/.operator/pending/T-SMUG"
+  elif [ "$vec" = nulpad ]; then
+    python3 -c "import sys; open(sys.argv[1],'wb').write(b'x'+b'\\0'*100+b'x'*411+b'session_id: EVIL\\n')" "$P/.operator/pending/T-SMUG"
+  else
+    # latenul: the NUL sits PAST byte 512 with every physical line under the cap,
+    # so the single-shot 512-byte probe missed it and the sub-cap lines slipped
+    # the pad512 guard too — the full-PR panel's score-92 exploit (owner=EVIL,
+    # exit 0 on bash 3.2). The fix loops the probe over the whole file.
+    python3 -c "import sys; open(sys.argv[1],'wb').write(b'\\n'.join(b'p'*100 for _ in range(6))+b'\\n'+b'q'*50+b'\\0'+b'r'*50+b'\\nsession_id: EVIL\\n')" "$P/.operator/pending/T-SMUG"
+  fi
+  # Under the OLDEST bash: the nul vectors only exist there (F46).
+  printf '{"session_id":"SESS-B","cwd":"%s"}' "$P" | "$BASH_OLD" "$HOOK" >/dev/null 2>&1; SMRC=$?
+  check "a one-line [$vec] sentinel cannot smuggle an owner — fails CLOSED (exit 2)" \
+    "$([ "$SMRC" -eq 2 ] && echo 0 || echo 1)"
+
+  # NOTE on the writer parsers (ops-verdict, ops-adopt): they carry the same
+  # F45/F46 guard, but it is BELT-AND-BRACES there, not load-bearing. A smuggled
+  # `session_id: ../../PWNED` parsed from the body reaches FRAG_OWNER only when
+  # no --owner is given — but check_bare_name (run on every owner before it
+  # becomes a fragment FILENAME) already refuses '/', so the traversal is
+  # blocked by an existing, proven guard regardless of F45/F46. Disabling the
+  # verdict F45 guard leaves the smuggle blocked (verified 2026-08-03), so a
+  # case asserting it would be vacuous — it passes with the guard off. The
+  # stop-hook reader above is where the guard IS load-bearing: it has no
+  # downstream bare-name check, so the smuggle reaches the mine/foreign
+  # partition directly. (pr-review test-coverage finding #3.)
+done
+# The guard must not break the path it sits on: a GENUINE foreign sentinel is
+# still reported and still non-blocking.
+rm -f "$P"/.operator/pending/*
+printf 'session_id: OTHER\ncwd: /x\nopened_at: 2026-08-02T00:00:00Z\n' > "$P/.operator/pending/T-FGN"
+run_hook stop-session-a.json "$P"
+check "a genuine foreign sentinel still does NOT block (guard did not overreach)" \
+  "$([ "$HRC" -eq 0 ] && echo 0 || echo 1)"
+
 # WHITESPACE in an owner is the subtlest disarm: the hook compares the stamped
 # owner byte-for-byte against the payload session id, so " SESS-A" can never
 # equal any real session — the task is FOREIGN forever, and foreign never
@@ -669,12 +825,25 @@ mkdir -p "$P/.operator/.lock" "$P/.operator/.lock.reclaim"
 # Run under a polled watchdog: against the UNFIXED code this never returns, and
 # an unbounded wait here would hang CI instead of reporting a failure. No
 # `timeout(1)` — macOS does not ship one.
-( cd "$P" && bash "$VERDICT" T-AB crit ev PASS --owner SESS-A >/dev/null 2>&1 ) &
+#
+# Tiny budget via the env seam (audit F08): the abandoned-claim path pays
+# LOCK_SPINS + the defers. on the real 30s/5s budgets this case alone ran >60s.
+# The OUTCOME under test (recovers, does not wedge; verdict recorded; nothing
+# left behind) is unchanged at a tiny budget.
+#
+# RECLAIM_WAIT must be set < LOCK_SPINS — the backoff `i=$((LOCK_SPINS-RECLAIM_WAIT))`
+# goes non-positive otherwise and each defer pays the full RECLAIM_WAIT (review
+# F-C: LOCK_SPINS=10 with the default RECLAIM_WAIT=50 took ~20s, not ~1s, and the
+# validator now rejects that combo anyway). Both set tiny; the guard requires
+# RECLAIM_WAIT < LOCK_SPINS.
+LOCK_SPINS=10 RECLAIM_WAIT=2 \
+  bash -c 'cd "$0" && bash "$1" T-AB crit ev PASS --owner SESS-A >/dev/null 2>&1' \
+  "$P" "$VERDICT" &
 ABPID=$!
 ABRC=1; waited=0
-while [ "$waited" -lt 120 ]; do
+while [ "$waited" -lt 20 ]; do
   if ! kill -0 "$ABPID" 2>/dev/null; then wait "$ABPID" 2>/dev/null; ABRC=$?; break; fi
-  sleep 2; waited=$((waited + 2))
+  sleep 1; waited=$((waited + 1))
 done
 if kill -0 "$ABPID" 2>/dev/null; then kill -9 "$ABPID" 2>/dev/null; ABRC=99; fi
 check "abandoned reclaim claim recovers (does not wedge forever)" "$([ "$ABRC" -eq 0 ] && echo 0 || echo 1)"
@@ -848,16 +1017,31 @@ check "dead holder: no lock or claim marker left behind" "$([ ! -d "$LK" ] && [ 
 # created its own, so the holder's own release then removed the NEW holder's
 # lock and a third writer walked in. Exceeding the budget must degrade to the
 # milder failure — proceed unlocked — never to stealing a running writer's lock.
-# Slow by nature: it has to outlast a real 30s budget.
+#
+# The lock budgets are env-overridable (a test seam; defaults unchanged), so the
+# case runs on a TINY budget — ~1s to degrade on a confirmed-live holder —
+# instead of the real 60s. The invariant under test (never steal a live holder's
+# lock; the waiter degrades rather than hangs) is unchanged; only the absolute
+# duration shrinks. Audit F08/F09: the real budget made the case take ~160s and
+# the "completed" assertion a flaky timing-race (spins≠0.1s wall-clock under
+# load). Measuring the property, not a wall-clock coincidence, is the fix.
+#
+# Hardcode LOCK_LIVE_SPINS=10 (do not read the ambient value): the suite must be
+# hermetic against the very variable it exists to control (review minor note).
+# LOCK_SPINS/RECLAIM_WAIT stay default here — the live-degrade branch never
+# reclaims, so only LOCK_LIVE_SPINS bounds this case.
 ( cd "$P" && bash "$TASK" T-LIVE --owner SESS-A >/dev/null 2>&1 )
-sleep 90 & LIVEPID=$!
+sleep 300 & LIVEPID=$!   # stays "live" for the whole case; duration irrelevant
 mkdir -p "$LK"; printf '%s %s %s\n' "${HOSTNAME:-nohost}" "${UID:-0}" "$LIVEPID" > "$LK/holder"
-( cd "$P" && bash "$VERDICT" T-LIVE crit ev PASS --owner SESS-A >/dev/null 2>&1 ) &
+LOCK_LIVE_SPINS=10 \
+  bash -c 'cd "$0" && bash "$1" T-LIVE crit ev PASS --owner SESS-A >/dev/null 2>&1' \
+  "$P" "$VERDICT" &
 LVWRITER=$!
 LVRC=1; waited=0
-while [ "$waited" -lt 70 ]; do
+# Poll up to 20s (generous vs the ~1s degrade) for the writer to finish.
+while [ "$waited" -lt 20 ]; do
   if ! kill -0 "$LVWRITER" 2>/dev/null; then wait "$LVWRITER" 2>/dev/null; LVRC=$?; break; fi
-  sleep 2; waited=$((waited + 2))
+  sleep 1; waited=$((waited + 1))
 done
 if kill -0 "$LVWRITER" 2>/dev/null; then kill -9 "$LVWRITER" 2>/dev/null; LVRC=99; fi
 check "live holder: waiter still completes (bounded, never hangs)" "$([ "$LVRC" -eq 0 ] && echo 0 || echo 1)"
@@ -948,6 +1132,19 @@ check "a held lock is stamped, and a stamped lock cannot be rmdir'd" "$([ "$PROB
 awk '/^# >>> LOCK BLOCK/,/^# <<< LOCK BLOCK/' "$SCRIPTS/ops-verdict.sh" | sed 's/ops-verdict:/TOOL:/g' > "$TMPD/lkv"
 awk '/^# >>> LOCK BLOCK/,/^# <<< LOCK BLOCK/' "$SCRIPTS/ops-adopt.sh"   | sed 's/ops-adopt:/TOOL:/g'   > "$TMPD/lka"
 check "adopt and verdict carry identical lock logic (no drift)" "$([ -s "$TMPD/lkv" ] && cmp -s "$TMPD/lkv" "$TMPD/lka" && echo 0 || echo 1)"
+
+# The env-overridable lock budgets must validate (review F-A/B/C of the F08 seam):
+# a non-numeric or zero value used to either wedge forever (F-A: [ -ge ] errors
+# inside the `if`, set -e doesn't fire, spin loop never exits) or collapse the
+# unjudgeable-holder budget to zero (F-B: instant reclaim — the F03 class). Both
+# now refuse at resolve time. RECLAIM_WAIT >= LOCK_SPINS is also refused (F-C: it
+# makes the backoff `i=$((LOCK_SPINS-RECLAIM_WAIT))` non-positive).
+ABORT_BUDGET() { # ABORT_BUDGET <var=val...> → exit code
+  ( cd "$P" && env "$@" bash "$VERDICT" T-BUD crit ev PASS --owner SESS-A >/dev/null 2>&1; echo $? )
+}
+check "non-numeric LOCK_SPINS is refused (no infinite hang, F-A)" "$([ "$(ABORT_BUDGET LOCK_SPINS=abc)" -eq 2 ] && echo 0 || echo 1)"
+check "zero LOCK_SPINS is refused (no budget collapse, F-B)" "$([ "$(ABORT_BUDGET LOCK_SPINS=0)" -eq 2 ] && echo 0 || echo 1)"
+check "RECLAIM_WAIT >= LOCK_SPINS is refused (no broken backoff, F-C)" "$([ "$(ABORT_BUDGET LOCK_SPINS=10 RECLAIM_WAIT=50)" -eq 2 ] && echo 0 || echo 1)"
 # Stamps first: a stamped lock dir is non-empty and survives `rm -rf` otherwise.
 rm -f "$P/.operator/.lock/holder" "$P/.operator/.lock.reclaim/holder" 2>/dev/null || true
 rm -rf "$P" "$TMPD"
@@ -985,6 +1182,20 @@ render() { # render <session-id> <cwd> → segment text with ANSI stripped
 P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
 check "no open tasks → renders nothing (the bar stays clean)" \
   "$([ -z "$(render SESS-A "$P")" ] && echo 0 || echo 1)"
+
+# Exit status is part of the renderer contract, not just its stdout: cc-status
+# may drop a renderer that fails. A trailing `[ -n "$WFSEG" ] && printf ...`
+# made an EMPTY wf segment the script's failing last command, so the common
+# case (tasks open, no workflow running) printed op[1] and exited 1 — main
+# exits 0 on the same payload (review panel, 2026-08-02). No prior case
+# asserted the exit code, which is why it regressed silently.
+sljson SESS-A "$P" | "$BASH_ABS" "$SL" >/dev/null 2>&1
+check "statusline exits 0 with nothing to render" "$?"
+SLEXITP="$(newproj)"; ( cd "$SLEXITP" && bash "$INIT" >/dev/null 2>&1 )
+printf 'session_id: SESS-A\n' > "$SLEXITP/.operator/pending/exit-probe"
+SLEXITOUT="$(sljson SESS-A "$SLEXITP" | "$BASH_ABS" "$SL" 2>/dev/null)"; SLEXITRC=$?
+check "statusline exits 0 when the op[ segment renders but no workflow is live" \
+  "$([ "$SLEXITRC" -eq 0 ] && printf '%s' "$SLEXITOUT" | grep -q 'op\[' && echo 0 || echo 1)"
 
 ( cd "$P" && bash "$TASK" T-1 --owner SESS-A >/dev/null 2>&1 )
 ( cd "$P" && bash "$TASK" T-2 --owner SESS-B >/dev/null 2>&1 )
@@ -1096,6 +1307,457 @@ if [ -f "$MANIFEST" ]; then
     "$(grep -q '"name"[[:space:]]*:[[:space:]]*"cc-operator"' "$MANIFEST" && echo 0 || echo 1)"
 fi
 rm -rf "$P" "$SLPY" "$SLNONE"
+
+########################################################################
+echo "-- Case: /cc-operator:tiers command wraps the tier resolver"
+# commands/tiers.md is a thin wrapper over ops-tiers.sh — it adds no logic, so
+# the resolver's own guards (charset, cc-proxy routability) are the validation.
+# What the command MUST guarantee: it exists, its allowed-tools grants the
+# ops-tiers.sh invocation, and it uses ${CLAUDE_PLUGIN_ROOT} (a bare scripts/
+# path resolves only inside this repo — the v0.2.0 blocked-start bug).
+CMD="$REPO/commands/tiers.md"
+check "commands/tiers.md exists" "$([ -f "$CMD" ] && echo 0 || echo 1)"
+check "tiers.md grants ops-tiers.sh via CLAUDE_PLUGIN_ROOT" \
+  "$(grep -q 'allowed-tools:.*CLAUDE_PLUGIN_ROOT.*scripts/ops-tiers.sh' "$CMD" && echo 0 || echo 1)"
+# The resolver's behavior, invoked the way the command invokes it. Config env
+# is isolated so a maintainer's real tiers.env cannot change the output, and
+# CC_PROXY_PORT is pointed at a dead port so the advisory catalogue probe is
+# instant rather than the ~5s curl timeout.
+TIERSENV() {  # TIERSENV <args...> -> stdout, rc captured
+  CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT=/nonexistent \
+  CC_PROXY_PORT=1 "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" "$@"
+}
+SHOW="$(TIERSENV --show 2>/dev/null)"; SHOWRC=$?
+check "ops-tiers --show prints the TIER/MODEL/SOURCE table" \
+  "$([ "$SHOWRC" -eq 0 ] && printf '%s' "$SHOW" | grep -q '^TIER *MODEL *SOURCE' && echo 0 || echo 1)"
+SETOUT="$(TIERSENV --set MECHANICAL=glm-4.7 --show 2>/dev/null)"
+check "set NAME=id applies a one-off override (source shows --set)" \
+  "$(printf '%s' "$SETOUT" | grep -q 'MECHANICAL.*glm-4.7.*--set' && echo 0 || echo 1)"
+TIERSENV --set MECHANICAL=bogus-id >/dev/null 2>&1; BADRC=$?
+check "an unroutable --set id is refused (non-zero exit)" \
+  "$([ "$BADRC" -ne 0 ] && echo 0 || echo 1)"
+# tiers.env carries TWO line kinds (the renderer's seat bindings share the
+# file). The resolver must SKIP a seat line, not die on it — the scaffold's own
+# documented example ('#op-scout=MECHANICAL', ops-init.sh) used to kill every
+# resolver invocation once uncommented (audit F15). A seat line with a BOGUS
+# tier value must still die: a typo is a mis-route, not a seat binding.
+SEATENV="$(mktemp "${TMPDIR:-/tmp}/opstest-seat.XXXXXX")"
+printf 'MECHANICAL=glm-4.7\nop-scout=MECHANICAL\n' > "$SEATENV"
+SEATOUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$SEATENV" \
+  CC_PROXY_PORT=1 "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" --show 2>/dev/null)"; SEATRC=$?
+check "a seat line in tiers.env is skipped by the resolver, tiers still resolve (F15)" \
+  "$([ "$SEATRC" -eq 0 ] && printf '%s' "$SEATOUT" | grep -q 'MECHANICAL *glm-4.7' && echo 0 || echo 1)"
+printf 'op-scout=MECHANICL\n' > "$SEATENV"
+CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$SEATENV" \
+  CC_PROXY_PORT=1 "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" --show >/dev/null 2>&1; SEATBADRC=$?
+check "a seat line with an unknown tier VALUE still dies in the resolver" \
+  "$([ "$SEATBADRC" -ne 0 ] && echo 0 || echo 1)"
+
+# A COMMENT longer than the 512-char read cap used to smuggle a live tier
+# binding past the comment check: `read -n 512` truncates mid-line and the
+# remainder arrives next iteration as a fresh "line", classified on its own.
+# Measured pre-fix: `#` + 511 x's + `MECHANICAL=glm-evil` resolved MECHANICAL
+# to glm-evil at exit 0 — a silent mis-route from a line the author had
+# commented OUT. Both readers of this file carry the guard.
+LONGENV="$(mktemp "${TMPDIR:-/tmp}/opstest-long.XXXXXX")"
+{ printf '#'; awk 'BEGIN{while(i++<511)printf "x"}'; printf 'MECHANICAL=glm-evil\n'; } > "$LONGENV"
+LONGOUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$LONGENV" \
+  CC_PROXY_PORT=1 "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" 2>/dev/null)"; LONGRC=$?
+check "an over-long comment cannot smuggle a tier binding past the resolver" \
+  "$([ "$LONGRC" -ne 0 ] && ! printf '%s' "$LONGOUT" | grep -q 'glm-evil' && echo 0 || echo 1)"
+CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$LONGENV" \
+  "$BASH_ABS" "$SCRIPTS/ops-render.sh" --show >/dev/null 2>&1; LONGRENDRC=$?
+check "the renderer carries the same over-long-line guard as the resolver" \
+  "$([ "$LONGRENDRC" -ne 0 ] && echo 0 || echo 1)"
+# A NUL is the same smuggle by a shorter road, and only on the bash the repo
+# TARGETS: bash 3.2's `read -n` stops AT a NUL, so `#` + 100 NULs + 411 x +
+# `MECHANICAL=glm-evil` yields a 1-CHAR first chunk that sails past the length
+# guard, and the tail parses as a live assignment. ${#line} cannot catch it
+# (bash drops NULs from variables entirely), and it is invisible on bash 5.3 —
+# which is why the suite was green while system bash was exploitable. The
+# probe must also not misfire on a NUL-free file that merely fills the cap.
+NULENV="$(mktemp "${TMPDIR:-/tmp}/opstest-nul.XXXXXX")"
+python3 -c "import sys; open(sys.argv[1],'wb').write(b'#'+b'\\0'*100+b'x'*411+b'MECHANICAL=glm-evil\\n')" "$NULENV"
+NULOUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$NULENV" \
+  CC_PROXY_PORT=1 "$BASH_OLD" "$SCRIPTS/ops-tiers.sh" 2>/dev/null)"; NULRC=$?
+check "a NUL-padded comment cannot smuggle a tier binding (resolver)" \
+  "$([ "$NULRC" -ne 0 ] && ! printf '%s' "$NULOUT" | grep -q 'glm-evil' && echo 0 || echo 1)"
+CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$NULENV" \
+  "$BASH_OLD" "$SCRIPTS/ops-render.sh" --show >/dev/null 2>&1; NULRENDRC=$?
+check "the renderer carries the same NUL guard as the resolver" \
+  "$([ "$NULRENDRC" -ne 0 ] && echo 0 || echo 1)"
+# A single 512-byte probe closed the door only at the front of the file: a NUL
+# at byte 829 (short comment lines, then `pad\0tail`, then the binding) passed
+# the probe and resolved MECHANICAL=glm-evil with exit 0 (Copilot 2026-08-03,
+# measured before the loop fix). The probe must walk the WHOLE file. Also on
+# BASH_OLD: same char/byte read -n behavior the front-NUL case pins.
+LATENULENV="$(mktemp "${TMPDIR:-/tmp}/opstest-latenul.XXXXXX")"
+python3 -c "import sys; open(sys.argv[1],'wb').write(
+  b'\\n'.join(b'# ' + b'x'*100 for _ in range(8)) + b'\\n# pad\\0tail\\nMECHANICAL=glm-evil\\n')" "$LATENULENV"
+LATEOUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$LATENULENV" \
+  CC_PROXY_PORT=1 "$BASH_OLD" "$SCRIPTS/ops-tiers.sh" 2>/dev/null)"; LATERC=$?
+check "a NUL past the first 512 bytes is still fatal (resolver probe loops the whole file)" \
+  "$([ "$LATERC" -ne 0 ] && ! printf '%s' "$LATEOUT" | grep -q 'glm-evil' && echo 0 || echo 1)"
+CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$LATENULENV" \
+  "$BASH_OLD" "$SCRIPTS/ops-render.sh" --show >/dev/null 2>&1; LATERENDRC=$?
+check "the renderer's NUL probe also loops the whole file" \
+  "$([ "$LATERENDRC" -ne 0 ] && echo 0 || echo 1)"
+rm -f "$LATENULENV"
+# The probe is now BOUNDED at 200 chunks (100KB): a newline-less multi-MB
+# tiers.env (no NUL) must die FAST, not loop the whole file. Before the cap
+# this measured 4.0s on a 64MB file (Copilot 2026-08-03, final review) — the
+# probe defeated the bounded-reader guarantee check_reader_bounds enforces.
+# The fixture must be 16MB, not 2MB: with the cap reverted, 2MB completed in
+# 2.4s on bash 3.2 — UNDER the 5s budget, so both assertions passed against
+# the broken code (code-review of f4cae1a, 2026-08-04; PLAYBOOK "prove it
+# discriminates"). 16MB measures 15.8s uncapped vs 0.03s capped on the same
+# bash — the budget now separates the two by three orders of magnitude.
+BIGENV="$(mktemp "${TMPDIR:-/tmp}/opstest-big.XXXXXX")"
+python3 -c "import sys; open(sys.argv[1],'wb').write(b'x'*(16*1024*1024)+b'\nMECHANICAL=glm-evil\n')" "$BIGENV"
+_start=$(date +%s)
+BIGOUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$BIGENV" \
+  CC_PROXY_PORT=1 "$BASH_OLD" "$SCRIPTS/ops-tiers.sh" 2>/dev/null)"; BIGRC=$?
+_elapsed=$(( $(date +%s) - _start ))
+check "a newline-less multi-MB tiers.env dies (probe is bounded, not whole-file)" \
+  "$([ "$BIGRC" -ne 0 ] && ! printf '%s' "$BIGOUT" | grep -q 'glm-evil' && echo 0 || echo 1)"
+check "the bounded probe rejects a multi-MB file fast (<5s, was 4.0s+ uncapped on 64MB)" \
+  "$([ "$_elapsed" -lt 5 ] && echo 0 || echo 1)"
+_start=$(date +%s)
+CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$BIGENV" \
+  "$BASH_OLD" "$SCRIPTS/ops-render.sh" --show >/dev/null 2>&1; BIGRENDRC=$?
+_elapsed=$(( $(date +%s) - _start ))
+check "the renderer's probe is also bounded (rejects multi-MB fast, <5s)" \
+  "$([ "$BIGRENDRC" -ne 0 ] && [ "$_elapsed" -lt 5 ] && echo 0 || echo 1)"
+rm -f "$BIGENV"
+# The probe cap must not narrow the accepted input below what the parse loop
+# itself permits (200 lines × 511 chars ≈ 100KB): the first cap was 40 chunks
+# (20KB), and a 24KB comment-heavy tiers.env that resolved fine at f4cae1a~1
+# died with a NUL-implicating message (code-review of f4cae1a, 2026-08-04).
+# 60 comment lines × 400 chars is legal under every parse-loop cap and must
+# keep resolving.
+FATENV="$(mktemp "${TMPDIR:-/tmp}/opstest-fat.XXXXXX")"
+python3 -c "
+import sys
+lines = [b'# ' + b'c'*400 for _ in range(60)] + [b'MECHANICAL=claude-3-5-haiku-20241022']
+open(sys.argv[1],'wb').write(b'\n'.join(lines) + b'\n')" "$FATENV"
+FATOUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$FATENV" \
+  CC_PROXY_PORT=1 "$BASH_OLD" "$SCRIPTS/ops-tiers.sh" 2>&1)"; FATRC=$?
+check "a comment-heavy tiers.env within the parse-loop caps still resolves (probe cap covers legal max)" \
+  "$([ "$FATRC" -eq 0 ] && printf '%s' "$FATOUT" | grep -q 'claude-3-5-haiku-20241022' && echo 0 || echo 1)"
+rm -f "$FATENV"
+# A MULTIBYTE comment smuggles the same way through the char/byte-mismatched
+# LENGTH guard (not the NUL probe): on BASH_OLD `read -n 512` fills 512 BYTES
+# while `${#line}` counts CHARACTERS under a UTF-8 locale, so `#`+'é'×255+`A`
+# (512 bytes = 257 chars) passes `< 512` and its truncated tail parses as a
+# live assignment. Full-PR panel, score 85. The parse loop now runs LC_ALL=C
+# so both count bytes. Forced UTF-8 locale + BASH_OLD, where the mismatch lives.
+UTF8ENV="$(mktemp "${TMPDIR:-/tmp}/opstest-utf8.XXXXXX")"
+python3 -c "import sys; open(sys.argv[1],'wb').write(('#'+'é'*255+'A').encode()+b'\\nMECHANICAL=glm-evil\\n')" "$UTF8ENV"
+UTF8OUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$UTF8ENV" \
+  CC_PROXY_PORT=1 LC_ALL=en_US.UTF-8 "$BASH_OLD" "$SCRIPTS/ops-tiers.sh" 2>/dev/null)"; UTF8RC=$?
+check "a multibyte comment cannot smuggle a tier binding past the length guard (resolver)" \
+  "$([ "$UTF8RC" -ne 0 ] && ! printf '%s' "$UTF8OUT" | grep -q 'glm-evil' && echo 0 || echo 1)"
+CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$UTF8ENV" \
+  LC_ALL=en_US.UTF-8 "$BASH_OLD" "$SCRIPTS/ops-render.sh" --show >/dev/null 2>&1; UTF8RENDRC=$?
+check "the renderer carries the same multibyte length guard as the resolver" \
+  "$([ "$UTF8RENDRC" -ne 0 ] && echo 0 || echo 1)"
+# ...and a LEGITIMATE short UTF-8 comment still parses (guard did not overreach).
+OKUTF8="$(mktemp "${TMPDIR:-/tmp}/opstest-okutf8.XXXXXX")"
+printf '# \xc3\xa9clair config\nMECHANICAL=glm-4.7\n' > "$OKUTF8"
+OKOUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$OKUTF8" \
+  CC_PROXY_PORT=1 LC_ALL=en_US.UTF-8 "$BASH_OLD" "$SCRIPTS/ops-tiers.sh" 2>/dev/null)"; OKRC=$?
+check "a short multibyte comment still resolves (length guard did not overreach)" \
+  "$([ "$OKRC" -eq 0 ] && printf '%s' "$OKOUT" | grep -q 'glm-4.7' && echo 0 || echo 1)"
+rm -f "$UTF8ENV" "$OKUTF8"
+rm -f "$NULENV"
+rm -f "$LONGENV"
+rm -f "$SEATENV"
+
+########################################################################
+echo "-- Case: /cc-operator:tiers render branch + ops-render.sh behavior"
+# ops-render.sh renders project-layer agents (.claude/agents/op-*.md) from the
+# tier config so a PLAIN Agent dispatch can run on a cc-proxy model. The command
+# (commands/tiers.md) is a thin wrapper; the renderer's guard chain
+# (charset/routable/seat-name) + atomic write are the validation. These cases
+# exercise the renderer's behavior, not just its validator-level shape.
+RENDER="$SCRIPTS/ops-render.sh"
+check "commands/tiers.md grants ops-render.sh via CLAUDE_PLUGIN_ROOT" \
+  "$(grep -q 'allowed-tools:.*CLAUDE_PLUGIN_ROOT.*scripts/ops-render.sh' "$CMD" && echo 0 || echo 1)"
+check "tiers.md documents the render branch" \
+  "$(grep -q 'render' "$CMD" && echo 0 || echo 1)"
+
+# A render fixture project, isolated from the maintainer's real tiers.env. The
+# renderer reads .operator/tiers.env; CC_PROXY_PORT=1 makes the --check liveness
+# probe instant (dead port) without hanging.
+RENDERENV() { # RENDERENV <args...> -> runs in the fixture project
+  CC_OPERATOR_TIERS_USER=/nonexistent CC_PROXY_PORT=1 \
+  "$BASH_ABS" "$RENDER" "$@"
+}
+RP="$(newproj)"
+# newproj does not init .operator; the renderer needs .operator/tiers.env + the
+# _templates (resolved from the plugin install, not the fixture). Set both up.
+( cd "$RP" && "$BASH_ABS" "$INIT" >/dev/null 2>&1 )
+
+# --show: the resolved seat→model table, with a tier repoint applied.
+printf 'MECHANICAL=glm-5-turbo\nop-scout=MECHANICAL\n' > "$RP/.operator/tiers.env"
+SHOWR="$( cd "$RP" && RENDERENV --show 2>/dev/null )"; SHOWRRC=$?
+check "ops-render --show prints the SEAT/TIER/MODEL/SOURCE table" \
+  "$([ "$SHOWRRC" -eq 0 ] && printf '%s' "$SHOWR" | grep -q '^SEAT *TIER *MODEL' && echo 0 || echo 1)"
+check "ops-render --show resolves a repointed tier (crawler: MECHANICAL→glm-5-turbo)" \
+  "$(printf '%s' "$SHOWR" | grep -q 'crawler.*MECHANICAL.*glm-5-turbo' && echo 0 || echo 1)"
+# F21: the implementer seats default to their ALIAS tiers (author=JUDGMENT,
+# mechanic=IMPLEMENT) — a MECHANICAL repoint must NOT move them; down-tiering
+# is a deliberate tiers.env act, never a default.
+check "ops-render --show keeps mechanic on IMPLEMENT (alias-matched default, F21)" \
+  "$(printf '%s' "$SHOWR" | grep -q 'mechanic.*IMPLEMENT' && echo 0 || echo 1)"
+check "ops-render --show resolves a seat override (scout→MECHANICAL)" \
+  "$(printf '%s' "$SHOWR" | grep -q 'scout.*MECHANICAL.*glm-5-turbo' && echo 0 || echo 1)"
+
+# render: writes .claude/agents/op-*.md with the spliced model id.
+( cd "$RP" && RENDERENV >/dev/null 2>&1 ); RENDRC=$?
+check "ops-render render exits 0" "$([ "$RENDRC" -eq 0 ] && echo 0 || echo 1)"
+check "render writes a project-layer op-mechanic.md" \
+  "$([ -f "$RP/.claude/agents/op-mechanic.md" ] && echo 0 || echo 1)"
+check "rendered op-crawler.md frontmatter has model: glm-5-turbo (spliced)" \
+  "$(grep -q '^model: glm-5-turbo' "$RP/.claude/agents/op-crawler.md" && echo 0 || echo 1)"
+check "rendered op-mechanic.md frontmatter has model: claude-sonnet-5 (IMPLEMENT, F21)" \
+  "$(grep -q '^model: claude-sonnet-5' "$RP/.claude/agents/op-mechanic.md" && echo 0 || echo 1)"
+check "rendered op-mechanic.md frontmatter has name: op-mechanic" \
+  "$(grep -q '^name: op-mechanic' "$RP/.claude/agents/op-mechanic.md" && echo 0 || echo 1)"
+# Single-source bodies (F14): the rendered implementer seats must keep the
+# plugin-root agent's tools line — the template-era render built author and
+# mechanic from default.tmpl, silently STRIPPING Write/Edit from both (a
+# rendered "implementer" that cannot implement). The verifier must likewise
+# keep its disallowedTools line.
+check "rendered op-mechanic keeps Write/Edit (single-source body, F14)" \
+  "$(grep -q '^tools:.*Write.*Edit' "$RP/.claude/agents/op-mechanic.md" && echo 0 || echo 1)"
+check "rendered op-author keeps Write/Edit (F14)" \
+  "$(grep -q '^tools:.*Write.*Edit' "$RP/.claude/agents/op-author.md" && echo 0 || echo 1)"
+check "rendered op-verifier keeps disallowedTools (F14)" \
+  "$(grep -q '^disallowedTools:' "$RP/.claude/agents/op-verifier.md" && echo 0 || echo 1)"
+check "rendered op-crawler exists (plugin-root body, crawl workflow seat)" \
+  "$(grep -q '^name: op-crawler' "$RP/.claude/agents/op-crawler.md" && echo 0 || echo 1)"
+check "render states restart-to-apply (agent files read at session start)" \
+  "$( cd "$RP" && RENDERENV 2>&1 | grep -qi 'restart' && echo 0 || echo 1)"
+
+# revert: removes the project layer (fall back to plugin-root alias agents).
+( cd "$RP" && RENDERENV --revert >/dev/null 2>&1 ); REVRC=$?
+check "ops-render --revert exits 0" "$([ "$REVRC" -eq 0 ] && echo 0 || echo 1)"
+check "revert removes the rendered op-mechanic.md" \
+  "$([ ! -f "$RP/.claude/agents/op-mechanic.md" ] && echo 0 || echo 1)"
+
+# guard chain: each rejection changes no file and exits non-zero.
+gmkdir() { mkdir -p "$RP/.claude/agents"; }
+printf 'MECHANICAL=not-a-model\n' > "$RP/.operator/tiers.env"
+( cd "$RP" && RENDERENV --show >/dev/null 2>&1 ); G1=$?
+check "guard: unroutable model id is refused (non-zero exit)" "$([ "$G1" -ne 0 ] && echo 0 || echo 1)"
+printf 'op-scout=BOGUS\n' > "$RP/.operator/tiers.env"
+( cd "$RP" && RENDERENV --show >/dev/null 2>&1 ); G2=$?
+check "guard: seat bound to unknown tier is refused (non-zero exit)" "$([ "$G2" -ne 0 ] && echo 0 || echo 1)"
+printf 'MECHANICAL=glm 5\n' > "$RP/.operator/tiers.env"
+( cd "$RP" && RENDERENV --show >/dev/null 2>&1 ); G3=$?
+check "guard: whitespace in model id is refused (non-zero exit)" "$([ "$G3" -ne 0 ] && echo 0 || echo 1)"
+
+# M7: CLAUDE_CODE_SUBAGENT_MODEL set → warned (it overrides frontmatter at dispatch).
+printf 'MECHANICAL=glm-5-turbo\n' > "$RP/.operator/tiers.env"
+M7WARN="$( cd "$RP" && CC_OPERATOR_TIERS_USER=/nonexistent CC_PROXY_PORT=1 \
+  CLAUDE_CODE_SUBAGENT_MODEL=glm-5.2 "$BASH_ABS" "$RENDER" --show 2>&1 )"
+check "M7: warns when CLAUDE_CODE_SUBAGENT_MODEL is set (overrides frontmatter)" \
+  "$(printf '%s' "$M7WARN" | grep -qi 'CLAUDE_CODE_SUBAGENT_MODEL' && echo 0 || echo 1)"
+
+# Renderer ownership (F17): render/revert delete ONLY files stamped with the
+# render mark. A hand-authored op-custom.md (plausible name — every shipped
+# agent is op-*) must survive both; a hand-authored file at a SEAT's own name
+# must block the render loudly rather than be overwritten.
+printf 'MECHANICAL=glm-5-turbo\n' > "$RP/.operator/tiers.env"
+mkdir -p "$RP/.claude/agents"
+printf -- '---\nname: op-custom\nmodel: opus\n---\nhand-written\n' > "$RP/.claude/agents/op-custom.md"
+( cd "$RP" && RENDERENV >/dev/null 2>&1 ); OWNRC=$?
+check "render succeeds alongside a hand-authored op-custom.md" \
+  "$([ "$OWNRC" -eq 0 ] && echo 0 || echo 1)"
+check "render preserves the hand-authored op-custom.md (F17)" \
+  "$([ -f "$RP/.claude/agents/op-custom.md" ] && grep -q 'hand-written' "$RP/.claude/agents/op-custom.md" && echo 0 || echo 1)"
+check "rendered files carry the ownership mark" \
+  "$(grep -q 'rendered-by: cc-operator ops-render' "$RP/.claude/agents/op-mechanic.md" && echo 0 || echo 1)"
+( cd "$RP" && RENDERENV --revert >/dev/null 2>&1 )
+check "revert preserves the hand-authored op-custom.md (F17)" \
+  "$([ -f "$RP/.claude/agents/op-custom.md" ] && [ ! -f "$RP/.claude/agents/op-mechanic.md" ] && echo 0 || echo 1)"
+# Collision: a hand-authored file at a seat's target name → die, nothing deleted.
+printf -- '---\nname: op-scout\nmodel: opus\n---\nmine\n' > "$RP/.claude/agents/op-scout.md"
+( cd "$RP" && RENDERENV >/dev/null 2>&1 ); COLRC=$?
+check "render refuses to overwrite an unmarked op-<seat>.md (non-zero exit)" \
+  "$([ "$COLRC" -ne 0 ] && grep -q 'mine' "$RP/.claude/agents/op-scout.md" && echo 0 || echo 1)"
+rm -f "$RP/.claude/agents/op-scout.md" "$RP/.claude/agents/op-custom.md"
+
+# Seat-name allowlist (F18): a metachar in a seat name used to be interpolated
+# into a BRE ('s.out' silently DELETED the baked scout record via grep -v).
+# Now anything outside [A-Za-z0-9_-] is refused loudly, and the override filter
+# compares literally.
+printf 'op-s.out=MECHANICAL\n' > "$RP/.operator/tiers.env"
+BREOUT="$( cd "$RP" && RENDERENV --show 2>&1 )"; BRERC=$?
+check "guard: seat name with a regex metachar is refused (F18)" \
+  "$([ "$BRERC" -ne 0 ] && printf '%s' "$BREOUT" | grep -q 'outside \[A-Za-z0-9_-\]' && echo 0 || echo 1)"
+printf 'op-x[y=MECHANICAL\n' > "$RP/.operator/tiers.env"
+( cd "$RP" && RENDERENV --show >/dev/null 2>&1 ); BRE2RC=$?
+check "guard: seat name with an unbalanced bracket is refused, no raw grep error" \
+  "$([ "$BRE2RC" -ne 0 ] && ! ( cd "$RP" && RENDERENV --show 2>&1 | grep -q 'brackets' ) && echo 0 || echo 1)"
+# A legitimate override still works: project seat line re-tiers scout, record intact.
+printf 'op-scout=MECHANICAL\n' > "$RP/.operator/tiers.env"
+OVR="$( cd "$RP" && RENDERENV --show 2>/dev/null )"
+check "literal override: scout re-tiered, no other seat lost" \
+  "$(printf '%s' "$OVR" | grep -q 'scout.*MECHANICAL.*project' && [ "$(printf '%s\n' "$OVR" | grep -c -E ' (default|project)$')" -eq 6 ] && echo 0 || echo 1)"
+
+rm -rf "$RP"
+
+########################################################################
+echo "-- Case: ops-render --check probes without writing"
+# --check is a documented user-facing branch (commands/tiers.md: "Use before
+# render to catch a typo'd or dead id") that no test invoked. It renders to a
+# temp dir, probes each distinct NON-claude id against cc-proxy, and refuses on
+# a failed probe. claude-* ids are harness-served and skipped, so an all-claude
+# config passes with no proxy running at all.
+CKP="$(newproj)"; mkdir -p "$CKP/.operator"
+printf 'MECHANICAL=glm-5-turbo\n' > "$CKP/.operator/tiers.env"
+CKOUT="$( cd "$CKP" && RENDERENV --check 2>&1 )"; CKRC=$?
+check "--check refuses when a model id fails the liveness probe" \
+  "$([ "$CKRC" -ne 0 ] && printf '%s' "$CKOUT" | grep -q 'probe FAILED' && echo 0 || echo 1)"
+check "--check writes nothing to .claude/agents/" \
+  "$([ ! -d "$CKP/.claude" ] && echo 0 || echo 1)"
+check "--check skips harness-served claude-* ids (no proxy needed for them)" \
+  "$(printf '%s' "$CKOUT" | grep -q 'claude-opus-5: skipped' && echo 0 || echo 1)"
+# All-claude config: nothing to probe, so it passes against a dead port.
+printf 'MECHANICAL=claude-haiku-4-5-20251001\n' > "$CKP/.operator/tiers.env"
+CKOUT2="$( cd "$CKP" && RENDERENV --check 2>&1 )"; CK2RC=$?
+check "--check passes when every id is harness-served" \
+  "$([ "$CK2RC" -eq 0 ] && printf '%s' "$CKOUT2" | grep -q 'check passed' && echo 0 || echo 1)"
+rm -rf "$CKP"
+
+########################################################################
+echo "-- Case: ops-render splices into a CRLF template (F29)"
+# The awk splice anchors its frontmatter delimiters on /^---$/, which `---\r`
+# does NOT match. Pre-fix, a CRLF template made infm never set, so EVERY
+# substitution branch was skipped and the file copied through verbatim: the
+# rendered agent kept the template's literal `NAME` placeholder and its stale
+# `model:` value, exit 0, "rendered N seat(s)". The old post-splice guard
+# (`grep -q '^model:'`) could not see it — it matched the untouched line.
+#
+# Needs a CRLF template, and templates resolve from the PLUGIN root (not the
+# fixture project), so mirror the two scripts + a CRLF default.tmpl into a
+# throwaway plugin root and render a project against that.
+CRP="$(newproj)"; CRM="$(newproj)"
+mkdir -p "$CRM/scripts" "$CRM/agents/_templates" "$CRP/.operator"
+cp "$SCRIPTS/ops-render.sh" "$SCRIPTS/ops-tiers.sh" "$CRM/scripts/"
+printf -- '---\r\nname: NAME\r\nmodel: haiku\r\ndescription: d\r\n---\r\nbody\r\n' \
+  > "$CRM/agents/_templates/default.tmpl"
+printf 'op-widget=MECHANICAL\nMECHANICAL=glm-5-turbo\n' > "$CRP/.operator/tiers.env"
+( cd "$CRP" && CC_OPERATOR_TIERS_USER=/nonexistent CC_PROXY_PORT=1 \
+    "$BASH_ABS" "$CRM/scripts/ops-render.sh" >/dev/null 2>&1 ); CRRC=$?
+check "CRLF template: render exits 0" "$([ "$CRRC" -eq 0 ] && echo 0 || echo 1)"
+check "CRLF template: model: splice lands (not the template's stale value)" \
+  "$(grep -q '^model: glm-5-turbo$' "$CRP/.claude/agents/op-widget.md" 2>/dev/null && echo 0 || echo 1)"
+check "CRLF template: name: placeholder is replaced, not shipped literally" \
+  "$(grep -q '^name: op-widget$' "$CRP/.claude/agents/op-widget.md" 2>/dev/null && echo 0 || echo 1)"
+check "CRLF template: rendered agent carries no CR" \
+  "$(! grep -q $'\r' "$CRP/.claude/agents/op-widget.md" 2>/dev/null && echo 0 || echo 1)"
+# The post-splice guard must assert the VALUE. A template with no model: line
+# renders an agent bound to the default backend; catch it loudly.
+printf -- '---\nname: NAME\ndescription: d\n---\nbody\n' \
+  > "$CRM/agents/_templates/default.tmpl"
+find "$CRP/.claude" -type f -delete 2>/dev/null
+( cd "$CRP" && CC_OPERATOR_TIERS_USER=/nonexistent CC_PROXY_PORT=1 \
+    "$BASH_ABS" "$CRM/scripts/ops-render.sh" >/dev/null 2>&1 ); NMRC=$?
+check "template with no model: line is refused (non-zero exit)" \
+  "$([ "$NMRC" -ne 0 ] && echo 0 || echo 1)"
+rm -rf "$CRP" "$CRM"
+
+########################################################################
+echo "-- Case: statusline shows workflow progress (journal-based ratio)"
+# The wf segment reads the session's newest LIVE journal.jsonl (done/started
+# ratio). It is NOT a % (total isn't known until the last dispatch — a % that
+# lies is the failure the file header was written to avoid). Fails toward
+# silence: absent/stale journal → no segment. Reuses the Case-22 `render` helper
+# + project $P (an operator project).
+# A FRESH operator project: Case 22's $P has open sentinels by now, which would
+# prefix the bar with op[...] and mask the wf-only assertion.
+WFPROJ="$(newproj)"; ( cd "$WFPROJ" && bash "$INIT" >/dev/null 2>&1 )
+WFSESS="wf-sess-test"
+WFDIR="$HOME/.claude/projects/wftestproj/$WFSESS/subagents/workflows/wf_abc"
+mkdir -p "$WFDIR"
+# Backdate a file past the liveness window. `date -v` is BSD-only and `date -d`
+# is GNU-only: the BSD form silently produced an EMPTY string on the Linux CI
+# runner, so `touch -t ""` failed and the "stale" cases never actually
+# backdated anything (they passed for the wrong reason while the live cases
+# failed). `touch -t` with an explicit past stamp works on both.
+backdate() { # backdate <path>
+  touch -t 202601010000 "$1"
+}
+mkjournal() { # mkjournal <started> <result>
+  : > "$WFDIR/journal.jsonl"
+  i=0; while [ "$i" -lt "$1" ]; do i=$((i+1)); printf '%s\n' '{"type":"started","key":"v2:k","agentId":"a'$i'"}' >> "$WFDIR/journal.jsonl"; done
+  i=0; while [ "$i" -lt "$2" ]; do i=$((i+1)); printf '%s\n' '{"type":"result","key":"v2:k","agentId":"a'$i'","result":null}' >> "$WFDIR/journal.jsonl"; done
+}
+mkjournal 12 5
+# No open tasks in $P, so the only segment is the wf ratio. Strip ANSI → "wf 5/12".
+check "live journal → renders 'wf 5/12' (done/started, not a %)" \
+  "$([ "$(render "$WFSESS" "$WFPROJ")" = "wf 5/12" ] && echo 0 || echo 1)"
+check "wf segment is dim (not red — a running workflow is not actionable)" \
+  "$(sljson "$WFSESS" "$WFPROJ" | "$BASH_ABS" "$SL" 2>/dev/null | grep -q $'\033\[2m' && echo 0 || echo 1)"
+# Fresh run: started>0, done=0. `grep -c` prints "0" AND exits 1 on zero
+# matches — a `|| echo 0` fallback captured "0\n0" and rendered a two-line
+# segment that broke the composed bar (audit F12, hit on a live run's whole
+# first phase). Assert one line AND the exact ratio.
+mkjournal 3 0
+WF0="$(render "$WFSESS" "$WFPROJ")"
+check "fresh run (done=0) → renders 'wf 0/3' on ONE line (F12)" \
+  "$([ "$WF0" = "wf 0/3" ] && echo 0 || echo 1)"
+# Stale journal: backdate >90s → no wf segment (liveness fails → render nothing,
+# since $P has no open tasks either).
+mkjournal 12 5
+backdate "$WFDIR/journal.jsonl"
+check "stale journal (>90s) → no wf segment" \
+  "$([ -z "$(render "$WFSESS" "$WFPROJ")" ] && echo 0 || echo 1)"
+# Long dispatch: journal quiet >90s but an agent transcript in the same dir is
+# fresh — the run is LIVE (journals are appended only on dispatch events, so a
+# single long agent run legitimately silences the journal for minutes; audit
+# F26). Liveness = newest of journal + agent-*.jsonl.
+printf '%s\n' '{"x":1}' > "$WFDIR/agent-live.jsonl"
+check "quiet journal + fresh agent transcript → still live (F26)" \
+  "$([ "$(render "$WFSESS" "$WFPROJ")" = "wf 5/12" ] && echo 0 || echo 1)"
+# ...and when the transcript is ALSO stale, the run is genuinely stopped.
+backdate "$WFDIR/agent-live.jsonl"
+check "quiet journal + stale agent transcript → no wf segment" \
+  "$([ -z "$(render "$WFSESS" "$WFPROJ")" ] && echo 0 || echo 1)"
+rm -f "$WFDIR/agent-live.jsonl"
+# UNBALANCED journal (started>result) = a dispatch in flight; mtime silence
+# proves nothing (a measured GLM run went >110s with the whole dir untouched —
+# the 90s window declared it dead and the segment flapped off mid-run,
+# 2026-08-03). Quiet-but-unbalanced stays live up to STALL_SEC (default 900).
+agequiet() { # agequiet <path> <seconds-ago>
+  python3 -c "import os,sys,time; t=time.time()-int(sys.argv[2]); os.utime(sys.argv[1],(t,t))" "$1" "$2"
+}
+mkjournal 12 5
+agequiet "$WFDIR/journal.jsonl" 300
+check "unbalanced journal quiet 300s → STILL live (dispatch in flight, no flap)" \
+  "$([ "$(render "$WFSESS" "$WFPROJ")" = "wf 5/12" ] && echo 0 || echo 1)"
+# ...but a BALANCED journal (started==result: run finished) keeps the tight
+# 90s window — a completed run must clear the bar promptly, not linger 15min.
+mkjournal 5 5
+agequiet "$WFDIR/journal.jsonl" 300
+check "balanced journal quiet 300s → no wf segment (finished runs clear fast)" \
+  "$([ -z "$(render "$WFSESS" "$WFPROJ")" ] && echo 0 || echo 1)"
+# ...and unbalanced past STALL_SEC is genuinely dead (errored agents never
+# write a result line — observed same day: both shards died on a rate limit —
+# so an unbalanced journal is ALSO the signature of a failed run; without this
+# backstop it would render forever).
+mkjournal 12 5
+agequiet "$WFDIR/journal.jsonl" 1200
+check "unbalanced journal quiet past STALL_SEC (1200s) → no wf segment (failed-run backstop)" \
+  "$([ -z "$(render "$WFSESS" "$WFPROJ")" ] && echo 0 || echo 1)"
+# Missing journal entirely → nothing (the fail-toward-silence default).
+: > "$WFDIR/journal.jsonl"   # empty: zero started → no ratio
+check "empty journal (0 started) → no wf segment" \
+  "$([ -z "$(render "$WFSESS" "$WFPROJ")" ] && echo 0 || echo 1)"
+rm -rf "$HOME/.claude/projects/wftestproj"
 
 ########################################################################
 echo "== summary: $PASS passed, $FAIL failed =="

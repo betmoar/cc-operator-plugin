@@ -5,10 +5,13 @@ materializes an operating charter, an append-only evidence ledger, and a
 Stop-hook completion gate into a project, so "done" means *evidenced*, not
 asserted.
 
-It is the operator layer that composes with the
-[`cc-unknowns`](https://github.com/betmoar/cc-unknowns-plugin) discovery skill:
-`cc-unknowns` surfaces what you don't know before building; `cc-operator` gates
-what you claim after.
+Discovery is built in: the charter's **Discovery discipline** (formerly the
+separate [`cc-unknowns`](https://github.com/betmoar/cc-unknowns-plugin)
+plugin, folded in as of 0.5.0 and retired) surfaces what you don't know
+before building — interview, blindspot pass, plan vetting, adversarial
+pre-done — and the evidence gate gates what you claim after. Sole external
+dependency: [cc-proxy](https://github.com/betmoar/cc-proxy-plugin) for
+non-Anthropic model routing.
 
 ## What it installs into a project
 
@@ -37,12 +40,40 @@ only; another session's are reported as informational and are refused by the
 writer if you try to close them. A sentinel with no owner blocks everyone — the
 safe default, and what pre-0.4 sentinels degrade to.
 
+## Orchestration layer (0.5.0)
+
+Four **workflows** are the operator's dispatch primitives — deterministic
+scripts that fan agent seats across model tiers and converge on judgment:
+
+| Workflow | Shape | Use |
+|---|---|---|
+| `cc-operator:review` | parallel narrow lenses (most cheap, two judgment) → adversarial verifier; a REFUTED is a hard stop | after a DONE on work that will be merged or depended on |
+| `cc-operator:brainstorm` | N divergent directions + blindspot scan + reference search → converge | before a spec exists |
+| `cc-operator:plan` | decompose an approved spec into TDD tasks → parallel feasibility/testability vetting | after a spec is approved |
+| `cc-operator:crawl` | one cheap crawler per shard → judgment-tier merge | digesting a large corpus fast |
+
+**Tier system.** Seats are pinned to tiers (`JUDGMENT`, `IMPLEMENT`,
+`MECHANICAL`, `RECON`) in each workflow; what a tier *resolves to* is layered
+config: built-ins → `~/.claude/cc-operator/tiers.env` → `.operator/tiers.env`
+→ `--set` one-offs. `ops-tiers.sh` resolves (charset + cc-proxy-routability
+guarded) and the operator passes the result as `args.tiers`; `ops-render.sh`
+renders project-layer agents so plain Agent dispatch can run on configured
+models. `/cc-operator:tiers` wraps both.
+
+**Input-axis compressor.** A PostToolUse hook (`scripts/ops-compress.mjs`)
+scrubs/dedups/elides re-billed tool output on a strict allowlist — never
+Read/Edit/Write/NotebookEdit, never `mcp__*`, never evidence-gate output
+(ledger paths and gate CLIs are carved out by path). Elided output is spilled
+verbatim (pre-scrub) to `.operator/.compress-spill/` and cited, so evidence
+stays recoverable byte-for-byte.
+
 ## Commands
 
 | Command | Purpose |
 |---|---|
 | `/cc-operator:start [--inline]` | Initialize the ledger + materialize the charter |
 | `/cc-operator:handoff` | Produce the six-section operator→human handoff |
+| `/cc-operator:tiers` | Resolve tier→model bindings, apply overrides, render project-layer agents |
 
 ## Install
 
@@ -111,6 +142,12 @@ count answers a different question than "will my stop be blocked?" — and gets
 it wrong in both directions. The segment runs the hook's own partition instead,
 against the session id in the statusline payload.
 
+Since 0.5.0 the segment also shows in-flight workflow progress: `wf 2/4` is
+the dispatched-work ratio (results/started) from the run's journal — never a
+percentage, since the total isn't known until the last dispatch. An unbalanced
+journal (dispatches still outstanding) holds the segment live through long
+quiet stretches; a finished run clears within ~90s.
+
 Installed with [cc-status](https://github.com/betmoar/cc-status-plugin) as the
 composer, it is discovered automatically via `.claude-plugin/statusline.json`
 and toggled with `/cc-status:toggle cc-operator on`. Standalone, wire it
@@ -127,11 +164,14 @@ directly:
 .claude-plugin/marketplace.json   # standalone install path (source "./")
 templates/OPERATOR.md             # the charter (materialized by /cc-operator:start)
 templates/{VERDICTS,DECISIONS}-header.md   # ledger schemas (byte-identical to the proven originals)
-commands/{start,handoff}.md       # the two slash commands
-agents/op-*.md                    # tier-aliased roles: author, mechanic, reviewer, scout, verifier
+commands/{start,handoff,tiers}.md # the three slash commands
+workflows/{review,brainstorm,plan,crawl}.js    # the orchestration primitives
+agents/op-*.md                    # tier-aliased seats: author, mechanic, reviewer, scout, verifier, brainstorm, crawler
 skills/chief-operator/SKILL.md    # thin router (front door only)
 scripts/ops-{init,task,verdict,adopt}.sh       # the evidence-gate mechanism
 scripts/ops-{stop,sessionstart}-hook.sh        # completion gate + session-id injection
+scripts/ops-{tiers,render}.sh     # tier resolver + project-layer agent renderer
+scripts/ops-compress.mjs          # input-axis compressor (PostToolUse)
 .claude-plugin/statusline.json    # cc-status segment manifest (name/render/order)
 scripts/statusline.sh             # the segment: open tasks, partitioned by owner
 scripts/validate_plugin.py        # contract linter — run before every PR
@@ -150,6 +190,8 @@ shellcheck scripts/*.sh tests/test-scripts.sh
 python3 scripts/validate_plugin.py
 python3 -m unittest discover -s tests
 bash tests/test-scripts.sh
+node tests/test_workflows.mjs
+node tests/test_compress.mjs
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for conventions and

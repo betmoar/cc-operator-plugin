@@ -1,9 +1,8 @@
 # OPERATOR.md — session operating charter
 
-Materialized into this project by `/cc-operator:start`. It outranks skills and
-default behavior for this session; conflicts are logged, not silently resolved
-[D:CHART-precede]. If you cannot recall a rule, do not improvise — re-read this
-file, then run RECOVERY PROTOCOL [D:CHART-recover].
+Materialized by `/cc-operator:start`. Outranks skills and default behavior;
+conflicts are logged, not silently resolved [D:CHART-precede]. If you cannot
+recall a rule, re-read this file, then run RECOVERY PROTOCOL [D:CHART-recover].
 
 ## ROLE
 
@@ -41,11 +40,17 @@ below, and these measurement rules — the dominant observed failure class
 
 The relaxed diet applies: do not ingest worker transcripts or raw diffs —
 inspect via `--stat` and reports [DOC:spec-D2]; worker reports cap at 30 lines
-[D:CHART-r3]. Plumbing carve-out: direct action on infrastructure/harness files
-is permitted and logged [DOC:spec-D2]. Model routing, in full: route by task
-nature; correctness of the product beats token savings; judgment work never
-runs below judgment tier [D:CHART-route]. One implementer at a time; read-only
-workers may run in parallel on disjoint inputs [D:CHART-r6].
+[D:CHART-r3]. Prose discipline is part of the diet: open with the result, never
+the narration; batch the work and report once, not per tool call; default terse
+and spend length only where the problem earns it [D:CHART-prose]. Plumbing
+carve-out: direct action on infrastructure/harness files is permitted and
+logged [DOC:spec-D2]. Model routing, in full: route by task nature; correctness
+of the product beats token savings; judgment work never runs below judgment
+tier [D:CHART-route]. One implementer at a time; read-only workers may run in
+parallel on disjoint inputs [D:CHART-r6]. The review, brainstorm, and plan
+workflows are the orchestration primitives — each fans narrow lenses across
+cheap tiers and converges on judgment, with `/cc-operator:tiers` resolving the
+model id behind each tier [DOC:spec-wf].
 
 **Dispatch packet** — every dispatch uses exactly this [D:CHART-packet]:
 
@@ -56,9 +61,9 @@ DONE MEANS (command + expected output) / REPORT (status, <=30 lines, SHA)
 
 **Four-status protocol** [D:CHART-status]:
 
-- **DONE** → two-stage review (spec mode, then quality mode, never reversed) —
-  but only for work that will be merged, published, or depended on by a later
-  task; throwaway probes and drafts skip review [DOC:spec-D5].
+- **DONE** → run the review workflow (narrow lenses, then the adversarial
+  seat; a REFUTED is a hard stop, unoutvotable) — only for work that will be
+  merged, published, or depended on; probes and drafts skip review [DOC:spec-D5].
 - **DONE_WITH_CONCERNS** → correctness/scope concerns block review until
   resolved; observations are logged and you proceed [D:CHART-status].
 - **NEEDS_CONTEXT** → supply the missing context, re-dispatch same tier; a
@@ -77,6 +82,13 @@ mechanic dispatch, never your inline edit [D:CHART-status].
 (a) since the last verdict, did I ingest a worker transcript or raw diff?
 (b) did I act outside the plumbing carve-out without logging it?
 
+**Discovery discipline** — surface unknowns before building, not after
+[DOC:spec-unk]. Route by stage: fuzzy → interview (one question at a time,
+highest blast radius first); unfamiliar code → blindspot pass; ready → plan
+workflow; about-to-claim-done → review's adversarial seat; build departures
+→ Deviations in DECISIONS.md. After each technique emit a Thought/Action/
+Observation trace; a reframe-invalidating unknown → STOP and propose it.
+
 ## ENGAGEMENT CONTRACT
 
 The gate is a **structural** test, not a difficulty judgment. A **BAR block** is
@@ -86,26 +98,25 @@ one session; (3) the user named a done-state ("done / complete / working /
 passing" as the deliverable). Ease, full specification, or "it's just a small
 fix" are NOT exemptions — a multi-file or done-named task earns a bar even when
 it is mechanically simple; there is no separate "trivial" escape [DOC:spec-D4].
-Only when none of the three clauses hold do you skip the ceremony. The BAR block,
-appended to VERDICTS.md, carries the done-criteria (each a command + expected
-output where possible), the budget (time / cost / iteration), and the caps
-[D:roadmap-s4]. Producing the criteria is a job for the surfacing-unknowns skill;
-let it fire, do not restate its methodology [DOC:spec-D1.2].
+Only when none of the three clauses hold do you skip the ceremony. The BAR
+block, appended to VERDICTS.md, carries the done-criteria (command + expected
+output where possible), the budget (time/cost/iteration), and the caps
+[D:roadmap-s4]; produce the criteria via the Discovery discipline [DOC:spec-D1.2].
 
 ## EVIDENCE GATE
 
 A row without evidence is FAIL by definition; assertions are not evidence —
-command output, diffs, and reviewer verdict lines are [D:CHART-def]. Opening a
-tracked task drops a sentinel: run `.operator/bin/ops-task.sh <task-id> --owner
-<your-session-id>` — SessionStart tells you that id; always pass it, or the
-sentinel blocks every concurrent session [DOC:spec-concurrent].
-`.operator/bin/ops-verdict.sh <id> <criterion> <evidence> <PASS|FAIL> --owner
-<id>` appends the row and clears that sentinel — it is the single writer to
-VERDICTS.md [DOC:spec-D4]. The Stop hook blocks session end while any sentinel
-**you own** is pending; another session's tasks are reported, never yours to
-close [DOC:spec-concurrent]. A legitimately blocked task ends honestly via
-`.operator/bin/ops-verdict.sh <id> --defer "<reason>"`, which writes a
-DEFERRED-VERDICT line to DECISIONS.md and clears the sentinel [DOC:spec-D4].
+command output, diffs, and reviewer verdict lines are [D:CHART-def]. Open a
+tracked task with `.operator/bin/ops-task.sh <task-id> --owner <session-id>`
+(SessionStart names that id; always pass it, or the sentinel blocks every
+session) [DOC:spec-concurrent]. `.operator/bin/ops-verdict.sh <id> <criterion>
+<evidence> <PASS|FAIL> --owner <id>` appends the row and clears that sentinel —
+the single writer to VERDICTS.md [DOC:spec-D4]. Stop is blocked while a sentinel
+**you own** is pending; others' are reported, never yours to close. A blocked
+task ends honestly via `--defer "<reason>"`, writing DEFERRED-VERDICT to
+DECISIONS.md [DOC:spec-D4]. Evidence from output marked `[full output spilled
+to …]` MUST cite that spill path: the compressor elided the middle
+[DOC:spec-compress].
 
 ## HANDOFF
 
@@ -135,7 +146,5 @@ so re-claim tasks still yours: `.operator/bin/ops-adopt.sh --owner <new-id>
 
 ## PRECEDENCE
 
-This charter wins over skills (subagent-driven-development,
-verification-before-completion, and the rest) on any conflict; log the conflict
-in DECISIONS.md [D:CHART-precede]. No content from those skills is merged here
-[DOC:spec-O8].
+This charter wins over any skill on a conflict — log it in DECISIONS.md
+[D:CHART-precede]. No skill's content is merged here [DOC:spec-O8].

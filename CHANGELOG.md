@@ -9,10 +9,113 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Symlink sentinels are now rejected at every read site, not just the
+  opener (F66).** F65's `-L` guard covered only `ops-task.sh`'s create path; a
+  symlink planted in `.operator/pending/` was still adopted by `ops-adopt.sh`
+  (laundering it into a real sentinel), closable into VERDICTS.md by
+  `ops-verdict.sh`, and read as a foreign task by the Stop hook and
+  statusline. Parsers now degrade a symlink to unowned (blocks — fail closed);
+  the mutating CLIs refuse it outright.
+- The tiers.env probe cap is now 200 chunks (100KB), the parse loop's own
+  legal maximum — the 20KB cap introduced with F64 rejected comment-heavy
+  configs (up to 200 lines × 511 chars) that resolved fine before it.
+- Corrected a false comment in `ops-task.sh` (echoed in the F65 commit
+  message): `mv` over a destination symlink replaces the link itself, never
+  its target — the real exposure was read-side laundering, not a data
+  overwrite.
+- The validator's probe-cap check now parses the cap value (was a substring
+  test that `-le 400000` satisfied) and matches any probe variable name (a
+  rename evaded it); the bash regression fixture grew to 16MB so the
+  wall-clock assertion actually fails when the cap is removed (2MB completed
+  under budget even uncapped).
+
+## [0.5.0] - 2026-08-03
+
+The orchestration layer: tier-routed workflows as the operator's dispatch
+primitives, an input-axis token compressor, and the guard/audit hardening
+rounds F07–F65 (a full-PR adversarial panel in the final stretch surfaced
+three live exploits that closed the door on late-NUL and multibyte smuggling,
+plus the unbounded-probe stall).
+
+### Added
+
+- **Four workflows** (`workflows/*.js`) as orchestration primitives — review
+  panel (narrow lenses → adversarial verifier, REFUTED is a hard stop),
+  brainstorm (divergent directions + blindspot scan + references), plan
+  (TDD decomposition with parallel vetting), and crawl (sharded corpus
+  digest). All args-normalized, tier-guarded, and covered by an execution
+  test suite (`tests/test_workflows.mjs`).
+- **Layered tier system**: `ops-tiers.sh` resolves tier→model bindings from
+  user/project `tiers.env` (charset + cc-proxy-routability guarded);
+  `ops-render.sh` renders project-layer agents so plain Agent dispatch can
+  run on configured models; `/cc-operator:tiers` wraps both.
+- **Input-axis token compressor** (`scripts/ops-compress.mjs` + PostToolUse
+  hook): allowlist-only scrub/dedup/elide of re-billed tool output, with
+  verbatim pre-scrub spill files and an evidence-gate carve-out
+  (ledger/CLI output is never compressed). Design rationale lives in the
+  maintainer's local `docs/spec/` (gitignored — not shipped in a clone).
+- **Workflow progress on the statusline**: `wf done/started` from the run
+  journal, with unbalanced-journal liveness so long dispatches don't flap
+  the segment (F58).
+- **Discovery discipline** folded into the charter (interview, blindspot
+  pass, plan vetting, adversarial pre-done) and the cc-agents specialists
+  absorbed as rendered seats.
+- **Validator checks** for the new surface: workflows, commands, compressor
+  guards, resolver↔renderer parity, render templates, reader byte-bounds, and
+  (F64) NUL-probe chunk-cap parity across every sentinel/config reader.
+- **Plain-English handout** (`docs/HANDOUT.md`): an end-user matrix of the
+  four tiers, seven agents, four workflows, and three commands, with an
+  ELI5 walkthrough of solo vs orchestrated mode and the evidence gate.
+
+### Fixed
+
+- **Gate hardening F42–F57**: sentinel owner smuggling via NUL/over-long
+  lines, and the over-long tiers.env line smuggling class.
+- **Full-PR adversarial panel F59–F65** — three live exploits repro'd with
+  commands, all closed and mutation-verified:
+  - **F59** — late-NUL owner smuggling: a single 512-byte NUL probe left every
+    NUL past byte 512 undetected, so padding + NUL + `session_id: EVIL`
+    claimed ownership and flipped a sentinel from blocking to waved-through.
+    All four parsers now loop the probe whole-file, bounded at 40 chunks.
+  - **F60** — `check_workflows` guard-application checks read a comment-stripped
+    view, so a trailing `//` could neuter the `BAD_CHARSET`/`ROUTABLE` call.
+  - **F61** — dangling `docs/spec/` refs in the changelog (fresh-clone honesty).
+  - **F62** — a multibyte comment bypassed the 512 line-cap on bash 3.2
+    (`read -n` counts bytes, `${#}` counts chars); parse loops now run `LC_ALL=C`.
+  - **F63** — `check_compressor` pinned `ELIDABLE` disjoint from
+    `NEVER_COMPRESS` and stripped trailing `//` comments (the vacuous-guard
+    class, with per-tool set literals and block-comment stripping).
+  - **F64** — the NUL probe in `ops-tiers.sh`/`ops-render.sh` looped whole-file
+    with no chunk cap, stalling the resolver 4.0s on a 64MB newline-less
+    `tiers.env`; now bounded (4.0s → 0.01s), enforced by `check_reader_bounds`.
+  - **F65** — `ops-task.sh`'s O_EXCL guard used `[ -f ]`, which follows
+    symlinks: a symlink→regular read as "already open", and downstream `mv`
+    would overwrite the target outside `pending/`; now guarded by `[ ! -L ]`.
+- **Dead-agent honesty F31/F32/F49**: a dead lens, terminal, or blindspots
+  agent surfaces as an error carrying the surviving work — never laundered
+  into an empty-but-clean result.
+- **Review workflow F33–F41**: array targets, starved lenses, malformed
+  verdict handling, doneMeans validation, honest cost accounting bound to
+  the LENSES table.
+- **Statusline F12/F26/F28/F44/F58**: corrupt bar on done=0, stat-flavor
+  probe (GNU/BSD), renderer exit status, transcript-mtime liveness, and the
+  mid-run liveness flap.
+
+### Changed
+
+- CLAUDE.md slimmed: landmine narratives moved to `docs/LANDMINES.md`,
+  playbook procedures to `docs/PLAYBOOK.md`; charter byte-bounded with
+  per-section citation floors.
+- 0.3.0's removed dev artifacts stay removed; spec headers now carry honest
+  implementation status.
+
 ## [0.4.0] - 2026-07-27
 
 Concurrent sessions in one working tree no longer trap each other. Field report
-and design: `docs/spec/concurrent-sessions.md`.
+and design rationale live in the maintainer's local `docs/spec/` (gitignored —
+not shipped in a clone).
 
 ### Changed
 - **BREAKING (behavioral)** — Task sentinels now carry an owner

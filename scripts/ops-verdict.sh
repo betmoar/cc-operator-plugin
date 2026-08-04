@@ -138,10 +138,28 @@ FRAG_MAX_BYTES=8388608
 # — strictly worse than the stale lock it fixed, which at least proceeded after
 # one budget (found by Codex review). Bounded deferral, then it is presumed
 # abandoned. An unexpirable claim is a deadlock with extra steps.
-LOCK_SPINS=300        # × 0.1s = 30s before an UNJUDGEABLE holder is presumed dead
-LOCK_LIVE_SPINS=600   # × 0.1s = 60s to wait on a CONFIRMED-LIVE holder, then go unlocked
-RECLAIM_WAIT=50       # × 0.1s = 5s to let a LIVE reclaimer finish (it needs ms)
+LOCK_SPINS=${LOCK_SPINS:-300}        # × 0.1s = 30s before an UNJUDGEABLE holder is presumed dead
+LOCK_LIVE_SPINS=${LOCK_LIVE_SPINS:-600}   # × 0.1s = 60s to wait on a CONFIRMED-LIVE holder, then go unlocked
+RECLAIM_WAIT=${RECLAIM_WAIT:-50}       # × 0.1s = 5s to let a LIVE reclaimer finish (it needs ms)
 LOCK_DEFERS_MAX=2     # short waits to grant before treating the claim as dead
+
+# Validate the env-overridable budgets. ${VAR:-default} only guards EMPTY, not
+# non-numeric — `[ "$i" -ge "$LOCK_SPINS" ]` with LOCK_SPINS=abc errors inside
+# the `if` (status 2), set -e does not fire on a failed test, and the spin loop
+# never exits → infinite hang, sentinel never clears, Stop blocks the session
+# forever (review F-A). LOCK_SPINS=0 collapses the unjudgeable-holder budget to
+# zero → instant reclaim of a holder that should sit out the full budget (the
+# F03 displacement class; review F-B). Reject both: a positive integer, or die.
+# This block is inside the LOCK BLOCK and must stay byte-identical in the sibling CLI.
+_lock_is_posint() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; [ "$1" -ge 1 ]; }
+_lock_budget_die() { echo "ops-verdict: $1 is not a positive integer (got '$2') — refusing; see LOCK_SPINS/LOCK_LIVE_SPINS/RECLAIM_WAIT" >&2; exit 2; }
+_lock_check_budget() { _lock_is_posint "$3" || _lock_budget_die "$1" "$3"; }
+_lock_check_budget LOCK_SPINS "$LOCK_SPINS" "$LOCK_SPINS"
+_lock_check_budget LOCK_LIVE_SPINS "$LOCK_LIVE_SPINS" "$LOCK_LIVE_SPINS"
+# RECLAIM_WAIT must be < LOCK_SPINS, else the backoff `i=$((LOCK_SPINS-RECLAIM_WAIT))`
+# goes non-positive and each defer pays the full RECLAIM_WAIT (review F-C).
+_lock_check_budget RECLAIM_WAIT "$RECLAIM_WAIT" "$RECLAIM_WAIT"
+[ "$RECLAIM_WAIT" -lt "$LOCK_SPINS" ] || _lock_budget_die "RECLAIM_WAIT (must be < LOCK_SPINS)" "$RECLAIM_WAIT"
 
 LOCK_HELD=0
 LOCK_MINE=""
@@ -285,9 +303,33 @@ lock_release() {
 # only the Stop hook; this reader and two others kept the unbounded form.)
 sentinel_owner() { # sentinel_owner <id> → stamped session_id ("" if none/invalid)
   local f="$OPDIR/pending/$1" line owner="" n=0
+  # A symlink is never a sentinel our CLIs wrote (F65): `-f` alone FOLLOWS it,
+  # so a link planted in pending/ would read its target's session_id: as a
+  # valid owner. Degrade to unowned — fails closed, like every other
+  # malformed body. The mutating paths additionally refuse outright below.
+  [ ! -L "$f" ] || return 0
   [ -f "$f" ] || return 0
+  # NUL pre-scan, same rationale as ops-stop-hook.sh (F46): bash cannot see a
+  # NUL in a variable, and `read -n` stops at one on bash 3.2, so a NUL-padded
+  # chunk passes the length guard and its tail smuggles an owner. Degrade to
+  # unowned rather than dying — this is a reader.
+  # Whole-file NUL probe in a LC_ALL=C subshell (F55): a single-shot probe left
+  # a NUL past byte 512 undetected, letting a padded sentinel smuggle a foreign
+  # owner. Bytes for both -n and ${#}; EOF exits non-zero so the trailing
+  # partial chunk never false-positives. Mirror of the Stop hook's parser.
+  if ! (LC_ALL=C _np=0
+        while IFS= read -r -d '' -n 512 _nulprobe; do
+          _np=$((_np + 1)); [ "$_np" -le 40 ] || exit 1
+          [ "${#_nulprobe}" -eq 512 ] || exit 1
+        done < "$f") 2>/dev/null; then
+    printf '%s' ""
+    return 0
+  fi
   while IFS= read -r -n 512 line || [ -n "$line" ]; do
     n=$((n+1)); [ "$n" -le 20 ] || break   # owner is line 1 by construction
+    # Cap-filling chunk → truncated mid-line; its tail would be matched as a
+    # fresh line and smuggle an owner. Mirrors ops-stop-hook.sh (F45).
+    [ "${#line}" -lt 512 ] || { owner=""; break; }
     case "$line" in
       "session_id: "*) owner="${line#session_id: }"; break ;;
     esac
@@ -448,6 +490,13 @@ if [ -n "$OWNER" ]; then check_owner_name "$OWNER"; fi
 # record a verdict and delete the new owner's sentinel (found by Codex review).
 # Callers therefore lock first, then call this.
 ownership_gate() {
+  # A symlink planted in pending/ is not a task our CLIs opened (F65): closing
+  # it would append a ledger row for work that never went through ops-task.sh's
+  # O_EXCL create, and clear_sentinel's `rm -f` would delete the link. Refuse
+  # outright — the parser's degrade-to-unowned is not enough here, because an
+  # unowned sentinel is closable by design. Runs under the lock in BOTH the
+  # defer and verdict paths, so this is the single choke point.
+  [ ! -L "$OPDIR/pending/$ID" ] || die "sentinel at $OPDIR/pending/$ID is a symlink — not a sentinel our CLIs wrote; refusing (remove it and open the task with ops-task.sh)"
   SOWNER="$(sentinel_owner "$ID")"
   if [ -n "$SOWNER" ]; then
     if [ -n "$OWNER" ] && [ "$OWNER" != "$SOWNER" ]; then

@@ -139,9 +139,57 @@ done
 # use $( ), which is a subshell, so a side-effect variable would be discarded.
 sentinel_owner() { # sentinel_owner <path> → "owner|opened_at"
   local line owner="" opened="" n=0
+  # A symlink is never a sentinel our CLIs wrote (F65): `-f` alone FOLLOWS it,
+  # so a planted link would read its target's session_id: as a foreign owner
+  # and wave the stop through. Degrade to unowned → BLOCKS everyone — the same
+  # fail-closed direction as every other body our writers could not have
+  # produced. (The enumeration below still counts the entry as a task; only
+  # the ownership claim is voided.)
+  [ ! -L "$1" ] || return 0
   [ -f "$1" ] || return 0
+  # A NUL is checked BEFORE the loop: bash cannot hold one in a variable (it
+  # drops them silently), so no test on $line can ever see one — the
+  # plausible-looking `case "$line" in *$'\0'*)` is vacuously TRUE, because
+  # $'\0' is the empty string and the pattern degenerates to `**`. That mistake
+  # was written and caught here (2026-08-02). `read -d ''` returns 0 only if it
+  # truly reached a NUL. It matters because bash 3.2's `read -n` stops AT a NUL,
+  # so a NUL-padded chunk passes the length guard and its tail is matched as a
+  # fresh line — smuggling an owner. Degrade to unowned = blocks. (F46)
+  # Probe the WHOLE file for a NUL, not just the first 512 bytes: a single-shot
+  # probe left a NUL past byte 512 undetected, so a padded sentinel smuggled a
+  # foreign owner and flipped unowned→foreign, opening the Stop gate (measured
+  # on bash 3.2: NUL at byte 656 → owner=EVIL, exit 0). Loop in a LC_ALL=C
+  # subshell so BOTH -n and ${#} count BYTES — a bare read prefix leaves ${#}
+  # counting characters, and a multibyte first chunk then false-positives a
+  # NUL. `read -d ''` returns 0 only on a NUL or a full 512-byte fill; EOF
+  # returns non-zero, so the final partial chunk never trips it. (F55 applied to
+  # the sentinel parsers; the config readers got it in 22791dc, these did not.)
+  # BOUNDED whole-file probe: cap at 40 chunks (20KB) so a 64MB newline-less
+  # sentinel cannot stall the scan (the single-shot form was O(1) but missed a
+  # NUL past byte 512). A real sentinel is one chunk; exceeding the cap means
+  # the file is not ours → fail closed (exit 1 → unowned → blocks), which also
+  # bounds where a late NUL can hide. A short chunk (NUL or a genuine <512 EOF)
+  # exits 1 too; a full 512-byte chunk continues. EOF ends the loop cleanly.
+  if ! (LC_ALL=C _np=0
+        while IFS= read -r -d '' -n 512 _nulprobe; do
+          _np=$((_np + 1)); [ "$_np" -le 40 ] || exit 1
+          [ "${#_nulprobe}" -eq 512 ] || exit 1
+        done < "$1") 2>/dev/null; then
+    printf '%s' ""
+    return 0
+  fi
   while IFS= read -r -n 512 line || [ -n "$line" ]; do
     n=$((n+1)); [ "$n" -le 20 ] || break
+    # A chunk that FILLS the cap was truncated mid-line: its tail arrives next
+    # iteration as a fresh "line" and is matched independently, so one physical
+    # line of padding + `session_id: EVIL` claimed ownership and flipped this
+    # sentinel from unowned (blocks) to foreign (waves the stop through) —
+    # exactly the inversion PLAYBOOK step 2 forbids. On bash 3.2 `read -n` also
+    # stops at a NUL, so a padded line need not even reach 512 bytes. Our CLIs
+    # write `session_id:` on line 1 and every line well under 512, so a
+    # cap-filling chunk cannot be ours: stop reading and leave owner unset,
+    # which degrades to "" = unowned = blocks everyone. Fail closed (F45).
+    [ "${#line}" -lt 512 ] || { owner=""; opened=""; break; }
     case "$line" in
       "session_id: "*) owner="${line#session_id: }" ;;
       "opened_at: "*)  opened="${line#opened_at: }" ;;

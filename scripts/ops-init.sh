@@ -38,8 +38,25 @@ if [ ! -f "$OPDIR/.gitignore" ]; then
 .lock/
 .lock.reclaim/
 .adopt.*
+# Compressor ephemera: session-scoped spills + dedup hashes, wiped on every
+# SessionStart. Spilled output is a RECOVERY aid, not evidence — the ledger row
+# is the evidence, and it cites the spill by path.
+.compress-spill/
+.compress-state/
 EOF
-  echo "created $OPDIR/.gitignore (lock ephemera)"
+  echo "created $OPDIR/.gitignore (lock + compressor ephemera)"
+fi
+
+# An ALREADY-initialized project has a .gitignore without the compressor lines
+# (the block above only writes when the file is absent), so spills would show up
+# as untracked noise and could be swept in by an over-broad `git add` — the same
+# failure F05 fixed for stale locks. Append idempotently.
+if [ -f "$OPDIR/.gitignore" ] && ! grep -q '^\.compress-spill/$' "$OPDIR/.gitignore" 2>/dev/null; then
+  {
+    printf '# Compressor ephemera (added by upgrade): session-scoped, wiped on SessionStart.\n'
+    printf '.compress-spill/\n.compress-state/\n'
+  } >> "$OPDIR/.gitignore"
+  echo "updated $OPDIR/.gitignore (compressor ephemera)"
 fi
 
 # Per-session verdict fragments (verdicts.d/<owner>.md) exist so two branches
@@ -73,6 +90,31 @@ if [ ! -f "$OPDIR/DECISIONS.md" ]; then
   echo "created $OPDIR/DECISIONS.md"
 else
   echo "kept $OPDIR/DECISIONS.md (exists)"
+fi
+
+# The tier config: tier→model (and optional seat→tier) bindings the renderer
+# (ops-render.sh) and the resolver (ops-tiers.sh) read. Commented defaults only —
+# uncomment/override to repoint a tier to a cc-proxy model id or bind a seat.
+# Layered: this project file overrides ~/.claude/cc-operator/tiers.env. Never
+# clobbered once it exists (the operator's bindings are source-of-truth here).
+if [ ! -f "$OPDIR/tiers.env" ]; then
+  cat > "$OPDIR/tiers.env" <<'EOF'
+# Tier → model-id bindings (cc-proxy routes by id shape: glm-*, vendor/model,
+# claude-*). Uncomment and edit to repoint a tier, e.g. MECHANICAL=glm-5-turbo.
+#JUDGMENT=claude-opus-5
+#IMPLEMENT=claude-sonnet-5
+#MECHANICAL=glm-5-turbo
+#RECON=claude-haiku-4-5-20251001
+#
+# Seat → tier overrides (optional; 'op-' prefix optional). Default seats:
+#   author=JUDGMENT  mechanic=IMPLEMENT  scout=RECON  verifier=JUDGMENT
+#   crawler=MECHANICAL  brainstorm=MECHANICAL
+# Example: run scout on the cheap tier too.
+#op-scout=MECHANICAL
+EOF
+  echo "created $OPDIR/tiers.env (commented defaults)"
+else
+  echo "kept $OPDIR/tiers.env (exists)"
 fi
 
 # Install the gate CLIs into the project so the charter's `.operator/bin/...`

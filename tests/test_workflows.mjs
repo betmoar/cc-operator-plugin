@@ -1,0 +1,482 @@
+// tests/test_workflows.mjs — execution tests for the workflow .js logic.
+//
+// A workflow script runs top-to-bottom with top-level `await`, calling agent() /
+// parallel() / phase() / pipeline() / log() against the live harness. We cannot
+// drive the harness in-test, but we CAN load the workflow as a module with
+// STUBBED globals: `args` is injected, the agent primitives return canned
+// schema-shaped fixtures. The workflow's PURE top-level logic then runs against
+// real (stubbed) input — tier validation, the N clamp, the bucket/threshold
+// filter — and we assert on what it computes. This tests the ACTUAL code, not a
+// re-implementation (the import-forbidden sandbox means we can't factor it out).
+//
+// Run:  node tests/test_workflows.mjs   (exit 0 iff all pass)
+// CI:   added as a step in .github/workflows/validate.yml (node ships on the runner).
+
+import { pathToFileURL } from "node:url";
+import path from "node:path";
+
+const ROOT = path.resolve(import.meta.dirname, "..");
+const WF = (f) => pathToFileURL(path.join(ROOT, "workflows", f)).href;
+
+let pass = 0, fail = 0;
+const ok = (cond, msg) => {
+  if (cond) { pass++; console.log(`  ok   ${msg}`); }
+  else { fail++; console.log(`  FAIL ${msg}`); }
+};
+const throws = async (fn, msg) => {
+  try { await fn(); ok(false, `${msg} (expected throw, got none)`); }
+  catch { ok(true, msg); }
+};
+
+// ── stub the workflow runtime globals ───────────────────────────────────────
+// phase/log are no-ops. agent() returns a caller-controlled canned value. We
+// key the canned return on the agent's `label` so a workflow's multiple agent
+// calls each get distinct fixtures. parallel returns its thunks' results in
+// order; pipeline runs each item through the stages.
+function makeRuntime(agentReturns = {}) {
+  const calls = [];
+  const agent = async (prompt, opts = {}) => {
+    const label = opts.label ?? "_";
+    calls.push({ label, model: opts.model, prompt });
+    return agentReturns[label] ?? null;
+  };
+  const parallel = async (thunks) => {
+    const out = [];
+    for (const t of thunks) out.push(await t());
+    return out;
+  };
+  const pipeline = async (items, ...stages) => {
+    let out = [];
+    for (const item of items) {
+      let cur = item;
+      for (const stage of stages) cur = await stage(cur, item, items.indexOf(item));
+      out.push(cur);
+    }
+    return out;
+  };
+  const phase = () => {};
+  // Captured, not discarded: log() is the ONLY channel by which a fan-out
+  // reports that some of its agents failed to return. A workflow that silently
+  // narrows its coverage is a real defect, so the messages are assertable.
+  const logs = [];
+  const log = (m) => { logs.push(String(m)); };
+  return { agent, parallel, pipeline, phase, log, calls, logs };
+}
+
+// Load a workflow with injected globals + args, return its result. The workflow
+// reads bare `args`/`agent`/etc. as globals; we wrap its source in a Function
+// with the stubs as parameters so the top-level logic runs against them.
+async function run(file, argsValue, agentReturns) {
+  const rt = makeRuntime(agentReturns);
+  const fs = await import("node:fs");
+  // Strip `export ` — the workflow ships as ESM, but we wrap it in a Function
+  // (CommonJS body), where `export const` is a syntax error. `export` only
+  // marks meta for the harness; it's inert at runtime.
+  const source = fs.readFileSync(new URL(file), "utf8").replace(/\bexport\s+const\s+meta\b/, "const meta");
+  const fn = new Function(
+    "args", "agent", "parallel", "pipeline", "phase", "log",
+    `return (async () => {\n${source}\n})();`
+  );
+  const result = await fn(argsValue, rt.agent, rt.parallel, rt.pipeline, rt.phase, rt.log);
+  return { result, rt };
+}
+
+// ── brainstorm: tier validation + N clamp ───────────────────────────────────
+console.log("-- Case: brainstorm.js tier validation + directions clamping");
+
+// N clamping: non-numeric directions → default 4; "abc" → 4; 0 → 2; 99 → 6; 3 → 3.
+// The number of direction agent calls = N (clamped). Stub agent to return a
+// fixed direction per label; count the `direction i/N` calls.
+async function brainstormN(directions) {
+  const rt = makeRuntime({});
+  rt.agent = async (p, o = {}) => { rt.calls.push(o.label); return { stance: "x", sketch: "x", tradeoffs: [], yagnis: "x" }; };
+  const fs = await import("node:fs");
+  const source = fs.readFileSync(new URL(WF("brainstorm.js")), "utf8").replace(/\bexport\s+const\s+meta\b/, "const meta");
+  const fn = new Function("args", "agent", "parallel", "pipeline", "phase", "log",
+    `return (async () => {\n${source}\n})();`);
+  await fn({ directions }, rt.agent, rt.parallel, rt.pipeline, rt.phase, rt.log);
+  return rt.calls.filter((l) => l?.startsWith("direction")).length;
+}
+ok((await brainstormN("abc")) === 4, "brainstorm N: non-numeric 'abc' → 4 directions (F04)");
+ok((await brainstormN(0)) === 2, "brainstorm N: 0 → clamped to 2 (min)");
+ok((await brainstormN(99)) === 6, "brainstorm N: 99 → clamped to 6 (max)");
+ok((await brainstormN(3)) === 3, "brainstorm N: 3 → 3 (in range)");
+ok((await brainstormN(undefined)) === 4, "brainstorm N: undefined → default 4");
+
+// Tier validation: IMPLEMENT (valid-but-unused) accepted; typo rejected; bad
+// charset rejected; unroutable rejected. Each is a top-level throw, so the
+// workflow aborts before any agent call.
+await throws(() => run(WF("brainstorm.js"), { tiers: { Mechanical: "glm-5" } }, {}),
+  "brainstorm tier: typo 'Mechanical' rejected (F07 typo guard)");
+await throws(() => run(WF("brainstorm.js"), { tiers: { MECHANICAL: "glm 5" } }, {}),
+  "brainstorm tier: whitespace in id rejected (via ROUTABLE — no glm- prefix)");
+// The above throws on ROUTABLE, NOT on the charset guard: "glm 5" has no
+// `glm-` prefix, no `/`, no `claude-` prefix, so it never reaches
+// BAD_CHARSET.test. Verified — a review found this test's old "(F01 charset)"
+// label claimed coverage it did not provide, and neutering BAD_CHARSET in all
+// four workflows left the whole suite green. The charset guard needs an id
+// that PASSES ROUTABLE and fails only on charset. Both shapes below do:
+// "glm-5 turbo" via the glm- prefix, "vendor/model x" via the slash.
+for (const bad of ["glm-5 turbo", "vendor/model x", 'glm-5"q', "claude-opus 5"]) {
+  await throws(() => run(WF("brainstorm.js"), { tiers: { MECHANICAL: bad } }, {}),
+    `brainstorm tier: ROUTABLE-shaped but charset-bad ${JSON.stringify(bad)} rejected (F01)`);
+}
+// The converse: a bracket-marked id is charset-LEGAL and must NOT be rejected
+// (a Copilot review asserted `]` was excluded from the allowed set; it is not —
+// `\]` inside a JS character class includes a literal `]`).
+let bracketOk = true;
+try {
+  await run(WF("brainstorm.js"), { tiers: { MECHANICAL: "glm-5.2[1m]" } },
+    { blindspots: { findings: [] }, converge: { ranked: [], sharedConstraints: [], openQuestions: [] } });
+} catch { bracketOk = false; }
+ok(bracketOk, "brainstorm tier: bracket-marked id 'glm-5.2[1m]' accepted (charset allows ])");
+await throws(() => run(WF("brainstorm.js"), { tiers: { MECHANICAL: "not-routable" } }, {}),
+  "brainstorm tier: unroutable id rejected");
+// IMPLEMENT is in KNOWN_TIERS → accepted (no throw); it's unused but routable.
+let implOk = true;
+try {
+  await run(WF("brainstorm.js"), { tiers: { IMPLEMENT: "claude-sonnet-5" } },
+    { blindspots: { findings: [] }, converge: { ranked: [], sharedConstraints: [], openQuestions: [] } });
+} catch { implOk = false; }
+ok(implOk, "brainstorm tier: IMPLEMENT accepted (F07 — valid-but-unused tier)");
+
+// ── review: bucket + threshold filter ───────────────────────────────────────
+console.log("-- Case: review.js scoring bucket + threshold");
+// Synthesize a panel whose findings we control, assert the workflow drops <50
+// and buckets 75+/60-74/50-59. Stub each lens to return its findings.
+const panelFixtures = {
+  "lens:spec": { findings: [
+    { summary: "drop me", evidence: "x", score: 40 },   // dropped (<50)
+    { summary: "consider", evidence: "x", score: 55 },   // consider (50-59)
+    { summary: "clarify", evidence: "x", score: 65 },    // should-clarify (60-74)
+    { summary: "must", evidence: "x", score: 90 },       // must-resolve (>=75)
+  ] },
+  "lens:quality": { findings: [] },
+};
+const { result: rev } = await run(WF("review.js"), {}, panelFixtures);
+ok((rev.dropped ?? 0) === 1, "review: drops findings below the 50 threshold");
+ok(rev.findings.length === 3, "review: keeps 3 findings at/above 50");
+ok(rev.findings[0].score === 90, "review: findings sorted highest-score-first");
+ok(rev.findings.find((f) => f.score === 90).bucket === "must-resolve", "review: bucket >=75 → must-resolve");
+ok(rev.findings.find((f) => f.score === 65).bucket === "should-clarify", "review: bucket 60-74 → should-clarify");
+ok(rev.findings.find((f) => f.score === 55).bucket === "consider", "review: bucket 50-59 → consider");
+
+// A lens whose agent dies resolves to null and is dropped by .filter(Boolean).
+// Dropped-lens and found-nothing are then indistinguishable unless the ratio is
+// logged — crawl.js logs it for the identical pattern; review.js did not, so a
+// panel could silently run at half the coverage the operator asked for.
+const ALL_LENSES = ["spec", "testability", "feasibility", "quality", "correctness"];
+const everyLens = Object.fromEntries(ALL_LENSES.map((k) => [`lens:${k}`, { findings: [] }]));
+const { rt: fullRt } = await run(WF("review.js"), {}, everyLens);
+ok(fullRt.logs.some((m) => new RegExp(`\\b${ALL_LENSES.length}/${ALL_LENSES.length} lenses returned`).test(m)) &&
+   !fullRt.logs.some((m) => /FAILED/.test(m)),
+  "review: logs a full lens ratio, no FAILED, when every lens returns");
+// Drop one lens fixture → its agent returns null and is filtered out.
+const { rt: partialRt } = await run(WF("review.js"), {},
+  Object.fromEntries(Object.entries(everyLens).filter(([k]) => k !== "lens:quality")));
+ok(partialRt.logs.some((m) =>
+     new RegExp(`\\b${ALL_LENSES.length - 1}/${ALL_LENSES.length} lenses returned`).test(m) &&
+     /1 FAILED: quality/.test(m)),
+  "review: a dead lens is reported as FAILED coverage, not silently dropped");
+const { result: partialRev } = await run(WF("review.js"), {},
+  Object.fromEntries(Object.entries(everyLens).filter(([k]) => k !== "lens:quality")));
+ok((partialRev.deadLenses ?? []).join() === "quality",
+  "review: the dead lens is named in the RESULT, not only the log");
+
+// The Workflow tool JSON-encodes a passed scalar, so a bare target path
+// arrives as `"docs/x.md"` — quotes included. They used to survive into
+// `target` and ship in every lens prompt as part of the path.
+const { rt: quotedRt } = await run(WF("review.js"), JSON.stringify("docs/x.md"), everyLens);
+const lensPrompt = quotedRt.calls.find((c) => c.label.startsWith("lens:")).prompt;
+ok(lensPrompt.includes("ARTIFACT: docs/x.md\n"),
+  "review: a JSON-encoded bare target is unwrapped, not passed with its quotes");
+// A plain (un-encoded) path must still work, and invalid JSON must not throw.
+const { rt: plainRt } = await run(WF("review.js"), "docs/y.md", everyLens);
+ok(plainRt.calls.find((c) => c.label.startsWith("lens:")).prompt.includes("ARTIFACT: docs/y.md\n"),
+  "review: a plain bare target still passes through unchanged");
+const { rt: junkRt } = await run(WF("review.js"), '"unterminated', everyLens);
+ok(junkRt.calls.find((c) => c.label.startsWith("lens:")).prompt.includes('ARTIFACT: "unterminated'),
+  "review: unparseable JSON degrades to the raw string, no throw");
+
+// ── plan: decomposition + vet classification ────────────────────────────────
+console.log("-- Case: plan.js vet classification (blocked / needs-info / clear)");
+// Stub decompose to return 2 tasks; vet lenses return feasible/testable/issues.
+// Assert the workflow classifies a 'no' feasibility as blocked, 'needs-info' as
+// needsInfo, and clean as neither.
+// `blocked` is three OR'd conditions. The original fixture set feasible:"no"
+// AND a contradiction issue on the same task, so it proved only that their
+// disjunction fires — a regression killing the testable or contradiction branch
+// alone would have passed. Each condition now has its own task.
+const planFixtures = {
+  decompose: { tasks: [
+    { id: "clean", title: "t", files: [], produces: "", testCycle: "run x → pass" },
+    { id: "blocked", title: "t", files: [], produces: "", testCycle: "run x" },
+    { id: "untestable", title: "t", files: [], produces: "", testCycle: "works correctly" },
+    { id: "contra", title: "t", files: [], produces: "", testCycle: "run x" },
+    { id: "info", title: "t", files: [], produces: "", testCycle: "run x" },
+  ], fileStructure: "f: r" },
+  // feasibility lens (JUDGMENT) returns per-task via the label; we key on label.
+  "feas:clean": { feasible: "yes", testable: "yes", issues: [] },
+  "feas:blocked": { feasible: "no", testable: "yes", issues: [] },
+  "feas:untestable": { feasible: "yes", testable: "yes", issues: [] },
+  // feasible AND testable both clean — only the contradiction issue blocks it.
+  "feas:contra": { feasible: "yes", testable: "yes", issues: [{ kind: "contradiction", detail: "x" }] },
+  "feas:info": { feasible: "needs-info", testable: "yes", issues: [] },
+  "test:clean": { feasible: "yes", testable: "yes", issues: [] },
+  "test:blocked": { feasible: "yes", testable: "yes", issues: [] },
+  "test:untestable": { feasible: "yes", testable: "no", issues: [] },
+  "test:contra": { feasible: "yes", testable: "yes", issues: [] },
+  "test:info": { feasible: "yes", testable: "yes", issues: [] },
+};
+const BIG_SPEC = "SPEC_SENTINEL_" + "s".repeat(5000);
+const { result: plan, rt: planRt } = await run(WF("plan.js"), { spec: BIG_SPEC }, planFixtures);
+const planCalls = planRt.calls;
+const blockedIds = (plan.blocked ?? []).map((b) => b.taskId);
+const needsInfoIds = plan.needsInfo ?? [];
+ok(blockedIds.includes("blocked"), "plan: feasible=no → blocked");
+ok(blockedIds.includes("untestable"), "plan: testable=no alone → blocked");
+ok(blockedIds.includes("contra"), "plan: contradiction issue alone → blocked");
+ok(needsInfoIds.includes("info"), "plan: feasible=needs-info → needsInfo");
+ok(!blockedIds.includes("clean") && !needsInfoIds.includes("clean"), "plan: clean task is neither blocked nor needsInfo");
+
+// A lens that dies resolves its slot to null → feasible/testable are undefined,
+// which matches neither "no" nor "needs-info". Before the fix that fell through
+// to the implicit "clear" bucket: a task whose vetting never ran reported as
+// having PASSED. It must surface as vettingIncomplete instead.
+const nullFixtures = {
+  decompose: { tasks: [
+    { id: "dead", title: "t", files: [], produces: "", testCycle: "run x" },
+  ], fileStructure: "f: r" },
+  // "feas:dead" deliberately absent → the stub returns null for that label.
+  "test:dead": { feasible: "yes", testable: "yes", issues: [] },
+};
+const { result: nullPlan } = await run(WF("plan.js"), { spec: "s" }, nullFixtures);
+ok((nullPlan.vettingIncomplete ?? []).includes("dead"),
+  "plan: a lens returning null → vettingIncomplete, NOT clear");
+ok(!(nullPlan.blocked ?? []).map((b) => b.taskId).includes("dead"),
+  "plan: vetting-incomplete is its own bucket, not conflated with blocked");
+// F13: the full spec goes to decompose ONCE; the per-task vet lenses get the
+// bounded specExcerpt, never the whole spec (it was re-billed T times at the
+// judgment tier — pure duplicate input).
+const feasCalls = planCalls.filter((c) => c.label.startsWith("feas:"));
+// One feasibility lens per decomposed task — derived, not hardcoded, so adding
+// a classification fixture does not silently weaken the F13 assertion.
+ok(feasCalls.length === planFixtures.decompose.tasks.length &&
+   feasCalls.every((c) => !c.prompt.includes(BIG_SPEC)),
+  "plan: feasibility vet prompt does NOT carry the full spec (F13)");
+ok(planCalls.find((c) => c.label === "decompose").prompt.includes(BIG_SPEC),
+  "plan: decompose (once) is the only full-spec consumer");
+
+// ── crawl: shard fan-out + merge ─────────────────────────────────────────────
+console.log("-- Case: crawl.js shard fan-out + merge");
+// The operator packs shards; the workflow dispatches one crawler per shard, then
+// one merge. Assert: N shards → N crawler calls (labels shard i/N), exactly one
+// merge call, and the result carries the merged findings/gaps. Also: no shards
+// → an error return (the operator must pack them; the workflow has no fs).
+const crawlFixtures = {
+  // every shard gets the same canned digest; the merge returns a merged shape.
+  // (the stub keys on label; shard labels are "shard 1/3" etc.)
+  merge: { findings: [{ fact: "merged", inferred: false }], gaps: [] },
+};
+// Override: return a shard digest for any "shard i/N" label, merge for "merge".
+const fs2 = await import("node:fs");
+const crawlSrc = fs2.readFileSync(new URL(WF("crawl.js")), "utf8").replace(/\bexport\s+const\s+meta\b/, "const meta");
+const crawlFn = new Function("args", "agent", "parallel", "pipeline", "phase", "log",
+  `return (async () => {\n${crawlSrc}\n})();`);
+const crawlCalls = [];
+const crawlAgent = async (p, o = {}) => {
+  crawlCalls.push(o.label);
+  if (o.label === "merge") return crawlFixtures.merge;
+  return { shard: ["a:1"], findings: [{ fact: "f" + o.label, inferred: false }], gaps: [] };
+};
+const crawlRes = await crawlFn(
+  { question: "how does auth work", shards: [{ paths: ["a"] }, { paths: ["b"] }, { paths: ["c"] }] },
+  crawlAgent, makeRuntime().parallel, makeRuntime().pipeline, () => {}, () => {},
+);
+const shardCalls = crawlCalls.filter((l) => l?.startsWith("shard")).length;
+ok(shardCalls === 3, "crawl: 3 shards → 3 crawler dispatches (one per shard)");
+ok(crawlCalls.filter((l) => l === "merge").length === 1, "crawl: exactly one merge dispatch");
+ok((crawlRes.shardsRequested ?? 0) === 3 && (crawlRes.shardsReturned ?? 0) === 3,
+  "crawl: reports shardsRequested/shardsReturned");
+ok(Array.isArray(crawlRes.findings) && crawlRes.findings.length === 1,
+  "crawl: returns the merged findings");
+// no shards → error, not a crash
+const noShard = await crawlFn({ question: "x" }, crawlAgent, makeRuntime().parallel, makeRuntime().pipeline, () => {}, () => {});
+ok(noShard?.error && /no shards/.test(noShard.error), "crawl: no args.shards → error return (workflow has no fs to pack them)");
+
+// ── F32: a dead TERMINAL single agent must not read as a clean result ────────
+console.log("-- Case: dead terminal agents fail loud, not clean (F32)");
+// The fan-out accounting (deadLenses, vettingIncomplete) covers agents that die
+// mid-fan-out; these cover the single judgment call each workflow ENDS on. The
+// stub returns null for any label without a fixture — the same null a schema
+// mismatch, timeout, or rate limit produces in production.
+
+// review: the adversarial verifier dies → the gate must fail CLOSED. null and
+// CONFIRMED both made `adversarial?.verdict === "REFUTED"` false, so a
+// verification that never ran read as a pass.
+const { result: deadAdv } = await run(WF("review.js"), "docs/x.md", everyLens);
+ok(deadAdv.blocked === true, "review: dead adversarial → blocked (fails closed, not open)");
+ok(deadAdv.unverified === true, "review: dead adversarial is named `unverified`, distinct from REFUTED");
+const { result: liveAdv } = await run(WF("review.js"), "docs/x.md",
+  { ...everyLens, adversarial: { verdict: "CONFIRMED", evidence: "ran x, saw y" } });
+ok(liveAdv.blocked === false && liveAdv.unverified === undefined,
+  "review: CONFIRMED adversarial → not blocked, not unverified");
+
+// crawl: the merge dies → error return CARRYING the shard digests (the paid
+// crawl work), never findings:[] masquerading as "nothing relevant found".
+const deadMerge = await crawlFn(
+  { question: "q", shards: [{ paths: ["a"] }, { paths: ["b"] }] },
+  async (p, o = {}) => o.label === "merge"
+    ? null
+    : { shard: ["a:1"], findings: [{ fact: "f", inferred: false }], gaps: [] },
+  makeRuntime().parallel, makeRuntime().pipeline, () => {}, () => {},
+);
+ok(deadMerge?.error && /merge agent died/.test(deadMerge.error),
+  "crawl: dead merge → error return, not a clean-empty result");
+ok(Array.isArray(deadMerge?.digests) && deadMerge.digests.length === 2,
+  "crawl: dead-merge error carries the shard digests (re-merge, don't re-crawl)");
+
+// brainstorm: the converge dies → error return carrying the divergent work.
+const { result: deadConv } = await run(WF("brainstorm.js"), { topic: "t", noReferences: true },
+  Object.fromEntries([1, 2, 3, 4].map((i) =>
+    [`direction ${i}/4`, { stance: "s", sketch: "k", tradeoffs: [], yagnis: "y" }])
+    .concat([["blindspots", { findings: [] }]])));
+ok(deadConv?.error && /converge agent died/.test(deadConv.error),
+  "brainstorm: dead converge → error return, not bundle:null");
+ok(Array.isArray(deadConv?.directions) && deadConv.directions.length === 4,
+  "brainstorm: dead-converge error carries the surviving directions");
+
+// brainstorm: the BLINDSPOTS scan dies → must not launder into `[]` ("nothing
+// to account for"). The whole point of the lens is to surface existing
+// abstractions the design would duplicate; a dead scan returning a clean empty
+// omits all of them silently. Same F31/F32 class, and the adjacent `references`
+// lens already signals via .catch+log — blindspots was the one direct agent()
+// in divergence with no null guard (pr-review silent-failure hunt, 2026-08-03).
+// Stub every lens LIVE except blindspots: a dead blindspots must surface an
+// error even when everything else succeeds.
+const { result: deadBlind } = await run(WF("brainstorm.js"), { topic: "t", noReferences: true },
+  Object.fromEntries([1, 2, 3, 4].map((i) =>
+    [`direction ${i}/4`, { stance: "s", sketch: "k", tradeoffs: [], yagnis: "y" }])
+    .concat([["converge", { ranked: [], sharedConstraints: [], openQuestions: [] }]])));
+ok(deadBlind?.error && /blindspots agent died/.test(deadBlind.error),
+  "brainstorm: dead blindspots → error return, not findings:[] masquerading as 'nothing to account for'");
+ok(Array.isArray(deadBlind?.directions) && deadBlind.directions.length === 4,
+  "brainstorm: the dead-blindspots error return carries the computed directions " +
+  "(the message says 'directions below are intact' — they must actually be below)");
+
+// ── F37: an array target must review what was passed, or fail loud ──────────
+console.log("-- Case: review.js multi-path target (F37)");
+// meta.whenToUse promises "Pass the artifact path(s)" and the normalizer
+// explicitly JSON-parses a leading `[`, but `typeof A === "string"` then fell
+// through to the "the working diff" default: the panel reviewed something
+// OTHER than what was passed, with no error. Silent-wrong is the worst of the
+// three possible behaviours (right / loud-wrong / silent-wrong).
+const arrRt = (await run(WF("review.js"), JSON.stringify(["docs/a.md", "docs/b.md"]), everyLens)).rt;
+const arrPrompt = arrRt.calls.find((c) => c.label.startsWith("lens:")).prompt;
+ok(arrPrompt.includes("docs/a.md") && arrPrompt.includes("docs/b.md"),
+  "review: an array target reaches the lens prompt (both paths)");
+ok(!arrPrompt.includes("the working diff"),
+  "review: an array target does NOT silently degrade to the working-diff default");
+const oneRt = (await run(WF("review.js"), JSON.stringify(["docs/only.md"]), everyLens)).rt;
+ok(oneRt.calls.find((c) => c.label.startsWith("lens:")).prompt.includes("ARTIFACT: docs/only.md\n"),
+  "review: a single-element array is rendered exactly like a bare path");
+// A malformed array is a caller error: reject it rather than review the wrong
+// thing. Loud-wrong beats silent-wrong.
+await throws(() => run(WF("review.js"), JSON.stringify([]), everyLens),
+  "review: an empty array target is rejected, not defaulted");
+await throws(() => run(WF("review.js"), JSON.stringify(["docs/a.md", 42]), everyLens),
+  "review: a non-string array element is rejected");
+// The object form may carry an array too — same contract.
+const objArrRt = (await run(WF("review.js"), { target: ["docs/x.md", "docs/y.md"] }, everyLens)).rt;
+ok(objArrRt.calls.find((c) => c.label.startsWith("lens:")).prompt.includes("docs/y.md"),
+  "review: args.target as an array is honored, same as the bare form");
+
+// ── F38: the lenses that ask about the task text must RECEIVE it ────────────
+console.log("-- Case: review.js lens context (F38)");
+// spec asks "what the task text asked for" and testability asks "for each
+// stated requirement" — but doneMeans went only to the adversarial seat, so
+// both were structurally forced into op-reviewer.md's NEEDS_CONTEXT branch.
+// Measured live: the spec lens returned one finding, score 0, saying exactly
+// that. A paid dispatch that cannot answer its own question.
+const dmRt = (await run(WF("review.js"),
+  { target: "docs/x.md", doneMeans: "DONEMEANS_SENTINEL: ships a --json flag" }, everyLens)).rt;
+const byLens = Object.fromEntries(
+  dmRt.calls.filter((c) => c.label.startsWith("lens:")).map((c) => [c.label.slice(5), c.prompt]));
+for (const k of ["spec", "testability"]) {
+  ok(byLens[k].includes("DONEMEANS_SENTINEL"),
+    `review: the ${k} lens receives the task text it asks about (F38)`);
+}
+for (const k of ["quality", "correctness"]) {
+  ok(!byLens[k].includes("DONEMEANS_SENTINEL"),
+    `review: the ${k} lens does NOT carry the task text (it never asks about it)`);
+}
+// No doneMeans passed → no dangling empty header in any prompt.
+const noDmRt = (await run(WF("review.js"), "docs/x.md", everyLens)).rt;
+ok(!noDmRt.calls.some((c) => /TASK TEXT:\s*\n/.test(c.prompt)),
+  "review: an absent doneMeans emits no empty TASK TEXT header");
+
+// ── F41: doneMeans is validated like target ─────────────────────────────────
+// doneMeans gets target's guard: it was unvalidated where target now is, so a
+// non-string rendered "TASK TEXT: [object Object]" into the two lenses that
+// ask about it — silent-wrong, the class F37 fixed one field over.
+for (const badDm of [{ x: 1 }, ["a"], 42, true]) {
+  await throws(() => run(WF("review.js"), { target: "docs/x.md", doneMeans: badDm }, everyLens),
+    `review: doneMeans=${JSON.stringify(badDm)} throws rather than stringifying into the prompt`);
+}
+// Whitespace-only is absence, not a header: an empty TASK TEXT starves the
+// same two lenses it was meant to feed.
+const wsDmRt = (await run(WF("review.js"),
+  { target: "docs/x.md", doneMeans: "   \n  " }, everyLens)).rt;
+ok(!wsDmRt.calls.some((c) => /TASK TEXT:/.test(c.prompt)),
+  "review: a whitespace-only doneMeans is treated as absent, not as an empty header");
+
+// ── F39: a malformed verdict is not a passing verdict ───────────────────────
+console.log("-- Case: review.js malformed adversarial verdict (F39)");
+// F32 made `adversarial == null` fail closed, but a NON-null malformed object
+// ({} or {verdict:"MAYBE"}) still yielded blocked:false — the same value a
+// CONFIRMED produces. The fix leaned entirely on the harness turning schema
+// violations into null; that is a narrower guarantee than "fails closed".
+for (const [label, adv] of [["{}", {}], ['{verdict:"MAYBE"}', { verdict: "MAYBE" }],
+                            ['{verdict:""}', { verdict: "" }]]) {
+  const r = (await run(WF("review.js"), "docs/x.md", { ...everyLens, adversarial: adv })).result;
+  ok(r.blocked === true && r.unverified === true,
+    `review: a malformed verdict ${label} is unverified + blocked, not a pass`);
+}
+const refuted = (await run(WF("review.js"), "docs/x.md",
+  { ...everyLens, adversarial: { verdict: "REFUTED", evidence: "e" } })).result;
+ok(refuted.blocked === true && refuted.unverified === undefined,
+  "review: REFUTED blocks but is NOT unverified (a real verdict was returned)");
+
+// ── F40: meta must not misstate what a dispatch costs ───────────────────────
+console.log("-- Case: review.js cost contract (F40)");
+// meta advertised "narrow lenses at cheap tiers" while 2 of 5 dispatch at
+// JUDGMENT — the cost shown in the tool picker was wrong. Assert the text
+// against the LENSES table itself so the two cannot drift apart again.
+const metaSrc = (await import("node:fs")).readFileSync(new URL(WF("review.js")), "utf8");
+const judgmentLenses = (metaSrc.match(/tier:\s*JUDGMENT/g) ?? []).length;
+const metaBlock = metaSrc.slice(0, metaSrc.indexOf("};"));
+// The panel's own cost must be described honestly. "cheap tiers" UNQUALIFIED is
+// the lie (2 of 5 lenses are JUDGMENT); "most at cheap tiers and two at
+// judgment tier" is the truth, so the check is for an unhedged claim, not for
+// the substring. `phases[].detail` is what the tool picker shows, so it must
+// not say "cheap tiers" flatly either.
+const unhedgedCheap = /(?<!most |mixed )(?:at |, )cheap tiers(?! and)/.test(metaBlock);
+ok(judgmentLenses > 0 && /judgment/i.test(metaBlock) && !unhedgedCheap,
+  "review: meta does not claim 'cheap tiers' while lenses dispatch at JUDGMENT (F40)");
+
+// The check above is the SHAPE half of the contract and was the whole of it
+// until a review panel repro'd the gap: flipping `correctness` to JUDGMENT
+// makes 3 of 5 lenses judgment-tier while meta still advertises "two", and the
+// suite stayed green at 63/63. `judgmentLenses > 0` is the only table-derived
+// assertion there, so the COUNT meta states was free to go stale. Bind the
+// spelled number in meta to the table, and "most" to the actual majority.
+const NUMBER_WORD = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6 };
+const mechanicalLenses = (metaSrc.match(/tier:\s*MECHANICAL/g) ?? []).length;
+const claimedJudgment = metaBlock.match(/\b(one|two|three|four|five|six)\b\s+at\s+judgment\s+tier/i);
+ok(claimedJudgment != null && NUMBER_WORD[claimedJudgment[1].toLowerCase()] === judgmentLenses,
+  `review: meta's judgment-lens COUNT matches the LENSES table (F40; meta says ${claimedJudgment?.[1] ?? "nothing"}, table has ${judgmentLenses})`);
+ok(!/\bmost at cheap tiers\b/.test(metaBlock) || mechanicalLenses > judgmentLenses,
+  `review: meta's "most at cheap tiers" holds against the table (F40; ${mechanicalLenses} cheap vs ${judgmentLenses} judgment)`);
+
+console.log(`\n== summary: ${pass} passed, ${fail} failed ==`);
+if (fail > 0) process.exit(1);

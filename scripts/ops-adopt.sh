@@ -83,10 +83,28 @@ die() { echo "ops-adopt: $1" >&2; exit 2; }
 # — strictly worse than the stale lock it fixed, which at least proceeded after
 # one budget (found by Codex review). Bounded deferral, then it is presumed
 # abandoned. An unexpirable claim is a deadlock with extra steps.
-LOCK_SPINS=300        # × 0.1s = 30s before an UNJUDGEABLE holder is presumed dead
-LOCK_LIVE_SPINS=600   # × 0.1s = 60s to wait on a CONFIRMED-LIVE holder, then go unlocked
-RECLAIM_WAIT=50       # × 0.1s = 5s to let a LIVE reclaimer finish (it needs ms)
+LOCK_SPINS=${LOCK_SPINS:-300}        # × 0.1s = 30s before an UNJUDGEABLE holder is presumed dead
+LOCK_LIVE_SPINS=${LOCK_LIVE_SPINS:-600}   # × 0.1s = 60s to wait on a CONFIRMED-LIVE holder, then go unlocked
+RECLAIM_WAIT=${RECLAIM_WAIT:-50}       # × 0.1s = 5s to let a LIVE reclaimer finish (it needs ms)
 LOCK_DEFERS_MAX=2     # short waits to grant before treating the claim as dead
+
+# Validate the env-overridable budgets. ${VAR:-default} only guards EMPTY, not
+# non-numeric — `[ "$i" -ge "$LOCK_SPINS" ]` with LOCK_SPINS=abc errors inside
+# the `if` (status 2), set -e does not fire on a failed test, and the spin loop
+# never exits → infinite hang, sentinel never clears, Stop blocks the session
+# forever (review F-A). LOCK_SPINS=0 collapses the unjudgeable-holder budget to
+# zero → instant reclaim of a holder that should sit out the full budget (the
+# F03 displacement class; review F-B). Reject both: a positive integer, or die.
+# This block is inside the LOCK BLOCK and must stay byte-identical in the sibling CLI.
+_lock_is_posint() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; [ "$1" -ge 1 ]; }
+_lock_budget_die() { echo "ops-adopt: $1 is not a positive integer (got '$2') — refusing; see LOCK_SPINS/LOCK_LIVE_SPINS/RECLAIM_WAIT" >&2; exit 2; }
+_lock_check_budget() { _lock_is_posint "$3" || _lock_budget_die "$1" "$3"; }
+_lock_check_budget LOCK_SPINS "$LOCK_SPINS" "$LOCK_SPINS"
+_lock_check_budget LOCK_LIVE_SPINS "$LOCK_LIVE_SPINS" "$LOCK_LIVE_SPINS"
+# RECLAIM_WAIT must be < LOCK_SPINS, else the backoff `i=$((LOCK_SPINS-RECLAIM_WAIT))`
+# goes non-positive and each defer pays the full RECLAIM_WAIT (review F-C).
+_lock_check_budget RECLAIM_WAIT "$RECLAIM_WAIT" "$RECLAIM_WAIT"
+[ "$RECLAIM_WAIT" -lt "$LOCK_SPINS" ] || _lock_budget_die "RECLAIM_WAIT (must be < LOCK_SPINS)" "$RECLAIM_WAIT"
 
 LOCK_HELD=0
 LOCK_MINE=""
@@ -270,6 +288,13 @@ lock_acquire
 
 for ID in ${IDS+"${IDS[@]}"}; do
   F="$OPDIR/pending/$ID"
+  # -L BEFORE -f: `-f` FOLLOWS a symlink, so a link planted in pending/ reads
+  # as a real sentinel — and the rewrite below would then replace the link with
+  # a genuine regular-file sentinel, LAUNDERING an entry that never went
+  # through ops-task.sh's O_EXCL create into live tracked work. A symlink is
+  # never a sentinel our CLIs wrote; refuse loudly (mirrors ops-task.sh's
+  # opener guard — the same F65 rule, applied at the read site).
+  [ ! -L "$F" ] || die "sentinel at $F is a symlink — not a sentinel our CLIs wrote; refusing to adopt (remove it and open the task with ops-task.sh)"
   [ -f "$F" ] || die "no open task '$ID' (no sentinel at $F)"
 done
 
@@ -288,9 +313,26 @@ for ID in ${IDS+"${IDS[@]}"}; do
   # and opened_at is echoed into the Stop hook's foreign-task report — where a
   # bare CR carriage-returns the terminal mid-line and eats the operator's
   # guidance. A CRLF sentinel is an ordinary checkout artifact. (Audit F04.)
+  # NUL pre-scan (F46): bash drops NULs so no $line test can see one, and bash
+  # 3.2's `read -n` stops AT a NUL — a padded chunk passes the length guard and
+  # its tail is matched as a fresh line, smuggling a prior owner. Treat the
+  # whole body as unusable; the fields below stay empty and are regenerated.
+  # Probe the WHOLE file in a LC_ALL=C subshell (F55): a single-shot probe left
+  # a NUL past byte 512 undetected. Bytes for both -n and ${#}; EOF exits
+  # non-zero so the trailing partial chunk never false-positives.
+  if ! (LC_ALL=C _np=0
+        while IFS= read -r -d '' -n 512 _nulprobe; do
+          _np=$((_np + 1)); [ "$_np" -le 40 ] || exit 1
+          [ "${#_nulprobe}" -eq 512 ] || exit 1
+        done < "$F") 2>/dev/null; then
+    PREV=""; OPENED=""; CWDLINE=""
+  else
   n=0
   while IFS= read -r -n 512 line || [ -n "$line" ]; do
     n=$((n+1)); [ "$n" -le 20 ] || break
+    # Cap-filling chunk → truncated mid-line; its tail would be matched as a
+    # fresh line and smuggle a prior owner. Mirrors ops-stop-hook.sh (F45).
+    [ "${#line}" -lt 512 ] || { PREV=""; break; }
     line="${line%$'\r'}"
     case "$line" in
       "session_id: "*) PREV="${line#session_id: }" ;;
@@ -298,6 +340,7 @@ for ID in ${IDS+"${IDS[@]}"}; do
       "cwd: "*)        CWDLINE="$line" ;;
     esac
   done < "$F"
+  fi
 
   # Rewrite via a temp file + mv so a crash mid-write cannot leave a sentinel
   # that parses as unowned (which would silently widen the block to everyone).

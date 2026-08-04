@@ -1,7 +1,7 @@
 # Playbook — changing cc-operator safely
 
 For whoever maintains this next. `CLAUDE.md` is the map (what couples to what,
-which landmines are already hit). This file is the **procedure**: what to do,
+with the landmine narratives in `docs/LANDMINES.md`). This file is the **procedure**: what to do,
 in order, when you touch a load-bearing component.
 
 The one thing to internalize: **this plugin has exactly one job — refuse to let a
@@ -125,8 +125,7 @@ delimited by `# >>> LOCK BLOCK` / `# <<< LOCK BLOCK`.
 
 ## Changing the Stop hook — the highest-risk file in the repo
 
-It runs on **every session's every turn-end**. Read `CLAUDE.md`'s landmine
-section first; then:
+It runs on **every session's every turn-end**. Read `docs/LANDMINES.md` first; then:
 
 1. **Bash builtins + at most one JSON parser.** No `grep`, `sed`, `awk`, `find`.
    If it depends on a binary missing from a stripped PATH, it bricks sessions.
@@ -178,3 +177,144 @@ Keep this list honest; add to it when you find a new gap.
 | A live SessionStart payload carries `cwd`, and `additionalContext` reaches the model | End-to-end, needs a real session. Verified live, never in CI. |
 | bash 3.2 compatibility | CI runs modern bash. The `${ARR+"${ARR[@]}"}` idiom is load-bearing on macOS and is validated only by local dev. |
 | `mkdir` atomicity on network filesystems | The lock and O_EXCL sentinel creation both assume POSIX atomicity. Untested on NFS. |
+
+## Changing a workflow (workflows/*.js) — the copy-paste invariant
+
+The workflow sandbox forbids `import()` (measured 2026-07-30 — "import() is
+not available in workflow scripts"), so the tier-resolution + args-normalization
+block is **copy-pasted** across review.js, brainstorm.js, plan.js. There is no
+shared module. `check_workflow_parity` is the only thing holding the copies
+together — the same lesson `check_lock_parity` enforces for the bash lock block.
+
+When you change the tier-validation logic (ROUTABLE, BAD_CHARSET, the args
+normalizer, the unknown-tier-key guard):
+
+1. **Change all three files.** `check_workflow_parity` fails the build if
+   ROUTABLE or BAD_CHARSET diverge. DEFAULT_TIERS is NOT a parity invariant —
+   each workflow declares only the tiers it uses, so do not "align" them.
+2. **A new shared regex constant must be added to `WORKFLOW_PARITY_CONSTS`** in
+   validate_plugin.py, or it can drift undetected.
+3. **`args` arrives as a JSON string, not an object** (the Workflow tool
+   stringifies it in transit). Every workflow normalizes with the `A` IIFE;
+   review.js additionally accepts a bare-string target. If you change the
+   normalizer, decide deliberately whether the bare-string branch applies.
+4. **The JS ROUTABLE + BAD_CHARSET must agree with `ops-tiers.sh`'s
+   `check_routable`** (charset `[A-Za-z0-9._:/@[]-]`). The shell is the
+   canonical gate; the JS is its mirror. A divergence is audit F01 — silent
+   mis-route on a hand-written `args.tiers` bypassing the resolver.
+5. **No `node --check`** in the validator — it is too lenient (returns exit 0
+   on redeclared consts, unclosed parens). A real syntax error surfaces at
+   launch; the structural checks (meta-first, ROUTABLE canonical+applied) are
+   what the build can enforce.
+
+### Adding a workflow
+
+Drop a `.js` in `workflows/`. It must: begin with `export const meta = {…}`,
+declare `const ROUTABLE` and `const BAD_CHARSET` byte-identical to the others,
+declare `const KNOWN_TIERS = [...]` equal to the resolver's `TIER_NAMES`, and
+apply `ROUTABLE.test` + `BAD_CHARSET.test` in a tier-validation loop whose
+unknown-key check is `if (!KNOWN_TIERS.includes(name))`.
+`check_workflows` + `check_workflow_parity` + `check_workflow_tier_namespace`
+enforce all three at build time.
+
+### The tier-namespace coupling (audit F07, 2026-07-31)
+
+`KNOWN_TIERS` (what a workflow *accepts* in `args.tiers`) and the resolver's
+`TIER_NAMES` (what `ops-tiers.sh` *emits*) must be the same set, even though a
+workflow only *uses* a subset (its `DEFAULT_TIERS`). The trap: if you add a tier
+to the resolver (e.g. a fifth seat) and forget to add it to every workflow's
+`KNOWN_TIERS`, forwarding the resolver's full map throws on the new key — exactly
+the F07 bug. `check_workflow_tier_namespace` holds this, but it is a regex
+reader, so:
+
+- **`KNOWN_TIERS` must be a real statement, not a comment.** The check matches
+  code lines only (it strips `//` lines, like `check_reader_bounds`). A
+  `// const KNOWN_TIERS = …` in a comment does NOT satisfy it.
+- **A rename/retype of the resolver's `TIER_NAMES=` line breaks the regex.** If
+  you change it to `readonly TIER_NAMES=` or single quotes, both work (the regex
+  accepts them); anything else (an array, a different var name) makes the check
+  **fail loud** — update `_resolver_tier_names`'s regex, do not silence it. The
+  check must never fail *open* (silently pass) — that was the review-caught
+  defect in the first version of this guard.
+- **`DEFAULT_TIERS` ≠ `KNOWN_TIERS`.** DEFAULT_TIERS is what the workflow
+  dispatches (review: 2 tiers); KNOWN_TIERS is what it accepts (always all 4).
+  Do not "fix" a workflow by making them equal — that re-opens F07.
+
+### Dead agents: null is a DEATH, not an empty result (audit F31 + F32)
+
+`agent()` resolves to **null** when the dispatched agent dies — schema
+mismatch, timeout, rate limit. Null is NOT "found nothing"; every consumer of
+an agent's return must decide which of the two it is holding, or the death
+launders into the passing shape:
+
+- **Fan-outs** (a lens, a vet, a shard): mark the death and carry it to both
+  the log AND the return value. Never let a `.then()` rewrite null into a
+  truthy empty object before a `.filter(Boolean)` — that was F31's worst
+  variant (the filter dropped nothing; a naive ratio log printed 5/5 with a
+  dead lens). Pattern: `dead: r == null` in review.js, `vettingIncomplete` in
+  plan.js.
+- **Terminal single calls** (the one judgment agent a workflow ends on): a
+  null here must produce an explicit `{error: …}` return that CARRIES the
+  surviving upstream work (shard digests, directions) so only the dead step is
+  re-run — never a default that reads as clean (F32: a dead adversarial made
+  `blocked:false`, the same value a CONFIRMED produces; the hard-stop gate
+  failed open).
+- **Gates fail CLOSED.** If the dead agent was a verifier, its absence blocks
+  (review.js: `blocked: adversarial == null || …`, plus `unverified: true` so
+  the operator can tell death from refutation).
+- Locking tests exist for every case above ("dead terminal agents fail loud"
+  in test_workflows.mjs); a new fan-out or terminal call gets the same pair
+  (dead → loud; alive → unchanged) or it will regress silently — null-handling
+  has no crash to catch it.
+
+### The env-overridable lock budgets (audit F08, 2026-07-31)
+
+`LOCK_SPINS`, `LOCK_LIVE_SPINS`, `RECLAIM_WAIT` in the LOCK BLOCK are
+`${VAR:-default}` — a test seam (the slow concurrency cases run on a tiny
+budget). They are validated as positive integers at resolve time in BOTH
+ops-verdict.sh and ops-adopt.sh (byte-identical block). If you change the lock:
+
+- **Any new budget var must get the same positive-int guard**, or a non-numeric
+  value wedges the spin loop forever (`[ -ge ]` errors inside the `if`, `set -e`
+  doesn't fire) — review F-A.
+- **`RECLAIM_WAIT` must stay `< LOCK_SPINS`.** The backoff `i=$((LOCK_SPINS -
+  RECLAIM_WAIT))` goes non-positive otherwise and each defer pays the full
+  RECLAIM_WAIT — review F-C.
+- The whole validation block is inside `# >>> LOCK BLOCK … # <<< LOCK BLOCK`,
+  so `check_lock_parity` enforces it stays byte-identical in both files. A
+  comment that names the sibling file by name will break parity (the normalizer
+  only rewrites `ops-tool:` message prefixes) — refer to "the sibling CLI".
+
+### The renderer's ownership + body-source rules (audit F14/F17/F18/F21/F22, 2026-08-01)
+
+`ops-render.sh` writes into the USER'S `.claude/agents/` — treat every change
+to its delete/write path as a data-loss surface:
+
+- **Delete only what you own.** Rendered files end with the `RENDER_MARK` line;
+  render/revert remove marked files only, and a seat whose target name is held
+  by an UNMARKED file dies before anything is deleted (F17). Never reintroduce
+  a glob-delete: `op-*` is the user's namespace too (op-reviewer is shipped but
+  not a seat — hand-shadowing it is legitimate).
+- **Seat names are allowlisted** (`[A-Za-z0-9_-]`), and the seat_add override
+  filter compares the name FIELD literally (awk `$1 != n`). Both guards exist
+  because a blocklist + BRE interpolation let `s.out` silently delete the
+  `scout` record (F18). A new place a seat name flows into (pattern, filename,
+  awk -v) inherits the allowlist, not a new blocklist.
+- **Bodies are single-sourced from plugin-root agents.** Lookup order:
+  `agents/op-<seat>.md` → `agents/_templates/<seat>.tmpl` → `default.tmpl`.
+  Editing a seat's contract happens in the plugin-root agent file ONLY — a
+  template that shadows a shipped seat re-opens F14 (the default.tmpl era
+  stripped Write/Edit from both implementer seats).
+- **Default seat tiers match the aliases** (author=JUDGMENT, mechanic=IMPLEMENT,
+  scout=RECON, verifier=JUDGMENT; crawler/brainstorm=MECHANICAL by design).
+  Down-tiering is a tiers.env act by the operator, never a shipped default —
+  the charter's "judgment work never runs below judgment tier" applies to
+  defaults too (F21).
+- **A workflow agentType must name a shipped plugin-root agent** — rendered
+  project-layer agents don't exist in the plugin registry
+  (`check_workflow_agent_types`, F22). When you add a seat a workflow
+  dispatches, ship the agent file, then reference it.
+- **tiers.env has two line kinds and two readers.** `ops-tiers.sh` skips seat
+  lines (after validating the tier VALUE); `ops-render.sh` consumes both. A new
+  line kind must be taught to BOTH parsers in the same commit, with a test
+  feeding it to each (F15 — the scaffold's own example killed the resolver).
