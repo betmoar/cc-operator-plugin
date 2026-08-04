@@ -430,6 +430,18 @@ const wsDmRt = (await run(WF("review.js"),
 ok(!wsDmRt.calls.some((c) => /TASK TEXT:/.test(c.prompt)),
   "review: a whitespace-only doneMeans is treated as absent, not as an empty header");
 
+// ── F-A1: the adversarial verifier carries the tree-check refutation target ─
+console.log("-- Case: review.js adversarial tree-check target (F-A1)");
+// The verifier is an AGENT (it touches disk), so it can confirm the working
+// tree holds no changes beyond the reviewed artifact — the read-only-seat write
+// boundary that prompt-level tool lists don't enforce. The target is a string
+// in the adversarial prompt; a worker touching files outside the artifact must
+// be a REFUTED basis. Assert the prompt carries it (F40-style, against the call).
+const advRt = (await run(WF("review.js"), "docs/x.md", everyLens)).rt;
+const advCall = advRt.calls.find((c) => c.label === "adversarial");
+ok(advCall && /tree check|working tree|beyond the reviewed/i.test(advCall.prompt),
+  "review: the adversarial prompt carries the F-A1 tree-check refutation target");
+
 // ── F39: a malformed verdict is not a passing verdict ───────────────────────
 console.log("-- Case: review.js malformed adversarial verdict (F39)");
 // F32 made `adversarial == null` fail closed, but a NON-null malformed object

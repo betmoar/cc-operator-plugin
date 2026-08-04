@@ -281,7 +281,11 @@ const adversarial = await agent(
     (doneMeans ? `DONE MEANS: ${doneMeans}\n` : "") +
     `\nRe-run the done-criteria YOURSELF. Never trust a prior run's report. ` +
     `Never fix anything. Return CONFIRMED only if you personally observed the expected output; ` +
-    `otherwise REFUTED. Your evidence must be the command you ran and what it actually printed.`,
+    `otherwise REFUTED. Your evidence must be the command you ran and what it actually printed.\n\n` +
+    `F-A1 tree check: also confirm the working tree contains no changes beyond the ` +
+    `reviewed artifact set (run \`git status --porcelain\`). A worker (or a read-only ` +
+    `seat with Bash) touching files outside the artifact under review is an unpresented ` +
+    `change — REFUTED on that basis, naming the stray path(s).`,
   {
     agentType: "cc-operator:op-verifier",
     model: JUDGMENT,

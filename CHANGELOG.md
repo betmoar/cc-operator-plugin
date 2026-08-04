@@ -9,6 +9,24 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-04
+
+### Added — worker-boundary enforcement (stage 3 of 3)
+
+- The F-A1 tree check is wired into the dispatch procedure (PLAYBOOK): after any
+  read-only/workflow dispatch returns, run `ops-claims.sh --expect-clean`; drift
+  is a FAIL-shaped finding. No seat is trusted (op-author is write-capable).
+- The review workflow's adversarial verifier gains a tree-check refutation target
+  — it confirms the working tree holds no changes beyond the reviewed artifact
+  (the verifier is an agent, so it can touch disk; a worker touching files
+  outside the artifact is a REFUTED basis).
+- PLAYBOOK rules F-A6 (a fix after a green gate re-runs the gate) and F-A13 (a
+  worker-authored commit uses the worker's own report sentence).
+- Also: the stage-1 REFUTED review's parse bugs fixed — `ops-claims.sh` now uses
+  porcelain `-z`/diff `-z` NUL-delimited parsing, `set -f` glob matching (a
+  deleted gate CLI no longer evades C3), validated `--since`, and
+  `--untracked-files=all`. 10 adversarial bash cases added.
+
 ### Added — worker-boundary enforcement (stage 2 of 3)
 
 - The deviation gate: an operator-taken decision can no longer reach session end
