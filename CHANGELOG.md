@@ -9,6 +9,24 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+### Added — worker-boundary enforcement (stage 1 of 3; spec `docs/spec/2026-08-03-worker-boundary-enforcement-design.md`)
+
+The worker seam's guarantees move from prompt-deep to code-deep, porting SSSF's
+enforcement layer (gap analysis F-A1/A2/A3) without its runtime.
+
+- `ops-claims.sh` — a fourth gate CLI: verifies a dispatch report's `CHANGED:`
+  line against the actual diff (C1 unclaimed-change, C2 phantom-claim) and
+  enforces "the builder cannot edit its own grader" (C3 gate-trespass over a
+  protected set, `--gate-task` to authorize). `--expect-clean` asserts a
+  read-only/workflow dispatch left no tree changes beyond `.operator/`.
+- `validate_plugin.check_claims` pins the protected-set literal AND its
+  application (F30: copy parity alone is insufficient).
+- The dispatch packet's REPORT carries `CHANGED:`; the charter's FORBIDDEN
+  default makes gate files off-limits to implementers unless the task IS the
+  gate. PLAYBOOK gains the worker-boundary procedure (F-A1/A6/A13).
+- Installed into `.operator/bin/` by `ops-init.sh`; joins `CHARTER_REQUIRED_CLIS`
+  and the compressor's `GATE_CLIS` carve-out.
+
 ## [0.5.1] - 2026-08-04
 
 ### Fixed

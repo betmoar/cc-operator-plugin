@@ -69,7 +69,7 @@ const LEDGER_PATHS = [
 // I2.1 — gate CLIs pass through. Nearly vacuous on its own (ops-verdict's output
 // is one line, far under any threshold); listed for hygiene, and byte-checked
 // against ops-init.sh's install set by validate_plugin.check_compressor.
-const GATE_CLIS = ["ops-verdict.sh", "ops-task.sh", "ops-adopt.sh"];
+const GATE_CLIS = ["ops-verdict.sh", "ops-task.sh", "ops-adopt.sh", "ops-claims.sh"];
 
 // Salvage regex: the one line that mattered in a 3000-line build log. `not ok`
 // is in here by name because TAP's failure marker contains no error WORD — a

@@ -122,6 +122,16 @@ def make_good_tree(root):
           GOOD_LOCK_BLOCK)
     write(root / "scripts" / "ops-adopt.sh",
           "#!/usr/bin/env bash\n" + guards + nolink + bounded + GOOD_LOCK_BLOCK)
+    # ops-claims.sh: a fourth gate CLI. check_claims pins its PROTECTED literal
+    # and requires matches_protected applied to $p — the stub carries both so
+    # the good tree is clean (and the check_claims mutation tests stub it out
+    # of compliance deliberately).
+    write(root / "scripts" / "ops-claims.sh",
+          "#!/usr/bin/env bash\n"
+          'PROTECTED="scripts/validate_plugin.py tests/ .operator/bin/ hooks/ '
+          'scripts/ops-*.sh scripts/statusline.sh"\n'
+          "matches_protected() { :; }\n"
+          'for p in $ACTUAL; do matches_protected "$p"; done\n')
     write(root / "scripts" / "statusline.sh", GOOD_STATUSLINE)
     # Every shipped slash command: frontmatter the harness registers it by,
     # and plugin-root script paths (a bare scripts/ path resolves only inside
@@ -182,7 +192,7 @@ def make_good_tree(root):
           'const LOSSLESS_ONLY = new Set(["Agent"]);\n'
           'const LEDGER_PATHS = [".operator/VERDICTS.md", ".operator/DECISIONS.md",\n'
           '  ".operator/verdicts.d/"];\n'
-          'const GATE_CLIS = ["ops-verdict.sh", "ops-task.sh", "ops-adopt.sh"];\n'
+          'const GATE_CLIS = ["ops-verdict.sh", "ops-task.sh", "ops-adopt.sh", "ops-claims.sh"];\n'
           'const SALVAGE_RE = /error|fail|not ok/i;\n'
           'function compress(tool, cmd) {\n'
           '  if (NEVER_COMPRESS.has(tool)) return null;\n'
@@ -1299,6 +1309,72 @@ class CompressorGuardTest(unittest.TestCase):
     def test_salvage_tap_alternative_dropped_fires(self):
         src = re.sub(r'\|not ok', '', self._real_comp, count=1)
         self.assertTrue(any("SALVAGE_RE omits" in p for p in self._probs(src)),
+                        self._probs(src))
+
+
+class ClaimsGuardTest(unittest.TestCase):
+    """check_claims must catch DRIFT, not just confirm presence. F30's lesson:
+    four-way copy parity is insufficient (uniform drift reads as "in parity").
+    So the protected-set literal is pinned to a canonical value AND its
+    application (matches_protected on $p) is required. Each test mutates the
+    real ops-claims.sh and asserts check_claims fires.
+    """
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        make_good_tree(self.dir)
+        self._real = (pathlib.Path(__file__).resolve().parent.parent /
+                      "scripts" / "ops-claims.sh").read_text(encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _probs(self, mutated_src):
+        write(self.dir / "scripts" / "ops-claims.sh", mutated_src)
+        probs = []
+        vp.check_claims(self.dir, probs)
+        return probs
+
+    def test_good_claims_is_clean(self):
+        self.assertEqual(self._probs(self._real), [])
+
+    def test_protected_path_dropped_fires(self):
+        # Drop scripts/statusline.sh from the literal — the F66 amendment. A
+        # checker matching only the whole literal would not name it; the token
+        # check does (drop it and the parser-weakening path re-opens).
+        src = self._real.replace(" scripts/statusline.sh", "", 1)
+        probs = self._probs(src)
+        self.assertTrue(any("statusline.sh" in p for p in probs), probs)
+
+    def test_protected_literal_drift_fires(self):
+        # Replace the whole literal with a different set — two ideas of "the grader".
+        src = re.sub(r'^PROTECTED=".*"$',
+                     'PROTECTED="only/one/path"', self._real, count=1, flags=re.MULTILINE)
+        self.assertTrue(any("drifted" in p for p in self._probs(src)),
+                        self._probs(src))
+
+    def test_literal_missing_fires(self):
+        src = re.sub(r'^PROTECTED=".*"$\n', '', self._real, count=1,
+                     flags=re.MULTILINE)
+        self.assertTrue(any("PROTECTED literal not found" in p
+                            for p in self._probs(src)), self._probs(src))
+
+    def test_callsite_neutered_fires(self):
+        # The literal is declared but matches_protected is not applied to $p
+        # (the F30 call-site half: a declaration alone guards nothing). Replace
+        # the call site with `false` so no code line carries both the matcher
+        # name and $p — a declaration alone guards nothing.
+        src = self._real.replace('if matches_protected "$p"; then',
+                                 'if false; then', 1)
+        self.assertTrue(any("not applied" in p for p in self._probs(src)),
+                        self._probs(src))
+
+    def test_callsite_renamed_fires(self):
+        # Rename the matcher: the literal stays, but nothing calls it — same
+        # class as commenting it out. A check that only grepped the matcher's
+        # definition would pass.
+        src = self._real.replace("matches_protected", "matches_safe", 10)
+        self.assertTrue(any("not applied" in p for p in self._probs(src)),
                         self._probs(src))
 
 

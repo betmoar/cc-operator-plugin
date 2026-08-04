@@ -72,7 +72,7 @@ CHARTER_SECTION_ORDER = [
 VERDICTS_HEADER = "| Gate | Criterion | Evidence | PASS/FAIL |"
 # The .operator/bin install set (ops-init.sh) — every one must be named in the
 # charter by its project-relative path.
-CHARTER_REQUIRED_CLIS = ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh")
+CHARTER_REQUIRED_CLIS = ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh", "ops-claims.sh")
 AGENT_MODEL_ALIASES = ("opus", "sonnet", "haiku")
 
 
@@ -354,7 +354,7 @@ def check_hook(root, problems):
 
 def check_scripts(root, problems):
     for name in ("ops-init.sh", "ops-verdict.sh", "ops-task.sh",
-                 "ops-adopt.sh", "ops-stop-hook.sh",
+                 "ops-adopt.sh", "ops-claims.sh", "ops-stop-hook.sh",
                  "ops-sessionstart-hook.sh", "statusline.sh", "ops-tiers.sh",
                  "ops-render.sh"):
         p = root / "scripts" / name
@@ -565,6 +565,63 @@ def check_guard_parity(root, problems):
                 f"planted symlink in pending/, laundering an entry our CLIs "
                 f"never wrote into a trusted sentinel (F65/F66; the guard "
                 f"must live at every reader, see docs/PLAYBOOK.md)")
+
+
+def check_claims(root, problems):
+    r"""ops-claims.sh protected-set parity (F30 lesson + F-A2).
+
+    The C3 gate-trespass check ("the builder cannot edit its own grader") only
+    means anything if the protected set is BOTH declared AND applied. F30 proved
+    that four-way copy parity is insufficient: uniform drift reads as "in parity"
+    while four files are identically broken. So, like the tier-namespace check,
+    the literal is pinned to a canonical value AND its application at a call site
+    is required. Drop a protected path from the literal, or neuter the call site
+    (comment it out / rename the matcher), and the build fails.
+
+    `statusline.sh` is in the set per the F66 amendment: it is a full sentinel
+    reader bound by gate semantics, so a worker weakening its parser re-opens a
+    laundering path invisibly — and no prior glob covered it.
+    """
+    p = root / "scripts" / "ops-claims.sh"
+    if not p.is_file():
+        return  # missing-file is already reported by check_scripts
+    text = p.read_text(encoding="utf-8")
+    # The canonical protected set — must byte-match the PROTECTED= literal in
+    # ops-claims.sh. A divergence here is two different ideas of "the grader".
+    literal = re.search(r'^PROTECTED="(.*)"$', text, re.MULTILINE)
+    canonical = ("scripts/validate_plugin.py tests/ .operator/bin/ hooks/ "
+                 "scripts/ops-*.sh scripts/statusline.sh")
+    if not literal:
+        problems.append(
+            "scripts/ops-claims.sh: PROTECTED literal not found — the "
+            "gate-trespass protected set must be a single declared literal "
+            "(F-A2: the builder cannot edit its own grader)")
+    elif literal.group(1) != canonical:
+        problems.append(
+            f"scripts/ops-claims.sh: PROTECTED literal drifted — expected "
+            f"{canonical!r}, got {literal.group(1)!r}. A divergence is two "
+            f"different ideas of 'the grader' (drop a path and the gate no "
+            f"longer protects it; F30: pin the literal, not a copy)")
+    # The literal must be APPLIED — a `matches_protected` call inside a real
+    # check, not just declared. A comment-only or renamed matcher passes a
+    # grep on the literal while guarding nothing (the F30 call-site half).
+    # CODE lines only: the script discusses the protected set at length in
+    # comments, and a checker firing on its own docs trains ignore.
+    code = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
+    if not any("matches_protected" in ln and "$p" in ln for ln in code):
+        problems.append(
+            "scripts/ops-claims.sh: matches_protected is not applied to the "
+            "touched paths — the PROTECTED literal is declared but not used; "
+            "a gate-trespass check that never runs guards nothing (F30: pin "
+            "the literal AND its application)")
+    # statusline.sh must be in the literal — it is the F66 amendment and the
+    # one a prior glob missed. Match the token, not the whole literal, so a
+    # reordering stays free but dropping it fires.
+    if "statusline.sh" not in (literal.group(1) if literal else ""):
+        problems.append(
+            "scripts/ops-claims.sh: PROTECTED omits scripts/statusline.sh — "
+            "it is a full sentinel reader (F66); leaving it out re-opens a "
+            "parser-weakening laundering path")
 
 
 def check_lock_parity(root, problems):
@@ -1203,6 +1260,7 @@ CHECKS = (
     check_reader_bounds,
     check_platform_idioms,
     check_guard_parity,
+    check_claims,
     check_compressor,
     check_lock_parity,
     check_resolver_renderer_parity,

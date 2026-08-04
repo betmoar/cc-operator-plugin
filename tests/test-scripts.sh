@@ -17,6 +17,7 @@ VERDICT="$SCRIPTS/ops-verdict.sh"
 HOOK="$SCRIPTS/ops-stop-hook.sh"
 TASK="$SCRIPTS/ops-task.sh"
 ADOPT="$SCRIPTS/ops-adopt.sh"
+CLAIMS="$SCRIPTS/ops-claims.sh"
 SSHOOK="$SCRIPTS/ops-sessionstart-hook.sh"
 
 # Absolute bash so a restricted PATH (case 5) governs only the hook's INTERNAL
@@ -1761,6 +1762,113 @@ check "unbalanced journal quiet past STALL_SEC (1200s) → no wf segment (failed
 check "empty journal (0 started) → no wf segment" \
   "$([ -z "$(render "$WFSESS" "$WFPROJ")" ] && echo 0 || echo 1)"
 rm -rf "$HOME/.claude/projects/wftestproj"
+
+########################################################################
+echo "-- Case: ops-claims verifies diff-matches-claims (C1/C2/C3) + expect-clean [F-A3/F-A2/F-A1]"
+# A fresh project with a base commit, then staged/unstaged/untracked changes.
+# ops-claims reads git state, so each sub-case mutates the tree and reads the
+# exit code + stdout. Every sub-case here is revert-discriminating: the check
+# it exercises is named in its fail message, and removing that check from
+# ops-claims.sh flips the asserted exit code.
+P="$(newproj)"
+( cd "$P" && git init -q && git config user.email t@t && git config user.name t )
+printf 'a\n' > "$P/a.txt"; printf 'b\n' > "$P/b.txt"
+mkdir "$P/tests"; printf 'x\n' > "$P/tests/t.sh"
+( cd "$P" && git add -A && git commit -qm base )
+runclaims() { ( cd "$P" && bash "$CLAIMS" "$@" ); }   # → exit code, stdout on fd1
+# clean_tree: revert all tracked mods + drop untracked, so each sub-case starts
+# from a known-clean base (state leaks between sub-cases otherwise — a real bug
+# class caught while writing these cases).
+clean_tree() { ( cd "$P" && git checkout -q . && git clean -qfd ); }
+
+# C1 green: claim exactly the one touched path.
+printf 'a2\n' > "$P/a.txt"
+runclaims --claimed "a.txt" >/dev/null 2>&1; C1G=$?
+check "C1 green: claim matches the single touched path" "$([ "$C1G" = 0 ] && echo 0 || echo 1)"
+
+# C1 fail: an unclaimed touched path (b.txt modified, not claimed). Capture the
+# NAMING before reverting — the output line exists only while b.txt is dirty.
+printf 'b2\n' > "$P/b.txt"
+C1OUT="$(runclaims --claimed "a.txt" 2>/dev/null)"; C1F=$?
+clean_tree
+check "C1 fail: touched-but-unclaimed path → non-zero" "$([ "$C1F" != 0 ] && echo 0 || echo 1)"
+check "C1 fail names 'unclaimed-change'" "$(printf '%s' "$C1OUT" | grep -q unclaimed-change && echo 0 || echo 1)"
+
+# C2 fail: a claimed path with no actual change (phantom-claim). Clean tree,
+# claim a.txt + c.txt — neither is changed → both phantom.
+C2OUT="$(runclaims --claimed "a.txt c.txt" 2>/dev/null)"; C2F=$?
+check "C2 fail: claimed-but-untouched path → non-zero" "$([ "$C2F" != 0 ] && echo 0 || echo 1)"
+check "C2 fail names 'phantom-claim'" "$(printf '%s' "$C2OUT" | grep -q phantom-claim && echo 0 || echo 1)"
+
+# C2 green with a directory-prefix claim: 'tests/' satisfied by tests/t.sh.
+# tests/ is a PROTECTED path, so this needs --gate-task or C3 (rightly) fails it.
+printf 'y\n' >> "$P/tests/t.sh"
+runclaims --claimed "tests/" --gate-task >/dev/null 2>&1; C2D=$?
+check "C2 green: dir-prefix claim 'tests/' satisfied by tests/t.sh" "$([ "$C2D" = 0 ] && echo 0 || echo 1)"
+
+# C3 fail: a touched protected path (tests/) without --gate-task.
+C3OUT="$(runclaims --claimed "tests/" 2>/dev/null)"; C3F=$?
+check "C3 fail: protected path touched without --gate-task → non-zero" "$([ "$C3F" != 0 ] && echo 0 || echo 1)"
+check "C3 fail names 'gate-trespass'" "$(printf '%s' "$C3OUT" | grep -q gate-trespass && echo 0 || echo 1)"
+
+# C3 pass: same tree, --gate-task authorizes the gate edit.
+runclaims --claimed "tests/" --gate-task >/dev/null 2>&1; C3P=$?
+check "C3 pass: protected path allowed with --gate-task" "$([ "$C3P" = 0 ] && echo 0 || echo 1)"
+clean_tree
+
+# CHANGED: none — clean working tree, no claims, no trespass.
+runclaims --claimed none >/dev/null 2>&1; CNG=$?
+check "CHANGED none: clean tree, no claims → exit 0" "$([ "$CNG" = 0 ] && echo 0 || echo 1)"
+
+# --expect-clean green: tree empty apart from .operator/ (none here).
+runclaims --expect-clean >/dev/null 2>&1; ECG=$?
+check "--expect-clean green on a clean tree" "$([ "$ECG" = 0 ] && echo 0 || echo 1)"
+
+# --expect-clean fail: a stray file beyond .operator/.
+printf 'z\n' > "$P/stray.txt"
+runclaims --expect-clean >/dev/null 2>&1; ECF=$?
+check "--expect-clean fail on a stray non-ledger file" "$([ "$ECF" != 0 ] && echo 0 || echo 1)"
+clean_tree
+
+# --expect-clean exempts .operator/ ledger paths: scaffold + a verdict row, then
+# expect-clean must still pass (a verdict is a normal side-effect of a dispatch).
+( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+printf 'row\n' >> "$P/.operator/VERDICTS.md"
+runclaims --expect-clean >/dev/null 2>&1; ECL=$?
+check "--expect-clean exempts .operator/ ledger paths" "$([ "$ECL" = 0 ] && echo 0 || echo 1)"
+
+# Untracked detection: an untracked file is an actual change caught by C1.
+clean_tree
+printf 'u\n' > "$P/untracked.txt"
+runclaims --claimed "a.txt" >/dev/null 2>&1; UNC=$?
+check "untracked file detected as an actual change (C1)" "$([ "$UNC" != 0 ] && echo 0 || echo 1)"
+
+# Charset/traversal discipline on --claimed: '..' traversal is rejected.
+runclaims --claimed "../etc" >/dev/null 2>&1; TRV=$?
+check "claimed '..' traversal is rejected" "$([ "$TRV" != 0 ] && echo 0 || echo 1)"
+# '|' in a claimed path is rejected (would break the list contract).
+runclaims --claimed "a.txt|injected" >/dev/null 2>&1; PIP=$?
+check "claimed '|' is rejected" "$([ "$PIP" != 0 ] && echo 0 || echo 1)"
+
+# --since default is HEAD: a change present at HEAD but not in the working tree
+# is NOT an actual change. Commit a.txt's modification, then claim only HEAD
+# paths — clean working tree → CHANGED none is green. (Confirms --since=HEAD.)
+( cd "$P" && git checkout -q . && git clean -qfd )
+printf 'a2\n' > "$P/a.txt"
+( cd "$P" && git add -A && git commit -qm second )
+runclaims --claimed none >/dev/null 2>&1; SINCE=$?
+check "--since defaults to HEAD: committed change is not a working-tree change" "$([ "$SINCE" = 0 ] && echo 0 || echo 1)"
+
+# Green run emits the SSSF 'what was verified' evidence line.
+GE="$(runclaims --claimed none 2>/dev/null)"
+check "green run emits a diff-matches-claims ok line" "$(printf '%s' "$GE" | grep -q 'diff-matches-claims} ok' && echo 0 || echo 1)"
+
+# ops-claims does NOT read pending/ (not a sentinel reader): confirm it carries
+# no sentinel-reader code path by checking it ignores a planted sentinel.
+mkdir -p "$P/.operator/pending"; printf 'session_id: OTHER\n' > "$P/.operator/pending/planted"
+runclaims --claimed none >/dev/null 2>&1; NPD=$?
+check "ops-claims ignores .operator/pending (not a sentinel reader)" "$([ "$NPD" = 0 ] && echo 0 || echo 1)"
+rm -rf "$P"
 
 ########################################################################
 echo "== summary: $PASS passed, $FAIL failed =="

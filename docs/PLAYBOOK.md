@@ -318,3 +318,39 @@ to its delete/write path as a data-loss surface:
   lines (after validating the tier VALUE); `ops-render.sh` consumes both. A new
   line kind must be taught to BOTH parsers in the same commit, with a test
   feeding it to each (F15 — the scaffold's own example killed the resolver).
+
+---
+
+## Worker-boundary enforcement (F-A1/F-A2/F-A3/F-A6/F-A13, 2026-08-04)
+
+The worker seam is where guarantees were prompt-deep: read-only seats and
+grader integrity relied on tool lists and dispatch text. `ops-claims.sh` makes
+the evidence gate verify claims mechanically, and the dispatch packet's REPORT
+line now carries `CHANGED:` for it to check. Procedures when you dispatch:
+
+1. **The packet's REPORT carries `CHANGED: <paths>|none`.** On a DONE report,
+   run `.operator/bin/ops-claims.sh --claimed "<paths>" [--since <dispatch-sha>]`.
+   It emits one evidence line per check (C1 unclaimed-change, C2 phantom-claim,
+   C3 gate-trespass) and the PASS verdict row cites the green output. A row
+   without the claims check is, like a row without evidence, FAIL by definition.
+2. **The standing FORBIDDEN default is gate files** (`scripts/validate_plugin.py`,
+   `tests/`, `.operator/bin/`, `hooks/`, `scripts/ops-*.sh`, `scripts/statusline.sh`):
+   off-limits to an implementer unless the task IS the gate, in which case pass
+   `--gate-task`. The F48 class (vacuous guards) shipped four times by the
+   maintainer; a worker weakening the validator would be harder to catch.
+3. **After any read-only or workflow dispatch, run `ops-claims.sh --expect-clean`.**
+   A read-only seat is a tool-list claim, not an enforced boundary: op-author
+   (the dominant lens seat) and every Bash-carrying seat (crawler/reviewer/
+   verifier) can write via shell. Drift is a FAIL-shaped finding logged before
+   any other action (F-A1). The check treats EVERY workflow run as needing it —
+   no seat is trusted.
+4. **A fix after a green gate re-runs the gate; the verdict cites the post-fix
+   run (F-A6).** A green result predating the change is stale.
+5. **A worker-authored commit message uses the worker's own report sentence,
+   never operator paraphrase (F-A13).** Reusing one agent's sentence for
+   another's diff is how a commit log starts lying.
+
+`check_claims` pins the protected-set literal AND its application (F30: pinned
+to a canonical literal and applied at a call site — copy parity alone is
+insufficient). `ops-claims.sh` does NOT read `.operator/pending/` (it reads git
+state), so it is neither a sentinel reader nor a `check_guard_parity` site.
