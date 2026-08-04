@@ -393,6 +393,39 @@ check "sessionstart gitignore-ensure is idempotent (no duplicate block)" \
   "$( [ "$(grep -c '^\.compress-spill/$' "$GIP/.operator/.gitignore")" = 1 ] && echo 0 || echo 1)"
 rm -rf "$Q" "$P" "$GIP"
 
+# --- automated upgrade path (version-gated bin/ refresh, 2026-08-04) ----------
+# ops-init stamps the installed version; SessionStart refreshes bin/ when the
+# running plugin's version differs. A project on an OLD operator keeps its old
+# bin/ CLIs until /cc-operator:start re-runs — but SessionStart fires every
+# session, so the new ops-claims.sh / --mark-handoff land automatically.
+UP="$(newproj)"; ( cd "$UP" && bash "$INIT" >/dev/null 2>&1 )
+# The plugin's current version (single-read, avoids nested-quote escaping).
+PLUGIN_VER="$(grep -m1 '"version"' "$REPO/.claude-plugin/plugin.json" \
+             | sed 's/.*"version".*:.*"\([^"]*\)".*/\1/')"
+# ops-init stamps the version from the plugin's plugin.json.
+check "ops-init stamps .operator/.version from plugin.json" \
+  "$([ -f "$UP/.operator/.version" ] && [ -n "$(cat "$UP/.operator/.version")" ] && echo 0 || echo 1)"
+# Simulate an OLD project: stale stamp + a stale bin/ CLI marker.
+printf '0.1.0-old\n' > "$UP/.operator/.version"
+printf '#!/usr/bin/env bash\necho STALE\n' > "$UP/.operator/bin/ops-verdict.sh"
+rm -f "$UP/.operator/bin/ops-claims.sh"   # old operator had no ops-claims.sh
+sed "s|<tmp>|$UP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
+# After the upgrade fire, bin/ops-verdict.sh is refreshed from the plugin copy...
+check "sessionstart refreshes a stale bin/ CLI on version change" \
+  "$(cmp -s "$UP/.operator/bin/ops-verdict.sh" "$VERDICT" && echo 0 || echo 1)"
+# ...and the stamp now matches the plugin version.
+check "sessionstart re-stamps .version after upgrade" \
+  "$([ "$(cat "$UP/.operator/.version")" = "$PLUGIN_VER" ] && echo 0 || echo 1)"
+# ops-claims.sh now exists (it didn't on old operator) — the upgrade installs it.
+check "sessionstart upgrade installs the new ops-claims.sh" \
+  "$([ -f "$UP/.operator/bin/ops-claims.sh" ] && echo 0 || echo 1)"
+# A second fire (version now matches) does NOT re-copy — steady-state is cheap.
+_pre="$(wc -c < "$UP/.operator/bin/ops-verdict.sh")"
+sed "s|<tmp>|$UP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
+check "sessionstart is a no-op when the version matches (steady-state)" \
+  "$( [ "$(wc -c < "$UP/.operator/bin/ops-verdict.sh")" = "$_pre" ] && echo 0 || echo 1)"
+rm -rf "$UP"
+
 ########################################################################
 echo "-- Case 9: migration safety — an unowned sentinel blocks EVERY session"
 # INVARIANT (spec §4.1 criterion 2): unowned fails CLOSED. Pre-0.4 sentinels are
@@ -1927,6 +1960,39 @@ check "C3 fires on a DELETED gate CLI (F-A2 attack; pathname-expansion fix)" \
   "$([ "$DEL" != 0 ] && echo 0 || echo 1)"
 check "deletion names 'gate-trespass'" \
   "$(printf '%s' "$DELOUT" | grep -q gate-trespass && echo 0 || echo 1)"
+clean_tree
+
+# Combined status codes must not glue the XY chars to the path (REFUTED #2). An
+# earlier allowlist missed AM/AD/MD/RD/T/etc., so "{item AM feature.txt}" — a
+# garbage item that defeats C1/C3 and the ledger exemption. These reproduce the
+# exact shapes the verifier caught.
+# AM: staged-add then working-modify. Claim it → must be green (one real path).
+printf 'a\n' > "$P/feature.txt"; ( cd "$P" && git add feature.txt >/dev/null 2>&1 )
+printf 'b\n' >> "$P/feature.txt"
+AMOUT="$(runclaims --claimed 'feature.txt' 2>/dev/null)"; AM=$?
+check "AM (added+modified) claimed → green, not a glued 'AM feature.txt' item" \
+  "$([ "$AM" = 0 ] && printf '%s' "$AMOUT" | grep -qv '{item AM' && echo 0 || echo 1)"
+clean_tree
+
+# AD: staged-add then working-DELETE of a gate CLI — the C3-evasion repro. The
+# status is 'AD scripts/ops-verdict.sh' (index-only; not in git diff HEAD), so
+# porcelain is the only source, and the glued 'AD ' must be stripped for C3.
+printf 'evil\n' > "$P/scripts/ops-verdict.sh"
+( cd "$P" && git add scripts/ops-verdict.sh >/dev/null 2>&1 )
+rm -f "$P/scripts/ops-verdict.sh"
+ADOUT="$(runclaims --claimed 'scripts/ops-verdict.sh' 2>/dev/null)"; AD=$?
+check "AD (added+deleted gate CLI) fires C3 gate-trespass" \
+  "$([ "$AD" != 0 ] && printf '%s' "$ADOUT" | grep -q gate-trespass && echo 0 || echo 1)"
+clean_tree
+
+# A STAGED ledger write must stay exempt from --expect-clean. The glued-prefix
+# bug made '{item AM .operator/...}' fail the ledger-path exemption.
+( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+printf 'row\n' >> "$P/.operator/DECISIONS.md"; ( cd "$P" && git add .operator/DECISIONS.md >/dev/null 2>&1 )
+printf 'more\n' >> "$P/.operator/DECISIONS.md"
+runclaims --expect-clean >/dev/null 2>&1; STEC=$?
+check "staged ledger write stays exempt from --expect-clean (no glued AM)" \
+  "$([ "$STEC" = 0 ] && echo 0 || echo 1)"
 clean_tree
 
 # A path WITH A SPACE is one item, not shredded. The first version word-split

@@ -128,4 +128,14 @@ for tool in ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh; do
 done
 echo "installed $OPDIR/bin/{ops-verdict.sh,ops-task.sh,ops-adopt.sh,ops-claims.sh}"
 
+# Stamp the installed plugin version. SessionStart compares this to the running
+# plugin's version and auto-refreshes bin/ when it differs — the automated
+# upgrade path for projects that don't re-run /cc-operator:start. ops-init writes
+# the current version; SessionStart keeps it current. (User request 2026-08-04.)
+_ver="$(grep -m1 '"version"' "$SCRIPT_DIR/../.claude-plugin/plugin.json" 2>/dev/null \
+        | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')"
+if [ -n "$_ver" ]; then
+  printf '%s\n' "$_ver" > "$OPDIR/.version"
+fi
+
 echo "operator ledger ready at $OPDIR/"

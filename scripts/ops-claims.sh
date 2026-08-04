@@ -155,20 +155,36 @@ git rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository — ops-cla
 # a separate NUL-delimited record, so BOTH paths are extracted as changes (a
 # renamed gate CLI must not evade C3). We collect each touched path.
 #
+# Status-code handling: an earlier version matched a HAND-WRITTEN ALLOWLIST of XY
+# codes (?? D M A R C...) and fell through anything else to the rename-dest
+# branch — so AM/AD/MD/RD/T/UU/AA left the status chars glued to the path
+# ("{item AM feature.txt}"), defeating C3 on a staged-then-deleted gate CLI and
+# the ledger exemption on a staged ledger write. The allowlist was the bug. The
+# structural rule (review REFUTED #2, 2026-08-04): git guarantees EVERY record
+# starts with exactly 2 status chars + 1 space, EXCEPT a rename/copy DEST, which
+# is a bare path emitted as the record immediately AFTER an R/C record. So track
+# whether the previous record was a rename (col 1 = R or C); if so the current
+# record is a bare dest (emit as-is), else strip the 3-char "XY " prefix. This
+# handles every XY combination without enumerating them.
+#
 # Builtins only: `IFS= read -r -d ''` reads one NUL-delimited record. bash 3.2's
 # `read -d ''` returns non-zero at EOF (no trailing NUL) but still populates the
 # variable, so `|| [ -n "$rec" ]` catches the final record.
 porcelain_paths() {  # porcelain_paths → emits one repo-relative path per line
-  local rec path
+  local rec path _expect_dest=0
   while IFS= read -r -d '' rec || [ -n "$rec" ]; do
     [ -n "$rec" ] || continue
-    # Strip the "XY " status prefix (3 chars: 2 status + 1 space). A rename
-    # record is "XY orig\0dest" — this read gets "XY orig", the NEXT read gets
-    # "dest" (no prefix). Both paths are emitted as changes.
-    case "$rec" in
-      "?? "* | " D"* | "D "* | " M"* | "M "* | "MM"* | "A "* | "R "* | "C "* | "??") path="${rec#???}" ;;
-      *) path="$rec" ;;   # the dest half of a rename (no XY prefix)
-    esac
+    if [ "$_expect_dest" = 1 ]; then
+      # The bare dest half of a rename/copy — no XY prefix. Emit as-is.
+      path="$rec"; _expect_dest=0
+    else
+      # A normal "XY <path>" record: strip the 3-char status prefix. If column 1
+      # is R or C (rename/copy), the NEXT record is the bare rename dest — flag it.
+      path="${rec#???}"
+      case "$rec" in
+        R*|C*) _expect_dest=1 ;;
+      esac
+    fi
     [ -n "$path" ] && printf '%s\n' "$path"
   done
 }
