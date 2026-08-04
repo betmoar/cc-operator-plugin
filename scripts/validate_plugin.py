@@ -425,7 +425,7 @@ def check_reader_bounds(root, problems):
         # per turn-end or per command. Measured on one 64MB newline-less
         # sentinel: 0.014s bounded vs 6.20s per parse unbounded, i.e. a
         # permanently wedged status bar rather than a slow one.
-        "statusline.sh": 2,      # sentinel_owner + the DECISIONS.md deviation scan
+        "statusline.sh": 2,      # sentinel_owner + the dev[N] reverse-tail scan
         # The tier-config resolver reads a file under .operator/ (untrusted — a
         # merge or checkout can produce it). Same hazard class as the others:
         # a newline-less multi-MB tiers.env is one "line" to an unbounded read.

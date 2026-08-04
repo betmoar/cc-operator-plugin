@@ -267,30 +267,44 @@ shopt -u nullglob
 # The bar renders the SAME partition the Stop hook blocks on: mine + unowned
 # DEVIATION lines after the last mine-or-unowned HANDOFF-MARK. A bar counting a
 # different set than the gate is worse than no bar (the coupling-table rule).
-# This is the statusline's SECOND ledger reader (after sentinel_owner) and a
-# DELIBERATE re-implementation, not a shared module — the sandbox-free statusline
-# and the hook cannot import each other. Same bounded-reader rules: byte-bounded
-# per line, whole-file with a fail-toward-silence aggregate cap (a wrong count is
-# worse than none — the opposite polarity from the hook, which fails toward
-# blocking; the bar never blocks, it only informs).
+#
+# STRATEGY DIFFERS FROM THE HOOK (CR5, code-review 2026-08-04): the bar renders
+# on a ~300ms timer, and the hook's whole-file scan is O(n) in an append-forever
+# ledger — measured 0.4s at 3000 lines, blowing the render budget. The bar uses a
+# REVERSE TAIL scan: read the last ~256 lines and walk them backwards, counting
+# mine/unowned deviations, STOPPING at the first mine/unowned mark (it clears
+# everything before it). That is O(tail), not O(n). The hook stays whole-file
+# fail-closed (it is the gate; accuracy beats latency there). The bar's accuracy
+# is approximate when the active deviations exceed the tail window — but the bar
+# is informational (fails toward silence, never blocks), and the hook still gates
+# exactly. `tail` is an external, but the bar already uses `grep` for the wf
+# segment; the gate (the Stop hook) bans externals, the mirror does not.
 #
 # Dim, not red: an unpresented deviation blocks STOP, not current work. Renders
 # nothing when the count is 0 (the common case) or the ledger is absent.
 DEVMINE=0
 scan_deviations_bar() { # scan_deviations_bar <decisions-path> <this-session>
-  local f="$1" sess="$2" line kind what n=0 bytes=0
+  local f="$1" sess="$2" line kind what i
   [ -f "$f" ] && [ ! -L "$f" ] || return 0
+  # Reject a NUL/corrupt ledger up front (fail toward silence). The tail scan
+  # below would otherwise parse garbage; a corrupt ledger must not render a count.
   if ! (LC_ALL=C _dp=0
         while IFS= read -r -d '' -n 512 _dprobe; do
           _dp=$((_dp + 1)); [ "$_dp" -le 4096 ] || exit 1
           [ "${#_dprobe}" -eq 512 ] || exit 1
         done < "$f") 2>/dev/null; then
-    return 0           # NUL/corrupt ledger: fail toward silence (bar never blocks)
+    return 0
   fi
-  while IFS= read -r -n 512 line || [ -n "$line" ]; do
-    n=$((n+1)); [ "$n" -le 20000 ] || return 0
-    bytes=$((bytes + ${#line} + 1)); [ "$bytes" -le 2097152 ] || return 0
-    [ "${#line}" -lt 512 ] || return 0
+  # Read the last ~256 lines into an array (tail is O(tail) seek, not a full
+  # read), then walk backwards. The mark-clears rule means a single mark from the
+  # end terminates the count — early exit, bounded parse.
+  local _lines=()
+  while IFS= read -r -n 512 line; do _lines+=("$line"); done < <(tail -n 256 "$f" 2>/dev/null)
+  [ "${#_lines[@]}" -gt 0 ] || return 0
+  i=${#_lines[@]}
+  while [ "$i" -gt 0 ]; do
+    i=$((i - 1))
+    line="${_lines[i]}"
     line="${line%$'\r'}"
     case "$line" in *" | "*) ;; *) continue ;; esac
     kind="${line#* | }"; kind="${kind#* | }"; kind="${kind%% | *}"
@@ -303,13 +317,15 @@ scan_deviations_bar() { # scan_deviations_bar <decisions-path> <this-session>
           *) DEVMINE=$((DEVMINE + 1)) ;;
         esac ;;
       HANDOFF-MARK)
+        # Walking backwards, the FIRST mine/unowned mark we hit is the last one
+        # in file order — it clears everything before it. Stop counting.
         case "$what" in
-          "[sid:$sess]"*) DEVMINE=0 ;;                  # mine/unowned → clears
-          "[sid:"*) : ;;                                # foreign → no effect
-          *) DEVMINE=0 ;;
+          "[sid:$sess]"*) return 0 ;;                   # mine/unowned → clears, stop
+          "[sid:"*) : ;;                                # foreign → no effect, keep walking
+          *) return 0 ;;
         esac ;;
     esac
-  done < "$f"
+  done
 }
 [ -n "$OPDIR" ] && scan_deviations_bar "$OPDIR/DECISIONS.md" "$SESSION"
 
