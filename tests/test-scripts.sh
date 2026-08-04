@@ -1943,6 +1943,15 @@ clean_tree
 runclaims --since "$BASE_SHA" --claimed none >/dev/null 2>&1; CNG=$?
 check "CHANGED none: clean tree, no claims → exit 0" "$([ "$CNG" = 0 ] && echo 0 || echo 1)"
 
+# T3: --expect-clean + --claimed combined — the real dispatch shape (a clean
+# read-only seat, operator still verifies claims). --expect-clean passes, then
+# the script falls through to C1/C2/C3. A PHANTOM claim must still fire C2 even
+# on a clean tree (the reviewer mutated the fall-through exit 0 and the suite
+# stayed green). Clean tree + a claimed-but-untouched path → C2 phantom.
+runclaims --since "$BASE_SHA" --expect-clean --claimed "nonexistent.txt" >/dev/null 2>&1; ECPC=$?
+check "--expect-clean + --claimed: phantom claim still fires C2 on a clean tree" \
+  "$([ "$ECPC" != 0 ] && echo 0 || echo 1)"
+
 # --expect-clean green: tree empty apart from .operator/ (none here).
 runclaims --expect-clean >/dev/null 2>&1; ECG=$?
 check "--expect-clean green on a clean tree" "$([ "$ECG" = 0 ] && echo 0 || echo 1)"
@@ -2195,6 +2204,35 @@ check "after --mark-handoff, the deviation is cleared" "$([ "$MH2" = 0 ] && echo
 check "--mark-handoff line carries the [sid:] tag" "$(grep -q 'HANDOFF-MARK.*\[sid:' "$DEC" && echo 0 || echo 1)"
 # A foreign owner cannot write a mark that would clear MY deviations (the mark's
 # sid is foreign, so it never clears mine — verified by the partition above).
+
+# --- T2: an UNOWNED HANDOFF-MARK clears every session (the third partition arm) ---
+# A mark with NO [sid:] tag is "unowned" and clears every session's deviations
+# (mirrors the unowned-sentinel rule). The reviewer mutated this branch to a no-op
+# and the suite stayed green — it is now asserted. Set up a mine deviation, clear
+# with an UNTAGGED mark, confirm Stop allowed.
+printf '2026-08-04 | e.t | DEVIATION | [sid:%s] mine | r\n' "$SID" > "$DEC"
+printf '2026-08-04 | e | HANDOFF-MARK | 2026-08-04T00:00:00Z | presented (no sid)\n' >> "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; UM=$?
+check "an untagged HANDOFF-MARK clears every session (third partition arm)" "$([ "$UM" = 0 ] && echo 0 || echo 1)"
+# And a DIFFERENT session is also cleared by the untagged mark.
+printf '{"session_id":"OTHER-SESS","stop_hook_active":false,"cwd":"%s"}' "$P" | bash "$HOOK" >/dev/null 2>&1; UM2=$?
+check "untagged mark clears a DIFFERENT session too (unowned = clears all)" "$([ "$UM2" = 0 ] && echo 0 || echo 1)"
+
+# --- T1: a SYMLINKED DECISIONS.md is not scanned (F65 class, both readers) -----
+# A planted symlink to an attacker file with a forged DEVIATION must NOT feed the
+# scan. The hook fails OPEN (absent-ledger class); the bar renders nothing.
+ATT="$(newproj)"; printf 'forged\n2026-08-04 | e.t | DEVIATION | [sid:%s] forged | r\n' "$SID" > "$ATT/forged-decisions"
+ln -s "$ATT/forged-decisions" "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; SYM=$?
+check "hook fails OPEN on a symlinked DECISIONS.md (not scanned)" "$([ "$SYM" = 0 ] && echo 0 || echo 1)"
+# The statusline mirror: a symlinked ledger renders no dev[N] segment.
+SYMSEG="$(printf '{"session_id":"%s","cwd":"%s","workspace":{"project_dir":"%s"}}' "$SID" "$P" "$P" \
+  | "$BASH_ABS" "$SCRIPTS/statusline.sh" 2>/dev/null | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g')"
+check "statusline renders no dev[ on a symlinked DECISIONS.md" \
+  "$(printf '%s' "$SYMSEG" | grep -q 'dev\[' || echo 0)"
+rm -f "$DEC" "$ATT"; rmdir "$ATT" 2>/dev/null || true
+# Restore a real (empty) DECISIONS.md for any later use.
+printf '# Decisions\n' > "$DEC"
 
 rm -rf "$P"
 
