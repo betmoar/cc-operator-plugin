@@ -375,7 +375,23 @@ check "sessionstart hook emits additionalContext with the id" "$(printf '%s' "$S
 Q="$(newproj)"
 SSQ="$(sed "s|<tmp>|$Q|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"; SSQRC=$?
 check "sessionstart hook silent outside operator projects" "$([ "$SSQRC" -eq 0 ] && [ -z "$SSQ" ] && echo 0 || echo 1)"
-rm -rf "$Q" "$P"
+# SessionStart ensures the compressor ephemera are git-ignored: a target project
+# whose .operator/.gitignore predates the compressor would otherwise show
+# .compress-spill/ as dirty state the moment the PostToolUse compressor fires
+# (user-reported 2026-08-04). The hook appends the lines idempotently.
+GIP="$(newproj)"; ( cd "$GIP" && bash "$INIT" >/dev/null 2>&1 )
+# Strip the compressor lines to simulate a pre-compressor gitignore.
+printf '# legacy\n.lock/\n' > "$GIP/.operator/.gitignore"
+sed "s|<tmp>|$GIP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
+check "sessionstart ensures .compress-spill/ is git-ignored" \
+  "$(grep -q '^\.compress-spill/$' "$GIP/.operator/.gitignore" && echo 0 || echo 1)"
+check "sessionstart ensures .compress-state/ is git-ignored" \
+  "$(grep -q '^\.compress-state/$' "$GIP/.operator/.gitignore" && echo 0 || echo 1)"
+# Idempotent: a second fire does not duplicate the block.
+sed "s|<tmp>|$GIP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
+check "sessionstart gitignore-ensure is idempotent (no duplicate block)" \
+  "$( [ "$(grep -c '^\.compress-spill/$' "$GIP/.operator/.gitignore")" = 1 ] && echo 0 || echo 1)"
+rm -rf "$Q" "$P" "$GIP"
 
 ########################################################################
 echo "-- Case 9: migration safety — an unowned sentinel blocks EVERY session"

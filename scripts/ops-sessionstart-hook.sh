@@ -68,6 +68,22 @@ for _cdir in "$cwd/.operator/.compress-spill" "$cwd/.operator/.compress-state"; 
   [ -d "$_cdir" ] && rm -rf "$_cdir" 2>/dev/null
 done
 
+# Ensure the compressor's ephemera are git-ignored BEFORE the compressor can
+# recreate them this session. ops-init writes these lines, but a target project
+# whose .operator/.gitignore predates the compressor (or was written by an older
+# ops-init) lacks them — so .compress-spill/ shows up as untracked dirty state
+# the moment the PostToolUse compressor fires, and stays dirty until the user
+# re-runs /cc-operator:start. The upgrade-append ops-init does only fires on
+# re-init; this runs every session. Idempotent append, best-effort (a write
+# failure must never cost the session its banner).
+_gi="$cwd/.operator/.gitignore"
+if [ -f "$_gi" ] && ! grep -q '^\.compress-spill/$' "$_gi" 2>/dev/null; then
+  {
+    printf '# Compressor ephemera (ensured by SessionStart): session-scoped, wiped on every start.\n'
+    printf '.compress-spill/\n.compress-state/\n'
+  } >> "$_gi" 2>/dev/null
+fi
+
 ctx="cc-operator: this session's id is ${session}. Pass --owner ${session} when opening or closing tracked tasks — .operator/bin/ops-task.sh <id> --owner ${session}, .operator/bin/ops-verdict.sh <id> ... --owner ${session}. Sentinels you open are then yours alone: the Stop hook blocks only on your own open tasks and reports other sessions' as informational. After a /clear your id changes — run .operator/bin/ops-adopt.sh --owner ${session} <id>... to re-claim tasks you are still working."
 
 if [ "$PARSER" = "jq" ]; then
