@@ -1804,10 +1804,12 @@ printf 'a\n' > "$P/a.txt"; printf 'b\n' > "$P/b.txt"
 mkdir "$P/tests"; printf 'x\n' > "$P/tests/t.sh"
 ( cd "$P" && git add -A && git commit -qm base )
 runclaims() { ( cd "$P" && bash "$CLAIMS" "$@" ); }   # → exit code, stdout on fd1
-# clean_tree: revert all tracked mods + drop untracked, so each sub-case starts
-# from a known-clean base (state leaks between sub-cases otherwise — a real bug
-# class caught while writing these cases).
-clean_tree() { ( cd "$P" && git checkout -q . && git clean -qfd ); }
+# clean_tree: revert ALL changes (staged + unstaged + untracked) to the current
+# HEAD so each sub-case starts from a known-clean base. `git checkout .` alone
+# misses STAGED changes (a `git rm`/`git mv` stages), so reset --hard + clean.
+# State leaks between sub-cases are a real bug class — a case that passes
+# against leftover state proves nothing.
+clean_tree() { ( cd "$P" && git reset -q --hard HEAD >/dev/null 2>&1 && git clean -qfd ); }
 
 # C1 green: claim exactly the one touched path.
 printf 'a2\n' > "$P/a.txt"
@@ -1886,6 +1888,72 @@ printf 'a2\n' > "$P/a.txt"
 ( cd "$P" && git add -A && git commit -qm second )
 runclaims --claimed none >/dev/null 2>&1; SINCE=$?
 check "--since defaults to HEAD: committed change is not a working-tree change" "$([ "$SINCE" = 0 ] && echo 0 || echo 1)"
+
+# --- adversarial cases (REFUTED review 2026-08-04): the F-A2 attack surface ---
+# These reproduce each must-resolve finding the review caught. Every one is the
+# exact shape that evaded the first version; they MUST stay green or the parse
+# has regressed back to word-split / pathname-expansion.
+clean_tree
+
+# C3 must fire on a DELETED gate CLI — the exact F-A2 attack. The first version's
+# `for pat in $PROTECTED` pathname-expanded, so a deleted file matched nothing.
+mkdir -p "$P/scripts"
+printf 'stub\n' > "$P/scripts/ops-verdict.sh"
+( cd "$P" && git add -A && git commit -qm gatefiles >/dev/null 2>&1 )
+# Working-tree deletion: the file was committed, now rm it. git diff HEAD and
+# porcelain both report the path as deleted/removed — the pattern must catch it.
+rm -f "$P/scripts/ops-verdict.sh"
+DELVIEW="$(cd "$P" && git status --porcelain --untracked-files=all scripts/ops-verdict.sh)"
+DELOUT="$(runclaims --claimed 'scripts/ops-verdict.sh' 2>/dev/null)"; DEL=$?
+check "F-A2 setup: the deleted gate CLI is in git's view" \
+  "$([ -n "$DELVIEW" ] && echo 0 || echo 1)"
+check "C3 fires on a DELETED gate CLI (F-A2 attack; pathname-expansion fix)" \
+  "$([ "$DEL" != 0 ] && echo 0 || echo 1)"
+check "deletion names 'gate-trespass'" \
+  "$(printf '%s' "$DELOUT" | grep -q gate-trespass && echo 0 || echo 1)"
+clean_tree
+
+# A path WITH A SPACE is one item, not shredded. The first version word-split
+# `my file.txt` into `my` + `file.txt`. Untracked (so porcelain -z must carry it).
+printf 'x\n' > "$P/my file.txt"
+SCOUT="$(runclaims --claimed none 2>/dev/null)"
+check "path with a space is one unclaimed-change item (not shredded)" \
+  "$(printf '%s' "$SCOUT" | grep -q '{item my file.txt}' && echo 0 || echo 1)"
+clean_tree
+
+# A bad --since ref is rejected, not silently degraded to "no changes" (which
+# would false-green a committed gate-trespass). The first version swallowed it.
+printf 'a2\n' > "$P/a.txt"
+runclaims --claimed none --since not-a-real-ref-xyz >/dev/null 2>&1; BADS=$?
+check "invalid --since ref is rejected (no silent false-green)" "$([ "$BADS" != 0 ] && echo 0 || echo 1)"
+clean_tree
+
+# A renamed file: git mv yields a rename entry. The first version parsed
+# 'R old -> new' into a garbage '->' item. Both old and new must be seen as
+# changes (a renamed gate CLI must not evade C3).
+mkdir -p "$P/hooks"; printf 'orig\n' > "$P/hooks/h.sh"
+( cd "$P" && git add -A && git commit -qm hookbase >/dev/null 2>&1 )
+( cd "$P" && git mv hooks/h.sh hooks/renamed.sh >/dev/null 2>&1 )
+MVVIEW="$(cd "$P" && git status --porcelain --untracked-files=all hooks/)"
+MVOUT="$(runclaims --claimed 'hooks/' --gate-task 2>/dev/null)"; MV=$?
+check "F-A2 rename setup: the rename is in git's view" \
+  "$([ -n "$MVVIEW" ] && echo 0 || echo 1)"
+check "rename: hooks/ claimed + --gate-task → green (both paths recognized)" "$([ "$MV" = 0 ] && echo 0 || echo 1)"
+check "rename does not emit a garbage '->' item" \
+  "$(printf '%s' "$MVOUT" | grep -qv '{item ->}' && echo 0 || echo 1)"
+clean_tree
+
+# Untracked file inside an UNTRACKED directory: --untracked-files=all must see
+# the file, not just the dir. (No --untracked-files=all → only 'docs/'.)
+mkdir -p "$P/docs/new"; printf 'm\n' > "$P/docs/new/a.md"
+runclaims --claimed "docs/new/a.md" >/dev/null 2>&1; UTD=$?
+check "untracked file in untracked dir is matched (--untracked-files=all)" "$([ "$UTD" = 0 ] && echo 0 || echo 1)"
+clean_tree
+
+# Leading-dot claimed path is rejected (the first version's comment promised it,
+# the code did not implement it — review REFUTED, doc/code divergence).
+runclaims --claimed ".hidden" >/dev/null 2>&1; DOT=$?
+check "leading-dot claimed path rejected (doc/code divergence fix)" "$([ "$DOT" != 0 ] && echo 0 || echo 1)"
 
 # Green run emits the SSSF 'what was verified' evidence line.
 GE="$(runclaims --claimed none 2>/dev/null)"

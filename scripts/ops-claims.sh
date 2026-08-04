@@ -42,12 +42,32 @@ die() { echo "ops-claims: $1" >&2; exit 2; }
 
 NL="$(printf '\nx')"; NL="${NL%x}"
 
+# A temp file for the diff∪porcelain path stream (the union loop reads it twice).
+# mktemp is the one external beyond git (cf. ops-verdict.sh --reconcile); cleaned
+# on exit. Paths are newline-delimited here so they survive intact only because
+# porcelain_paths/diff -z already de-quoted them — a raw space is fine in this
+# file, it is the word-split ITERATION that would shred it, and we iterate with
+# `while IFS= read -r` (one path per line), never unquoted `$ACTUAL`.
+_ACTUAL_TMP="$(mktemp "${TMPDIR:-/tmp}/opsclaims.XXXXXX")"
+trap 'rm -f "$_ACTUAL_TMP"' EXIT
+
 # --- protected set (F-A2: the builder cannot edit its own grader) ------------
-# A touched path under any of these, without --gate-task, is gate-trespass (C3).
-# PROTECTED is the single source; matches_protected() is its application site —
-# check_claims pins BOTH the literal and the call (F30: pinned to a canonical
-# literal AND applied; copy parity alone is insufficient). A path ending in '/'
-# matches by prefix (tests/ covers tests/test-scripts.sh); else exact.
+# A touched path matching any of these PATTERNS, without --gate-task, is
+# gate-trespass (C3). PROTECTED is the single source; matches_protected() is its
+# application site — check_claims pins BOTH the literal and the call (F30: pinned
+# to a canonical literal AND applied; copy parity alone is insufficient). A
+# token ending in '/' matches by PREFIX (tests/ covers tests/x); a token with a
+# glob char (*?[) matches as a glob; else exact.
+#
+# `set -f` is CRITICAL here. An earlier version iterated `for pat in $PROTECTED`
+# WITHOUT it, so `scripts/ops-*.sh` PATHNAME-EXPANDED against the filesystem:
+# a deleted gate CLI (the exact F-A2 attack — `git rm scripts/ops-verdict.sh`)
+# matched nothing and evaded C3, and the match was CWD-relative. With `set -f`,
+# `for pat in $PROTECTED` only WORD-SPLITS (no glob expansion against disk), and
+# each token is then used as a `case` PATTERN — matching against the STRING $p,
+# never the filesystem. A deleted file still matches its pattern (review REFUTED,
+# 2026-08-04). This keeps ONE source (the literal); a hardcoded `case` would be a
+# second copy that drifts — the F30 trap.
 #
 # statusline.sh is included per the F66 amendment: it is a full sentinel reader
 # bound by gate semantics (same -L/NUL/byte-bound obligations as the hook), so a
@@ -57,23 +77,32 @@ PROTECTED="scripts/validate_plugin.py tests/ .operator/bin/ hooks/ scripts/ops-*
 
 matches_protected() {  # matches_protected <path> → 0 if under the protected set
   local p="$1" pat
-  for pat in $PROTECTED; do
+  set -f          # disable pathname expansion so $PROTECTED's glob tokens stay
+  for pat in $PROTECTED; do   # literal PATTERNS matched against the string $p.
     case "$pat" in
-      */) case "$p" in "$pat"*) return 0 ;; esac ;;   # prefix match (dir glob)
-      *)  [ "$p" = "$pat" ] && return 0 ;;            # exact match
+      */) # a dir token (trailing /) matches by PREFIX: tests/ covers tests/t.sh
+          [ "${p#"$pat"}" != "$p" ] && { set +f; return 0; } ;;
+      *)  # a glob/exact token. $pat is a glob by design (ops-*.sh → ops-verdict.sh),
+          # deliberately unquoted so [[ == ]] pattern-matches rather than pathname-
+          # expands. A deleted gate CLI still matches its pattern (review REFUTED).
+          # shellcheck disable=SC2053
+          [[ $p == $pat ]] && { set +f; return 0; } ;;
     esac
   done
+  set +f
   return 1
 }
 
 # A claimed path ending in '/' matches by prefix; else exact. Same rule as the
-# protected set: "CHANGED: tests/" is satisfied by a diff touching tests/x.
+# protected set: "CHANGED: tests/" is satisfied by a diff touching tests/x. set -f
+# stops a claimed glob from pathname-expanding against the disk (review REFUTED).
 matches_claimed() {  # matches_claimed <path> <claimed-list> → 0 if claimed
-  local p="$1" c pat
+  local p="$1" c
+  set -f
   for c in $2; do
     case "$c" in
-      */) case "$p" in "$c"*) return 0 ;; esac ;;
-      *)  [ "$p" = "$c" ] && return 0 ;;
+      */) case "$p" in "$c"*) set +f; return 0 ;; esac ;;
+      *)  [ "$p" = "$c" ] && { set +f; return 0; } ;;
     esac
   done
   return 1
@@ -117,6 +146,33 @@ done
 # Both modes need a git repo; refuse clearly rather than emit raw git errors.
 git rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository — ops-claims reads git state"
 
+# --- porcelain path extraction (NUL-delimited; robust to spaces/quotes) ------
+# `git status --porcelain -z` and `git diff --name-only -z` separate records with
+# a NUL, so a path containing a space, a tab, or a quote — which porcelain v1
+# C-quotes and an unquoted `$VAR` then word-splits into garbage — survives intact
+# (review REFUTED, 2026-08-04). Each porcelain record is "XY path" (2 status
+# chars + a space + the path) OR, for a rename/copy, "XY orig\0dest": the ORIG is
+# a separate NUL-delimited record, so BOTH paths are extracted as changes (a
+# renamed gate CLI must not evade C3). We collect each touched path.
+#
+# Builtins only: `IFS= read -r -d ''` reads one NUL-delimited record. bash 3.2's
+# `read -d ''` returns non-zero at EOF (no trailing NUL) but still populates the
+# variable, so `|| [ -n "$rec" ]` catches the final record.
+porcelain_paths() {  # porcelain_paths → emits one repo-relative path per line
+  local rec path
+  while IFS= read -r -d '' rec || [ -n "$rec" ]; do
+    [ -n "$rec" ] || continue
+    # Strip the "XY " status prefix (3 chars: 2 status + 1 space). A rename
+    # record is "XY orig\0dest" — this read gets "XY orig", the NEXT read gets
+    # "dest" (no prefix). Both paths are emitted as changes.
+    case "$rec" in
+      "?? "* | " D"* | "D "* | " M"* | "M "* | "MM"* | "A "* | "R "* | "C "* | "??") path="${rec#???}" ;;
+      *) path="$rec" ;;   # the dest half of a rename (no XY prefix)
+    esac
+    [ -n "$path" ] && printf '%s\n' "$path"
+  done
+}
+
 # --- --expect-clean (F-A1): read-only-seat tree check ------------------------
 # Run after any read-only/workflow dispatch. The working tree must be empty
 # apart from .operator/ ledger paths; anything else is a read-only seat that
@@ -124,18 +180,14 @@ git rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository — ops-cla
 # before any other action. Independent of --claimed (it can run alone).
 if [ "$EXPECT_CLEAN" = "1" ]; then
   stray=""
-  # Porcelain v1: "XY path" (or "XY "path" for special). Field 1 is the status,
-  # the rest is the path. Strip the two-char status prefix to get the path.
-  while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    p="${line#???}"            # drop "XY " (status + space)
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
     is_ledger_path "$p" && continue
-    stray="${stray:+$stray }$p"
-  done <<EOF
-$(git status --porcelain 2>/dev/null || true)
-EOF
+    stray="${stray:+$stray$NL}$p"
+  done < <(git status --porcelain -z --untracked-files=all 2>/dev/null | porcelain_paths)
   if [ -n "$stray" ]; then
-    for p in $stray; do
+    printf '%s\n' "$stray" | while IFS= read -r p; do
+      [ -n "$p" ] || continue
       echo "{item $p} fail: working tree not clean (read-only dispatch left a change beyond .operator/)"
     done
     exit 1
@@ -162,81 +214,93 @@ check_claimed_path() {  # check_claimed_path <path>
     *"|"*) die "claimed path contains '|' — rephrase without it" ;;
     *"$nl"*) die "claimed path contains a newline" ;;
     ../*|*/../*) die "claimed path contains '..' traversal — not a claim about this repo" ;;
+    .*|*/.*) die "claimed path has a leading/trailing dot — not a path the gate tracks (review REFUTED, 2026-08-04: the comment promised this, the code did not)" ;;
   esac
 }
+# CLAIMED is space-separated on the CLI (the CHANGED: line contract). Iterate
+# with word-splitting: that IS the contract. A claimed path with a literal space
+# is not representable in it (a documented limitation, not a bug) — and ACTUAL,
+# the git-output side, is NUL-delimited so spaces there are safe.
+set -f
 for c in $CLAIMED; do check_claimed_path "$c"; done
+set +f
 
-# Actual changes = tracked-changed-since-SINCE  ∪  untracked.
-# `git diff --name-only` covers modified+staged+deleted since SINCE; porcelain
-# adds untracked (?? ) and unmerged, which diff omits. Both streams are captured
-# (builtins + git only — no sed/sort/awk: the porcelain "XY " prefix is stripped
-# with ${line#???}, and the union is de-duped by a first-occurrence loop because
-# bash 3.2 has no associative arrays). A duplicate path would at most repeat an
-# evidence line; the dedup keeps the output clean, it is not load-bearing.
-_actual=""
-while IFS= read -r line; do
-  [ -n "$line" ] || continue
-  p="${line#???}"            # drop "XY " (status + space) — porcelain only
-  _actual="${_actual:+$_actual$NL}$p"
-done <<EOF
-$(git status --porcelain 2>/dev/null || true)
-EOF
-_diff="$(git diff --name-only "$SINCE" 2>/dev/null || true)"
-# De-dup union (first occurrence wins).
+# Validate --since: a typo'd or invalid ref must NOT silently degrade to "no
+# changes" (which would green-light a committed gate-trespass). git diff against
+# a bad ref errors on stderr; without this guard the `|| true` swallowed it and
+# the gate reported a false PASS (review REFUTED, 2026-08-04). Fail loud instead.
+if ! git rev-parse --verify "${SINCE}^{commit}" >/dev/null 2>&1; then
+  die "--since '${SINCE}' is not a valid commit ref — refusing (a bad ref must not silently pass the gate)"
+fi
+
+# Actual changes = tracked-changed-since-SINCE  ∪  untracked+unstaged.
+# `git diff --name-only -z` covers modified+staged+deleted since SINCE; porcelain
+# adds untracked (?? ) and unmerged, which diff omits. Both use -z (NUL-delimited)
+# so paths with spaces/quotes survive intact (review REFUTED, 2026-08-04). The
+# union is de-duped by a first-occurrence loop (bash 3.2 has no assoc arrays); a
+# duplicate would at most repeat an evidence line, so the dedup is cosmetic.
 ACTUAL=""
 _seen=""
 _de_dup() {  # _de_dup <path> — append to ACTUAL unless already seen
-  local p="$1"
+  [ -n "$1" ] || return 0
   case "$NL$_seen$NL" in
-    *"$NL$p$NL"*) return 0 ;;
+    *"$NL$1$NL"*) return 0 ;;
   esac
-  _seen="${_seen:+$_seen$NL}$p"
-  ACTUAL="${ACTUAL:+$ACTUAL$NL}$p"
+  _seen="${_seen:+$_seen$NL}$1"
+  ACTUAL="${ACTUAL:+$ACTUAL$NL}$1"
 }
-while IFS= read -r line; do [ -n "$line" ] && _de_dup "$line"; done <<EOF
-$_diff
-$_actual
-EOF
+git diff --name-only -z "$SINCE" 2>/dev/null \
+  | while IFS= read -r -d '' _p || [ -n "$_p" ]; do printf '%s\n' "$_p"; done \
+  > "$_ACTUAL_TMP"
+git status --porcelain -z --untracked-files=all 2>/dev/null | porcelain_paths >> "$_ACTUAL_TMP"
+while IFS= read -r line; do _de_dup "$line"; done < "$_ACTUAL_TMP"
 
 fails=0
 
 # C3 gate-trespass first (it is the most serious): a touched protected path
 # without --gate-task. Checked across ACTUAL so it fires even when the worker
-# honestly reported the trespass in --claimed.
+# honestly reported the trespass in --claimed. ACTUAL is read from the temp file
+# (NOT a pipe — `fails` must mutate in THIS shell, and `for p in $ACTUAL` would
+# word-split a space-containing path, review REFUTED 2026-08-04).
 if [ "$GATE_TASK" = "0" ]; then
-  for p in $ACTUAL; do
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
     if matches_protected "$p"; then
       echo "{item $p} fail: gate-trespass — touched a protected (gate) path without --gate-task"
       fails=$((fails + 1))
     fi
-  done
+  done < "$_ACTUAL_TMP"
 fi
 
 # C1 unclaimed-change: a touched file not in the claimed list. Ledger paths
 # are exempt (verdict rows are expected side-effects of any dispatch).
-for p in $ACTUAL; do
+while IFS= read -r p; do
+  [ -n "$p" ] || continue
   is_ledger_path "$p" && continue
   if [ -z "$CLAIMED" ] || ! matches_claimed "$p" "$CLAIMED"; then
     echo "{item $p} fail: unclaimed-change — touched but not in the claimed list"
     fails=$((fails + 1))
   fi
-done
+done < "$_ACTUAL_TMP"
 
 # C2 phantom-claim: a claimed file with no actual change. "reported done,
 # touched nothing". A directory claim (tests/) is satisfied if ANY actual path
-# is under it; an exact claim needs its exact path in ACTUAL.
+# is under it; an exact claim needs its exact path in ACTUAL. CLAIMED is
+# space-split (the CLI contract); set -f stops a claimed glob expanding.
 if [ -n "$CLAIMED" ]; then
+  set -f
   for c in $CLAIMED; do
     found=0
     case "$c" in
-      */) for p in $ACTUAL; do case "$p" in "$c"*) found=1; break ;; esac; done ;;
-      *)  for p in $ACTUAL; do [ "$p" = "$c" ] && { found=1; break; }; done ;;
+      */) while IFS= read -r p; do case "$p" in "$c"*) found=1; break ;; esac; done < "$_ACTUAL_TMP" ;;
+      *)  while IFS= read -r p; do [ "$p" = "$c" ] && { found=1; break; }; done < "$_ACTUAL_TMP" ;;
     esac
-    if [ "$found" = "0" ]; then
+    if [ "$found" = 0 ]; then
       echo "{item $c} fail: phantom-claim — claimed but no actual change"
       fails=$((fails + 1))
     fi
   done
+  set +f
 fi
 
 if [ "$fails" -gt 0 ]; then
@@ -247,9 +311,7 @@ fi
 # Green: state what was verified (the SSSF "a green gate answers what did you
 # verify" shape). The operator's PASS verdict row cites these lines.
 n_actual=0
-while IFS= read -r _l; do [ -n "$_l" ] && n_actual=$((n_actual + 1)); done <<EOF
-$ACTUAL
-EOF
+while IFS= read -r _l; do [ -n "$_l" ] && n_actual=$((n_actual + 1)); done < "$_ACTUAL_TMP"
 if [ -n "$CLAIMED" ]; then
   echo "{item diff-matches-claims} ok: $n_actual changed path(s) all claimed; no phantom claims"
 else
