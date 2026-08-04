@@ -250,6 +250,12 @@ deviations_unpresented=0      # global: count of mine+unowned deviations after t
 deviations_scan_failed=0      # global: 1 = file unreadable/absent (caller fails OPEN)
 scan_deviations() { # scan_deviations <decisions-path> <this-session>
   local f="$1" sess="$2" line kind what n=0 bytes=0
+  # LC_ALL=C so read -n 512 and ${#line} count BYTES not characters (Copilot
+  # review, 2026-08-04): in a UTF-8 locale a 512-char chunk can be up to 2048
+  # bytes, evading the per-line cap and making the DECISIONS_MAX_BYTES accumulator
+  # ~4x looser than intended. Safe to set here: the function only does byte-level
+  # parsing, and the hook exits (ASCII output only) shortly after it runs.
+  LC_ALL=C
   deviations_unpresented=0
   deviations_scan_failed=0
   [ -f "$f" ] || { deviations_scan_failed=1; return 0; }

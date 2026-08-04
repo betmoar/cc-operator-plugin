@@ -285,6 +285,13 @@ shopt -u nullglob
 DEVMINE=0
 scan_deviations_bar() { # scan_deviations_bar <decisions-path> <this-session>
   local f="$1" sess="$2" line kind what i
+  # LC_ALL=C so the bounded reads and ${#} count BYTES not characters (Copilot
+  # review, 2026-08-04): in a multibyte locale a 512-char chunk can be 2048
+  # bytes, weakening the byte bound. Safe to set without restore: every segment
+  # this statusline renders (op[/dev[/wf, ANSI codes, path strings from
+  # charset-restricted bare-name sentinel filenames) is ASCII, so the byte
+  # locale does not change its output.
+  LC_ALL=C
   [ -f "$f" ] && [ ! -L "$f" ] || return 0
   # Reject a NUL/corrupt ledger up front (fail toward silence). The tail scan
   # below would otherwise parse garbage; a corrupt ledger must not render a count.
