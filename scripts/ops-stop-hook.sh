@@ -139,6 +139,13 @@ done
 # use $( ), which is a subshell, so a side-effect variable would be discarded.
 sentinel_owner() { # sentinel_owner <path> → "owner|opened_at"
   local line owner="" opened="" n=0
+  # A symlink is never a sentinel our CLIs wrote (F65): `-f` alone FOLLOWS it,
+  # so a planted link would read its target's session_id: as a foreign owner
+  # and wave the stop through. Degrade to unowned → BLOCKS everyone — the same
+  # fail-closed direction as every other body our writers could not have
+  # produced. (The enumeration below still counts the entry as a task; only
+  # the ownership claim is voided.)
+  [ ! -L "$1" ] || return 0
   [ -f "$1" ] || return 0
   # A NUL is checked BEFORE the loop: bash cannot hold one in a variable (it
   # drops them silently), so no test on $line can ever see one — the

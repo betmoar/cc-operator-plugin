@@ -303,6 +303,11 @@ lock_release() {
 # only the Stop hook; this reader and two others kept the unbounded form.)
 sentinel_owner() { # sentinel_owner <id> → stamped session_id ("" if none/invalid)
   local f="$OPDIR/pending/$1" line owner="" n=0
+  # A symlink is never a sentinel our CLIs wrote (F65): `-f` alone FOLLOWS it,
+  # so a link planted in pending/ would read its target's session_id: as a
+  # valid owner. Degrade to unowned — fails closed, like every other
+  # malformed body. The mutating paths additionally refuse outright below.
+  [ ! -L "$f" ] || return 0
   [ -f "$f" ] || return 0
   # NUL pre-scan, same rationale as ops-stop-hook.sh (F46): bash cannot see a
   # NUL in a variable, and `read -n` stops at one on bash 3.2, so a NUL-padded
@@ -485,6 +490,13 @@ if [ -n "$OWNER" ]; then check_owner_name "$OWNER"; fi
 # record a verdict and delete the new owner's sentinel (found by Codex review).
 # Callers therefore lock first, then call this.
 ownership_gate() {
+  # A symlink planted in pending/ is not a task our CLIs opened (F65): closing
+  # it would append a ledger row for work that never went through ops-task.sh's
+  # O_EXCL create, and clear_sentinel's `rm -f` would delete the link. Refuse
+  # outright — the parser's degrade-to-unowned is not enough here, because an
+  # unowned sentinel is closable by design. Runs under the lock in BOTH the
+  # defer and verdict paths, so this is the single choke point.
+  [ ! -L "$OPDIR/pending/$ID" ] || die "sentinel at $OPDIR/pending/$ID is a symlink — not a sentinel our CLIs wrote; refusing (remove it and open the task with ops-task.sh)"
   SOWNER="$(sentinel_owner "$ID")"
   if [ -n "$SOWNER" ]; then
     if [ -n "$OWNER" ] && [ "$OWNER" != "$SOWNER" ]; then

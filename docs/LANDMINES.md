@@ -37,6 +37,29 @@ being re-read every session.
   *"raw bash error as operator guidance"* landmine, already fixed in the hook
   via `-f`).
 
+- **A symlink guard applied at one site is a guard applied at none of the ones
+  that matter (F65→F66).** The F65 `-L` rejection first landed only in
+  `ops-task.sh`'s opener — the write path — while every *read* site kept plain
+  `-f`, which FOLLOWS symlinks. A link planted in `pending/` was therefore
+  adopted by `ops-adopt.sh` (whose temp-file rewrite then *laundered* it into
+  a genuine regular-file sentinel), closable into VERDICTS.md by
+  `ops-verdict.sh`, and read by the Stop hook and statusline as its target's
+  owner — a foreign id waved the stop through (code-review of f4cae1a,
+  2026-08-04; all reproduced live). Same PLAYBOOK rule as owner guards: apply
+  at every reader, or the input class that is not ours walks in through the
+  door you did not guard. Two corollaries from the same review: (a) the
+  original F65 comment claimed `mv` over a destination symlink overwrites the
+  link's *target* — measured false; `rename(2)` replaces the link itself, so
+  the exposure was always the laundering, never a data overwrite; (b) both
+  regression guards shipped with F64/F65 were bypassable — the validator's cap
+  check was a substring test (`le 40` matched `-le 400000`) keyed to the
+  literal variable name `_nulprobe`, and the bash test's 2MB fixture completed
+  under its own 5s budget with the cap reverted. A guard that passes against
+  the broken code guards nothing — prove discrimination by reverting
+  (PLAYBOOK, "Verifying a fix"). Now enforced by `check_guard_parity`'s
+  five-site `-L` check; the parsers degrade a symlink to unowned (blocks,
+  fail closed), the mutating CLIs refuse loudly.
+
 - **The Stop hook must use bash builtins + one JSON parser only.** It reads
   stdin with `read -r -d ''` (a line loop drops a newline-less final line — a
   real bug that once made the hook see an empty cwd and always exit 0) and

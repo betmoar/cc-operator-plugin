@@ -434,22 +434,32 @@ def check_reader_bounds(root, problems):
         # from drifting back to the uncapped loop. The `-n 512` inside the
         # probe is itself a `read -r -n \d+`, so it is already counted above as
         # a bounded read; here we additionally require the cap to accompany it.
+        # Match ANY NUL-probe loop, not the literal variable name `_nulprobe`:
+        # a rename would otherwise carry the probe out of the check's sight
+        # entirely (the first version required `_nulprobe` and a renamed,
+        # uncapped probe passed clean — code-review of f4cae1a, 2026-08-04).
         nul_probes = [
             i for i, ln in enumerate(code)
-            if re.search(r"read -r -d '' -n \d+ _nulprobe", ln)
+            if re.search(r"read -r -d '' -n \d+ \w+", ln)
         ]
         for i in nul_probes:
             # The counter + cap must appear within the same probe block (the
-            # few lines from the `while` to the chunk-size check). A probe
-            # without a `_np` counter in that window is uncapped.
+            # few lines from the `while` to the chunk-size check), and the
+            # cap's VALUE is parsed and bounded — the first version substring-
+            # matched "le 40", which `-le 400000` (effectively uncapped)
+            # satisfies (same review). The ceiling is 200 chunks (100KB): the
+            # config parse loops' own legal maximum (200 lines × 512 bytes).
+            # Sentinel probes use 40; anything above 200 no longer bounds the
+            # probe to legal-input scale and is treated as uncapped.
             window = "\n".join(code[i:i + 4])
-            if "_np" not in window or "le 40" not in window:
+            cap = re.search(r"-le (\d+)\b", window)
+            if not cap or int(cap.group(1)) > 200:
                 problems.append(
                     f"scripts/{name}: NUL probe at code line {i + 1} has no "
-                    f"chunk cap (_np … le 40) — an uncapped `read -d ''` loop "
-                    f"walks a multi-MB file end-to-end and stalls the reader "
-                    f"(see ops-stop-hook.sh sentinel_owner for the canonical "
-                    f"bounded form)")
+                    f"chunk cap (a counter with `-le N`, N<=200) — an uncapped "
+                    f"`read -d ''` loop walks a multi-MB file end-to-end and "
+                    f"stalls the reader (see ops-stop-hook.sh sentinel_owner "
+                    f"for the canonical bounded form)")
 
 
 def check_platform_idioms(root, problems):
@@ -535,6 +545,25 @@ def check_guard_parity(root, problems):
                 "scripts/ops-stop-hook.sh: sentinel_owner does not reject "
                 "whitespace owners — an owner that can never match a real "
                 "session id makes its task permanently non-blocking")
+    # The -L symlink rejection is a FIVE-site coupling: the opener plus every
+    # sentinel reader. It was first applied to ops-task.sh alone, and every
+    # read site kept following planted symlinks — adopt laundered them into
+    # real sentinels, verdict closed them into the ledger, the hook and bar
+    # read their targets' owners (F65/F66, code-review of f4cae1a 2026-08-04).
+    # `-f` follows symlinks; a symlink is never a sentinel our CLIs wrote.
+    for name in ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh",
+                 "ops-stop-hook.sh", "statusline.sh"):
+        p = root / "scripts" / name
+        if not p.is_file():
+            continue
+        code = [ln for ln in p.read_text(encoding="utf-8").splitlines()
+                if not ln.lstrip().startswith("#")]
+        if not any(re.search(r"(!\s+-L|-L\s+\S)", ln) for ln in code):
+            problems.append(
+                f"scripts/{name}: no symlink (-L) rejection — `-f` follows a "
+                f"planted symlink in pending/, laundering an entry our CLIs "
+                f"never wrote into a trusted sentinel (F65/F66; the guard "
+                f"must live at every reader, see docs/PLAYBOOK.md)")
 
 
 def check_lock_parity(root, problems):

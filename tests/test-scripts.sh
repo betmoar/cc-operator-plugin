@@ -238,9 +238,10 @@ ln -s /nonexistent "$P2/.operator/pending/T-DEAD"
 check "ops-task refuses to open over a dangling symlink (non-zero exit)" "$([ "$LRC" -ne 0 ] && echo 0 || echo 1)"
 # symlink TO A REGULAR FILE (Copilot 2026-08-03, final review): unlike the
 # dangling case, `-f` FOLLOWS this symlink and reads TRUE, so the old guard
-# reported it as "already open" and exited 0. The exposure is downstream —
-# ops-adopt.sh's `mv "$TMP" "$F"` follows the symlink and overwrites the
-# target OUTSIDE .operator/pending/. A symlink is never a sentinel we wrote;
+# reported it as "already open" and exited 0 — presenting a planted entry as
+# live tracked work. (mv/rename(2) replaces a destination symlink itself and
+# never touches its target — measured 2026-08-04 — so the exposure is the
+# laundering, not a data overwrite.) A symlink is never a sentinel we wrote;
 # `-L` must reject it.
 _TGT="$(mktemp "${TMPDIR:-/tmp}/opstest-symlink.XXXXXX")"
 printf 'session_id: attacker\n' > "$_TGT"
@@ -266,6 +267,49 @@ rm -rf "$P/.operator/bin"
 run_hook stop-basic.json "$P"
 check "no bin/: block message falls back to plugin-root absolute path" "$(printf '%s' "$HERR" | grep -q "$SCRIPTS/ops-verdict.sh" && echo 0 || echo 1)"
 rm -rf "$P"
+
+########################################################################
+echo "-- Case: a planted symlink sentinel is rejected by every reader"
+# The F65 -L guard first landed in ops-task.sh's opener only — the write site.
+# Every READ site kept plain `-f`, which FOLLOWS symlinks, so a symlink planted
+# in pending/ (malicious checkout, hostile merge) was accepted as a real
+# sentinel everywhere downstream: ops-adopt.sh adopted it and its rewrite
+# LAUNDERED it into a genuine regular-file sentinel the whole gate then
+# trusts; ops-verdict.sh closed it into VERDICTS.md as if the task had gone
+# through the O_EXCL create; the Stop hook and statusline read its target's
+# `session_id:` and, on a foreign id, waved the stop through / rendered it
+# foreign (code-review of f4cae1a, 2026-08-04). The rule, applied per
+# PLAYBOOK: a symlink is never a sentinel our CLIs wrote. Parsers degrade it
+# to "" = unowned = BLOCKS (fail closed); mutating CLIs refuse loudly.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+_SYT="$(mktemp "${TMPDIR:-/tmp}/opstest-symtgt.XXXXXX")"
+printf 'session_id: SESS-A\nopened_at: 2026-08-04T00:00:00Z\n' > "$_SYT"
+ln -s "$_SYT" "$P/.operator/pending/T-SYM"
+# adopt: must refuse, leave the symlink a symlink, and not touch the target
+( cd "$P" && bash "$ADOPT" --owner SESS-NEW T-SYM >/dev/null 2>&1 ); SYARC=$?
+check "adopt refuses a symlink sentinel (non-zero exit)" "$([ "$SYARC" -ne 0 ] && echo 0 || echo 1)"
+check "adopt did not launder the symlink into a regular sentinel" "$([ -L "$P/.operator/pending/T-SYM" ] && echo 0 || echo 1)"
+check "adopt left the symlink's target untouched" "$([ "$(head -1 "$_SYT")" = "session_id: SESS-A" ] && echo 0 || echo 1)"
+# verdict: must refuse — no ledger row, sentinel not cleared
+SYROWS0="$(wc -l < "$P/.operator/VERDICTS.md")"
+( cd "$P" && bash "$VERDICT" T-SYM crit ev PASS --owner SESS-A >/dev/null 2>&1 ); SYVRC=$?
+check "verdict refuses to close a symlink sentinel (non-zero exit)" "$([ "$SYVRC" -ne 0 ] && echo 0 || echo 1)"
+check "no ledger row was written for the symlink sentinel" "$([ "$(wc -l < "$P/.operator/VERDICTS.md")" -eq "$SYROWS0" ] && echo 0 || echo 1)"
+check "verdict did not clear the symlink sentinel" "$([ -L "$P/.operator/pending/T-SYM" ] && echo 0 || echo 1)"
+# defer: same refusal — it also clears sentinels
+( cd "$P" && bash "$VERDICT" T-SYM --defer "why" --owner SESS-A >/dev/null 2>&1 ); SYDRC=$?
+check "defer refuses a symlink sentinel (non-zero exit)" "$([ "$SYDRC" -ne 0 ] && echo 0 || echo 1)"
+# Stop hook: the target says SESS-A, but a symlink is not a claim of ownership
+# — it must read as UNOWNED, which blocks EVERY session (the same fail-closed
+# direction as a malformed body), never as SESS-A's foreign task.
+run_hook stop-session-b.json "$P"
+check "Stop hook blocks a bystander on a symlink sentinel (unowned, exit 2)" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+check "Stop hook does not attribute the symlink to the target's owner" "$(printf '%s' "$HERR" | grep -q 'owned by SESS-A' && echo 1 || echo 0)"
+# statusline: same partition — unowned counts as MINE-blocking, never foreign
+SYSL="$(printf '{"session_id":"SESS-B","cwd":"%s","workspace":{"project_dir":"%s"}}' "$P" "$P" \
+  | "$BASH_ABS" "$SCRIPTS/statusline.sh" 2>/dev/null | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g')"
+check "statusline counts a symlink sentinel as blocking, not foreign" "$([ "$SYSL" = "op[1]" ] && echo 0 || echo 1)"
+rm -f "$_SYT"; rm -rf "$P"
 
 ########################################################################
 echo "-- Case 7: ledger cell hygiene — refuse, never corrupt (single-writer schema)"
@@ -1359,15 +1403,17 @@ CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$LATENULENV" \
 check "the renderer's NUL probe also loops the whole file" \
   "$([ "$LATERENDRC" -ne 0 ] && echo 0 || echo 1)"
 rm -f "$LATENULENV"
-# The probe is now BOUNDED at 40 chunks (20KB): a newline-less multi-MB
+# The probe is now BOUNDED at 200 chunks (100KB): a newline-less multi-MB
 # tiers.env (no NUL) must die FAST, not loop the whole file. Before the cap
 # this measured 4.0s on a 64MB file (Copilot 2026-08-03, final review) — the
-# probe defeated the bounded-reader guarantee check_reader_bounds enforces. A
-# 2MB file is enough to exceed the 20KB cap by 100x while keeping the test
-# fast; gate on a wall-clock budget so a regression that drops the cap (back
-# to a 4s+ stall) is caught, not just the exit code.
+# probe defeated the bounded-reader guarantee check_reader_bounds enforces.
+# The fixture must be 16MB, not 2MB: with the cap reverted, 2MB completed in
+# 2.4s on bash 3.2 — UNDER the 5s budget, so both assertions passed against
+# the broken code (code-review of f4cae1a, 2026-08-04; PLAYBOOK "prove it
+# discriminates"). 16MB measures 15.8s uncapped vs 0.03s capped on the same
+# bash — the budget now separates the two by three orders of magnitude.
 BIGENV="$(mktemp "${TMPDIR:-/tmp}/opstest-big.XXXXXX")"
-python3 -c "import sys; open(sys.argv[1],'wb').write(b'x'*(2*1024*1024)+b'\nMECHANICAL=glm-evil\n')" "$BIGENV"
+python3 -c "import sys; open(sys.argv[1],'wb').write(b'x'*(16*1024*1024)+b'\nMECHANICAL=glm-evil\n')" "$BIGENV"
 _start=$(date +%s)
 BIGOUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$BIGENV" \
   CC_PROXY_PORT=1 "$BASH_OLD" "$SCRIPTS/ops-tiers.sh" 2>/dev/null)"; BIGRC=$?
@@ -1383,6 +1429,22 @@ _elapsed=$(( $(date +%s) - _start ))
 check "the renderer's probe is also bounded (rejects multi-MB fast, <5s)" \
   "$([ "$BIGRENDRC" -ne 0 ] && [ "$_elapsed" -lt 5 ] && echo 0 || echo 1)"
 rm -f "$BIGENV"
+# The probe cap must not narrow the accepted input below what the parse loop
+# itself permits (200 lines × 511 chars ≈ 100KB): the first cap was 40 chunks
+# (20KB), and a 24KB comment-heavy tiers.env that resolved fine at f4cae1a~1
+# died with a NUL-implicating message (code-review of f4cae1a, 2026-08-04).
+# 60 comment lines × 400 chars is legal under every parse-loop cap and must
+# keep resolving.
+FATENV="$(mktemp "${TMPDIR:-/tmp}/opstest-fat.XXXXXX")"
+python3 -c "
+import sys
+lines = [b'# ' + b'c'*400 for _ in range(60)] + [b'MECHANICAL=claude-3-5-haiku-20241022']
+open(sys.argv[1],'wb').write(b'\n'.join(lines) + b'\n')" "$FATENV"
+FATOUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$FATENV" \
+  CC_PROXY_PORT=1 "$BASH_OLD" "$SCRIPTS/ops-tiers.sh" 2>&1)"; FATRC=$?
+check "a comment-heavy tiers.env within the parse-loop caps still resolves (probe cap covers legal max)" \
+  "$([ "$FATRC" -eq 0 ] && printf '%s' "$FATOUT" | grep -q 'claude-3-5-haiku-20241022' && echo 0 || echo 1)"
+rm -f "$FATENV"
 # A MULTIBYTE comment smuggles the same way through the char/byte-mismatched
 # LENGTH guard (not the NUL probe): on BASH_OLD `read -n 512` fills 512 BYTES
 # while `${#line}` counts CHARACTERS under a UTF-8 locale, so `#`+'é'×255+`A`

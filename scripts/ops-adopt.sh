@@ -288,6 +288,13 @@ lock_acquire
 
 for ID in ${IDS+"${IDS[@]}"}; do
   F="$OPDIR/pending/$ID"
+  # -L BEFORE -f: `-f` FOLLOWS a symlink, so a link planted in pending/ reads
+  # as a real sentinel — and the rewrite below would then replace the link with
+  # a genuine regular-file sentinel, LAUNDERING an entry that never went
+  # through ops-task.sh's O_EXCL create into live tracked work. A symlink is
+  # never a sentinel our CLIs wrote; refuse loudly (mirrors ops-task.sh's
+  # opener guard — the same F65 rule, applied at the read site).
+  [ ! -L "$F" ] || die "sentinel at $F is a symlink — not a sentinel our CLIs wrote; refusing to adopt (remove it and open the task with ops-task.sh)"
   [ -f "$F" ] || die "no open task '$ID' (no sentinel at $F)"
 done
 

@@ -117,10 +117,12 @@ else
   # pre-existing REGULAR FILE is a legit already-open; anything else is a
   # fault we refuse rather than misreport. The `-L` test is load-bearing:
   # `-f` FOLLOWS symlinks, so a symlink→regular file reads as "already open"
-  # (exit 0) without it — and ops-adopt.sh's `mv "$TMP" "$F"` then follows that
-  # symlink and overwrites its target OUTSIDE .operator/pending/, a
-  # path-traversal/data-exposure surface via a planted sentinel (Copilot
-  # 2026-08-03, final review). A symlink is never a sentinel we wrote.
+  # (exit 0) without it — telling the operator a planted entry is live tracked
+  # work. (NOT a data-overwrite hazard: mv/rename(2) replaces a destination
+  # symlink itself, never its target — measured 2026-08-04. The real exposure
+  # is read-side laundering: a reader that follows the link treats a file our
+  # CLIs never wrote as a sentinel; every reader now carries this same -L
+  # rejection.) A symlink is never a sentinel we wrote.
   if [ -f "$OPDIR/pending/$ID" ] && [ ! -L "$OPDIR/pending/$ID" ]; then
     echo "already open: $ID (ownership unchanged — use ops-adopt.sh to re-stamp)"
     exit 0

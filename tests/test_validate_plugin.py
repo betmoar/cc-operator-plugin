@@ -35,6 +35,7 @@ GOOD_CHARTER = "# OPERATOR.md\n\n" + "\n".join(
 # how three guardrails went unexercised here.
 GOOD_STATUSLINE = (
     "#!/usr/bin/env bash\n"
+    "[ ! -L \"$1\" ] || exit 0\n"
     "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
     "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]*) owner=\"\" ;; esac\n")
 
@@ -108,16 +109,19 @@ def make_good_tree(root):
     guards = ("check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
               "check_owner_name() { :; }\n")
     bounded = "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
+    # every sentinel touchpoint carries the -L symlink rejection (F65/F66)
+    nolink = "[ ! -L \"$1\" ] || exit 0\n"
     write(root / "scripts" / "ops-stop-hook.sh",
-          "#!/usr/bin/env bash\n" + bounded +
+          "#!/usr/bin/env bash\n" + nolink + bounded +
           "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]*) owner=\"\" ;; esac\n")
-    write(root / "scripts" / "ops-task.sh", "#!/usr/bin/env bash\n" + guards)
+    write(root / "scripts" / "ops-task.sh",
+          "#!/usr/bin/env bash\n" + guards + nolink)
     write(root / "scripts" / "ops-verdict.sh",
-          "#!/usr/bin/env bash\n" + guards + bounded +
+          "#!/usr/bin/env bash\n" + guards + nolink + bounded +
           "while IFS= read -r -n 512 row; do :; done < \"$frag\"\n" +
           GOOD_LOCK_BLOCK)
     write(root / "scripts" / "ops-adopt.sh",
-          "#!/usr/bin/env bash\n" + guards + bounded + GOOD_LOCK_BLOCK)
+          "#!/usr/bin/env bash\n" + guards + nolink + bounded + GOOD_LOCK_BLOCK)
     write(root / "scripts" / "statusline.sh", GOOD_STATUSLINE)
     # Every shipped slash command: frontmatter the harness registers it by,
     # and plugin-root script paths (a bare scripts/ path resolves only inside
@@ -417,18 +421,21 @@ class ValidatorTest(unittest.TestCase):
         """Install minimal but realistic reader scripts into the fixture tree."""
         good_hook = (
             "#!/usr/bin/env bash\n"
+            "[ ! -L \"$1\" ] || exit 0\n"
             "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
             "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]*) owner=\"\" ;; esac\n")
         good_verdict = (
             "#!/usr/bin/env bash\n"
             "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
             "check_owner_name() { :; }\n"
+            "[ ! -L \"$f\" ] || exit 0\n"
             "while IFS= read -r -n 512 line; do :; done < \"$f\"\n"
             "while IFS= read -r -n 512 row; do :; done < \"$frag\"\n")
         good_adopt = (
             "#!/usr/bin/env bash\n"
             "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
             "check_owner_name() { :; }\n"
+            "[ ! -L \"$F\" ] || exit 0\n"
             "while IFS= read -r -n 512 line; do :; done < \"$F\"\n")
         write(self.dir / "scripts" / "ops-stop-hook.sh", hook_body or good_hook)
         write(self.dir / "scripts" / "ops-verdict.sh", verdict_body or good_verdict)
@@ -436,7 +443,8 @@ class ValidatorTest(unittest.TestCase):
         write(self.dir / "scripts" / "ops-task.sh",
               "#!/usr/bin/env bash\n"
               "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
-              "check_owner_name() { :; }\n")
+              "check_owner_name() { :; }\n"
+              "[ ! -L \"$F\" ] || exit 0\n")
         write(self.dir / "scripts" / "statusline.sh", GOOD_STATUSLINE)
 
     def bounds_problems(self):
@@ -498,6 +506,47 @@ class ValidatorTest(unittest.TestCase):
         vp.check_reader_bounds(self.dir, probs)
         self.assertTrue(any("chunk cap" in p for p in probs), probs)
 
+    def test_missing_symlink_guard_fires(self):
+        # The F65 -L guard is a four-reader coupling (adopt, verdict, hook,
+        # statusline) plus the opener — the exact shape check_guard_parity
+        # exists to hold: it was first applied to ops-task.sh alone, and every
+        # read site kept following planted symlinks (code-review of f4cae1a,
+        # 2026-08-04). A reader that loses its `-L` test fails the build.
+        self._write_readers(hook_body=(
+            "#!/usr/bin/env bash\n"
+            "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
+            "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]*) owner=\"\" ;; esac\n"
+            "# no -L rejection\n"))
+        probs = self.bounds_problems()
+        self.assertTrue(any("symlink" in p and "ops-stop-hook.sh" in p
+                            for p in probs), probs)
+
+    def test_probe_cap_raised_to_substring_superset_fires(self):
+        # The first version of the chunk-cap check was a substring test
+        # ("le 40" in window), so `-le 400000` — effectively uncapped — passed
+        # as if it were 40 (code-review of f4cae1a, 2026-08-04). The cap's
+        # VALUE must be parsed and bounded, not string-matched.
+        write(self.dir / "scripts" / "ops-tiers.sh",
+              "#!/usr/bin/env bash\n"
+              "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
+              + self._CAPPED_PROBE.replace("-le 40 ", "-le 400000 "))
+        probs = []
+        vp.check_reader_bounds(self.dir, probs)
+        self.assertTrue(any("chunk cap" in p for p in probs), probs)
+
+    def test_probe_variable_rename_does_not_evade_the_check(self):
+        # The probe detector was keyed to the literal variable name _nulprobe,
+        # so renaming it (with the cap fully removed) produced zero problems
+        # (same review). Any `read -r -d '' -n N <var>` loop over a file is a
+        # NUL probe and must carry the cap, whatever the variable is called.
+        write(self.dir / "scripts" / "ops-tiers.sh",
+              "#!/usr/bin/env bash\n"
+              "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
+              + self._UNCAPPED_PROBE.replace("_nulprobe", "_chunk"))
+        probs = []
+        vp.check_reader_bounds(self.dir, probs)
+        self.assertTrue(any("chunk cap" in p for p in probs), probs)
+
     def test_comments_mentioning_read_do_not_fire(self):
         # A checker that fires on its own documentation trains the maintainer to
         # ignore the build. This exact bug was introduced and caught in the audit.
@@ -507,6 +556,7 @@ class ValidatorTest(unittest.TestCase):
             "#    a plain read -r would slurp the whole line first\n"
             "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
             "check_owner_name() { :; }\n"
+            "[ ! -L \"$F\" ] || exit 0\n"
             "while IFS= read -r -n 512 line; do :; done < \"$F\"\n"))
         self.assertEqual(self.bounds_problems(), [])
 

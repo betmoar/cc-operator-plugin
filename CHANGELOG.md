@@ -9,6 +9,28 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Symlink sentinels are now rejected at every read site, not just the
+  opener (F66).** F65's `-L` guard covered only `ops-task.sh`'s create path; a
+  symlink planted in `.operator/pending/` was still adopted by `ops-adopt.sh`
+  (laundering it into a real sentinel), closable into VERDICTS.md by
+  `ops-verdict.sh`, and read as a foreign task by the Stop hook and
+  statusline. Parsers now degrade a symlink to unowned (blocks — fail closed);
+  the mutating CLIs refuse it outright.
+- The tiers.env probe cap is now 200 chunks (100KB), the parse loop's own
+  legal maximum — the 20KB cap introduced with F64 rejected comment-heavy
+  configs (up to 200 lines × 511 chars) that resolved fine before it.
+- Corrected a false comment in `ops-task.sh` (echoed in the F65 commit
+  message): `mv` over a destination symlink replaces the link itself, never
+  its target — the real exposure was read-side laundering, not a data
+  overwrite.
+- The validator's probe-cap check now parses the cap value (was a substring
+  test that `-le 400000` satisfied) and matches any probe variable name (a
+  rename evaded it); the bash regression fixture grew to 16MB so the
+  wall-clock assertion actually fails when the cap is removed (2MB completed
+  under budget even uncapped).
+
 ## [0.5.0] - 2026-08-03
 
 The orchestration layer: tier-routed workflows as the operator's dispatch

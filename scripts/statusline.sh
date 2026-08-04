@@ -112,6 +112,11 @@ done
 # here, which would silently make every sentinel parse as unowned.
 sentinel_owner() { # sentinel_owner <path> → owner ("" = unowned)
   local line owner="" n=0
+  # A symlink is never a sentinel our CLIs wrote (F65): `-f` alone FOLLOWS it,
+  # so a planted link would read its target's session_id: and render as
+  # foreign. Degrade to unowned → counted as MINE-blocking — the bar mirrors
+  # the Stop hook's partition, and the hook blocks on this entry.
+  [ ! -L "$1" ] || return 0
   [ -f "$1" ] || return 0
   # A NUL is checked BEFORE the loop: bash cannot hold one in a variable (it
   # drops them silently), so no test on $line can ever see one — the

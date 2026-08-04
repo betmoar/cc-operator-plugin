@@ -97,16 +97,18 @@ load_file() { # load_file <path> <source-label>
   # Measured on bash 3.2.57 (the version this repo targets); invisible on 5.3,
   # which is why the suite was green. A tiers.env is text: a NUL means
   # truncation or a binary blob, never a config someone wrote.
-  # The probe LOOPS over the file but is BOUNDED at 40 chunks (20KB) — the same
-  # cap the Stop hook's sentinel parser carries (F59). A single 512-byte probe
-  # left every NUL past byte 512 undetected (Copilot 2026-08-03: a NUL at byte
-  # 829 followed by MECHANICAL=glm-evil resolved with exit 0), so the loop must
-  # walk more than one chunk; but a loop with NO cap walks a newline-less multi-MB
-  # tiers.env end-to-end before the parse loop's line-cap can reject it — measured
-  # 4.0s on a 64MB file (Copilot 2026-08-03, final review). The probe then stalls
-  # tier resolution on untrusted project config, defeating the bounded-reader
-  # guarantee check_reader_bounds exists to enforce. 40 chunks keeps late-NUL
-  # detection within a real config's size (a tiers.env is <1KB); exceeding it is
+  # The probe LOOPS over the file but is BOUNDED at 200 chunks (100KB). A
+  # single 512-byte probe left every NUL past byte 512 undetected (Copilot
+  # 2026-08-03: a NUL at byte 829 followed by MECHANICAL=glm-evil resolved with
+  # exit 0), so the loop must walk more than one chunk; but a loop with NO cap
+  # walks a newline-less multi-MB tiers.env end-to-end before the parse loop's
+  # line-cap can reject it — measured 4.0s on a 64MB file (Copilot 2026-08-03,
+  # final review). The probe then stalls tier resolution on untrusted project
+  # config, defeating the bounded-reader guarantee check_reader_bounds exists
+  # to enforce. 200 chunks is the parse loop's own legal maximum (200 lines ×
+  # 512 bytes incl. newline): the first cap was 40 chunks (20KB), which
+  # rejected a comment-heavy config the parse loop itself considers valid
+  # (code-review of f4cae1a, 2026-08-04). Exceeding the parse loop's max is
   # malformed by definition → fail closed. `read -d ''` returns 0 only on
   # reaching a NUL or filling the -n cap; EOF returns non-zero, so the final
   # partial chunk never false-positives. The whole probe runs in a LC_ALL=C
@@ -116,10 +118,10 @@ load_file() { # load_file <path> <source-label>
   # 'é'×400 comment died as a NUL under en_US.UTF-8).
   if ! (LC_ALL=C _np=0
         while IFS= read -r -d '' -n 512 _nulprobe; do
-          _np=$((_np + 1)); [ "$_np" -le 40 ] || exit 1
+          _np=$((_np + 1)); [ "$_np" -le 200 ] || exit 1
           [ "${#_nulprobe}" -eq 512 ] || exit 1
         done < "$1") 2>/dev/null; then
-    die "$1: contains a NUL byte or exceeds 20KB — refusing (tiers.env is text, not a binary blob)"
+    die "$1: contains a NUL byte or exceeds 100KB — refusing (tiers.env is text, not a binary blob)"
   fi
   # LC_ALL=C for the whole parse loop so `read -n` (a BYTE cap on bash 3.2) and
   # `${#line}` (a CHARACTER count in the parent locale) agree on BYTES. Without
