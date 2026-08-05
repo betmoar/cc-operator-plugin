@@ -9,6 +9,46 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-08-05
+
+### Fixed — deviation gate was blind on ledgers with long rows (#9)
+
+The Stop-hook deviation gate aborted its scan at the first ledger row over 512
+bytes, hard-coded the unpresented count to `1`, and returned. Two compounding
+consequences, both now fixed:
+
+- **Phantom block.** Any ledger with a row over 512 bytes blocked Stop even with
+  no unpresented decision — and any `HANDOFF-MARK` past the first long row was
+  unreachable, so `--mark-handoff` could never clear the block (an unkillable
+  false positive). Multi-KB rows are the *expected* shape of an honest ledger
+  (the charter asks for measurements/baselines in the row's what-cell), so a
+  project's ledger silently disabled its own gate.
+- **Blindness.** Because the count was a hard-coded `1` rather than an
+  accumulation, a genuine unpresented `DEVIATION` after the abort point was
+  invisible — the failure presented as a false positive, masking a dark gate.
+
+Fix: `scan_deviations` (`ops-stop-hook.sh`) and its statusline mirror
+(`statusline.sh`) now **accumulate** cap-filling chunks into one logical line
+before classifying, rather than failing closed per chunk. This also *eliminates*
+the F45 kind-forgery vector instead of merely detecting it: a continuation is
+appended, never classified as an independent row, so it cannot forge a kind. The
+aggregate `DECISIONS_MAX_BYTES` cap remains the pathological-input bound.
+
+A row is now discriminated by a leading ISO date (`YYYY-MM-DD | …`), not merely
+by the presence of ` | `. Header prose containing the kind enum previously parsed
+as a forged row and blocked every freshly-scaffolded ledger.
+
+### Changed — DECISIONS schema distinguishes gated from record kinds (#9)
+
+The `DECISIONS-header.md` kind enum advertised `DECISION` and `DEFERRED-VERDICT`
+alongside the gated kinds, but the gate counts only
+`DEVIATION | ESCALATION | GATE-EXCEPTION`. A `DECISION` row never blocked Stop,
+despite the schema presenting it as first-class. The header now splits the kinds
+into **gated** (block Stop until presented), **record** (logged, never block),
+and the **HANDOFF-MARK** marker. `validate_plugin.check_decisions_schema` pins
+both the token set and the gated/record split, and requires both readers to count
+exactly the gated literal.
+
 ## [0.6.0] - 2026-08-04
 
 ### Added — worker-boundary enforcement (stage 3 of 3)

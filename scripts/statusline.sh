@@ -302,18 +302,43 @@ scan_deviations_bar() { # scan_deviations_bar <decisions-path> <this-session>
         done < "$f") 2>/dev/null; then
     return 0
   fi
-  # Read the last ~256 lines into an array (tail is O(tail) seek, not a full
-  # read), then walk backwards. The mark-clears rule means a single mark from the
-  # end terminates the count — early exit, bounded parse.
+  # CONTINUATION ACCUMULATION — issue #9. A ledger row may be many KB; read -n
+  # 512 splits one physical row across multiple lines, so a naive line-walk
+  # mis-parses long rows: a long DEVIATION's continuation chunks fail the
+  # " | " row test and are skipped → under-counted (the bar's silent analog of
+  # the hook's hard-abort). Fix: accumulate cap-filling chunks into one logical
+  # line before classifying. A chunk that hit the 512 cap stopped on the count,
+  # not a newline, so it is a CONTINUATION; a shorter chunk hit the newline and
+  # completes the row. read under LC_ALL=C, so ${#} is bytes and exactly 512
+  # bytes iff it stopped on the count.
   local _lines=()
-  while IFS= read -r -n 512 line; do _lines+=("$line"); done < <(tail -n 256 "$f" 2>/dev/null)
+  local _acc=""
+  # `|| [ -n "$line" ]` flushes a final chunk at EOF without a trailing newline:
+  # read returns non-zero on EOF but still sets $line to what it read, and
+  # without this guard the last unterminated row's final chunk is dropped from
+  # _acc — the bar would under-count exactly the no-trailing-newline ledgers the
+  # hook's `|| [ -n "$line" ]` handles. Mirror parity (issue #9, Copilot review).
+  while IFS= read -r -n 512 line || [ -n "$line" ]; do
+    if [ "${#line}" -ge 512 ]; then
+      _acc="${_acc}${line}"           # mid-row → keep accumulating
+    else
+      _lines+=("${_acc}${line}"); _acc=""   # newline/EOF → complete row
+    fi
+  done < <(tail -n 256 "$f" 2>/dev/null)
+  [ -n "$_acc" ] && _lines+=("$_acc")      # flush a final unterminated row
   [ "${#_lines[@]}" -gt 0 ] || return 0
   i=${#_lines[@]}
   while [ "$i" -gt 0 ]; do
     i=$((i - 1))
     line="${_lines[i]}"
     line="${line%$'\r'}"
-    case "$line" in *" | "*) ;; *) continue ;; esac
+    # A ledger ROW begins with an ISO date; " | " alone also matches header prose
+    # (the kind-enum comment line), which would forge a count on a fresh ledger
+    # (issue #9 collateral). Match the row grammar, not just a delimiter.
+    case "$line" in
+      [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' | '*) ;;
+      *) continue ;;
+    esac
     kind="${line#* | }"; kind="${kind#* | }"; kind="${kind%% | *}"
     what="${line#* | }"; what="${what#* | }"; what="${what#* | }"; what="${what%% | *}"
     case "$kind" in
