@@ -313,7 +313,12 @@ scan_deviations_bar() { # scan_deviations_bar <decisions-path> <this-session>
   # bytes iff it stopped on the count.
   local _lines=()
   local _acc=""
-  while IFS= read -r -n 512 line; do
+  # `|| [ -n "$line" ]` flushes a final chunk at EOF without a trailing newline:
+  # read returns non-zero on EOF but still sets $line to what it read, and
+  # without this guard the last unterminated row's final chunk is dropped from
+  # _acc — the bar would under-count exactly the no-trailing-newline ledgers the
+  # hook's `|| [ -n "$line" ]` handles. Mirror parity (issue #9, Copilot review).
+  while IFS= read -r -n 512 line || [ -n "$line" ]; do
     if [ "${#line}" -ge 512 ]; then
       _acc="${_acc}${line}"           # mid-row → keep accumulating
     else

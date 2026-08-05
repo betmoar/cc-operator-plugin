@@ -2306,6 +2306,15 @@ LRBAR="$(printf '{"session_id":"SESS-A","cwd":"%s","workspace":{"project_dir":"%
   | "$BASH_ABS" "$SCRIPTS/statusline.sh" 2>/dev/null | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g')"
 check "statusline counts a long (>512B) mine DEVIATION as dev[1] (#9)" \
   "$(printf '%s' "$LRBAR" | grep -q 'dev\[1\]' && echo 0 || echo 1)"
+# A long row with NO trailing newline: read returns non-zero on EOF but still
+# holds the final chunk. Without `|| [ -n "$line" ]` the bar dropped that chunk
+# and under-counted — the mirror parity the hook's own flush guard enforces
+# (Copilot review on #10). printf '%s' writes no trailing newline.
+printf '# Decisions\n2026-08-05 | e.t | DEVIATION | [sid:SESS-A] %s | r' "$LONG" > "$DEVDEC2"
+LRBAR2="$(printf '{"session_id":"SESS-A","cwd":"%s","workspace":{"project_dir":"%s"}}' "$DEVPROJ" "$DEVPROJ" \
+  | "$BASH_ABS" "$SCRIPTS/statusline.sh" 2>/dev/null | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g')"
+check "statusline counts a long mine DEVIATION with no trailing newline (#10 review)" \
+  "$(printf '%s' "$LRBAR2" | grep -q 'dev\[1\]' && echo 0 || echo 1)"
 
 rm -f "$DEC" "$ATT"; rmdir "$ATT" 2>/dev/null || true
 # Restore a real (empty) DECISIONS.md for any later use.

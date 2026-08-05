@@ -304,27 +304,15 @@ def check_decisions_schema(root, problems):
                 f"deviation gate's clearing mark is in the enum but this reader "
                 f"never matches it, so a presented decision reads as unpresented "
                 f"forever (F30: the enum AND its consumers must agree)")
-    # The verdict CLI writes HANDOFF-MARK; it must still know the marker.
+    # The verdict CLI WRITES HANDOFF-MARK; the readers above only READ it. A
+    # writer that never emits the marker strands every presented decision as
+    # unpresented (F30 writer half — distinct from the reader drift above).
     vp = root / "scripts" / "ops-verdict.sh"
     if vp.is_file() and "HANDOFF-MARK" not in vp.read_text(encoding="utf-8"):
         problems.append(
             "scripts/ops-verdict.sh: does not reference HANDOFF-MARK — the "
             "deviation gate's clearing mark is in the enum but this writer "
             "never emits it (F30: the enum AND its consumers must agree)")
-    # Both deviation-gate readers must know the HANDOFF-MARK kind: a reader that
-    # never checks for it treats a mark as ordinary prose and never clears — the
-    # enum is declared but the consumer drifted (the F30 call-site half). The
-    # verdict CLI writes it; the hook + statusline read it.
-    for name in ("ops-stop-hook.sh", "statusline.sh", "ops-verdict.sh"):
-        p = root / "scripts" / name
-        if not p.is_file():
-            continue  # missing-file is already reported by check_scripts
-        if "HANDOFF-MARK" not in p.read_text(encoding="utf-8"):
-            problems.append(
-                f"scripts/{name}: does not reference HANDOFF-MARK — the "
-                f"deviation gate's clearing mark is in the enum but this reader "
-                f"never matches it, so a presented decision reads as unpresented "
-                f"forever (F30: the enum AND its consumers must agree)")
 
 
 def check_agents(root, problems):
