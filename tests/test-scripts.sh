@@ -2231,6 +2231,83 @@ SYMSEG="$(printf '{"session_id":"%s","cwd":"%s","workspace":{"project_dir":"%s"}
 check "statusline renders no dev[ on a symlinked DECISIONS.md" \
   "$(printf '%s' "$SYMSEG" | grep -q 'dev\[' || echo 0)"
 rm -f "$DEC" "$ATT"; rmdir "$ATT" 2>/dev/null || true
+
+# --- issue #9: a ledger row LONGER than the 512-byte read cap (continuation) ---
+# DECISIONS.md is append-forever and the charter asks for measurements/baselines
+# in the what-cell, so multi-KB rows are the EXPECTED shape of an honest ledger.
+# read -n 512 FILLS on such a row. The old per-chunk guard hard-coded the count
+# to 1 and RETURNED, which (a) blocked Stop on a ledger with NO deviation at all
+# (phantom block) and (b) left the gate BLIND to a real deviation after the long
+# row, the failure presenting as a false positive. Worse, any HANDOFF-MARK past
+# the first long row was unreachable, so --mark-handoff could never clear it.
+# Fix: accumulate cap-filling chunks into one logical row before classifying.
+# LONG = 1200-byte what-cell (3 read chunks: 512+512+176).
+LONG="$(python3 -c 'print("x"*1200)')"
+# ARM A — a long DEFERRED-VERDICT (record kind, not gated) and NO gated deviation.
+# Pre-fix: phantom block (exit 2). Post-fix: no gated deviation → exit 0.
+{ printf '# Decisions\n'
+  printf '2026-08-05 | e.t | DEFERRED-VERDICT | %s | r\n' "$LONG"; } > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; LR0=$?
+check "long record row, no gated deviation → Stop allowed (no phantom block, #9)" \
+  "$([ "$LR0" = 0 ] && echo 0 || echo 1)"
+# ARM B — a long record row, THEN a genuine mine DEVIATION after it. Pre-fix the
+# scan aborted at the long row and counted the DEVIATION only by accident of the
+# hardcoded 1; post-fix the DEVIATION is genuinely counted → blocks.
+{ printf '# Decisions\n'
+  printf '2026-08-05 | e.t | DEFERRED-VERDICT | %s | r\n' "$LONG"
+  printf '2026-08-05 | e.t | DEVIATION | [sid:%s] real unpresented | r\n' "$SID"; } > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; LR1=$?
+check "long record row then mine DEVIATION after it → DEVIATION counted (#9)" \
+  "$([ "$LR1" = 2 ] && echo 0 || echo 1)"
+# ARM C — a long record row, then a mine DEVIATION, then a mine HANDOFF-MARK past
+# the long row. Pre-fix the mark was unreachable → stuck block forever (unkillable
+# phantom). Post-fix the mark is reached and clears → exit 0.
+{ printf '# Decisions\n'
+  printf '2026-08-05 | e.t | DEFERRED-VERDICT | %s | r\n' "$LONG"
+  printf '2026-08-05 | e.t | DEVIATION | [sid:%s] chose X | r\n' "$SID"
+  printf '2026-08-05 | e | HANDOFF-MARK | [sid:%s] 2026-08-05T00:00:00Z | presented\n' "$SID"; } > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; LR2=$?
+check "mine DEVIATION + mine mark, both past a long row → mark clears (#9)" \
+  "$([ "$LR2" = 0 ] && echo 0 || echo 1)"
+# ARM D — the DEVIATION ITSELF is the long row (>512 bytes in the what-cell).
+# Pre-fix: the kind parse ran on the first 512-byte chunk; the chunk held the
+# date+task+kind, so it was parsed, but a continuation could forge a kind. Post-fix
+# the whole row accumulates and is classified once. A long mine DEVIATION blocks.
+{ printf '# Decisions\n'
+  printf '2026-08-05 | e.t | DEVIATION | [sid:%s] %s | r\n' "$SID" "$LONG"; } > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; LR3=$?
+check "a DEVIATION whose what-cell exceeds 512 bytes still blocks (#9)" \
+  "$([ "$LR3" = 2 ] && echo 0 || echo 1)"
+# ARM E — foreign DEVIATION in a long row → never blocks (continuation does not
+# smuggle the foreign tag into a countable position).
+{ printf '# Decisions\n'
+  printf '2026-08-05 | e.t | DEVIATION | [sid:SESS-B-OTHER] %s | r\n' "$LONG"; } > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; LR4=$?
+check "long foreign DEVIATION → never blocks (#9)" \
+  "$([ "$LR4" = 0 ] && echo 0 || echo 1)"
+# Continuation cannot forge a kind: a chunk boundary landing mid-token must not
+# synthesize DEVIATION. Pad the what-cell so the KIND cell of a HANDOFF-MARK's
+# continuation lands across a 512 boundary — it must still classify correctly.
+{ printf '# Decisions\n'
+  printf '2026-08-05 | e.t | DEVIATION | [sid:%s] chose X | r\n' "$SID"
+  printf '2026-08-05 | e.t | DEFERRED-VERDICT | %s | r\n' "$LONG"
+  printf '2026-08-05 | e | HANDOFF-MARK | [sid:%s] 2026-08-05T00:00:00Z | presented\n' "$SID"; } > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; LR5=$?
+check "kind not forgeable across a continuation boundary (#9)" \
+  "$([ "$LR5" = 0 ] && echo 0 || echo 1)"
+
+# --- the bar mirror of #9: a long mine DEVIATION is counted, not skipped ----
+# Pre-fix the statusline's array read split a long row across entries; the
+# continuation chunks failed the " | " row test and were skipped → under-count.
+DEVDEC2="$DEVPROJ/.operator/DECISIONS.md"
+{ printf '# Decisions\n'
+  printf '2026-08-05 | e.t | DEVIATION | [sid:SESS-A] %s | r\n' "$LONG"; } > "$DEVDEC2"
+LRBAR="$(printf '{"session_id":"SESS-A","cwd":"%s","workspace":{"project_dir":"%s"}}' "$DEVPROJ" "$DEVPROJ" \
+  | "$BASH_ABS" "$SCRIPTS/statusline.sh" 2>/dev/null | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g')"
+check "statusline counts a long (>512B) mine DEVIATION as dev[1] (#9)" \
+  "$(printf '%s' "$LRBAR" | grep -q 'dev\[1\]' && echo 0 || echo 1)"
+
+rm -f "$DEC" "$ATT"; rmdir "$ATT" 2>/dev/null || true
 # Restore a real (empty) DECISIONS.md for any later use.
 printf '# Decisions\n' > "$DEC"
 

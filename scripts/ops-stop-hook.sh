@@ -275,37 +275,29 @@ scan_deviations() { # scan_deviations <decisions-path> <this-session>
     deviations_unpresented=1   # a NUL/corrupt ledger: block (count as unpresented)
     return 0
   fi
-  # Single forward pass: a mine/unowned DEVIATION increments; a mine/unowned
-  # HANDOFF-MARK resets to 0 (it clears everything before it). At EOF the count
-  # is exactly the deviations after the last mark = the unpresented set.
-  while IFS= read -r -n 512 line || [ -n "$line" ]; do
-    n=$((n+1)); [ "$n" -le 20000 ] || { deviations_unpresented=1; return 0; }
-    # Aggregate BYTE cap (fail-closed): DECISIONS.md is append-forever, so no
-    # cap is sized to "legal input". A ledger past the cap is not scannable in
-    # the hook's budget — surface it as a block, not a silent pass. ${#line} is
-    # bytes here (LC_ALL=C is not set globally in this hot reader, but each line
-    # is ≤512 bytes by the -n bound regardless of locale, so the sum is a sound
-    # upper bound on bytes read).
-    bytes=$((bytes + ${#line} + 1))
-    [ "$bytes" -le "$DECISIONS_MAX_BYTES" ] || { deviations_unpresented=1; return 0; }
-    # A cap-filling chunk was truncated mid-line: its tail would parse as a fresh
-    # line and could forge a kind. Our scaffold writes short lines, so a 512-fill
-    # is not ours → count as unpresented (fail toward blocking). (F45 class.)
-    [ "${#line}" -lt 512 ] || { deviations_unpresented=1; return 0; }
-    line="${line%$'\r'}"      # a CRLF checkout must not change semantics
-    # A DECISIONS row is pipe-delimited: <date> | <eng.task> | <kind> | <what> | <why>
+  # classify one COMPLETE logical row. Nested so it sees $sess (dynamic scope:
+  # bash locals are visible to callees) and the global deviations_unpresented.
+  # Factored because the forward pass must classify twice — once per row inside
+  # the loop, and once for a final row left mid-accumulation at EOF.
+  _dec_line() { # _dec_line <logical-line>
+    line="${1%$'\r'}"          # a CRLF checkout must not change semantics
+    # A ledger ROW begins with an ISO date: "YYYY-MM-DD | ...". The `*" | "*` test
+    # alone is not enough — prose and header comments contain " | " too (the kind
+    # enum line "# ... DEVIATION | ESCALATION | GATE-EXCEPTION" would otherwise
+    # parse kind=GATE-EXCEPTION, no sid → unowned → counted, blocking every
+    # freshly-scaffolded ledger: issue #9 collateral). A leading date is the
+    # unambiguous row discriminator; the ledger grammar guarantees it (the kind
+    # tag, the only thing that can forge a count, never starts a real row).
+    case "$line" in
+      [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' | '*) ;;
+      *) return ;;             # not a ledger row (header comment, blank, prose)
+    esac
     # Extract kind (field 3) and what (field 4) by splitting on " | " — a glob's
     # `*` would consume the delimiter. Only kind+what matter; the sid lives in
     # the what-cell as a leading [sid:<id>] tag.
-    case "$line" in
-      *" | "*) ;;
-      *) continue ;;            # not a ledger row (header comment, blank, prose)
-    esac
-    # field 3 (kind): strip the first TWO " | "-delimited cells (date, eng.task).
-    # Each `${var#* | }` strips one cell + its delimiter; two of them land on kind.
+    # field 3: strip the first TWO " | "-delimited cells (date, eng.task).
     kind="${line#* | }"; kind="${kind#* | }"; kind="${kind%% | *}"
-    # field 4 (what): the cell holding the leading [sid:<id>] tag. Strip three
-    # cells, then cut at the next " | " so only the what-cell remains.
+    # field 4: strip three cells, then cut at the next " | " for the what-cell.
     what="${line#* | }"; what="${what#* | }"; what="${what#* | }"; what="${what%% | *}"
     case "$kind" in
       DEVIATION|ESCALATION|GATE-EXCEPTION)
@@ -315,7 +307,7 @@ scan_deviations() { # scan_deviations <decisions-path> <this-session>
         # own decisions, not another session's tasks to chase).
         case "$what" in
           "[sid:$sess]"*) : ;;                      # mine → counts
-          "[sid:"*) continue ;;                     # foreign → never blocks
+          "[sid:"*) return ;;                       # foreign → never blocks
           *) : ;;                                   # unowned (no tag) → counts
         esac
         deviations_unpresented=$((deviations_unpresented + 1)) ;;
@@ -327,7 +319,47 @@ scan_deviations() { # scan_deviations <decisions-path> <this-session>
           *) deviations_unpresented=0 ;;                # unowned → clears
         esac ;;
     esac
+  }
+  # Single forward pass: a mine/unowned DEVIATION increments; a mine/unowned
+  # HANDOFF-MARK resets to 0 (it clears everything before it). At EOF the count
+  # is exactly the deviations after the last mark = the unpresented set.
+  #
+  # CONTINUATION ACCUMULATION (not per-chunk fail-closed) — issue #9. A ledger
+  # row may be many KB: the charter asks for measurements/baselines/root-causes
+  # in the what-cell, so multi-thousand-byte rows are the EXPECTED shape of an
+  # honest ledger, not an anomaly. read -n 512 FILLS on any row past 512 bytes.
+  # The old per-chunk guard then hard-coded the count to 1 and RETURNED, which
+  # (a) made any HANDOFF-MARK past the first long row unreachable — so
+  # --mark-handoff could never clear the block, an unkillable phantom block —
+  # and (b) left the gate blind to real unpresented decisions after the abort
+  # point, the failure presenting as a false positive that masks a dark gate.
+  # Fix: a chunk that FILLS the cap did not see a newline, so it is a
+  # CONTINUATION of the current row — append it and keep reading. A chunk
+  # SHORTER than the cap hit a newline or EOF, so the logical line is complete
+  # — classify it and reset the buffer. Under LC_ALL=C, read -n 512 returns
+  # exactly 512 bytes iff it stopped on the count rather than a delimiter.
+  # This also ELIMINATES the F45 kind-forgery vector rather than merely
+  # detecting it: a continuation is appended, never classified as an
+  # independent row, so it cannot forge a kind. The aggregate byte cap below
+  # bounds pathological input — the per-chunk failure was not carrying that.
+  logical=""
+  while IFS= read -r -n 512 line || [ -n "$line" ]; do
+    n=$((n+1)); [ "$n" -le 20000 ] || { deviations_unpresented=1; return 0; }
+    # Aggregate BYTE cap (fail-closed): DECISIONS.md is append-forever, so no
+    # cap is sized to "legal input". A ledger past the cap is not scannable in
+    # the hook's budget — surface it as a block, not a silent pass. ${#line} is
+    # bytes here (LC_ALL=C above); the +1 charges for the newline/EOF delimiter.
+    bytes=$((bytes + ${#line} + 1))
+    [ "$bytes" -le "$DECISIONS_MAX_BYTES" ] || { deviations_unpresented=1; return 0; }
+    logical="${logical}${line}"
+    # Cap-filling chunk → mid-row, keep accumulating (see CONTINUATION note).
+    [ "${#line}" -ge 512 ] && continue
+    _dec_line "$logical"
+    logical=""
   done < "$f"
+  # Flush a final row left mid-accumulation at EOF: a file ending on a cap-fill
+  # chunk with no trailing newline exits the loop with the buffer unprocessed.
+  [ -z "$logical" ] || _dec_line "$logical"
 }
 
 # --- enumerate pending sentinels (builtin glob; no `find` dependency) --------

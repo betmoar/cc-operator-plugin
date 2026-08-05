@@ -249,12 +249,17 @@ def check_ledger_schema(root, problems):
             f"{VERDICTS_HEADER!r} (schema must byte-match the proven ledger)")
 
 
-# The DECISIONS-header kind enum — must include HANDOFF-MARK (stage 2). The hook
-# and statusline now PARSE this schema (the deviation gate), so a drifted enum
-# can no longer pass green while the readers disagree. Pin the literal AND require
-# both readers to reference the HANDOFF-MARK kind (F30: the enum AND its consumers).
-DECISIONS_KINDS = (
-    "DEVIATION|ESCALATION|GATE-EXCEPTION|DECISION|DEFERRED-VERDICT|HANDOFF-MARK")
+# The DECISIONS-header kind set — split into GATED (block Stop until presented),
+# RECORD (logged, never block), and the HANDOFF-MARK marker (clears the gated
+# set). The hook/statusline deviation gate counts ONLY the GATED kinds; the
+# schema must advertise that split so a reader does not mistake a non-gated
+# record (DECISION/DEFERRED-VERDICT) for a kind that should block Stop
+# (issue #9, F30). Pin each token AND the gated/record grouping.
+DECISIONS_GATED_KINDS = ("DEVIATION", "ESCALATION", "GATE-EXCEPTION")
+DECISIONS_RECORD_KINDS = ("DECISION", "DEFERRED-VERDICT")
+DECISIONS_MARKER_KIND = "HANDOFF-MARK"
+# The gated kinds, in order, as the hook's case-statement literal.
+DECISIONS_GATED_LITERAL = "|".join(DECISIONS_GATED_KINDS)
 
 
 def check_decisions_schema(root, problems):
@@ -262,12 +267,50 @@ def check_decisions_schema(root, problems):
     if not d.is_file():
         problems.append("templates/DECISIONS-header.md: missing")
         return
-    if DECISIONS_KINDS not in d.read_text(encoding="utf-8"):
+    text = d.read_text(encoding="utf-8")
+    for k in (*DECISIONS_GATED_KINDS, *DECISIONS_RECORD_KINDS, DECISIONS_MARKER_KIND):
+        if k not in text:
+            problems.append(
+                f"templates/DECISIONS-header.md: kind enum missing {k!r} "
+                f"— the deviation gate (stage 2) parses this schema; a missing "
+                f"HANDOFF-MARK makes every handoff-clear read as unpresented "
+                f"(F30: pin the enum, not a copy)")
+    # The gated/record split must be visible: a header that lists all kinds as
+    # one undifferentiated enum invites operators to record decisions in a kind
+    # the gate ignores (issue #9). The split is the schema's honest contract.
+    if "gated" not in text or "record" not in text:
         problems.append(
-            f"templates/DECISIONS-header.md: kind enum drifted — expected "
-            f"{DECISIONS_KINDS!r}. The deviation gate (stage 2) parses this "
-            f"schema; a missing HANDOFF-MARK makes every handoff-clear read as "
-            f"an unpresented decision (F30: pin the enum, not a copy)")
+            "templates/DECISIONS-header.md: kind enum does not distinguish gated "
+            "from record kinds — the deviation gate blocks only "
+            f"{DECISIONS_GATED_LITERAL!r}; DECISION/DEFERRED-VERDICT are records "
+            "that never block. A reader who cannot see the split mistakes a "
+            "non-gated record for a kind that should block Stop (issue #9)")
+    # Both deviation-gate readers must count EXACTLY the gated kinds: a reader
+    # that widened to DECISION would gate routine notes, and one that dropped a
+    # kind would miss unpresented decisions (issue #9, F30 call-site half).
+    for name in ("ops-stop-hook.sh", "statusline.sh"):
+        p = root / "scripts" / name
+        if not p.is_file():
+            continue  # missing-file is already reported by check_scripts
+        s = p.read_text(encoding="utf-8")
+        if DECISIONS_GATED_LITERAL not in s:
+            problems.append(
+                f"scripts/{name}: deviation gate does not count the gated kinds "
+                f"({DECISIONS_GATED_LITERAL!r}) — must match the header's gated "
+                f"set exactly (issue #9)")
+        if "HANDOFF-MARK" not in s:
+            problems.append(
+                f"scripts/{name}: does not reference HANDOFF-MARK — the "
+                f"deviation gate's clearing mark is in the enum but this reader "
+                f"never matches it, so a presented decision reads as unpresented "
+                f"forever (F30: the enum AND its consumers must agree)")
+    # The verdict CLI writes HANDOFF-MARK; it must still know the marker.
+    vp = root / "scripts" / "ops-verdict.sh"
+    if vp.is_file() and "HANDOFF-MARK" not in vp.read_text(encoding="utf-8"):
+        problems.append(
+            "scripts/ops-verdict.sh: does not reference HANDOFF-MARK — the "
+            "deviation gate's clearing mark is in the enum but this writer "
+            "never emits it (F30: the enum AND its consumers must agree)")
     # Both deviation-gate readers must know the HANDOFF-MARK kind: a reader that
     # never checks for it treats a mark as ordinary prose and never clears — the
     # enum is declared but the consumer drifted (the F30 call-site half). The

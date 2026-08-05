@@ -37,7 +37,7 @@ GOOD_STATUSLINE = (
     "#!/usr/bin/env bash\n"
     "[ ! -L \"$1\" ] || exit 0\n"
     "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
-    "# deviation-gate mirror: a second bounded read of DECISIONS.md (HANDOFF-MARK)\n"
+    "# deviation-gate mirror: counts DEVIATION|ESCALATION|GATE-EXCEPTION (HANDOFF-MARK)\n"
     "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
     "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]*) owner=\"\" ;; esac\n")
 
@@ -68,7 +68,10 @@ def make_good_tree(root):
           "# Verdicts\n" + vp.VERDICTS_HEADER + "\n|---|---|---|---|\n")
     write(root / "templates" / "DECISIONS-header.md",
           "# Decisions — append-only, one line per entry\n"
-          "# <ISO-date> | <engagement.task> | <" + vp.DECISIONS_KINDS + "> | <what> | <why>\n")
+          "# <ISO-date> | <engagement.task> | <kind> | <what> | <why>\n"
+          "# gated: DEVIATION | ESCALATION | GATE-EXCEPTION\n"
+          "# record: DECISION | DEFERRED-VERDICT\n"
+          "# marker: HANDOFF-MARK\n")
     for name, model in (("op-author", "opus"),
                         ("op-mechanic", "sonnet"),
                         ("op-reviewer", "opus")):
@@ -118,7 +121,7 @@ def make_good_tree(root):
     nolink = "[ ! -L \"$1\" ] || exit 0\n"
     write(root / "scripts" / "ops-stop-hook.sh",
           "#!/usr/bin/env bash\n" + nolink + bounded +
-          "# deviation gate: a second bounded read of DECISIONS.md (HANDOFF-MARK)\n"
+          "# deviation gate: counts DEVIATION|ESCALATION|GATE-EXCEPTION (HANDOFF-MARK)\n"
           "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
           "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]*) owner=\"\" ;; esac\n")
     write(root / "scripts" / "ops-task.sh",
@@ -327,11 +330,21 @@ class ValidatorTest(unittest.TestCase):
     # --- decisions schema (stage 2: the deviation gate parses this enum) ---
     def test_decisions_kind_enum_drift_fires(self):
         # Drop HANDOFF-MARK from the enum — a presented decision would then read
-        # as unpresented forever. check_decisions_schema pins the whole enum.
+        # as unpresented forever. check_decisions_schema pins every kind token.
         write(self.dir / "templates" / "DECISIONS-header.md",
               "# Decisions\n"
-              "# <d> | <e> | <DEVIATION|ESCALATION|DECISION|DEFERRED-VERDICT> | <w> | <y>\n")
-        self.assertFires("kind enum drifted")
+              "# gated: DEVIATION | ESCALATION | GATE-EXCEPTION\n"
+              "# record: DECISION | DEFERRED-VERDICT\n")
+        self.assertFires("missing 'HANDOFF-MARK'")
+
+    def test_decisions_enum_missing_split_fires(self):
+        # All kinds present but no gated/record split — a reader cannot tell which
+        # kinds block Stop (issue #9). check_decisions_schema pins the split.
+        write(self.dir / "templates" / "DECISIONS-header.md",
+              "# <ISO-date> | <eng> | "
+              "<DEVIATION|ESCALATION|GATE-EXCEPTION|DECISION|DEFERRED-VERDICT"
+              "|HANDOFF-MARK> | <what> | <why>\n")
+        self.assertFires("does not distinguish gated from record kinds")
 
     def test_decisions_reader_missing_handoff_mark_fires(self):
         # A deviation-gate reader that never matches HANDOFF-MARK never clears —
@@ -341,6 +354,15 @@ class ValidatorTest(unittest.TestCase):
               "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
               "while IFS= read -r -n 512 dline; do :; done < \"$dec\"\n")
         self.assertFires("does not reference HANDOFF-MARK")
+
+    def test_decisions_reader_gated_literal_drift_fires(self):
+        # A reader that counts a kind the gate should ignore (DECISION) diverges
+        # from the header's gated set (issue #9). Mutate the good hook's gated
+        # literal so only this check fires, not every check.
+        p = self.dir / "scripts" / "ops-stop-hook.sh"
+        write(p, p.read_text().replace(
+            "DEVIATION|ESCALATION|GATE-EXCEPTION", "DEVIATION|ESCALATION|DECISION"))
+        self.assertFires("deviation gate does not count the gated kinds")
 
     # --- 6. agents ---
     def test_agent_missing_model(self):
