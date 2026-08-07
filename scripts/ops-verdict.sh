@@ -18,6 +18,10 @@
 #   Writes a DEFERRED-VERDICT line to DECISIONS.md and clears the sentinel.
 #   The honest end-state for a legitimately blocked task.
 #
+# Exempt:   ops-verdict.sh --exempt-mark "<reason>" --owner <sid>
+#   The ledger half of the G3 arm-gate exemption; called by ops-task.sh
+#   --exempt, which does not write ledgers. Appends one GATE-EXCEPTION line.
+#
 # Reconcile: ops-verdict.sh --reconcile
 #   Appends to VERDICTS.md every row present in .operator/verdicts.d/*.md but
 #   missing from it. Idempotent. This REPAIRS a merge, it does not regenerate
@@ -504,6 +508,54 @@ if [ "${1:-}" = "--mark-handoff" ]; then
     "$(date +%F)" "$MENG" "$MOWNER" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$DECISIONS"
   lock_release
   echo "marked handoff for session $MOWNER (DECISIONS.md HANDOFF-MARK appended)"
+  exit 0
+fi
+
+# --- exempt-mark path (no task-id) ------------------------------------------
+# The ledger half of the G3 arm-gate exemption. The operator-facing surface is
+# `ops-task.sh --exempt "<reason>" --owner <sid>`, which validates and then
+# delegates HERE, because this script is the single writer to DECISIONS.md and
+# already owns the lock. ops-task.sh takes no lock by design; giving it one to
+# append one rare line would copy the LOCK BLOCK to a third file.
+#
+# The row is a GATE-EXCEPTION — a kind the stage-2 deviation gate ALREADY blocks
+# Stop on until a HANDOFF-MARK presents it. That is the whole enforcement: the
+# hatch is real and one command, and it costs a presentation. No new machinery.
+#
+# --owner is REQUIRED and non-empty for the same reason --mark-handoff requires
+# it: the [sid:] tag is what scopes the debt. An untagged GATE-EXCEPTION reads
+# as unowned, which under the hook's partition blocks EVERY session — a wedge,
+# and this feature exists to prevent wedges.
+if [ "${1:-}" = "--exempt-mark" ]; then
+  shift
+  XREASON=""
+  XOWNER=""
+  XSEEN=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --owner)
+        [ $# -ge 2 ] || die "--owner requires a session id"
+        [ -z "$XOWNER" ] || die "--owner given more than once"
+        XOWNER="$2"; shift 2 ;;
+      --owner=*)
+        [ -z "$XOWNER" ] || die "--owner given more than once"
+        XOWNER="${1#--owner=}"; shift ;;
+      -*) die "unknown option '$1' (usage: ops-verdict.sh --exempt-mark \"<reason>\" --owner <sid>)" ;;
+      *)
+        [ "$XSEEN" -eq 0 ] || die "unexpected extra argument '$1' (the reason is a single quoted string)"
+        XSEEN=1; XREASON="$1"; shift ;;
+    esac
+  done
+  [ -n "$XREASON" ] || die "--exempt-mark requires a non-empty reason (the grant is audited: the reason is what the handoff presents)"
+  [ -n "$XOWNER" ] || die "--exempt-mark requires --owner <sid> (an untagged GATE-EXCEPTION reads as unowned and would block every session)"
+  check_owner_name "$XOWNER"
+  check_cell "exemption reason" "$XREASON"
+  [ -f "$DECISIONS" ] || die "missing $DECISIONS — run ops-init.sh first"
+  lock_acquire
+  printf '%s | %s | GATE-EXCEPTION | [sid:%s] arm-gate exemption granted: %s | exempt via ops-task.sh --exempt\n' \
+    "$(date +%F)" "arm-gate" "$XOWNER" "$XREASON" >> "$DECISIONS"
+  lock_release
+  echo "GATE-EXCEPTION recorded for session $XOWNER (owes a handoff presentation: ops-verdict.sh --mark-handoff --owner $XOWNER)"
   exit 0
 fi
 

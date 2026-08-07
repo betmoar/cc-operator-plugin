@@ -2556,5 +2556,104 @@ check "G2 an unowned open task arms no session" "$([ "$ARC" -eq 2 ] && echo 0 ||
 rm -rf "$P"
 
 ########################################################################
+echo "-- Case: G3 exemption — the audited escape hatch the arm gate advertises"
+# A blocking gate with no override is how a session wedges. The hatch is one
+# command and it is NOT free: it writes a GATE-EXCEPTION, a kind the stage-2
+# deviation gate already blocks Stop on until a HANDOFF-MARK presents it. So
+# bypassing the arm gate owes a handoff presentation. See backlog-charter.md §G3.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+S="SESS-G3"
+DEC3="$P/.operator/DECISIONS.md"
+payload3() { printf '{"session_id":"%s","stop_hook_active":false,"cwd":"%s"}' "$S" "$P"; }
+
+# G3.2 FIRST (it must leave DECISIONS.md untouched, which is only checkable
+# against a ledger the grant has not yet written to).
+DEC3_BEFORE="$(cat "$DEC3")"
+( cd "$P" && bash "$TASK" --exempt >/dev/null 2>&1 ); X2=$?
+check "G3.2 --exempt with no reason → exit non-zero" "$([ "$X2" -ne 0 ] && echo 0 || echo 1)"
+# A FORGOTTEN reason: `--exempt --owner $S` must not swallow the next flag as
+# the reason text — that grants an exemption whose audit line reads "--owner",
+# and drops the ownership tag that scopes the debt.
+( cd "$P" && bash "$TASK" --exempt --owner "$S" >/dev/null 2>&1 ); X2F=$?
+check "G3.2 --exempt --owner \$S (reason forgotten) → exit non-zero" \
+  "$([ "$X2F" -ne 0 ] && echo 0 || echo 1)"
+( cd "$P" && bash "$TASK" --exempt "" --owner "$S" >/dev/null 2>&1 ); X2E=$?
+check "G3.2 --exempt with an EMPTY reason → exit non-zero" "$([ "$X2E" -ne 0 ] && echo 0 || echo 1)"
+( cd "$P" && bash "$TASK" --exempt "no owner given" >/dev/null 2>&1 ); X2O=$?
+check "G3.2 --exempt without --owner → exit non-zero (no untagged GATE-EXCEPTION)" \
+  "$([ "$X2O" -ne 0 ] && echo 0 || echo 1)"
+check "G3.2 a refused --exempt leaves DECISIONS.md unchanged" \
+  "$([ "$(cat "$DEC3")" = "$DEC3_BEFORE" ] && echo 0 || echo 1)"
+check "G3.2 a refused --exempt writes no marker" \
+  "$([ ! -e "$P/.operator/.armed/$S.exempt" ] && echo 0 || echo 1)"
+# An exemption is the NO-open-task path: taking a task id too is contradictory.
+( cd "$P" && bash "$TASK" t-x --exempt "both" --owner "$S" >/dev/null 2>&1 ); X2B=$?
+check "G3.2 --exempt with a task-id → exit non-zero (mutually exclusive)" \
+  "$([ "$X2B" -ne 0 ] && echo 0 || echo 1)"
+
+# G3.1 — the grant itself.
+( cd "$P" && bash "$TASK" --exempt "upstream API is down, documenting the workaround" --owner "$S" >/dev/null 2>&1 ); X1=$?
+check "G3.1 --exempt \"reason\" --owner \$S → exit 0" "$([ "$X1" -eq 0 ] && echo 0 || echo 1)"
+# Count ROWS, not mentions: the scaffolded header carries the kind enum as a
+# comment (`# gated ...: DEVIATION | ESCALATION | GATE-EXCEPTION`), which a bare
+# grep counts — the same false positive the Stop hook's `#`-skip exists for.
+GX="$(grep -c '^[^#].* | GATE-EXCEPTION | ' "$DEC3" || true)"
+check "G3.1 exactly one GATE-EXCEPTION row written" "$([ "$GX" = "1" ] && echo 0 || echo 1)"
+check "G3.1 the GATE-EXCEPTION is tagged [sid:\$S] and carries the reason" \
+  "$(grep '^[^#].* | GATE-EXCEPTION | ' "$DEC3" | grep -q "\[sid:$S\].*upstream API is down" && echo 0 || echo 1)"
+check "G3.1 .armed/\$S.exempt exists" \
+  "$([ -e "$P/.operator/.armed/$S.exempt" ] && echo 0 || echo 1)"
+# The grant does NOT fabricate the derived marker: two kinds, two lifetimes.
+check "G3.1 the grant writes no DERIVED .armed/\$S" \
+  "$([ ! -e "$P/.operator/.armed/$S" ] && echo 0 || echo 1)"
+# ...and the gate now lets this session write (the hatch actually opens).
+run_armhook "$P" "$S"
+check "G3.1 armgate.on absent → allowed anyway (control for the next assert)" \
+  "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
+: > "$P/.operator/armgate.on"
+run_armhook "$P" "$S"
+check "G3.1 gate ON + exemption granted → the write is allowed" \
+  "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
+rm -f "$P/.operator/armgate.on"
+
+# G3.3 — the debt: the exemption owes a presentation, so Stop is blocked.
+payload3 | bash "$HOOK" >/dev/null 2>&1; X3=$?
+check "G3.3 after the grant, Stop is BLOCKED (the exemption owes a presentation)" \
+  "$([ "$X3" = 2 ] && echo 0 || echo 1)"
+
+# G3.5 BEFORE G3.4: the mark would clear the deviation gate and make the
+# ordering of the remaining asserts less discriminating. Verdicting an
+# UNRELATED open task runs recompute_arm_marker, which must never touch a
+# GRANTED marker — an exempt session has nothing in pending/, so a recompute
+# that owned both kinds would revoke the grant on the next verdict.
+( cd "$P" && bash "$TASK" g3unrelated --owner "$S" >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" g3unrelated crit ev PASS --owner "$S" >/dev/null 2>&1 )
+check "G3.5 the recompute leaves .armed/\$S.exempt present" \
+  "$([ -e "$P/.operator/.armed/$S.exempt" ] && echo 0 || echo 1)"
+check "G3.5 the same recompute DID remove the derived .armed/\$S (recompute ran)" \
+  "$([ ! -e "$P/.operator/.armed/$S" ] && echo 0 || echo 1)"
+
+# G3.4 — presenting the debt clears it.
+( cd "$P" && bash "$VERDICT" --mark-handoff --owner "$S" >/dev/null 2>&1 )
+payload3 | bash "$HOOK" >/dev/null 2>&1; X4=$?
+check "G3.4 after --mark-handoff, Stop is allowed" "$([ "$X4" = 0 ] && echo 0 || echo 1)"
+
+# The debt is SESSION-SCOPED: a foreign session never inherits it. (A grant that
+# blocked everyone would be the wedge this feature exists to prevent.)
+printf '{"session_id":"SESS-G3-OTHER","stop_hook_active":false,"cwd":"%s"}' "$P" \
+  | bash "$HOOK" >/dev/null 2>&1; X4F=$?
+check "G3 a foreign session is not blocked by \$S's exemption" \
+  "$([ "$X4F" = 0 ] && echo 0 || echo 1)"
+
+# G3.6 — the opener stays LOCK-FREE. The ledger write is delegated to
+# ops-verdict.sh, which already holds the lock; a lock here would copy the LOCK
+# BLOCK to a third file (and check_lock_parity to a third site) for one rare flag.
+X6="$(grep -c 'lock_acquire' "$TASK" || true)"
+check "G3.6 grep -c 'lock_acquire' ops-task.sh = 0 (the write is delegated)" \
+  "$([ "$X6" = "0" ] && echo 0 || echo 1)"
+
+rm -rf "$P"
+
+########################################################################
 echo "== summary: $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]
