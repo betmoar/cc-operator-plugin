@@ -9,40 +9,80 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
-### Fixed — the compressor materialized `.operator/` in projects that never opted in
+## [0.7.0] - 2026-08-07
 
-`ops-compress.mjs` is a PostToolUse hook, so it fires wherever the plugin is
-*installed* — and its spill/dedup roots were created with `mkdir -p`, which
-created `.operator/` itself. A project that never ran `/cc-operator:start` got a
-directory it did not ask for, with no `.gitignore` (that is written by
-`ops-init.sh`, which never ran there) and therefore untracked dirty state.
+### Added — the arm-gate layer (opt-in): every write accountable to an open task
 
-- Each ephemera root now writes its own `.gitignore` holding `*`, so the tree
-  stays clean without depending on `ops-init.sh` or the SessionStart append.
-- When `.operator/` is absent the roots move to `$TMPDIR/cc-operator/<sha256(cwd)
-  [:16]>/` instead of creating one. Spill and cite keep working; an out-of-tree
-  spill is cited by absolute path rather than a `../..` walk.
-- SessionStart wipes the tempdir root too — it is the one copy never visible in
-  the tree, so it was also the one that would have grown forever.
+Three parts, each gating a different moment. The gate is **opt-in**
+(`.operator/armgate.on`, absent by default) and fails OPEN on every
+infrastructure failure — a PreToolUse hook that fails closed makes a project
+unwritable. `Bash` is deliberately ungated (classifying shell writes is
+unwinnable, and gating Bash deadlocks the repair path). The threat model is
+forgetting, not evasion.
 
-### Changed — `.operator/.gitignore` is an allowlist
+- **G1 — the retro-gate (default-on).** `ops-verdict.sh` distinguishes three
+  states: armed (sentinel present), never-armed (no sentinel, no prior row),
+  duplicate/amending. A never-armed verdict is recorded AND writes a
+  `GATE-EXCEPTION` to DECISIONS.md — a gated kind that blocks Stop until
+  presented. Never refuses real evidence. A never-armed verdict with no
+  `--owner` is refused (the exception must carry a `[sid:]` tag). The prior-row
+  scan is bounded by `FRAG_MAX_BYTES`.
+- **G2 — the arm gate (opt-in).** New `ops-armgate-hook.sh` on PreToolUse
+  (`Write|Edit|MultiEdit|NotebookEdit`): blocks a session holding no open task
+  from mutating a file, stderr naming the arm command and the exemption path.
+  The `.armed/<sid>` marker is a derived cache, created by `ops-task.sh` /
+  `ops-adopt.sh` and recomputed by `ops-verdict.sh` (remove → rescan → restore,
+  under the lock — the order that survives a task opening mid-recompute).
+- **G3 — the audited exemption.** `ops-task.sh --exempt "<reason>" --owner <sid>`
+  delegates the GATE-EXCEPTION write to `ops-verdict.sh --exempt-mark` (the
+  opener takes no lock), and creates `.armed/<sid>.exempt` — a granted marker
+  the recompute never touches.
 
-The v1 blocklist defaulted new machine state to *tracked*, so every directory
-added since had to be remembered and appended — twice (`.lock/` for F05, then
-`.compress-spill/`). v2 ignores `*` and re-admits only evidence: both ledgers,
-the `verdicts.d/` fragments that `merge=union` operates on, and `tiers.env`.
-Future ephemera are covered by construction.
+### Added — backlog integration (CLI-independent cherry-picks)
 
-Existing projects are migrated (not appended to — the two schemes contradict) by
-both `ops-init.sh` and the SessionStart hook, keeping the previous file as
-`.gitignore.v1.bak`. New `check_gitignore_parity` pins the two writers equal.
+- **B7** — `backlog/` joins the PROTECTED set (whole directory). An implementer
+  that can edit `backlog/tasks/*.md` can edit the acceptance criteria it is
+  judged against — the F48 vacuous-guard class relocated to the plan layer.
+  Two-site F30 pin (ops-claims.sh + validator).
+- **B10.1** — `ops-backlog.sh --census`: tracked-file / code-file / code-LOC
+  counts (one-pass LOC, sub-1s on a 12K-file repo). A reporting CLI, not a gate
+  CLI — joins the install set, not CHARTER_REQUIRED_CLIS/GATE_CLIS.
 
-### Changed — `templates/OPERATOR.md` reflowed to 95 columns
+### Fixed
 
-The charter was wrapped at ~75–83 columns against a 100-column cap, so 13 of its
-149 lines were formatting rather than content: 149→136 lines, 8194→8188 bytes,
-word stream and citation tags verified identical. The binding cap is now bytes
-(~812 spare) rather than lines (14 spare), and no further reflow can buy room.
+- **Retro-gate long-row blindness (G1.7)** — the prior-row scan skipped any
+  read-chunk that filled its 512-byte bound, so a long evidence cell split a row
+  and the chunk carrying `| <id> |` was skipped — a genuine duplicate was
+  misfiled never-armed, writing a spurious GATE-EXCEPTION. Now matches every line
+  start (the prefix is always there; a mid-cell continuation never begins with
+  `| <id> |`). Found by the G3 review.
+- **SessionStart tempdir wipe unreachable (U5)** — the tempdir-root cleanup sat
+  behind the `.operator/` gate, so it was unreachable for exactly the projects
+  that use the tempdir path (no `.operator/`), and that root grew forever. Hoisted
+  above the gate. Found by the G3 review.
+- **The compressor materialized `.operator/` in projects that never opted in** —
+  each ephemera root now writes its own `.gitignore` holding `*`; when
+  `.operator/` is absent the roots move to `$TMPDIR/cc-operator/<sha256(cwd)
+  [:16]>/` instead of creating one.
+- **`templates/OPERATOR.md` reflowed to 95 columns** — 149→136 lines, 8188 bytes,
+  word stream and citation tags verified identical. Binding cap is now bytes.
+
+### Changed
+
+- **`.operator/.gitignore` is an allowlist** — v2 ignores `*` and re-admits only
+  evidence; future ephemera are covered by construction. Existing projects
+  migrated (not appended) by both `ops-init.sh` and SessionStart;
+  `check_gitignore_parity` pins the two writers equal.
+- **CLAUDE.md coupling table** gains two G2 rows (the `.armed/` marker convention
+  across three writers + the hook; the matcher keeping `Bash` out).
+
+### Decided — quiet-introduction policy (§10 of backlog-charter.md)
+
+The CLI-dependent B-items (B2/B3/B4/B5/B8/B9) and B11's register-audit are
+**deliberately unbuilt** — do not build loud detection for a problem the field
+has not demonstrated. U1 (B11 reads the p1–p5 field, not an invented tag), U2
+(no backlog.md dependency — covered in-house, dissolving B5's premise), U3 (the
+unknowns scan is end-user-triggered by release posture, size is informational).
 
 ## [0.6.1] - 2026-08-05
 
