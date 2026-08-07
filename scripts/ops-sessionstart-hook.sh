@@ -96,7 +96,7 @@ if [ -n "$_newver" ] && [ "$_newver" != "$_oldver" ]; then
   # review 2026-08-04). Best-effort for the banner; the stamp is the contract.
   _upgrade_ok=1
   if [ -d "$_ssdir" ] && mkdir -p "$cwd/.operator/bin" 2>/dev/null; then
-    for _tool in ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh; do
+    for _tool in ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh ops-backlog.sh; do
       [ -f "$_ssdir/$_tool" ] || continue
       if cp "$_ssdir/$_tool" "$cwd/.operator/bin/$_tool" 2>/dev/null \
          && chmod +x "$cwd/.operator/bin/$_tool" 2>/dev/null; then

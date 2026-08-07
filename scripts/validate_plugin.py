@@ -492,9 +492,10 @@ def check_armgate(root, problems):
 
 def check_scripts(root, problems):
     for name in ("ops-init.sh", "ops-verdict.sh", "ops-task.sh",
-                 "ops-adopt.sh", "ops-claims.sh", "ops-stop-hook.sh",
-                 "ops-sessionstart-hook.sh", "ops-armgate-hook.sh",
-                 "statusline.sh", "ops-tiers.sh", "ops-render.sh"):
+                 "ops-adopt.sh", "ops-claims.sh", "ops-backlog.sh",
+                 "ops-stop-hook.sh", "ops-sessionstart-hook.sh",
+                 "ops-armgate-hook.sh", "statusline.sh", "ops-tiers.sh",
+                 "ops-render.sh"):
         p = root / "scripts" / name
         if not p.is_file():
             problems.append(f"scripts/{name}: missing")

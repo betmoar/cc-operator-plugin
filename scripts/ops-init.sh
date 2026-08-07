@@ -147,11 +147,11 @@ fi
 # no ${CLAUDE_PLUGIN_ROOT}). Unlike the ledgers these are always refreshed:
 # they are generated artifacts tracking the installed plugin version.
 mkdir -p "$OPDIR/bin"
-for tool in ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh; do
+for tool in ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh ops-backlog.sh; do
   cp "$SCRIPT_DIR/$tool" "$OPDIR/bin/$tool"
   chmod +x "$OPDIR/bin/$tool"
 done
-echo "installed $OPDIR/bin/{ops-verdict.sh,ops-task.sh,ops-adopt.sh,ops-claims.sh}"
+echo "installed $OPDIR/bin/{ops-verdict.sh,ops-task.sh,ops-adopt.sh,ops-claims.sh,ops-backlog.sh}"
 
 # Stamp the installed plugin version. SessionStart compares this to the running
 # plugin's version and auto-refreshes bin/ when it differs — the automated

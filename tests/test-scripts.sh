@@ -1981,6 +1981,29 @@ runclaims --since "$BASE_SHA" --claimed "backlog/tasks/y.md" --gate-task >/dev/n
 clean_tree
 check "B7.1c backlog/ edit allowed with --gate-task" "$([ "$B7CRC" = 0 ] && echo 0 || echo 1)"
 
+# B10.1 — ops-backlog.sh --census: prints file/code/code-loc counts, exit 0, and
+# counts code files/lines correctly. The <1s-on-10K-files bound (B10 AC1) is
+# verified out-of-suite on a synthetic large repo (too big for a unit case);
+# this case pins correctness on a small known corpus.
+B10P="$(newproj)"
+( cd "$B10P" && git init -q && git config user.email t@t && git config user.name t )
+# 2 code files (1 with a blank line), 1 doc file, 1 code-ext-less file.
+printf 'a = 1\n\nb = 2\n' > "$B10P/x.py"
+printf 'echo hi\n' > "$B10P/y.sh"
+printf '# readme\n' > "$B10P/README.md"
+printf 'data\n' > "$B10P/notes"
+( cd "$B10P" && git add -A && git commit -qm base >/dev/null 2>&1 )
+B10OUT="$(cd "$B10P" && bash "$SCRIPTS/ops-backlog.sh" --census 2>/dev/null)"; B10RC=$?
+check "B10.1 --census exits 0" "$([ "$B10RC" = 0 ] && echo 0 || echo 1)"
+# 4 tracked files; 2 code files; 3 non-blank code lines (x.py has 2, y.sh has 1).
+check "B10.1 --census counts files=4" "$(printf '%s' "$B10OUT" | grep -q '^files: 4$' && echo 0 || echo 1)"
+check "B10.1 --census counts code-files=2" "$(printf '%s' "$B10OUT" | grep -q '^code-files: 2$' && echo 0 || echo 1)"
+check "B10.1 --census counts code-loc=3 (non-blank lines only)" "$(printf '%s' "$B10OUT" | grep -q '^code-loc: 3$' && echo 0 || echo 1)"
+# --census needs a git repo: refuse cleanly, not a raw git error.
+B10NG="$(mktemp -d "${TMPDIR:-/tmp}/opstest.XXXXXX")"
+(cd "$B10NG" && bash "$SCRIPTS/ops-backlog.sh" --census 2>/dev/null); B10NGRC=$?
+check "B10.1 --census on a non-git dir → non-zero" "$([ "$B10NGRC" != 0 ] && echo 0 || echo 1)"
+
 # CHANGED: none — clean working tree, no claims, no trespass.
 runclaims --since "$BASE_SHA" --claimed none >/dev/null 2>&1; CNG=$?
 check "CHANGED none: clean tree, no claims → exit 0" "$([ "$CNG" = 0 ] && echo 0 || echo 1)"
