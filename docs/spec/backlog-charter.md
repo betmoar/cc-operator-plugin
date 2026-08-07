@@ -94,18 +94,28 @@ the same agent in the same context. An external backlog fixes this for free: the
 acceptance criteria are written down first, in a file, by a different act — and
 the operator's job narrows to *adjudicating against them*.
 
-### E4 — the charter has one line of headroom
+### E4 — the charter's headroom, and which cap actually binds
 
-Measured at HEAD:
+Measured at `71732ff`, when this spec was written:
 
-| Bound | Now | Cap |
+| Bound | At 71732ff | Cap |
 |---|---|---|
 | lines | **149** | 150 |
 | bytes | 8194 | 9000 |
 | longest non-table line | 83 | 100 |
 
-This is a hard design constraint, not a footnote: **no new charter section is
-affordable.** Everything below is budgeted against it (§6).
+One line spare — which read as "no new charter section is affordable", and §6
+was budgeted against that. **That reading was wrong, and the correction is
+measured**: the charter was wrapped at ~75–83 columns against a 100-column cap,
+so 13 of those 149 lines were formatting, not content. After a reflow to 95
+columns (verified word-for-word identical — see §6.2) the file is 136/150 lines
+and 8188/9000 bytes.
+
+The constraint is therefore real but has **moved axis**: ~812 bytes ≈ 8 more
+full lines, against 14 spare lines. Bytes bind now, and no further reflow can
+buy room — that lever is spent. Budget in bytes; a proposal that counts only
+lines is measuring the cap that stopped binding. Everything below is budgeted
+against this (§6.2).
 
 ---
 
@@ -136,19 +146,38 @@ Why this is the right first move:
 
 - It **cannot wedge a session's writes.** It adds a handoff obligation, never a
   refusal. The worst case is a session that must present before stopping.
-- It **never refuses the verdict.** Refusing would strand real evidence outside
-  the ledger — strictly worse than recording it with a caveat.
+- It **never refuses the verdict** on any path the gate was actually used on.
+  Refusing there would strand real evidence outside the ledger — strictly worse
+  than recording it with a caveat. The single exception is the never-armed row
+  with no owner to attribute it to; see the third requirement.
 - It converts E1 from an invisible hole into a **visible, costly** one. Skipping
   the gate is still possible; it is no longer deniable.
 
 Two implementation requirements, both derived from existing landmines:
 
-- The prior-row lookup must be **bounded** and read the session fragment
-  (`verdicts.d/<owner>.md`), not all of VERDICTS.md. `FRAG_MAX_BYTES` already
-  bounds that file. Anything unbounded here lengthens the critical section, and
-  PLAYBOOK "touching the lock" step 3 forbids that without a re-budget.
-- The `GATE-EXCEPTION`'s what-cell carries the `[sid:<session>]` tag, or it is
-  unowned and blocks **every** session (the documented unowned-blocks-all rule).
+- **The prior-row lookup must be bounded**, and read the session fragment
+  (`verdicts.d/<owner>.md`), not all of VERDICTS.md. Note what is NOT true: the
+  earlier draft claimed `FRAG_MAX_BYTES` already bounds that file. It does not —
+  the size refusal exists only inside the `--reconcile` branch
+  (`ops-verdict.sh:417-419`); the direct verdict path never stats the fragment.
+  G1's lookup would therefore be the **first unbounded read under the lock**,
+  which is exactly the PLAYBOOK "touching the lock" step-3 hazard this bullet
+  cites. Lift `FRAG_MAX_BYTES` to function scope and apply it to every fragment
+  read, and scan in reverse — a fragment is append-only, so the newest row for
+  `<id>` is at the tail (the same reverse-tail strategy `statusline.sh` uses).
+  Deriving the state from `pending/` instead is not an option: never-armed and
+  duplicate/amending BOTH have an absent sentinel, so only the ledger can tell
+  them apart.
+- **A never-armed verdict with no `--owner` is refused.** The `GATE-EXCEPTION`'s
+  what-cell must carry `[sid:<session>]`, and on this path there is no session to
+  name: `SOWNER` is empty because there is no sentinel, and no flag was given. An
+  untagged (or `[sid:unowned]`) gated line is unowned, and unowned fails CLOSED —
+  it would block **every** session until someone presents it, which is precisely
+  the cross-session wedge 0.4.0 exists to remove. Refusing is the honest move and
+  costs nothing: SessionStart always names the id, so `--owner` is always
+  available. Scope it narrowly — the ordinary armed verdict (sentinel present,
+  `SOWNER` supplies the owner) and the duplicate/amending row still proceed
+  without a flag, exactly as today.
 
 ### G2 — the arm gate: PreToolUse blocks the first unarmed write *(opt-in)*
 
@@ -190,13 +219,45 @@ Instead the expensive question is answered by the **writers**, and the hook asks
 a cheap one:
 
 - `ops-task.sh --owner S` (success) and `ops-adopt.sh --owner S` → create
-  `.operator/.armed/S` (empty marker).
+  `.operator/.armed/S` (empty marker), **after** the sentinel exists. The reverse
+  order opens a window where the marker outlives no sentinel; that direction is
+  harmless (stale-true) but the correct order is free.
 - `ops-verdict.sh` (verdict **and** `--defer`) → after clearing the sentinel,
-  **under the lock it already holds**, rescan `pending/` for any sentinel owned
-  by `S`; if none remain, remove `.operator/.armed/S`.
-- The hook's entire check is: gate enabled → `[ -e ".operator/.armed/$session" ]`.
-  One stat. No parsing, no byte bounds, no partition, builtins only by
-  construction.
+  **under the lock it already holds**: remove `.operator/.armed/S` FIRST, then
+  rescan `pending/` for any sentinel owned by `S`, and re-create the marker if one
+  remains. The order matters and the intuitive one is wrong. Clear → rescan →
+  conditionally-remove loses this interleaving:
+
+  ```
+  verdict:  clear sentinel
+  verdict:  rescan pending/ → empty
+  task:                        creates sentinel (O_EXCL, no lock — by design)
+  task:                        creates marker
+  verdict:  rm .armed/S                          ← marker gone, sentinel present
+  ```
+
+  That is stale-FALSE, the one direction the table below calls "the one to
+  prevent", and none of the three mitigations addresses it — they are written for
+  a desync that persists, not one the recompute itself creates (and mitigation 2,
+  "the next verdict corrects it", is circular: the next verdict can lose the same
+  race). Remove-then-rescan-then-restore is safe under every interleaving: a
+  sentinel created before the rescan is seen by it, one created after brings its
+  own marker.
+- The hook's entire check is: gate enabled → `[ -e ".operator/.armed/$session" ]`
+  **or** `[ -e ".operator/.armed/$session.exempt" ]` (G3). One or two stats. No
+  parsing, no byte bounds, no partition, builtins only by construction.
+
+**Why a marker at all, rather than globbing `pending/`.** The hook must answer
+"does THIS session hold a task open", not "is `pending/` non-empty" — the
+unscoped question lets session B write freely because session A has work open,
+reintroducing the cross-session fail-open 0.4.0 closed. Answering the scoped
+question means parsing `session_id:` out of a sentinel body, and in this repo
+that is not a `grep`: it is `LC_ALL=C`, the `-L` symlink rejection, a NUL probe
+before the loop, and a 512-byte bounded read (`ops-stop-hook.sh:140-158`) — sixty
+lines that would become a **fourth** copy, on a hook that fires before every
+edit. `CLAUDE.md`'s coupling table already carries that duplication as a known
+cost at three copies. The derived marker is the cheaper trade, and its desync
+directions are analysed below rather than assumed away.
 
 This is a derived cache, and this repo's history is unkind to derived caches
 ("two components disagreeing about what a task is, silently off" — audit F01).
@@ -238,6 +299,34 @@ the marker. Bypassing the arm gate therefore **owes a handoff presentation**,
 enforced by the stage-2 deviation gate that already ships. The hatch is real,
 one command, and auditable — which is the same shape `ops-task.sh` gave to
 opening a task in 0.3.0.
+
+Two things that phrasing hides, both decided here:
+
+- **`ops-task.sh` does not become a ledger writer.** It takes no lock today, on
+  purpose — `set -C` gives it an O_EXCL create and *"no lock needed, the kernel
+  arbitrates"* (`ops-task.sh:93`). Every DECISIONS.md append in the repo happens
+  inside `ops-verdict.sh` under `lock_acquire`, and `check_lock_parity`
+  (`validate_plugin.py:721`) pins that block across the writers that have it.
+  Giving the opener a lock copies that block to a third file and puts lock code
+  in the path that runs on every task open, for the sake of one rare flag. So
+  `--exempt` stays the operator-facing surface and **delegates the write** to
+  `ops-verdict.sh`, which already holds the lock and is already the single
+  writer. No new lock site, no `check_lock_parity` edit, and the invariant in
+  `CLAUDE.md`'s load-bearing map stays literally true.
+- **The exemption marker is a distinct file: `.armed/<sid>.exempt`.** It has to
+  be, because G2.1's recompute *derives* armed-ness from `pending/` — and an
+  exempt session by definition has nothing there, so the recompute would delete
+  a plain `.armed/<sid>` the moment any verdict ran. Two marker kinds, two
+  lifetimes: `.armed/<sid>` is derived and recomputed under the lock;
+  `.armed/<sid>.exempt` is granted and the recompute never touches it. The
+  distinction is one the earlier draft assumed without naming.
+
+**An exemption is session-scoped and expires with the session.** A `/clear`
+rotates the session id, so the marker becomes unreachable on its own and the
+deviation gate has already collected the presentation debt by then. Nothing needs
+to sweep it beyond the ordinary ephemera cleanup — and under the v2 allowlist
+`.gitignore` (§6.1) it is ignored by construction, like every other file the
+plugin creates.
 
 ### G4 — what G1+G2 together do and do not achieve
 
@@ -376,6 +465,127 @@ gate multiplies the ways a session wedges, and issue #9 is the standing evidence
 that a new gate stage's first field contact finds its false positives. Ship it
 as a CLI plus a charter rule; promote only on evidence.
 
+### B10 — on a large repo, naming the unknowns is task #1, and everything blocks on it
+
+The charter already routes discovery: *surface unknowns before building, not
+after* — fuzzy → interview, unfamiliar code → blindspot pass [DOC:spec-unk].
+What it does not do is make that routing **structural**. It is a rule the
+operator applies by judgment, and the failure mode is silent: an unknown that was
+never named does not appear anywhere as a gap. It appears later as a wrong build.
+
+The evidence is this spec. Its two most expensive defects — §6.3 pointing an
+implementer at `check_install_set_parity` and `check_scripts`, neither of which
+reads `CHARTER_REQUIRED_CLIS`, and the claim that `FRAG_MAX_BYTES` bounds a read
+it never reaches — are both **unknowns about existing code written down as
+knowns**. On a repo of this size (59 tracked files, 22 code files, ~11K LOC) it
+took a review panel with a dedicated claim-check lens to find them, and that lens
+died once on a retry cap and had to be re-run on a second model. Scale the
+codebase and that class does not get rarer; it gets harder to see.
+
+So: **above a size threshold, the backlog's first task is to name the unknowns,
+and every other task is `blockedBy` it.**
+
+- **Shape.** The workflow (§5) inserts the task at ingest time, before
+  sequencing. B4's topological sort then does the rest — it is already
+  deterministic and already in JS, so "everything blocks on #1" needs no new
+  mechanism, just one synthetic node with an edge to every root.
+- **Threshold, a number and not a judgment.** The charter's own idiom is that a
+  cap trip is *"a defined stop-and-report, not a judgment call"* [D:roadmap-s1];
+  a discovery gate that fires on vibes is the thing this rule exists to replace.
+  The census must be cheap enough to run unconditionally at ingest — on this repo
+  `git ls-files` is ~10ms — and it must be stated in the bar so the human can see
+  which side of the line the engagement fell on.
+- **Done-condition.** The task closes on a PASS row citing a written unknown
+  register, not on "we considered it". Same rule as every other AC: a row without
+  evidence is FAIL by definition [D:CHART-def]. The register is the artifact; the
+  verdict is the proof it exists.
+- **Interaction with the bar (A1/A2).** The unknowns task runs BEFORE the bar is
+  locked, or it cannot inform the criteria it exists to correct. That makes it
+  the one task whose output legitimately changes the bar — which is not an
+  exception to A2, because A2 governs re-locking an *already locked* bar. State
+  the ordering explicitly so the two rules cannot be read as contradicting.
+
+Open, and deliberately not decided here — the threshold value. This repo is the
+only measured point (59/22/11K) and it is small; a rule calibrated on one sample
+is a guess with a number on it. The 4th acceptance criterion below is what turns
+it into a measurement.
+
+Acceptance criteria:
+
+1. `ops-backlog.sh --census` prints file count, code-file count and code LOC for
+   the repo, and exits 0 in under 1s on a repo of ≥10K files.
+2. With the threshold exceeded, the workflow's phase-3 output has the unknowns
+   task first and every root task carrying it in `blockedBy`; below the
+   threshold, no such task is inserted. Both directions tested.
+3. The BAR block records the census numbers and which side of the threshold they
+   fell on — so a later reader can tell "no unknowns task" from "the gate did not
+   run", which is E1's shape at the plan layer.
+4. The threshold itself is set from at least three measured repos of different
+   sizes, with the false-positive cost (ceremony on a small repo) and
+   false-negative cost (a wrong build on a large one) stated for each. Until then
+   the value ships as a documented guess, not as a tuned constant.
+
+### B11 — a register the engagement outgrew is a register that lies
+
+B10 gets the unknowns *named*. B11 is the other half of the same problem, and it
+is the one that shows up in every long engagement: **the register is written once
+and then drifts out of date silently.** Two drifts, both observed in the field:
+
+- A finding is resolved, but its entry still sits in the open section carrying
+  its original *"Done looks like"* prose. A reader — human or agent — cannot tell
+  a live finding from a dead one without re-deriving the whole thing.
+- An unknown becomes known, and nothing removes it from the unknowns table. *If
+  an unknown is known it is no longer unknown.* A table that still lists it is
+  not merely stale, it is **wrong about the state of the work**, and it costs the
+  next session a re-investigation of a question already answered.
+
+The failure is not carelessness. It is that closing a finding and moving its
+entry are two separate acts, and only the first one has a mechanism. So the
+second gets done by hand, at the end, by an agent reading the document and
+reasoning about which prose is obsolete — expensive, unreliable, and exactly the
+kind of bookkeeping that has a machine answer available.
+
+**The ledger already knows.** A PASS row for `<id>#ac<N>` is the fact that the
+finding closed; DECISIONS.md holds the deviations and the handoff marks. The
+register duplicates that state in prose, and B1's rule is precisely that
+duplicated state means one copy is wrong with nothing to say which. B9 already
+cross-reads checked ACs against ledger rows for the *backlog*; B11 is the same
+cross-read aimed at the **register documents**.
+
+`ops-backlog.sh --audit` gains a register pass. Given a register file (the spec,
+a review-findings doc, an unknowns table) it reports, and never edits:
+
+| Finding | Meaning |
+|---|---|
+| an open-section entry whose id has a PASS row | resolved-but-unmoved — belongs in the closed section |
+| an unknowns-table row whose id has a PASS or a DECISIONS resolution | **known, still listed as unknown** — the drift that costs a re-investigation |
+| a closed-section entry with no PASS row | closed without evidence — the phantom-done shape (B9), one layer up |
+| an entry referencing an id absent from the backlog and the ledger | a dangling cross-reference; the id was renamed or the entry was never real |
+
+**It reports, never rewrites.** The prose that accompanies a moved finding is a
+judgment — *why* it closed, what it cost, what it taught — and a mechanical move
+would either drop that or fabricate it. What the audit removes is the
+*detection* burden, which is the part that is mechanical and the part that gets
+skipped. The operator still writes the sentence.
+
+Deliberately not in scope: inferring resolution from prose ("this reads like it's
+done"). The only resolution signal is a ledger row, because that is the only one
+with evidence behind it — `D:CHART-def` applies to registers exactly as it does
+to verdicts.
+
+Acceptance criteria:
+
+1. `ops-backlog.sh --audit --register <file>` prints one line per finding in the
+   four kinds above and exits non-zero when any resolved-but-unmoved or
+   known-but-listed-unknown row is found; exits 0 on a clean register.
+2. Run against this spec at the commit that resolves the panel findings (§8b), it
+   reports zero drift — the register and the ledger agree. That is the test that
+   the audit is describing reality rather than a format it invented.
+3. A register entry whose id has a **FAIL** row is reported as still-open, not as
+   resolved. A row's existence is not resolution; its verdict is.
+4. The audit never writes to the register: assert the file's hash is unchanged
+   across a run that reports findings.
+
 ---
 
 ## 4. Decisions — locked-goal autonomy (A)
@@ -406,11 +616,45 @@ identifiable** so later drift is detectable rather than arguable.
 ### A2 — you cannot re-lock your own goal *(the integrity keystone)*
 
 An operator that may amend its own done-criteria has no gate at all — it has a
-mood ring. Mechanically: `ops-verdict.sh` (and `ops-backlog.sh --audit`)
-recompute the BAR block's hash against the pin. On mismatch:
+mood ring. Mechanically: the BAR block's hash is compared against the pin, and on
+mismatch a `GATE-EXCEPTION` is written naming the drift.
 
-- a **PASS** against that bar is refused, and
-- a `GATE-EXCEPTION` is written.
+**Where that comparison runs is a decision, not a detail.** The obvious place is
+`ops-verdict.sh`, so a PASS against a drifted bar is refused synchronously. It is
+the wrong place, for two reasons that compound:
+
+- **VERDICTS.md has no size bound and no block grammar.** `FRAG_MAX_BYTES` is the
+  only bound in the file (`ops-verdict.sh:81`) and it covers fragments, not the
+  ledger; `templates/VERDICTS-header.md` defines a 4-cell table with no BAR-block
+  delimiters. Hashing "the BAR block" on every verdict is therefore an unbounded
+  read inside the critical section — the same PLAYBOOK step-3 hazard G1 was just
+  corrected for.
+- **A boundary guessed at read time produces false drift.** With no delimiters,
+  where the block starts and stops is a heuristic; a row that grows against it,
+  or a later tweak to the heuristic, changes the hash without anyone having
+  touched the bar. A keystone gate that cries wolf gets switched off, and then it
+  guards nothing.
+
+So the hash is computed **once, at lock time**, by `ops-bar.sh lock` — which
+reads the block outside the verdict lock, where a full read is legitimate — and
+the `BAR-LOCK` line records the hash **and the block's boundary**. Verification
+moves to `ops-bar.sh --verify` and `ops-backlog.sh --audit`: paths that hold no
+write lock and where a full read is expected. The lock line becomes the only
+place the block is ever interpreted.
+
+The cost is real and stated plainly: drift becomes **detected** rather than
+**refused**. A PASS against a drifted bar is written and then flagged, instead of
+being blocked at the moment of writing. That is the right trade because A2's own
+stated goal is to make drift *"detectable rather than arguable"* — an audit that
+finds the mismatch and writes the `GATE-EXCEPTION` achieves exactly that, and a
+synchronous refusal adds little against an operator who could rewrite the bar
+anyway. This is an honesty rail, the same class as the arm gate, not a sandbox.
+
+What makes the trade sound rather than convenient: **the audit is mandatory in
+the release path.** `ops-backlog.sh --audit` runs before an engagement's work can
+be promoted, so a mismatch cannot reach a merge unseen. An A2 whose audit is
+optional would be strictly weaker than the synchronous version; an A2 whose audit
+is compulsory at the boundary that matters is not.
 
 The operator's unilateral moves against a locked bar are exactly two: **fail**
 it, or **defer** it with a reason. Amending it is a human act. This is what lets
@@ -463,9 +707,9 @@ Phases, and which are agentic:
 
 | Phase | Tier / mechanism | Output |
 |---|---|---|
-| 1. **Ingest** | RECON fan-out over `backlog task list --json` + per-task `--plain` | structured task records: id, deps, status, AC list |
+| 1. **Ingest** | RECON fan-out over `backlog task list --json` + per-task `--plain`; **no agent** for the repo census (B10) | structured task records: id, deps, status, AC list; census numbers |
 | 2. **Bar** | JUDGMENT, single | the derived BAR block (B3) — the one artifact the human sees before lock |
-| 3. **Sequence** | **no agent** — topo-sort in JS (B4) | ready set, in dependency order; a cycle → R3 |
+| 3. **Sequence** | **no agent** — topo-sort in JS (B4); above the census threshold the unknowns task is the synthetic root every other task blocks on (B10) | ready set, in dependency order; a cycle → R3 |
 | 4. **Execute** | `pipeline()` per ready task: implement (IMPLEMENT) → claims check → review workflow for mergeable work | per-task evidence bundle |
 | 5. **Adjudicate** | JUDGMENT, per AC | recommended verdict + the evidence that supports it |
 
@@ -498,22 +742,56 @@ workflow" — non-negotiable, build-enforced:
 
 | File | Change |
 |---|---|
-| `scripts/ops-verdict.sh` | G1 retro-gate; A2 bar-hash pin; `.armed/` recompute under the existing lock |
-| `scripts/ops-task.sh` | create `.armed/<sid>`; `--exempt "<reason>"` (G3) |
+| `scripts/ops-verdict.sh` | G1 retro-gate; `FRAG_MAX_BYTES` to function scope; `.armed/` recompute (remove → rescan → restore) under the existing lock; the `--exempt` GATE-EXCEPTION write delegated here from `ops-task.sh`. **No `FRAG_OWNER` change** — see the §8b retraction |
+| `scripts/ops-task.sh` | create `.armed/<sid>` after the sentinel; `--exempt "<reason>"` (G3) — parses and validates, delegates the ledger write |
 | `scripts/ops-adopt.sh` | create `.armed/<sid>` |
 | `scripts/ops-armgate-hook.sh` | **new** — PreToolUse arm gate (G2), opt-in |
-| `scripts/ops-backlog.sh` | **new** — `--audit` (B9), bar derivation helper (B3), preflight (B8) |
-| `scripts/ops-bar.sh` | **new** — `lock` (A1); may instead land as `ops-verdict.sh --lock-bar`, see Q3 |
+| `scripts/ops-backlog.sh` | **new** — `--audit` (B9, and A2's bar-hash verify), `--census` (B10), bar derivation helper (B3), preflight (B8) |
+| `scripts/ops-bar.sh` | **new** — `lock` (A1) and `--verify` (A2); may instead land as `ops-verdict.sh --lock-bar`, see Q3 |
 | `scripts/ops-claims.sh` | `PROTECTED` gains `backlog/` (B7) |
-| `scripts/ops-init.sh`, `ops-sessionstart-hook.sh` | install set gains the new CLIs; `.operator/.gitignore` gains `.armed/` |
+| `scripts/ops-init.sh`, `ops-sessionstart-hook.sh` | install set gains the new CLIs. **No `.gitignore` change:** the v2 allowlist ignores `*` and re-admits only evidence, so `.armed/` — and every ephemera directory added after it — is covered by construction |
 | `hooks/hooks.json` | new `PreToolUse` block |
 | `workflows/backlog.js` | **new** (§5) |
-| `commands/backlog.md` | **new** — where the prose the charter cannot afford lives |
+| `commands/backlog.md` | **new** — where the prose the charter cannot afford lives, incl. B3 bar derivation and the A3 release list |
 | `scripts/validate_plugin.py` | see 6.3 |
+| `tests/test-scripts.sh` | **§8c is the case list** — every row there is a case here, titled after its id (`G1.4`, `G2.9`, …) so a coupling row can cite it by name. Includes the cases 6.3's rows name: the *"arm gate"* cases and the extended *"ops-claims verifies diff-matches-claims"* cases |
+| `tests/test_workflows.mjs` | the B4 sequencing rows (`B4.1`, `B4.2`) and the B10 threshold rows (`B10.2`, `B10.3`) — workflow-level, not shell |
+| `CHANGELOG.md` | a `## [x.y.z]` heading in the SAME commit as each `plugin.json` version bump — the release gate fails otherwise (`CLAUDE.md` coupling row) |
 
-### 6.2 The charter budget — 1 line spare (E4)
+### 6.2 The charter budget — measured, and the binding axis has moved
 
-**Maximum 4 new charter lines**, and they must be paid for. Proposal:
+E4 measured the charter at 149/150 lines with 1 line spare, and this section used
+to propose paying for 4 new lines by reclaiming prose. That is no longer the
+situation, and the reason is worth recording because it changes which cap the
+next editor has to respect.
+
+The charter was wrapped at ~75–83 columns against a 100-column cap: 17–25 columns
+unused on every line. Reflowing to 95 (5 columns of margin, no words added or
+removed) freed **13 lines**:
+
+| | before | after | cap |
+|---|---|---|---|
+| lines | 149 | **136** | 150 |
+| bytes | 8194 | **8188** | 9000 |
+| longest non-table line | 83 | **95** | 100 |
+
+Verified content-identical by diffing the word stream, the citation tags, the
+headings and the table rows — all four identical — with `validate_plugin.py`
+green and the bash suite unchanged at 365/0 **for the reflow commit specifically**
+— later work in the same branch adds cases, so a reader comparing against a
+current run should expect a higher total and check the delta, not the absolute.
+So the four new lines are affordable
+without touching a word of existing prose, and the earlier "reclaim ~4 lines"
+plan is withdrawn: it would have traded content for room that was already there.
+
+**The binding cap is now bytes, not lines.** 8188/9000 leaves ~812 bytes ≈ 8 full
+95-column lines, against 14 spare lines. Reflowing cannot buy any more room —
+that lever is spent — so the next addition that does not fit is a genuine
+"reclaim or justify" decision rather than a formatting one. Budget in bytes and
+measure with `wc -lc`; a proposal that counts only lines is measuring the cap
+that stopped binding.
+
+The four lines themselves:
 
 - ENGAGEMENT CONTRACT, +2: when a backlog exists the bar **derives** from its
   ACs + `definition_of_done` (B3); once locked, the operator decides and stops
@@ -521,11 +799,10 @@ workflow" — non-negotiable, build-enforced:
 - EVIDENCE GATE, +2: gate ids are `<backlog-id>#ac<N>` (B2); an AC is checked
   only after a PASS row (A5).
 
-Paid by reclaiming ~4 lines of ORCHESTRATED-MODE prose, **or** by raising
-`CHARTER_MAX_LINES`. Raising the cap is the wrong instinct — the cap bounds
-always-on tokens and F19 added the byte bounds precisely to stop packing from
-defeating it. Reclaim first; if the reclaim is not clean, that is a finding
-about the charter, not a reason to move the line.
+Raising `CHARTER_MAX_LINES` remains the wrong instinct and is not needed here:
+the cap bounds always-on tokens, and F19 added the byte bounds precisely to stop
+packing from defeating it. After the reflow the byte bound is doing that job
+directly.
 
 Everything else — backlog setup, the release list in full, the audit's output
 grammar — lives in `commands/backlog.md`, `skills/chief-operator/SKILL.md`, and
@@ -541,14 +818,40 @@ Written in the existing table's shape so they can be pasted:
 | the arm gate's tool matcher in `hooks.json`           | keep `Bash` OUT of it (G2) and update the deny message, `commands/backlog.md`, and the *"arm gate"* cases                                                                                                        |
 | the AC↔gate-id convention `<backlog-id>#ac<N>`        | update `ops-backlog.sh --audit`, the charter's EVIDENCE GATE line, and the bar-derivation helper — the id is the join key between two projects' files                                                            |
 | `PROTECTED=` in `ops-claims.sh` (now incl. `backlog/`)| the existing row already covers it: `validate_plugin.check_claims` pins the literal AND its `matches_protected` application (F30), plus the *"ops-claims verifies diff-matches-claims"* cases                     |
-| the BAR-block hash input (A2)                         | update `ops-bar.sh lock`, `ops-verdict.sh`'s pin check, and `ops-backlog.sh --audit`; a hash over a different byte range silently un-pins every locked bar                                                       |
+| the BAR-block hash input or its recorded boundary (A2) | update `ops-bar.sh lock` + `--verify` and `ops-backlog.sh --audit`; a hash over a different byte range silently un-pins every locked bar. `ops-verdict.sh` is deliberately NOT in this list — the comparison does not run there (A2) |
 
-New validator obligations: `CHARTER_REQUIRED_CLIS` gains the new CLIs, which
-transitively moves `check_scripts`, `check_install_set_parity` (pins the
-`ops-init.sh` and `ops-sessionstart-hook.sh` lists equal — CR4), and the
-`GATE_CLIS` literal in `ops-compress.mjs` (the I2.1 carve-out). A new
-`check_armgate` should pin the matcher set and assert `Bash` is absent from it —
-the one property whose silent loss would turn a rail into a wedge.
+**New validator obligations.** The earlier draft got this paragraph wrong in both
+directions and it is worth stating correctly, because it is the kind of error
+that sends an implementer to edit a file that has nothing to do with the change.
+`CHARTER_REQUIRED_CLIS` (`validate_plugin.py:75`) has exactly **two** readers:
+
+- `check_charter` (`:213`) — requires a `.operator/bin/<cli>` mention in
+  OPERATOR.md for every entry. **Moves with the constant.**
+- the `GATE_CLIS` comparison for `ops-compress.mjs` (`:1304`) — the I2.1
+  carve-out. **Moves with the constant.**
+
+And two checks the draft named that are **not** coupled to it:
+
+- `check_scripts` (`:421-426`) iterates its own hardcoded tuple. Adding a CLI
+  there is a **separate edit**; skip it and the new scripts ship with no `bash -n`
+  and no missing-file report. `ops-armgate-hook.sh` is not a charter CLI at all,
+  so nothing would ever add it — it must be added by hand.
+- `check_install_set_parity` (`:696`) extracts the install set with a regex over
+  the shell scripts (`:704`), whose `[^;]*` tail already matches new CLIs. It
+  never reads the Python constant and needs no edit.
+
+Also unchanged: `check_lock_parity`. G3 delegates its ledger write to
+`ops-verdict.sh` rather than giving `ops-task.sh` a lock, so no new lock site
+appears (G3).
+
+Genuinely new: `check_armgate`, pinning the matcher set and asserting `Bash` is
+absent from it — the one property whose silent loss would turn a rail into a
+wedge. And note the charter-line consequence of the first bullet: every CLI added
+to `CHARTER_REQUIRED_CLIS` costs a charter line beyond §6.2's four. That is the
+argument for keeping `ops-backlog.sh` and `ops-bar.sh` OUT of the constant —
+they are engagement setup, invoked from `commands/backlog.md`, not session
+mechanics the operator needs named in every session's charter. After the reflow
+the room exists either way; this is a scoping decision, not a budget one.
 
 ---
 
@@ -577,6 +880,169 @@ Kept in the PLAYBOOK's register — add to it when a new gap is found.
 | Backlog.md's flags are as documented | Read from the README on 2026-08-06 and not executed. Verify against `backlog --help` and pin the version (B-preamble). |
 | A locked bar prevents goal drift | It prevents *silent* goal drift. An operator can still fail or defer everything and hand back an honest nothing — which is the intended escape, not a hole. |
 | The retro-gate distinguishes "never armed" from "armed in another session" | It reads this session's fragment. A task armed by session A and closed by session B (after `ops-adopt.sh`) is the case to test explicitly. |
+| The B10 census threshold is the right size | It is calibrated on ONE repo — this one (59 files / 22 code / ~11K LOC), which is small. Until B10's AC4 measures three repos of different sizes, the number ships as a documented guess. Both error directions have a real cost: ceremony on a small repo, a wrong build on a large one. |
+| Naming unknowns first prevents the defect class it targets | Untested. The argument is an existence proof (§6.3 and the `FRAG_MAX_BYTES` claim in THIS spec were unknowns written as knowns), not evidence that a mandated discovery task would have caught them. It might have produced a register that missed the same two. |
+| §8c's criteria are the right ones | They are testable, which is not the same as sufficient. Each was derived from a decision in this document, so a decision that is itself wrong gets a criterion that passes. §8c closes the "cannot be checked" gap, not the "is correct" one — G1.4 asserts a refusal the spec chose; it cannot tell you the refusal was the right call. |
+| An implementer following §8c produces a working feature | Every row is a unit-level assertion. None exercises the composed path — arm → write → verdict → recompute → stop — across two concurrent sessions, which is where this repo's bugs have historically lived (F01, F03, the 0.4.0 ownership work). A green §8c is a floor. |
+
+---
+
+## 8b. Amendments from the review panel (2026-08-07)
+
+This spec was reviewed by the `cc-operator:review` panel at commit `71732ff`
+(605 lines). The adversarial seat returned **CONFIRMED** — it reproduced E1 in a
+fresh scaffolded repo byte-for-byte, re-measured E4 against HEAD, and confirmed
+the regression gates (`validate_plugin` exit 0, bash suite 365/0). Everything the
+spec claimed about the *current* code held, except where noted below.
+
+The claim-check lens died on a StructuredOutput retry cap after 43 tool calls and
+was re-run separately on a second model. That re-run produced the §6.3 correction
+— which is the most consequential change here, and it was found only because the
+lens was re-run rather than written off. Recorded because it is evidence for
+B10's argument: the defects that survive are the ones a panel finds late or not
+at all.
+
+| # | Finding | Where it landed |
+|---|---|---|
+| 1 | ~~`FRAG_OWNER` resolves to `""` with no owner → fragment is `verdicts.d/.md`, a dotfile invisible to the hook's glob~~ | **WITHDRAWN — the finding was wrong.** See the retraction below. |
+| 2 | §6.3 claimed `CHARTER_REQUIRED_CLIS` transitively moves `check_scripts` and `check_install_set_parity`; neither reads it, and it omitted `check_charter`, which does | §6.3, rewritten with the two real readers named |
+| 3 | `FRAG_MAX_BYTES` does not bound the read G1 would do — that refusal is only inside `--reconcile` | G1, second requirement |
+| 4 | A never-armed verdict with no `--owner` has no sid to tag, and an untagged GATE-EXCEPTION blocks every session | G1, third requirement — refuse, narrowly scoped |
+| 5 | A2 hashes an unbounded VERDICTS.md with no block grammar, on every verdict | A2, rewritten: hash at lock time, verify at audit time, mandatory in the release path |
+| 6 | G3 made `ops-task.sh` a ledger writer; it deliberately takes no lock | G3, rewritten: `--exempt` delegates the write to `ops-verdict.sh` |
+| 7 | G2.1's clear → rescan → remove recompute loses a race with `ops-task.sh` and produces stale-FALSE | G2.1, rewritten: remove → rescan → restore, with the interleaving shown |
+| 8 | `.operator/.gitignore` needed an upgrade-path append for `.armed/` | Obsolete — the v2 allowlist ignores `*` and re-admits only evidence |
+| 9 | §6.2's +4 omitted the charter lines `check_charter` would force | §6.2, rewritten around the measured reflow; §6.3 records the per-CLI cost |
+| 10 | §6.1 omitted `tests/` and `CHANGELOG.md` | §6.1, two rows added |
+| 11 | B2's "safe as a fragment name" argues a coupling that does not exist — fragments are named by owner, never by task id | Noted here; B2's identity mapping is unaffected, only its justification |
+
+### Retraction — finding #1 was false (second panel, 2026-08-07)
+
+The amended spec went back through the panel. The feasibility lens refuted
+finding #1, and it is right:
+
+```
+$ bash -c 'f(){ echo "[${1:-unowned}]"; }; f ""'    → [unowned]
+$ bash -c 'f(){ echo "[${1-unowned}]"; }; f ""'     → []
+```
+
+`${1:-word}` — **with** the colon — substitutes on unset *or null*. Only the
+colonless form is unset-only. `append_fragment` (`ops-verdict.sh:378`) uses the
+colon form, so an empty `FRAG_OWNER` lands in `unowned.md`, not `.md`. Confirmed
+end-to-end in a fresh scaffold, `ops-verdict.sh` with no `--owner`:
+
+```
+$ ls -a .operator/verdicts.d/
+.  ..  unowned.md
+```
+
+There is no dotfile, no invisible fragment, and no standing bug. The proposed
+`FRAG_OWNER="${OWNER:-${SOWNER:-unowned}}"` is a no-op. G1's third requirement is
+withdrawn; two remain.
+
+**Q4 is unaffected** and stays. It is about the `[sid:<session>]` tag on the
+GATE-EXCEPTION line in DECISIONS.md, not about the fragment filename — an
+untagged gated line is still unowned, and unowned still fails closed.
+
+Recorded rather than quietly deleted because of what it cost: finding #1 was a
+must-resolve at score 82 in the first panel, was written into this spec as
+established fact, and would have sent an implementer to make a no-op edit while
+believing a bug was fixed. A review finding is a hypothesis until someone runs
+it — the same rule this repo applies to a subagent's "COMPLETE".
+
+Across every proposed section the panel scored testability 35–50 in the first
+pass and 85–95 in the second: the sections describe behaviour without a command
+and an expected output. §8c closes that.
+
+---
+
+## 8c. Acceptance criteria for the proposed behaviour
+
+The panel's largest finding, twice, is that this document argues well and
+specifies untestably. Every decision below gets a command and an expected
+result, so an implementer can tell "built" from "believed built" — and so a
+reviewer can refute a claim without re-deriving the design.
+
+Format: each row is a command run from a project root and what it must produce.
+`$S` is the session id. Rows marked **(new)** describe behaviour that does not
+exist yet; rows marked **(regression)** pin behaviour that must not change.
+
+### G1 — the retro-gate
+
+| # | Command | Expected |
+|---|---|---|
+| G1.1 | open a task, then `ops-verdict.sh t1 crit ev PASS --owner $S` | exit 0; row in VERDICTS.md; **zero** new `GATE-EXCEPTION` lines in DECISIONS.md **(regression)** |
+| G1.2 | with `pending/` empty: `ops-verdict.sh never-armed crit ev PASS --owner $S` | exit 0; row appended; **exactly one** `GATE-EXCEPTION` line whose what-cell contains `[sid:$S]` **(new)** |
+| G1.3 | repeat G1.2's command a second time | exit 0; row appended; stderr matches `duplicate`/`amending`; **no second** `GATE-EXCEPTION` **(new)** |
+| G1.4 | with `pending/` empty and **no** `--owner`: `ops-verdict.sh never-armed crit ev PASS` | **exit non-zero**; VERDICTS.md unchanged (byte-compare); stderr names `--owner` **(new)** |
+| G1.5 | armed task, no `--owner`: `ops-verdict.sh t1 crit ev PASS` | exit 0 — the narrow scope of G1.4 is asserted, not assumed **(regression)** |
+| G1.6 | a fragment padded past `FRAG_MAX_BYTES`, then a verdict on that session | exit 0 within the lock budget; the read is refused/truncated rather than slurped — assert by timing bound and by the refusal message **(new)** |
+
+### G2 / G2.1 — the arm gate and the armed marker
+
+| # | Command | Expected |
+|---|---|---|
+| G2.1 | armgate hook with a `Write` payload, `armgate.on` absent | exit 0, no stderr — opt-in default **(new)** |
+| G2.2 | `armgate.on` present, no `.armed/$S`, `Write` payload | **exit 2**; stderr names both `ops-task.sh … --owner $S` and the `--exempt` path **(new)** |
+| G2.3 | same, with `.armed/$S` present | exit 0 **(new)** |
+| G2.4 | same, with only `.armed/$S.exempt` present | exit 0 — the exempt marker arms independently **(new)** |
+| G2.5 | `armgate.on` present, payload cwd has no `.operator/` above it | exit 0 — fails open on missing state **(new)** |
+| G2.6 | `armgate.on` present, no JSON parser on PATH | exit 0, silent — fails open on infrastructure **(new)** |
+| G2.7 | `grep -c '"Bash"' hooks/hooks.json` in the PreToolUse matcher | 0 — `Bash` is never gated; asserted by `check_armgate`, not by reading **(new)** |
+| G2.8 | open task for `$S`, verdict it, then `ls .operator/.armed/` | `$S` absent — the recompute removed it **(new)** |
+| G2.9 | two tasks open for `$S`, verdict one, then `ls .operator/.armed/` | `$S` **present** — remove-then-rescan-then-restore put it back **(new)** |
+| G2.10 | `.armed/$S` deleted by hand, then a verdict on an open task of `$S` | `$S` present again — the recompute is self-healing **(new)** |
+
+### G3 — the exemption
+
+| # | Command | Expected |
+|---|---|---|
+| G3.1 | `ops-task.sh --exempt "reason" --owner $S` | exit 0; one `GATE-EXCEPTION` line tagged `[sid:$S]` containing `reason`; `.armed/$S.exempt` exists **(new)** |
+| G3.2 | `ops-task.sh --exempt` with no reason | exit non-zero; DECISIONS.md unchanged **(new)** |
+| G3.3 | after G3.1, run the Stop hook for `$S` | **exit 2** — the exemption owes a presentation **(new)** |
+| G3.4 | after G3.1 and a `--mark-handoff`, run the Stop hook | exit 0 **(new)** |
+| G3.5 | after G3.1, verdict an unrelated open task of `$S`, then `ls .operator/.armed/` | `$S.exempt` still present — the recompute never touches a granted marker **(new)** |
+| G3.6 | `grep -c 'lock_acquire' scripts/ops-task.sh` | 0 — the opener stays lock-free; the write is delegated **(new)** |
+
+### A1 / A2 — the bar lock and its hash
+
+| # | Command | Expected |
+|---|---|---|
+| A1.1 | `ops-bar.sh lock eng-1` | exit 0; one `BAR-LOCK` line carrying a hash, the block boundary, the blast-radius globs, the budget and the caps **(new)** |
+| A1.2 | `ops-bar.sh lock eng-1` again | exit non-zero — a bar locks once **(new)** |
+| A2.1 | `ops-bar.sh --verify eng-1` on an untouched bar | exit 0, no output **(new)** |
+| A2.2 | edit one byte inside the bar block, then `--verify` | exit non-zero naming the drift; one `GATE-EXCEPTION` written **(new)** |
+| A2.3 | append 100 rows to VERDICTS.md *outside* the block, then `--verify` | exit 0 — the recorded boundary means growth is not drift **(new)** |
+| A2.4 | after A2.2, `ops-verdict.sh <id> crit ev PASS --owner $S` | **exit 0** — the hash is not checked at verdict time; the drift is already recorded **(new)** |
+| A2.5 | `ops-backlog.sh --audit` with a drifted bar | exit non-zero — the audit is what refuses, and it is mandatory in the release path **(new)** |
+| A2.6 | `grep -c 'sha' scripts/ops-verdict.sh` | 0 — no hash computation on the write path **(new)** |
+
+### B — the backlog integration
+
+| # | Command | Expected |
+|---|---|---|
+| B2.1 | open a task id `task-42#ac3` | exit 0 — the `#` form passes `check_bare_name` in all three CLIs **(new)** |
+| B4.1 | phase-3 on a backlog with `a→b→c` | ready order `a, b, c`, produced with no agent call in the phase **(new)** |
+| B4.2 | phase-3 on a backlog with a dependency cycle | the workflow returns an R3 escalation, not an ordering **(new)** |
+| B7.1 | worker diff touching `backlog/tasks/x.md`, then `ops-claims.sh --claimed "backlog/tasks/x.md"` | exit non-zero naming `gate-trespass` **(new)** |
+| B7.2 | `python3 scripts/validate_plugin.py` after adding `backlog/` to `PROTECTED` in only one of the two pinned sites | exit non-zero — `check_claims` pins the literal AND its application (F30) **(new)** |
+| B8.1 | preflight against a `backlog.config.yml` with `autoCommit: true` | exit non-zero; no bar locked **(new)** |
+| B9.1 | AC checked with no PASS row, then `ops-backlog.sh --audit` | exit non-zero; output names `phantom done: <id>#ac<N>` **(new)** |
+| B9.2 | PASS row with the AC unchecked | reported as `lag`, exit 0 — benign **(new)** |
+| B9.3 | AC checked with a FAIL row | exit non-zero; output names `contradiction` **(new)** |
+| B10.1 | `ops-backlog.sh --census` on a repo of ≥10K files | exit 0 in under 1s; prints file count, code-file count, code LOC **(new)** |
+| B10.2 | phase-3 above the threshold | the unknowns task is first; every root task lists it in `blockedBy` **(new)** |
+| B10.3 | phase-3 below the threshold | no unknowns task inserted **(new)** |
+| B11.1 | `--audit --register <file>` on a register with a resolved-but-unmoved entry | exit non-zero naming that entry **(new)** |
+| B11.2 | same, on a register listing an unknown that has a PASS row | exit non-zero — known, still listed as unknown **(new)** |
+| B11.3 | same, where the entry's row is a **FAIL** | reported still-open, not resolved **(new)** |
+| B11.4 | hash the register before and after any `--audit --register` run | identical — the audit never writes **(new)** |
+
+Two of these are worth stating as design assertions rather than tests, because
+they pin an absence: **G3.6** and **A2.6** both assert that a file does *not*
+gain something (a lock, a hash computation). An absence is what silently
+reappears under a later edit, which is why each has a grep with an expected count
+rather than a prose promise.
 
 ---
 
@@ -594,7 +1060,10 @@ Kept in the PLAYBOOK's register — add to it when a new gap is found.
    grows the install set and every parity check that pins it. A new flag widens
    the single writer, which is the most dangerous file in the repo. Leaning to
    the flag, on the grounds that the lock is a ledger write and the ledger has
-   exactly one writer by design.
+   exactly one writer by design. *(Note the same reasoning decided G3: `--exempt`
+   delegates its write rather than duplicating the lock. If Q3 goes the same way,
+   `ops-bar.sh` shrinks to a `--verify` reader and the lock write lands as an
+   `ops-verdict.sh` flag.)*
 4. **Q4 — does `backlog/` in `PROTECTED` (B7) over-restrict?** It forbids an
    implementer from writing `--notes` / `implementation_notes` back to its own
    task, which is a genuinely useful worker behaviour. The alternative is a
@@ -603,3 +1072,57 @@ Kept in the PLAYBOOK's register — add to it when a new gap is found.
 5. **Q5 — is `definition_of_done` per-engagement or per-task?** B3 applies it to
    every task in the engagement. If a project's DoD is heavyweight, that
    multiplies criteria by task count and the bar becomes unreadable.
+
+---
+
+## 10. Backlog — carried items
+
+Items to schedule once `backlog/` exists (B1–B9). Until the CLI is wired this
+section IS the backlog; each entry must be portable to a `backlog task` with its
+acceptance criteria intact.
+
+### BL-1 — cache-aware dispatch: keep cheap-tier seats hitting a warm prefix
+
+**Investigate**, not yet a design. The orchestration layer fans narrow lenses
+across cheap tiers (`ops-tiers.sh`: `MECHANICAL=glm-5-turbo`, `RECON=glm-4.5-air`)
+and converges on judgment. Every one of those dispatches pays full input price on
+a cold prefix, and re-pays it on the next dispatch that shares the same context
+but arrives after the provider's cache window has lapsed. The question is whether
+dispatch ORDER and PACKET SHAPE can be arranged so a fan-out reuses one warm
+prefix instead of paying N cold ones.
+
+What makes this non-obvious, and why it is an investigation rather than a task:
+
+- **The cache is the provider's, not ours.** TTL, the prefix-match rule, and
+  whether a cache entry is even per-seat differ per vendor, and this repo routes
+  cheap tiers to non-Anthropic ids through cc-proxy. A design that assumes
+  Anthropic's semantics would be wrong for exactly the tiers it targets.
+- **Prefix stability is a packet property.** The dispatch packet (charter,
+  `TASK / TEXT / SCENE / INPUTS / …`) puts per-dispatch text early. If the shared
+  material (charter, repo map, shard corpus) is not byte-identical and FIRST,
+  there is no prefix to hit — this is the axis a design would have to move, and
+  it collides with the packet's fixed field order.
+- **It interacts with the compressor.** `ops-compress.mjs` rewrites tool output
+  to shrink re-billed input. That is the same cost axis from the other end, and
+  its spill/dedup state is session-scoped — a cache design that assumes stable
+  earlier turns must account for the compressor having altered them.
+
+Acceptance criteria (each needs a command + expected output before this leaves
+the backlog):
+
+1. A measurement of what a fan-out actually costs today: cached vs uncached input
+   tokens per seat across one real `review` run, read from the run's own usage
+   record — not estimated.
+2. A written statement, per routed tier, of that provider's cache TTL and
+   prefix-match rule, each with its source.
+3. A yes/no on whether packet field order can carry a stable shared prefix
+   without breaking `[D:CHART-packet]`; if no, the finding is that the charter
+   constrains this and the item closes as won't-do with that reason recorded.
+4. If a design follows: a measured before/after on the same fan-out, same
+   artifact, with the token delta as evidence.
+
+Explicitly out of scope for the investigation: raising cheap-tier work to a
+judgment tier to reuse its cache. Model routing is charter-fixed — correctness of
+the product beats token savings, and judgment work never runs below judgment tier
+[D:CHART-route]. A cache design that quietly re-routes work is a routing change
+wearing a cost argument.
