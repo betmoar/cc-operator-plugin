@@ -374,7 +374,12 @@ for ID in ${IDS+"${IDS[@]}"}; do
   # Failure is swallowed — a marker we could not write degrades to stale-false,
   # repaired by the next verdict's recompute, and dying here would abort an
   # adoption that already succeeded.
-  mkdir -p "$OPDIR/.armed" 2>/dev/null && : > "$OPDIR/.armed/$OWNER" || true
+  # Explicit `if`, not `A && B || C`: with the chained form a FAILED truncate
+  # still runs the `|| true`, which reads as "success tolerated" when it is the
+  # one outcome worth the (swallowed) failure being distinct. SC2015.
+  if mkdir -p "$OPDIR/.armed" 2>/dev/null; then
+    : > "$OPDIR/.armed/$OWNER" 2>/dev/null || true
+  fi
 
   echo "adopted $ID: ${PREV:-<unowned>} -> $OWNER"
 done

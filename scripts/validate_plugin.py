@@ -488,6 +488,20 @@ def check_armgate(root, problems):
             problems.append(
                 "scripts/ops-armgate-hook.sh: does not honour .armed/<sid>.exempt "
                 "— the G3 exemption is the only escape from a blocking gate")
+        # An EXISTING-but-unusable .armed (a regular file, a chmod accident) must
+        # fail OPEN. Without this the gate denies a legitimately armed session
+        # AND every documented repair is dead: ops-task.sh/ops-adopt.sh swallow
+        # their marker write and report success, --exempt dies after its ledger
+        # row lands. Measured unwritable-and-unrepairable (PR review 2026-08-07).
+        # Pinned because every other assertion here passed with the bug present.
+        code = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
+        if not any("-d" in ln and ".armed" in ln for ln in code):
+            problems.append(
+                "scripts/ops-armgate-hook.sh: no `-d` test on .armed — an existing "
+                "but unusable marker directory must fail OPEN, or a legitimately "
+                "armed session is denied every edit with no in-band repair (the "
+                "hook's own header promises this; it was once documented and "
+                "unimplemented)")
 
 
 def check_scripts(root, problems):

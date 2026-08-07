@@ -128,6 +128,27 @@ esac
 [ -e "$opdir/.armed/$session" ] && exit 0
 [ -e "$opdir/.armed/$session.exempt" ] && exit 0
 
+# `.armed` EXISTS but is not a usable directory (a regular file, a bad restore,
+# a chmod/umask accident) → INFRASTRUCTURE FAILURE → fail OPEN. The header's
+# contract already promised this ("an unreadable or unusable marker"); it was
+# documented and not implemented (PR-review finding, 2026-08-07).
+#
+# Why this is the critical direction and not a nicety: with `.armed` unusable,
+# every marker write in the repo fails, and the three repairs this deny message
+# prints are ALL dead — `ops-task.sh` and `ops-adopt.sh` swallow their marker
+# write by design (a failed marker is meant to degrade to stale-false), so they
+# report success and change nothing; `--exempt` dies AFTER its ledger row lands,
+# leaving the operator owing a handoff for an exemption they never received.
+# Measured: a legitimately-armed session with an open task, denied on every
+# Write/Edit/MultiEdit/NotebookEdit, with no in-band way out. That is the
+# unwritable-and-unrepairable project this hook's whole polarity exists to avoid.
+#
+# ABSENCE of `.armed` must still DENY — that is the honest never-armed case, and
+# it is the common one. Only an existing-but-unusable `.armed` fails open.
+if [ -e "$opdir/.armed" ] && { [ ! -d "$opdir/.armed" ] || [ ! -x "$opdir/.armed" ]; }; then
+  exit 0
+fi
+
 # --- deny --------------------------------------------------------------------
 # Name the recovery verbatim (stale-false mitigation 1): ops-adopt.sh re-stamps
 # ownership AND re-creates the marker, so a session whose marker desynced from a

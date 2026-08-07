@@ -2004,6 +2004,29 @@ B10NG="$(mktemp -d "${TMPDIR:-/tmp}/opstest.XXXXXX")"
 (cd "$B10NG" && bash "$SCRIPTS/ops-backlog.sh" --census 2>/dev/null); B10NGRC=$?
 check "B10.1 --census on a non-git dir → non-zero" "$([ "$B10NGRC" != 0 ] && echo 0 || echo 1)"
 
+# B10.2 — a filename containing a SPACE must not vanish from the count. Bare
+# `xargs` word-splits on any whitespace, so `my file.py` became two bogus args,
+# both cats failed, 2>/dev/null swallowed it, and the file dropped out silently:
+# measured code-loc 1 on a 2-file/3-line repo. Every stage is NUL-delimited now.
+# (PR-review finding, 2026-08-07.)
+B10SP="$(newproj)"
+( cd "$B10SP" && git init -q -b work && git config user.email t@t && git config user.name t )
+printf 'a = 1\nb = 2\n' > "$B10SP/my file.py"     # 2 non-blank lines, spaced name
+printf 'c = 3\n'        > "$B10SP/plain.py"       # 1 non-blank line
+( cd "$B10SP" && git add -A && git commit -qm base >/dev/null 2>&1 )
+B10SPOUT="$(cd "$B10SP" && bash "$SCRIPTS/ops-backlog.sh" --census 2>/dev/null)"
+check "B10.2 --census counts a file whose name contains a space (code-loc: 3)" \
+  "$(printf '%s' "$B10SPOUT" | grep -q '^code-loc: 3$' && echo 0 || echo 1)"
+
+# B10.3 — an unreadable code file must be REPORTED, never silently undercounted.
+# A census that prints a confident number over a partial read misinforms exactly
+# the B10 decision it exists to inform. Simulated by deleting a tracked file so
+# `cat` fails (chmod is not portable under every test runner).
+rm -f "$B10SP/plain.py"
+B10PART="$(cd "$B10SP" && bash "$SCRIPTS/ops-backlog.sh" --census 2>/dev/null)"
+check "B10.3 --census marks an incomplete read PARTIAL rather than printing a confident count" \
+  "$(printf '%s' "$B10PART" | grep -q '^code-loc: .*PARTIAL' && echo 0 || echo 1)"
+
 # CHANGED: none — clean working tree, no claims, no trespass.
 runclaims --since "$BASE_SHA" --claimed none >/dev/null 2>&1; CNG=$?
 check "CHANGED none: clean tree, no claims → exit 0" "$([ "$CNG" = 0 ] && echo 0 || echo 1)"
@@ -2463,6 +2486,53 @@ DEC_AFTER="$(grep -cE '^[0-9]{4}.*GATE-EXCEPTION' "$P/.operator/DECISIONS.md" ||
 check "G1.7 long-evidence duplicate is duplicate, not never-armed (no spurious GATE-EXCEPTION)" \
   "$([ "${DEC_AFTER:-0}" = "${DEC_BEFORE:-0}" ] && [ "$DUP17" -eq 0 ] && echo 0 || echo 1)"
 
+# G1.8 — a never-armed verdict writes EXACTLY ONE GATE-EXCEPTION however many
+# times it is amended. The exception is the bypass record; a second one on every
+# amendment would make the deviation gate cry wolf, and the operator would learn
+# to wave it through — the failure mode issue #9 already taught this repo once.
+#
+# NOT asserted here, and deliberately so: recovering the exception when a crash
+# lands between the fragment-row append and the exception append. That guard was
+# built and reverted — an ARMED first verdict also leaves a row with no
+# exception, so "row without exception" cannot distinguish crash-interrupted
+# from ordinary-amended, and the guard fired spuriously on every armed amendment
+# (G1.7 catches exactly that). The residual is recorded in ops-verdict.sh's
+# retro_gate; closing it needs an atomic pair, which is its own slice.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+S8="SESS-G18"
+( cd "$P" && bash "$VERDICT" g1t8 crit ev PASS --owner "$S8" >/dev/null 2>&1 )
+G18_FIRST="$(grep -cE '^[0-9]{4}.*GATE-EXCEPTION' "$P/.operator/DECISIONS.md" || true)"
+( cd "$P" && bash "$VERDICT" g1t8 crit2 ev2 PASS --owner "$S8" >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" g1t8 crit3 ev3 PASS --owner "$S8" >/dev/null 2>&1 )
+G18_AFTER="$(grep -cE '^[0-9]{4}.*GATE-EXCEPTION' "$P/.operator/DECISIONS.md" || true)"
+check "G1.8 never-armed verdict writes exactly one GATE-EXCEPTION across amendments" \
+  "$([ "${G18_FIRST:-0}" = "1" ] && [ "${G18_AFTER:-0}" = "1" ] && echo 0 || echo 1)"
+
+# G1.9 — the retro-gate covers BOTH closing paths. --defer retires a task exactly
+# as a verdict does, so deferring an id that was never opened is an unarmed close
+# and earns the same GATE-EXCEPTION. Before this, a session could retire
+# arbitrary ids via --defer with no trace while the identical act through the
+# PASS/FAIL path was recorded — an asymmetry a bypass would find.
+# (PR-review finding, 2026-08-07.)
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+S9="SESS-G19"
+( cd "$P" && bash "$VERDICT" g1t9 --defer "blocked" --owner "$S9" >/dev/null 2>&1 )
+G19_NA="$(grep -cE '^[0-9]{4}.*GATE-EXCEPTION' "$P/.operator/DECISIONS.md" || true)"
+check "G1.9 --defer of a never-opened task writes a GATE-EXCEPTION" \
+  "$([ "${G19_NA:-0}" = "1" ] && echo 0 || echo 1)"
+# Regression: deferring a properly ARMED task is unchanged, and needs no --owner
+# (the sentinel supplies it) — the narrow scope of the refusal above is asserted.
+( cd "$P" && bash "$TASK" g1t9b --owner "$S9" >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" g1t9b --defer "reason" >/dev/null 2>&1 ); G19ARC=$?
+G19_ARMED="$(grep -cE '^[0-9]{4}.*GATE-EXCEPTION' "$P/.operator/DECISIONS.md" || true)"
+check "G1.9 --defer of an armed task exits 0 and writes no GATE-EXCEPTION" \
+  "$([ "$G19ARC" -eq 0 ] && [ "${G19_ARMED:-0}" = "1" ] && echo 0 || echo 1)"
+# A never-armed defer with no --owner is REFUSED: an untagged GATE-EXCEPTION is
+# unowned, and unowned blocks every session (the cross-session wedge 0.4.0 removed).
+( cd "$P" && bash "$VERDICT" g1t9c --defer "x" >/dev/null 2>&1 ); G19NRC=$?
+check "G1.9 --defer never-armed without --owner is refused" \
+  "$([ "$G19NRC" -ne 0 ] && echo 0 || echo 1)"
+
 rm -rf "$P"
 
 ########################################################################
@@ -2526,6 +2596,25 @@ run_armhook "$P" "$S" "/nonexistent"
 check "G2.6 no JSON parser → exit 0 (fails open)" "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
 check "G2.6 no JSON parser → silent (no stderr before every edit)" \
   "$([ -z "$AERR" ] && echo 0 || echo 1)"
+
+# G2.11 — `.armed` EXISTS but is not a usable directory → fail OPEN. This is the
+# unwritable-and-UNREPAIRABLE case: with .armed unusable every marker write in
+# the repo fails, so all three repairs the deny message prints are dead
+# (ops-task.sh/ops-adopt.sh swallow their marker write and report success while
+# changing nothing; --exempt dies after its ledger row lands). A legitimately
+# armed session was denied every file mutation with no in-band way out.
+# Measured before the fix: rc=2. (PR-review finding, 2026-08-07.)
+#
+# Polarity matters in BOTH directions, so both are asserted: an unusable .armed
+# fails OPEN, an ABSENT .armed still DENIES (the honest never-armed case).
+( cd "$P/.operator" && rm -rf .armed && : > .armed )      # regular file, not a dir
+run_armhook "$P" "$S"
+check "G2.11 .armed exists but is not a usable directory → exit 0 (fails open)" \
+  "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
+( cd "$P/.operator" && rm -f .armed )                      # absent again
+run_armhook "$P" "$S"
+check "G2.11 .armed absent + unarmed session → still exit 2 (absence is not an infra fault)" \
+  "$([ "$ARC" -eq 2 ] && echo 0 || echo 1)"
 
 # G2.7 — `Bash` is never in the PreToolUse matcher. Asserted against hooks.json
 # itself (check_armgate pins the same property in the build gate).

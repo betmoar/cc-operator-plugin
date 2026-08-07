@@ -34,34 +34,64 @@ if [ "${1:-}" = "--census" ]; then
   # repo's real weight. git ls-files is the census the spec names (~10ms here,
   # B10 AC1); wc -l counts them without holding the list in a shell variable
   # (a 10K-file repo would otherwise hit ARG_MAX in a for-loop).
-  n_files="$(git ls-files 2>/dev/null | grep -c '' || true)"
+  # EVERY stage is NUL-delimited (`-z`/`-0`). A newline-delimited list breaks on a
+  # filename containing a space: bare `xargs` word-splits on ANY whitespace, so
+  # `my file.py` became two bogus arguments, both `cat`s failed, `2>/dev/null`
+  # swallowed it, and that file vanished from the count — measured `code-loc: 1`
+  # on a 2-file/3-line repo (PR-review finding, 2026-08-07). A census that is
+  # silently wrong is worse than one that refuses: this number is the whole
+  # input to the B10 "is this repo big enough to need an unknowns pass" decision.
+  n_files="$(git ls-files -z 2>/dev/null | tr -dc '\0' | wc -c | tr -d ' ')"
   # Code files: a conservative extension set. "Code" here is the size signal for
   # "how much does a reader have to hold to find the unknowns", so it is the
   # source, not the prose. A .md is documentation; a .sh/.py/.js/.ts/.go/.rs/.c/.h
   # is code. The set is deliberately ordinary — the threshold (B10 AC4, unmeasured)
   # is the tuning knob, not the extension list, and a missing extension under-
   # counts slightly (safe) where a wrong threshold mis-classifies the whole repo.
-  n_code="$(git ls-files 2>/dev/null \
-    | grep -E '\.(sh|py|js|mjs|cjs|ts|tsx|jsx|go|rs|c|h|cpp|cc|hpp|java|rb|pl|php|kt|swift|lua|vim|el|clj|ex|exs|erl|scala|r|jl|dart|sql)$' \
-    | grep -c '' || true)"
-  # Code LOC: non-blank lines in the code files. The earlier draft forked
+  CODE_RE='\.(sh|py|js|mjs|cjs|ts|tsx|jsx|go|rs|c|h|cpp|cc|hpp|java|rb|pl|php|kt|swift|lua|vim|el|clj|ex|exs|erl|scala|r|jl|dart|sql)$'
+  n_code="$(git ls-files -z 2>/dev/null | grep -zE "$CODE_RE" | tr -dc '\0' | wc -c | tr -d ' ')"
+  # Code LOC: non-blank lines in the code files. The first draft forked
   # `git show | grep -c` PER FILE — 24K process spawns on a 12K-file repo, 167s,
   # failing B10 AC1 (<1s). One pass instead: the code-file list piped through a
-  # single `xargs cat | grep -cE` (one grep process total). Measured 0.86s on a
-  # 12K-file repo — under the 1s bound. Reads the working tree (the census is
-  # "how much does a reader hold", and that is the working tree, not the index);
-  # the file list is git ls-files, so it stays tracked-scoped. xargs handles a
-  # 10K-file list across argv batches; `grep -c` over the stream sums them.
+  # single `xargs -0 cat | grep -cE` (one grep process total), 0.86s on a 12K-file
+  # repo. Reads the working tree (the census is "how much does a reader hold",
+  # and that is the working tree, not the index); the file list is git ls-files,
+  # so it stays tracked-scoped. xargs batches a 10K-file list across argv.
+  #
+  # `cat`'s stderr is CAPTURED, not discarded: a file that cannot be read (deleted
+  # between listing and read, permission denied) means the printed count is a
+  # partial one, and the operator has to be able to tell that apart from a
+  # complete count. Report it on stderr and mark the line; never print a
+  # confident number over an incomplete read.
+  loc=0
+  partial=0
   if [ "$n_code" -gt 0 ]; then
-    loc="$(git ls-files 2>/dev/null \
-      | grep -E '\.(sh|py|js|mjs|cjs|ts|tsx|jsx|go|rs|c|h|cpp|cc|hpp|java|rb|pl|php|kt|swift|lua|vim|el|clj|ex|exs|erl|scala|r|jl|dart|sql)$' \
-      | xargs cat 2>/dev/null | grep -cE '[^[:space:]]' || true)"
-  else
-    loc=0
+    # Read failures are detected from cat's STDERR, not from an exit status.
+    # BSD xargs (macOS) does NOT propagate a child cat's failure through its own
+    # exit status — measured: a missing file yields loc short by that file and
+    # xargs rc 0. An exit-status check here would be a guard that never fires
+    # (the F30 "declared but not applied" class), so the temp file is the price
+    # of the guarantee. One extra pipe stage, no second traversal.
+    _caterr="$(mktemp "${TMPDIR:-/tmp}/opscensus.XXXXXX")"
+    loc="$(git ls-files -z 2>/dev/null | grep -zE "$CODE_RE" \
+      | xargs -0 cat 2>"$_caterr" | grep -cE '[^[:space:]]' || true)"
+    [ ! -s "$_caterr" ] || partial=1
+    if [ "$partial" -eq 1 ]; then
+      sed 's/^/ops-backlog:   /' < "$_caterr" >&2
+    fi
+    rm -f "$_caterr"
   fi
   echo "files: $n_files"
   echo "code-files: $n_code"
-  echo "code-loc: $loc"
+  if [ "$partial" -eq 1 ]; then
+    # Never print a confident number over an incomplete read: a file that could
+    # not be read (deleted between listing and read, permission denied) makes
+    # code-loc a floor, not a count, and the operator has to be able to tell.
+    echo "code-loc: $loc (PARTIAL — one or more files unreadable)"
+    echo "ops-backlog: warning — some code files could not be read; code-loc is a PARTIAL count" >&2
+  else
+    echo "code-loc: $loc"
+  fi
   exit 0
 fi
 

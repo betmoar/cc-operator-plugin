@@ -100,6 +100,13 @@ def make_good_tree(root):
                 "type": "command",
                 "command": 'node "${CLAUDE_PLUGIN_ROOT}/scripts/ops-compress.mjs"',
             }]}],
+            # The G2 arm gate. `Bash` must NEVER appear in this matcher —
+            # check_armgate pins the set exactly (gating Bash deadlocks the
+            # repair path, since ops-task.sh is itself a Bash call).
+            "PreToolUse": [{"matcher": "Write|Edit|MultiEdit|NotebookEdit", "hooks": [{
+                "type": "command",
+                "command": 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-armgate-hook.sh"',
+            }]}],
         }
     }))
     write(root / ".claude-plugin" / "statusline.json", json.dumps({
@@ -152,9 +159,24 @@ def make_good_tree(root):
     write(root / "scripts" / "ops-claims.sh",
           "#!/usr/bin/env bash\n"
           'PROTECTED="scripts/validate_plugin.py tests/ .operator/bin/ hooks/ '
-          'scripts/ops-*.sh scripts/statusline.sh"\n'
+          'scripts/ops-*.sh scripts/statusline.sh backlog/"\n'
           "matches_protected() { :; }\n"
           'for p in $ACTUAL; do matches_protected "$p"; done\n')
+    # ops-backlog.sh: the planning/reporting CLI (B10.1). In check_scripts (so it
+    # gets bash -n) but NOT a gate CLI — not in CHARTER_REQUIRED_CLIS/GATE_CLIS.
+    write(root / "scripts" / "ops-backlog.sh",
+          "#!/usr/bin/env bash\n"
+          'if [ "${1:-}" = "--census" ]; then echo "files: 0"; exit 0; fi\n')
+    # ops-armgate-hook.sh: the G2 PreToolUse gate. check_armgate pins that it
+    # consults armgate.on, reads the .armed/ marker, honours .exempt, and carries
+    # a `-d` test so an unusable marker dir fails OPEN.
+    write(root / "scripts" / "ops-armgate-hook.sh",
+          "#!/usr/bin/env bash\n"
+          '[ -f "$opdir/armgate.on" ] || exit 0\n'
+          '[ -e "$opdir/.armed/$session" ] && exit 0\n'
+          '[ -e "$opdir/.armed/$session.exempt" ] && exit 0\n'
+          'if [ -e "$opdir/.armed" ] && [ ! -d "$opdir/.armed" ]; then exit 0; fi\n'
+          "exit 2\n")
     write(root / "scripts" / "statusline.sh", GOOD_STATUSLINE)
     # Every shipped slash command: frontmatter the harness registers it by,
     # and plugin-root script paths (a bare scripts/ path resolves only inside

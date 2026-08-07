@@ -667,7 +667,11 @@ recompute_arm_marker() { # recompute_arm_marker <session-id>
   done
   shopt -u nullglob
   if [ "$still" -eq 0 ]; then
-    mkdir -p "$OPDIR/.armed" 2>/dev/null && : > "$OPDIR/.armed/$sid" 2>/dev/null || true
+    # Explicit `if`, not `A && B || C` (SC2015): the chained form runs the
+    # `|| true` even when the truncate itself failed, conflating the two.
+    if mkdir -p "$OPDIR/.armed" 2>/dev/null; then
+      : > "$OPDIR/.armed/$sid" 2>/dev/null || true
+    fi
   fi
   return 0
 }
@@ -726,6 +730,24 @@ retro_gate() {
   if [ "$found" -eq 0 ]; then
     RETRO_STATE="duplicate"
     echo "ops-verdict: warning — no sentinel for '$ID' but a prior row exists in the fragment; treating as duplicate/amending row" >&2
+    # RESIDUAL, recorded rather than papered over (PR-review finding 2026-08-07).
+    # The fragment row and the GATE-EXCEPTION are two appends, not one atomic
+    # act. A crash between them leaves a row whose audit line never landed, and
+    # THIS branch then reads it as an amendment — the bypass record is lost.
+    #
+    # The obvious guard (downgrade only when a GATE-EXCEPTION for <id> exists)
+    # was implemented and REVERTED: a legitimately ARMED first verdict also
+    # leaves a row with no exception, so the guard reclassified every ordinary
+    # armed-then-amended verdict as never-armed and wrote a spurious exception
+    # (caught by the G1.7 case). "Prior row without exception" is genuinely
+    # ambiguous between the two, and nothing in the fragment distinguishes them.
+    #
+    # Closing it properly means making the pair atomic — writing the exception
+    # BEFORE the row, or journaling both under one fsync — which is a change to
+    # the single writer's ordering contract and belongs in its own slice with
+    # its own bar. The crash window is ~1 line wide and the failure is
+    # audit-trail loss, not ledger corruption; recording it beats a guard that
+    # trades a rare loss for a common false positive.
   else
     RETRO_STATE="never-armed"
   fi
@@ -739,8 +761,18 @@ if [ "${2:-}" = "--defer" ]; then
   [ -f "$DECISIONS" ] || die "missing $DECISIONS — run ops-init.sh first"
   lock_acquire
   ownership_gate          # inside the lock: adoption cannot slip in behind it
+  # G1 applies to BOTH closing paths. --defer retires a task exactly as a verdict
+  # does, so deferring an id that was never opened is an unarmed close and earns
+  # the same GATE-EXCEPTION. Without this a session could retire arbitrary ids it
+  # never armed and leave no trace, while the identical act through the PASS/FAIL
+  # path is recorded — an asymmetry a bypass would find (PR review 2026-08-07).
+  retro_gate
   printf '%s | %s | DEFERRED-VERDICT | %s | deferred via ops-verdict.sh --defer\n' \
     "$(date +%F)" "$ID" "$REASON" >> "$DECISIONS"
+  if [ "$RETRO_STATE" = "never-armed" ]; then
+    printf '%s | %s | GATE-EXCEPTION | [sid:%s] defer of %s recorded without an open sentinel — the arm gate was not used | never-armed via ops-verdict.sh --defer\n' \
+      "$(date +%F)" "$ID" "${OWNER:-$SOWNER}" "$ID" >> "$DECISIONS"
+  fi
   clear_sentinel
   recompute_arm_marker "$FRAG_OWNER"   # G2.1 — under the lock, after the clear
   lock_release
