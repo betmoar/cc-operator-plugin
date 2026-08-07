@@ -1538,6 +1538,27 @@ class GitignoreParityTest(unittest.TestCase):
         self.assertTrue(any("missing allow line" in p for p in probs), probs)
         self.assertTrue(any("drift" in p for p in probs), probs)
 
+    def test_dropping_the_bare_star_fires(self):
+        # The `*` is what makes this an ALLOWLIST. Drop it and the file inverts
+        # to a v1 blocklist: bin/, pending/, .lock/ and every compressor spill
+        # ship TRACKED, which is the failure v2 exists to end. This went
+        # unpinned while the docstring called `*` "the load-bearing half" —
+        # dropping it left the build green (Copilot review, PR #12). Both
+        # writers are mutated independently: a check that only covers one is
+        # the same half-applied guard it is meant to catch.
+        for name, real in (("ops-init.sh", self._real_init),
+                           ("ops-sessionstart-hook.sh", self._real_ssh)):
+            with self.subTest(writer=name):
+                write(self.dir / "scripts" / name,
+                      real.replace(
+                          "# is genuinely evidence a teammate must read.\n*\n!.gitignore",
+                          "# is genuinely evidence a teammate must read.\n!.gitignore",
+                          1))
+                probs = self._probs()
+                self.assertTrue(any("no bare `*` line" in p for p in probs), probs)
+                write(self.dir / "scripts" / name, real)   # restore for the next subTest
+        self.assertEqual(self._probs(), [])
+
     def test_losing_the_v2_marker_fires(self):
         # Without the marker neither writer can DETECT a v1 file, so a blocklist
         # is appended to instead of replaced — and the two schemes contradict.

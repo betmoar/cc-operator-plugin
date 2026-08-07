@@ -820,10 +820,21 @@ def check_gitignore_parity(root, problems):
     hook un-tracks a ledger the moment a session starts. Same F30 shape as
     check_install_set_parity: two copies, uniform drift is the realistic failure.
 
-    Pins the ALLOW lines (the load-bearing half — `*` ignores everything else by
-    construction) and the marker both files grep for to detect a v1 file.
+    Pins the bare `*` AND the ALLOW lines, in both writers, plus the marker they
+    grep for to detect a v1 file.
+
+    The `*` is pinned because it is what makes this an allowlist at all, and its
+    loss is the silent direction: drop it and the file inverts back to a v1
+    blocklist — every ephemera directory (`bin/`, `pending/`, `.lock/`,
+    `.compress-spill/`) becomes TRACKED by default, which is precisely the
+    recurring failure v2 exists to end. An earlier version of this docstring
+    called `*` "the load-bearing half" and then checked only the allow lines;
+    dropping `*` from a writer left the build green (Copilot review, PR #12).
+    Naming an invariant in prose while pinning a different one is the F30 shape
+    this check was written to prevent, reproduced inside the check itself.
     """
     MARK = "# cc-operator gitignore v2 (allowlist)"
+    IGNORE_ALL = "*"
     ALLOW = ("!.gitignore", "!.gitattributes", "!VERDICTS.md", "!DECISIONS.md",
              "!tiers.env", "!verdicts.d/", "!verdicts.d/*.md")
     sets = {}
@@ -842,6 +853,14 @@ def check_gitignore_parity(root, problems):
         # Allow lines are line-anchored: a '!VERDICTS.md' inside prose is not a
         # heredoc body line, and would make this check vacuous.
         lines = {ln.strip() for ln in text.splitlines()}
+        # The bare `*` line: without it the file is a blocklist wearing an
+        # allowlist's marker, and every ephemera dir ships tracked.
+        if IGNORE_ALL not in lines:
+            problems.append(
+                f"scripts/{name}: the v2 gitignore body has no bare `*` line — "
+                f"without it the allowlist inverts to a blocklist and machine "
+                f"state (bin/, pending/, .lock/, .compress-spill/) becomes "
+                f"TRACKED by default, the exact failure v2 ended")
         sets[name] = tuple(a for a in ALLOW if a in lines)
     a, b = sets.get("ops-init.sh"), sets.get("ops-sessionstart-hook.sh")
     for name, got in sets.items():
