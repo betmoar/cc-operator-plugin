@@ -1223,26 +1223,40 @@ asks is not whether to *become* an FDE framework but where the charter's current
 capabilities leave a gap against the FDE skill surface the role is now named for,
 and whether closing any gap is worth a feature.
 
-The FDE role, as it is described across current sources (DataCamp, Glocomms,
-Invisible Tech, Salesforce — the GeeksforGeeks roadmap the human pointed at was
-unreachable at search time, but the role definition converges), bundles four
-competencies:
+The FDE role, as it is described across current sources (the Palantir-origin
+model the AI labs — Anthropic, OpenAI, Cohere — are now cloning; DataCamp,
+Glocomms, Invisible Tech, Salesforce; the GeeksforGeeks roadmap the human
+pointed at was unreachable at search time, but the role definition converges),
+bundles competencies with a known time split — roughly ~40% full-stack build,
+~30% enterprise-architecture design, ~30% client-facing discovery/iteration
+(fde.academy). The economic thesis behind the AI-lab adoption is load-bearing
+for this item: as the *model* commoditizes, deployment + customization becomes
+the differentiator (MindStudio, The New Stack). A charter whose value is the
+deployment discipline — not the model — is exactly on that axis, which is why
+the question is worth asking. Five competencies:
 
 1. **Deployment & integration** — operationalizing a system inside a *customer's
    live environment*, not a clean lab. This maps directly to the charter's "run
    in the user's project, not the plugin repo" stance (the `.operator/bin/`
-   install path, the SessionStart id injection).
-2. **Systems glue** — APIs, cloud infra, deployment pipelines, model-eval /
-   DevOps layers. The charter has the dispatch + review + tier machinery but
-   nothing in the gate vocabulary names deployment pipelines, evals, or infra
-   state as first-class BAR criteria.
+   install path, the SessionStart id injection). ~40% build share.
+2. **Systems glue / enterprise architecture** — APIs, cloud infra, deployment
+   pipelines, model-eval / DevOps layers. The charter has the dispatch + review
+   + tier machinery but nothing in the gate vocabulary names deployment
+   pipelines, evals, or infra state as first-class BAR criteria. ~30% share.
 3. **Customer communication & product judgment** — the bridge between a product
    and its client, often the person who "can make or break a launch." This is
    the handoff, and the charter's six-section operator→human handoff is already a
-   disciplined version of it.
+   disciplined version of it. ~30% share.
 4. **Operational tuning after deploy** — ongoing evals, pipeline tuning, model
    iteration. The charter's evidence gate stops at a verified done-state; it has
    no notion of a *living* engagement that drifts and needs re-tuning.
+5. **Alignment / safety posture** — the Anthropic FDE interview screens for a
+   formed opinion on responsible scaling, Constitutional AI, and the
+   pre-train/fine-tune/inference distinctions; the role treats safety as a
+   competency, not a checkbox. The charter has PRECEDENCE (it wins on conflict
+   and logs them) and a `security-review` skill, but no first-class
+   "alignment/safety" BAR criterion — the gap the generic sources miss and the
+   interview-guide source surfaces.
 
 What makes this non-obvious, and why it is an investigation rather than a task:
 
@@ -1251,12 +1265,18 @@ What makes this non-obvious, and why it is an investigation rather than a task:
   its own names (the handoff IS the customer-communication competency). The first
   job is to state which FDE competencies are *already* covered and by what
   charter mechanism, so the residual is honest rather than a re-skinning.
-- **The genuine residual looks narrow.** The two that do not map cleanly are (a)
-  deployment-pipeline / infra-state as first-class gated criteria, and (b)
-  ongoing tuning of a deployed engagement. Both may be better served by the
+- **The genuine residual looks narrow.** The three that do not map cleanly are
+  (a) deployment-pipeline / infra-state as first-class gated criteria, (b)
+  ongoing tuning of a deployed engagement, and (c) an alignment/safety
+  criterion in the BAR (competency 5). (a) and (b) may be better served by the
   backlog-as-charter work (B) than by an FDE feature — the backlog is already the
   "living plan" surface, and a `definition_of_done` item that names a pipeline or
-  an eval gate is already expressible (B3).
+  an eval gate is already expressible (B3). (c) is the open one: is a safety
+  criterion a job for the charter's gate, or for the `security-review` skill it
+  already invokes? The competency map (AC1) has to answer that honestly, because
+  the tempting answer — add a `safety:` BAR field — risks duplicating the
+  security-review surface the charter already has, the same state-duplication B1
+  forbids.
 - **The charter's autonomy bargain is the FDE's too.** An FDE is trusted with
   judgment once the goal is locked; the charter buys that with the arm + verdict
   + deviation gates (G1/G2/G3). The risk in adding "FDE coverage" as a feature is
@@ -1266,7 +1286,7 @@ What makes this non-obvious, and why it is an investigation rather than a task:
 Acceptance criteria (each needs a command + expected output before this leaves
 the backlog):
 
-1. A written competency map: each of the four FDE competencies above, marked
+1. A written competency map: each of the five FDE competencies above, marked
    `{covered, partial, gap}`, each `covered`/`partial` citing the charter
    mechanism (section + the `[D:…]` or `[DOC:spec-…]` tag) that already provides
    it. The map's purpose is to make the residual falsifiable, not aspirational.
@@ -1281,6 +1301,12 @@ the backlog):
 4. If a feature follows (not assumed): a candidate mechanism that does NOT
    duplicate the handoff or the evidence gate under a new name — and the AC that
    would discriminate it from "B with a different label."
+5. For the alignment/safety competency (5) specifically: a decision on whether a
+   safety criterion belongs in the charter's BAR gate, in the `security-review`
+   skill, or is already covered by PRECEDENCE. The discriminating question:
+   "what does a `safety:` BAR criterion gate that PRECEDENCE + security-review do
+   not?" If the answer is "nothing," the item closes as covered-by-existing with
+   that recorded, not as a feature.
 
 Explicitly out of scope: renaming the charter's vocabulary to match FDE
 industry terms. The charter's names (engagement, verdict, BAR, deviation) are
