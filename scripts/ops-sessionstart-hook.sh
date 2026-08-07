@@ -53,6 +53,34 @@ session="$(json_get session_id)"
 # cwd rather than going silent — a missing banner costs the whole mechanism.
 cwd="$(json_get cwd)"
 [ -n "$cwd" ] || cwd="$PWD"
+
+# --- tempdir-ephemera cleanup (runs for EVERY project, even one with no -----
+# .operator/). The compressor's containment-(B) falls back to a tempdir root
+# keyed by sha256(cwd) precisely when .operator/ is ABSENT (a project that never
+# ran /cc-operator:start must not have one materialized in it). That copy is
+# session-scoped ephemera that accumulates forever if never wiped — and the
+# `.operator/` gate below used to make this wipe unreachable for exactly the
+# projects that use the tempdir path. So this runs FIRST, before the gate. The
+# in-project .operator/.compress-* wipe stays behind the gate (it needs the
+# directory it wipes). Key must match ops-compress.mjs:ephemeralRoot.
+_ccdir=""
+if command -v shasum >/dev/null 2>&1; then
+  _ccdir="$(printf '%s' "$cwd" | shasum -a 256 2>/dev/null | cut -c1-16)"
+elif command -v sha256sum >/dev/null 2>&1; then
+  _ccdir="$(printf '%s' "$cwd" | sha256sum 2>/dev/null | cut -c1-16)"
+fi
+if [ -n "$_ccdir" ]; then
+  for _cdir in \
+    "${TMPDIR:-/tmp}/cc-operator/$_ccdir/.compress-spill" \
+    "${TMPDIR:-/tmp}/cc-operator/$_ccdir/.compress-state"; do
+    [ -d "$_cdir" ] && rm -rf "$_cdir" 2>/dev/null
+  done
+fi
+
+# Gate everything that operates ON .operator/ (the banner, the bin/ upgrade, the
+# in-project ephemera wipe, the gitignore migration): a project without one has
+# nothing to upgrade or migrate. The tempdir wipe above is the exception — it
+# serves precisely the projects that fail this gate.
 [ -d "$cwd/.operator" ] || exit 0
 
 # --- automated upgrade path (version-gated) ----------------------------------
@@ -131,24 +159,8 @@ fi
 for _cdir in "$cwd/.operator/.compress-spill" "$cwd/.operator/.compress-state"; do
   [ -d "$_cdir" ] && rm -rf "$_cdir" 2>/dev/null
 done
-# The compressor falls back to a tempdir root when the project has no .operator/
-# (it must not materialize one in a repo that never ran /cc-operator:start), so
-# that copy needs the same session-scoped wipe — otherwise the ONE path that is
-# never visible in the tree is also the one that grows forever. Key must match
-# ops-compress.mjs:ephemeralRoot — sha256(cwd), first 16 hex chars.
-_ccdir=""
-if command -v shasum >/dev/null 2>&1; then
-  _ccdir="$(printf '%s' "$cwd" | shasum -a 256 2>/dev/null | cut -c1-16)"
-elif command -v sha256sum >/dev/null 2>&1; then
-  _ccdir="$(printf '%s' "$cwd" | sha256sum 2>/dev/null | cut -c1-16)"
-fi
-if [ -n "$_ccdir" ]; then
-  for _cdir in \
-    "${TMPDIR:-/tmp}/cc-operator/$_ccdir/.compress-spill" \
-    "${TMPDIR:-/tmp}/cc-operator/$_ccdir/.compress-state"; do
-    [ -d "$_cdir" ] && rm -rf "$_cdir" 2>/dev/null
-  done
-fi
+# The tempdir-root half of this wipe runs EARLY, before the .operator/ gate —
+# see the block above. It serves precisely the projects that fail this gate.
 
 # Migrate a v1 (blocklist) .operator/.gitignore to the v2 allowlist BEFORE the
 # compressor can recreate its ephemera this session. ops-init does this too, but
