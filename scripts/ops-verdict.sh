@@ -564,6 +564,62 @@ ownership_gate() {
 
 clear_sentinel() { rm -f "$OPDIR/pending/$ID"; }
 
+# --- arm-marker recompute (G2.1) --------------------------------------------
+# The PreToolUse arm gate reads .operator/.armed/<sid> — a DERIVED cache of
+# "this session owns at least one pending sentinel". This is the single place
+# that recomputes it, and it runs UNDER THE LOCK both paths already hold, AFTER
+# clear_sentinel.
+#
+# THE ORDER IS LOAD-BEARING AND THE INTUITIVE ONE IS WRONG. Clear → rescan →
+# conditionally-remove loses this interleaving:
+#
+#   verdict:  clear sentinel
+#   verdict:  rescan pending/ → empty
+#   task:                        creates sentinel (O_EXCL, no lock — by design)
+#   task:                        creates marker
+#   verdict:  rm .armed/S                       ← marker gone, sentinel present
+#
+# That is stale-FALSE — a legitimately-armed session blocked from every edit,
+# the one desync direction the design forbids. And it is not covered by the
+# stale-false mitigations: those are written for a desync that PERSISTS, not one
+# the recompute itself creates ("the next verdict corrects it" is circular — the
+# next verdict can lose the same race).
+#
+# Remove-then-rescan-then-restore is safe under every interleaving: a sentinel
+# created BEFORE the rescan is seen by it and the marker is restored; one
+# created AFTER brings its own marker (ops-task.sh writes it). The worst case is
+# stale-TRUE for one moment, which merely degrades to today's ungated behaviour.
+#
+# ops-task.sh takes no lock by design, so this cannot be fixed by locking the
+# opener — the recompute has to be correct against an unlocked concurrent write.
+#
+# The `.exempt` marker is NEVER touched here: an exempt session by definition has
+# nothing in pending/, so a recompute that owned both kinds would delete a grant
+# the moment any verdict ran. Two marker kinds, two lifetimes (G3).
+#
+# Failures are swallowed (`|| true`, `2>/dev/null`): this runs after the ledger
+# row is already written, and dying here under `set -e` would abort a verdict
+# that succeeded. A marker we could not write degrades to stale-false, which the
+# gate's deny message (ops-adopt.sh) and the next verdict both repair.
+recompute_arm_marker() { # recompute_arm_marker <session-id>
+  local sid="$1" f still=1
+  [ -n "$sid" ] || return 0
+  rm -f "$OPDIR/.armed/$sid" 2>/dev/null || true
+  shopt -s nullglob
+  for f in "$OPDIR/pending"/*; do
+    # -f, not -e: a directory or a symlink in pending/ is not a sentinel our
+    # CLIs wrote; sentinel_owner rejects both and returns "" (unowned), which
+    # is not this session either way.
+    [ -f "$f" ] || continue
+    if [ "$(sentinel_owner "${f##*/}")" = "$sid" ]; then still=0; break; fi
+  done
+  shopt -u nullglob
+  if [ "$still" -eq 0 ]; then
+    mkdir -p "$OPDIR/.armed" 2>/dev/null && : > "$OPDIR/.armed/$sid" 2>/dev/null || true
+  fi
+  return 0
+}
+
 # --- Retro-gate: three-state arm check (G1) ---------------------------------
 # Runs inside the lock, after ownership_gate. Determines whether this verdict
 # is armed (sentinel present), never-armed (no sentinel, no prior row), or a
@@ -624,6 +680,7 @@ if [ "${2:-}" = "--defer" ]; then
   printf '%s | %s | DEFERRED-VERDICT | %s | deferred via ops-verdict.sh --defer\n' \
     "$(date +%F)" "$ID" "$REASON" >> "$DECISIONS"
   clear_sentinel
+  recompute_arm_marker "$FRAG_OWNER"   # G2.1 — under the lock, after the clear
   lock_release
   echo "deferred $ID (DECISIONS.md line written, sentinel cleared)"
   exit 0
@@ -663,6 +720,7 @@ if [ "$RETRO_STATE" = "never-armed" ]; then
     "$(date +%F)" "$ID" "${OWNER:-$SOWNER}" "$ID" >> "$DECISIONS"
 fi
 clear_sentinel
+recompute_arm_marker "$FRAG_OWNER"     # G2.1 — under the lock, after the clear
 lock_release
 if [ "$RETRO_STATE" = "never-armed" ]; then
   echo "recorded $ID = $VERDICT (never-armed — GATE-EXCEPTION written to DECISIONS.md)"

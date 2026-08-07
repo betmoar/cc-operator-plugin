@@ -17,6 +17,7 @@ VERDICT="$SCRIPTS/ops-verdict.sh"
 HOOK="$SCRIPTS/ops-stop-hook.sh"
 TASK="$SCRIPTS/ops-task.sh"
 ADOPT="$SCRIPTS/ops-adopt.sh"
+ARMHOOK="$SCRIPTS/ops-armgate-hook.sh"
 CLAIMS="$SCRIPTS/ops-claims.sh"
 SSHOOK="$SCRIPTS/ops-sessionstart-hook.sh"
 
@@ -2399,6 +2400,158 @@ FRAG="$P/.operator/verdicts.d/$S.md"
 { cat "$FRAG"; printf '%s' "$(printf 'x%.0s' $(seq 1 9000000))"; } > "$FRAG.pad" && mv "$FRAG.pad" "$FRAG"
 ( cd "$P" && bash "$VERDICT" na-g16b crit ev PASS --owner "$S" 2>/dev/null ); G16=$?
 check "G1.6 oversized-fragment verdict exits 0 (not wedged)" "$([ "$G16" -eq 0 ] && echo 0 || echo 1)"
+
+rm -rf "$P"
+
+########################################################################
+echo "-- Case: G2 arm gate — PreToolUse blocks the first unarmed write (opt-in)"
+# The gate is one or two stats on .operator/.armed/<sid>, and its polarity is
+# the OPPOSITE of the Stop hook's: every infrastructure failure fails OPEN,
+# because an unwritable project cannot repair itself. See backlog-charter.md §8c.
+
+# Feed the arm hook a PreToolUse payload; captures exit code (ARC) and stderr (AERR).
+run_armhook() { # run_armhook <cwd> <session-id> [restricted-PATH]
+  local cwd="$1" sid="$2" rpath="${3:-}" json errf
+  json="$(sed -e "s|<tmp>|$cwd|g" -e "s|<sid>|$sid|g" "$FIXTURES/pretooluse-write.json")"
+  errf="$(mktemp)"
+  if [ -n "$rpath" ]; then
+    printf '%s' "$json" | PATH="$rpath" "$BASH_ABS" "$ARMHOOK" 2>"$errf"
+  else
+    printf '%s' "$json" | "$BASH_ABS" "$ARMHOOK" 2>"$errf"
+  fi
+  ARC=$?
+  AERR="$(cat "$errf")"; rm -f "$errf"
+}
+
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+S="SESS-G2"
+
+# G2.1 — armgate.on absent: the gate does not exist for this project.
+run_armhook "$P" "$S"
+check "G2.1 armgate.on absent → exit 0 (opt-in default)" "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
+check "G2.1 armgate.on absent → no stderr" "$([ -z "$AERR" ] && echo 0 || echo 1)"
+
+# G2.2 — gate on, no marker: deny, and the message names both recovery commands.
+: > "$P/.operator/armgate.on"
+run_armhook "$P" "$S"
+check "G2.2 gate on + unarmed → exit 2" "$([ "$ARC" -eq 2 ] && echo 0 || echo 1)"
+check "G2.2 stderr names ops-task.sh … --owner $S" \
+  "$(printf '%s' "$AERR" | grep -q "ops-task.sh <task-id> --owner $S" && echo 0 || echo 1)"
+check "G2.2 stderr names the --exempt path" \
+  "$(printf '%s' "$AERR" | grep -q -- '--exempt' && echo 0 || echo 1)"
+
+# G2.3 — the derived marker arms the session.
+mkdir -p "$P/.operator/.armed"; : > "$P/.operator/.armed/$S"
+run_armhook "$P" "$S"
+check "G2.3 .armed/\$S present → exit 0" "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
+rm -f "$P/.operator/.armed/$S"
+
+# G2.4 — the granted (exempt) marker arms independently of the derived one.
+: > "$P/.operator/.armed/$S.exempt"
+run_armhook "$P" "$S"
+check "G2.4 only .armed/\$S.exempt present → exit 0" "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
+rm -f "$P/.operator/.armed/$S.exempt"
+
+# G2.5 — no .operator/ above the payload cwd: fail OPEN on missing state.
+Q="$(newproj)"
+run_armhook "$Q" "$S"
+check "G2.5 no .operator/ above cwd → exit 0 (fails open)" "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
+rm -rf "$Q"
+
+# G2.6 — no JSON parser on PATH: fail OPEN, silently. The gate is still ON and
+# the session is still unarmed, so a fail-CLOSED hook would exit 2 here.
+run_armhook "$P" "$S" "/nonexistent"
+check "G2.6 no JSON parser → exit 0 (fails open)" "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
+check "G2.6 no JSON parser → silent (no stderr before every edit)" \
+  "$([ -z "$AERR" ] && echo 0 || echo 1)"
+
+# G2.7 — `Bash` is never in the PreToolUse matcher. Asserted against hooks.json
+# itself (check_armgate pins the same property in the build gate).
+G27="$(python3 - "$REPO/hooks/hooks.json" <<'PY'
+import json, sys
+h = json.load(open(sys.argv[1]))["hooks"]["PreToolUse"][0]["matcher"]
+print(sum(1 for t in h.split("|") if t == "Bash"))
+PY
+)"
+check "G2.7 PreToolUse matcher contains zero Bash entries" \
+  "$([ "$G27" = "0" ] && echo 0 || echo 1)"
+
+# --- the recompute: remove → rescan → restore, under the ledger lock ----------
+
+# G2.8 — one task open, verdicted: the marker is removed.
+( cd "$P" && bash "$TASK" g2t8 --owner "$S" >/dev/null 2>&1 )
+check "G2.8 ops-task.sh creates .armed/\$S" \
+  "$([ -e "$P/.operator/.armed/$S" ] && echo 0 || echo 1)"
+( cd "$P" && bash "$VERDICT" g2t8 crit ev PASS --owner "$S" >/dev/null 2>&1 )
+check "G2.8 verdict on the only task removes .armed/\$S" \
+  "$([ ! -e "$P/.operator/.armed/$S" ] && echo 0 || echo 1)"
+run_armhook "$P" "$S"
+check "G2.8 the disarmed session is denied again" "$([ "$ARC" -eq 2 ] && echo 0 || echo 1)"
+
+# G2.9 — TWO tasks open, one verdicted: remove-then-rescan-then-RESTORE puts the
+# marker back. A clear→rescan→conditionally-remove implementation passes G2.8 and
+# fails here; this is the case that catches the wrong order.
+( cd "$P" && bash "$TASK" g2t9a --owner "$S" >/dev/null 2>&1 )
+( cd "$P" && bash "$TASK" g2t9b --owner "$S" >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" g2t9a crit ev PASS --owner "$S" >/dev/null 2>&1 )
+check "G2.9 verdict with a second task still open restores .armed/\$S" \
+  "$([ -e "$P/.operator/.armed/$S" ] && echo 0 || echo 1)"
+run_armhook "$P" "$S"
+check "G2.9 the still-armed session is allowed" "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
+
+# G2.10 — marker deleted by hand (the stale-FALSE desync), then a verdict on
+# another open task of the same session: the recompute is self-healing.
+( cd "$P" && bash "$TASK" g2t10 --owner "$S" >/dev/null 2>&1 )
+rm -f "$P/.operator/.armed/$S"
+( cd "$P" && bash "$VERDICT" g2t10 crit ev PASS --owner "$S" >/dev/null 2>&1 )
+check "G2.10 hand-deleted marker is restored by the recompute" \
+  "$([ -e "$P/.operator/.armed/$S" ] && echo 0 || echo 1)"
+
+# The --defer path recomputes too — same lock, same order. g2t9b is still open,
+# so deferring it must leave no marker; and the exempt grant must survive a
+# recompute (G3.5: two marker kinds, two lifetimes).
+: > "$P/.operator/.armed/$S.exempt"
+( cd "$P" && bash "$VERDICT" g2t9b --defer "blocked upstream" >/dev/null 2>&1 )
+check "G2 --defer recomputes: no owned sentinel left → marker removed" \
+  "$([ ! -e "$P/.operator/.armed/$S" ] && echo 0 || echo 1)"
+check "G2 the recompute never touches .armed/\$S.exempt (G3 grant)" \
+  "$([ -e "$P/.operator/.armed/$S.exempt" ] && echo 0 || echo 1)"
+rm -f "$P/.operator/.armed/$S.exempt"
+
+# ops-adopt.sh re-creates the marker for the NEW owner — the recovery the deny
+# message names verbatim (stale-false mitigation 1).
+S2="SESS-G2-ROT"
+( cd "$P" && bash "$TASK" g2adopt --owner "$S" >/dev/null 2>&1 )
+rm -f "$P/.operator/.armed/$S2"
+( cd "$P" && bash "$ADOPT" --owner "$S2" g2adopt >/dev/null 2>&1 )
+check "G2 ops-adopt.sh creates .armed/ for the adopting session" \
+  "$([ -e "$P/.operator/.armed/$S2" ] && echo 0 || echo 1)"
+run_armhook "$P" "$S2"
+check "G2 the adopting session is allowed" "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
+# Ownership-scoping: a BYSTANDER session is not armed by $S2's open task. The
+# marker is keyed by session id precisely so an unscoped "is pending/ non-empty?"
+# cannot let session B write because session A holds work open — the cross-
+# session fail-open 0.4.0 exists to close. Uses a session that has never opened
+# anything: $S still carries an ACCEPTED stale-true marker here (adopt re-keys
+# the sentinel to $S2 but does not recompute the previous owner), which is the
+# documented harmless direction, not a property to assert against.
+S3="SESS-G2-BYSTANDER"
+run_armhook "$P" "$S3"
+check "G2 another session's open task does not arm a bystander" \
+  "$([ "$ARC" -eq 2 ] && echo 0 || echo 1)"
+( cd "$P" && bash "$VERDICT" g2adopt crit ev PASS --owner "$S2" >/dev/null 2>&1 )
+
+# An UNOWNED task arms nobody: there is no session to key a marker to. Counted
+# as a DELTA, not as an empty directory — $S's accepted stale-true marker lives
+# there (see above), so "no markers at all" is the wrong assertion.
+count_markers() { local n=0 m; shopt -s nullglob; for m in "$P/.operator/.armed"/*; do [ -e "$m" ] && n=$((n+1)); done; shopt -u nullglob; echo "$n"; }
+ARM_BEFORE="$(count_markers)"
+( cd "$P" && bash "$TASK" g2unowned >/dev/null 2>&1 )
+ARM_AFTER="$(count_markers)"
+check "G2 an unowned open task writes no new marker" \
+  "$([ "$ARM_BEFORE" = "$ARM_AFTER" ] && echo 0 || echo 1)"
+run_armhook "$P" "$S3"
+check "G2 an unowned open task arms no session" "$([ "$ARC" -eq 2 ] && echo 0 || echo 1)"
 
 rm -rf "$P"
 

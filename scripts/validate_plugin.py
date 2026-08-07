@@ -418,11 +418,83 @@ def check_hook(root, problems):
                 "${CLAUDE_PLUGIN_ROOT}")
 
 
+def check_armgate(root, problems):
+    r"""The PreToolUse arm gate must never match `Bash` (G2/G2.7).
+
+    The arm gate BLOCKS (exit 2). Deciding whether an arbitrary shell command
+    writes is an unwinnable classification problem, and `ops-task.sh` — the only
+    way to clear a denial — is itself a Bash call, so a matcher that grew `Bash`
+    would deadlock the repair path: the session could neither write nor arm.
+    That is this repo's recurring worst outcome (a guard that makes an existing
+    task unclosable), and its loss would be silent — the gate would still look
+    like it worked, right up to the first wedged session.
+
+    Pinned here rather than left to review because the matcher is one string in
+    a JSON file, and every other property of the gate is enforced by a test that
+    would still pass with `Bash` in it.
+    """
+    hp = root / "hooks" / "hooks.json"
+    hook = load_json(hp, problems)
+    if hook is None:
+        return
+    try:
+        block = hook["hooks"]["PreToolUse"][0]
+    except (KeyError, IndexError, TypeError):
+        problems.append(
+            "hooks/hooks.json: no PreToolUse block — the arm gate (G2) is not wired")
+        return
+    matcher = block.get("matcher", "")
+    tools = [t for t in matcher.split("|") if t]
+    if "Bash" in tools:
+        problems.append(
+            "hooks/hooks.json: the PreToolUse arm-gate matcher includes `Bash` — "
+            "it must never (G2.7): classifying shell commands is unwinnable, and "
+            "gating Bash deadlocks the repair path (ops-task.sh IS a Bash call)")
+    expected = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
+    if set(tools) != expected:
+        problems.append(
+            f"hooks/hooks.json: PreToolUse arm-gate matcher is {matcher!r}; "
+            f"expected exactly {'|'.join(sorted(expected))} (structured "
+            f"file-mutation tools only — see scripts/ops-armgate-hook.sh SCOPE)")
+    try:
+        cmd = block["hooks"][0]["command"]
+    except (KeyError, IndexError, TypeError):
+        problems.append("hooks/hooks.json: PreToolUse block has no hook command")
+        return
+    if "ops-armgate-hook.sh" not in cmd:
+        problems.append(
+            f"hooks/hooks.json: PreToolUse command does not point at "
+            f"ops-armgate-hook.sh (got {cmd!r})")
+    if "${CLAUDE_PLUGIN_ROOT}" not in cmd:
+        problems.append(
+            "hooks/hooks.json: PreToolUse command should use ${CLAUDE_PLUGIN_ROOT} "
+            "— hooks run from the plugin root, not the project (a scripts/ path "
+            "resolves only inside this repo)")
+    # The gate is opt-in in 0.7.x: the switch must be READ, and its absence must
+    # be the allow path. A hook that stopped consulting armgate.on would block
+    # every project that never asked for the gate.
+    p = root / "scripts" / "ops-armgate-hook.sh"
+    if p.is_file():
+        text = p.read_text(encoding="utf-8")
+        if "armgate.on" not in text:
+            problems.append(
+                "scripts/ops-armgate-hook.sh: does not consult armgate.on — the "
+                "gate is opt-in in 0.7.x; without the switch it blocks every project")
+        if ".armed/" not in text and ".armed/$session" not in text:
+            problems.append(
+                "scripts/ops-armgate-hook.sh: does not read the .armed/ marker — "
+                "the whole gate is that one stat (G2.1)")
+        if ".exempt" not in text:
+            problems.append(
+                "scripts/ops-armgate-hook.sh: does not honour .armed/<sid>.exempt "
+                "— the G3 exemption is the only escape from a blocking gate")
+
+
 def check_scripts(root, problems):
     for name in ("ops-init.sh", "ops-verdict.sh", "ops-task.sh",
                  "ops-adopt.sh", "ops-claims.sh", "ops-stop-hook.sh",
-                 "ops-sessionstart-hook.sh", "statusline.sh", "ops-tiers.sh",
-                 "ops-render.sh"):
+                 "ops-sessionstart-hook.sh", "ops-armgate-hook.sh",
+                 "statusline.sh", "ops-tiers.sh", "ops-render.sh"):
         p = root / "scripts" / name
         if not p.is_file():
             problems.append(f"scripts/{name}: missing")
@@ -1399,6 +1471,7 @@ CHECKS = (
     check_agents,
     check_render_templates,
     check_hook,
+    check_armgate,
     check_scripts,
     check_reader_bounds,
     check_platform_idioms,

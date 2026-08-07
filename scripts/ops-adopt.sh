@@ -366,6 +366,16 @@ for ID in ${IDS+"${IDS[@]}"}; do
   fi
   mv "$TMP" "$F"
 
+  # --- arm marker (G2.1) -----------------------------------------------------
+  # AFTER the sentinel carries the new owner, under the lock this loop already
+  # holds. Adoption is the documented repair for a desynced marker (the arm
+  # gate's deny message names this command verbatim): re-stamping ownership and
+  # re-creating the marker are the same operation from the operator's side.
+  # Failure is swallowed — a marker we could not write degrades to stale-false,
+  # repaired by the next verdict's recompute, and dying here would abort an
+  # adoption that already succeeded.
+  mkdir -p "$OPDIR/.armed" 2>/dev/null && : > "$OPDIR/.armed/$OWNER" || true
+
   echo "adopted $ID: ${PREV:-<unowned>} -> $OWNER"
 done
 

@@ -1,0 +1,1 @@
+{"hook_event_name":"PreToolUse","tool_name":"Write","cwd":"<tmp>","session_id":"<sid>","tool_input":{"file_path":"<tmp>/f.txt","content":"x"}}

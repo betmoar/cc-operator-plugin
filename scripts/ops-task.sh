@@ -131,7 +131,35 @@ else
   fi
 fi
 
+# --- arm marker (G2.1) -------------------------------------------------------
+# The PreToolUse arm gate (ops-armgate-hook.sh) asks a CHEAP question — "is
+# .operator/.armed/<sid> there?" — so it never needs a fourth copy of the
+# sentinel-ownership parser. The expensive question is answered here, by the
+# writer that already knows the answer.
+#
+# ORDER IS DELIBERATE: the sentinel exists by the time we get here. The reverse
+# order opens a window where the marker outlives no sentinel — harmless
+# (stale-true degrades to today's ungated behaviour) but the correct order is
+# free, so take it.
+#
+# Only with --owner: an unowned task has no session to arm, and a marker keyed
+# by nothing would arm nobody.
+#
+# NO LOCK, deliberately: this script takes none (the O_EXCL create above is
+# arbitrated by the kernel), and adding one here would copy the LOCK BLOCK to a
+# third file for the sake of a mkdir. A concurrent ops-verdict.sh recompute is
+# safe against this by construction — it removes the marker BEFORE rescanning
+# pending/, so a sentinel created before its rescan is seen, and one created
+# after (like this one) brings its own marker. Failures are swallowed: a marker
+# we could not write degrades to stale-false, which the gate's deny message and
+# the next verdict's recompute both repair, and dying here would make an
+# unwritable .operator/ break task-opening itself.
+arm_marker() { # arm_marker <session-id>
+  mkdir -p "$OPDIR/.armed" 2>/dev/null && : > "$OPDIR/.armed/$1"
+}
+
 if [ -n "$OWNER" ]; then
+  arm_marker "$OWNER" || true
   echo "opened $ID owned by $OWNER (sentinel $OPDIR/pending/$ID — cleared only by ops-verdict.sh)"
 else
   echo "opened $ID UNOWNED — blocks every session's Stop; pass --owner <sid> to scope it"
