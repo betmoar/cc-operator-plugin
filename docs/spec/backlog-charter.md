@@ -276,7 +276,11 @@ Stale-false mitigations, all three required:
 2. `ops-verdict.sh` recomputes the marker on every run, so any desync is
    corrected at the next verdict rather than persisting.
 3. The gate is **opt-in in 0.7.0** (`.operator/armgate.on`, absent by default).
-   A false block can only reach a project that asked for it.
+   A false block can only reach a project that asked for it. Confirmed as the
+   shipping default (Q1, §9): default-on would not close E1 either — `Bash` is
+   ungated at any setting — so both options deliver *closable*, and only one of
+   them can wedge a session. G1 is default-on and covers the same ground
+   retroactively, which makes opt-in G2 a second layer rather than a hole.
 
 Ownership-scoping is not optional here, and that is why the marker is keyed by
 session id: an unscoped "is `pending/` non-empty?" check would let session B
@@ -385,8 +389,8 @@ count of unadjudicated criteria.
 For a backlog-driven engagement the BAR block is generated from:
 
 - the task's acceptance criteria (`--ac` items, in file order → `#ac<N>`), plus
-- the project's `definition_of_done` from `backlog.config.yml`, applied to every
-  task in the engagement.
+- the project's `definition_of_done` from `backlog.config.yml`, **filtered** —
+  see below (Q5).
 
 Each becomes a done-criterion in the charter's required shape: **command +
 expected output**. An AC that cannot be expressed that way is not yet a
@@ -394,6 +398,16 @@ criterion — and the existing `plan` workflow already has the lens that says so
 (`testable: "no"`, whose issue detail must name the observable command that
 would make it testable). Reuse it: a `testable: no` AC is **rewritten in the
 backlog, before lock**, not waved through.
+
+**The DoD filter (Q5, decided).** Applying every `definition_of_done` item to
+every task multiplies criteria by task count and makes the bar unreadable;
+applying it once per engagement converts it from a done-condition into an
+end-of-run check that can fail everything without naming which task failed.
+Neither is right, and the same `testable` lens sorts them: a DoD item that yields
+a command + expected output **per task** ("the suite passes") belongs in every
+task's bar; one that does not ("documentation updated") becomes a **single
+engagement-wide AC** rather than N unfalsifiable copies. Point the lens at DoD
+items, not only at ACs.
 
 This is the concrete answer to E3 — the criteria are authored in the backlog and
 merely *transcribed* into the bar; the operator's remaining job is adjudication.
@@ -441,6 +455,20 @@ Per `CLAUDE.md`, this delta is not a one-line edit: it must move
 `validate_plugin.check_claims` (which pins the literal **and** its
 `matches_protected` application — F30) and the *"ops-claims verifies
 diff-matches-claims"* cases together.
+
+**The whole directory, with no carve-out for notes (Q4, decided).** The obvious
+objection is that this forbids an implementer from writing `--notes` /
+`implementation_notes` back to its own task, which is genuinely useful. The
+tempting fix — a field-level rule, notes writable and criteria not — requires
+parsing the neighbour project's frontmatter grammar, which B5 forbids precisely
+because that grammar is theirs to change and a hand-rolled parser here would be a
+silent-breakage surface with no owner.
+
+It is also unnecessary: **the implementer does not need write access to record a
+note.** It reports the note in its REPORT and the operator writes it with
+`backlog task edit --notes`. That is the same routing A5 sets for checking an AC
+(only after a PASS row) and the same routing G3 takes for its ledger write — the
+worker produces the content, the operator performs the act.
 
 ### B8 — `autoCommit` must be off
 
@@ -599,7 +627,7 @@ and an integrity pin on the goal so autonomy cannot quietly redefine success.
 ### A1 — the lock is an artifact, not a mood
 
 ```
-.operator/bin/ops-bar.sh lock <engagement-id>
+.operator/bin/ops-verdict.sh --lock-bar <engagement-id> --owner <sid>
 ```
 
 appends a `BAR-LOCK` line to DECISIONS.md carrying:
@@ -635,12 +663,20 @@ the wrong place, for two reasons that compound:
   touched the bar. A keystone gate that cries wolf gets switched off, and then it
   guards nothing.
 
-So the hash is computed **once, at lock time**, by `ops-bar.sh lock` — which
-reads the block outside the verdict lock, where a full read is legitimate — and
-the `BAR-LOCK` line records the hash **and the block's boundary**. Verification
-moves to `ops-bar.sh --verify` and `ops-backlog.sh --audit`: paths that hold no
-write lock and where a full read is expected. The lock line becomes the only
-place the block is ever interpreted.
+So the hash is computed **once, at lock time**, by `--lock-bar` — which reads the
+block before taking the lock, where a full read is legitimate — and the
+`BAR-LOCK` line records the hash **and the block's boundary**. Verification moves
+to `ops-backlog.sh --audit`: a path that holds no write lock and where a full read
+is expected. The lock line becomes the only place the block is ever interpreted.
+
+**The write and the verify live in different files, and that split is the point**
+(Q3, decided). The lock is a DECISIONS.md append, so it belongs to the single
+writer under the lock it already holds — the same reasoning that put G3's
+`--exempt` write there rather than giving `ops-task.sh` a lock. The verify is a
+*read*, needs no lock, and must NOT live in the writer: A2.6 pins that
+`ops-verdict.sh` computes no hash at all. There is therefore no `ops-bar.sh`; a
+CLI that would hold one flag on each side of that split is a CLI whose two halves
+belong in two different places.
 
 The cost is real and stated plainly: drift becomes **detected** rather than
 **refused**. A PASS against a drifted bar is written and then flagged, instead of
@@ -746,10 +782,10 @@ workflow" — non-negotiable, build-enforced:
 | `scripts/ops-task.sh` | create `.armed/<sid>` after the sentinel; `--exempt "<reason>"` (G3) — parses and validates, delegates the ledger write |
 | `scripts/ops-adopt.sh` | create `.armed/<sid>` |
 | `scripts/ops-armgate-hook.sh` | **new** — PreToolUse arm gate (G2), opt-in |
-| `scripts/ops-backlog.sh` | **new** — `--audit` (B9, and A2's bar-hash verify), `--census` (B10), bar derivation helper (B3), preflight (B8) |
-| `scripts/ops-bar.sh` | **new** — `lock` (A1) and `--verify` (A2); may instead land as `ops-verdict.sh --lock-bar`, see Q3 |
-| `scripts/ops-claims.sh` | `PROTECTED` gains `backlog/` (B7) |
-| `scripts/ops-init.sh`, `ops-sessionstart-hook.sh` | install set gains the new CLIs. **No `.gitignore` change:** the v2 allowlist ignores `*` and re-admits only evidence, so `.armed/` — and every ephemera directory added after it — is covered by construction |
+| `scripts/ops-backlog.sh` | **new** — `--audit` (B9, the A2 bar-hash verify, and B11's register pass), `--census` (B10), bar derivation helper (B3), preflight (B8) |
+| ~~`scripts/ops-bar.sh`~~ | **Not created** (Q3, decided). The lock write is `ops-verdict.sh --lock-bar`; the verify is `ops-backlog.sh --audit`. One less CLI in the install set, in `check_scripts`, and in the charter |
+| `scripts/ops-claims.sh` | `PROTECTED` gains `backlog/` (B7) — the whole directory; worker notes route through the operator (Q4) |
+| `scripts/ops-init.sh`, `ops-sessionstart-hook.sh` | install set gains `ops-backlog.sh` and `ops-armgate-hook.sh` only. **No `.gitignore` change:** the v2 allowlist ignores `*` and re-admits only evidence, so `.armed/` — and every ephemera directory added after it — is covered by construction |
 | `hooks/hooks.json` | new `PreToolUse` block |
 | `workflows/backlog.js` | **new** (§5) |
 | `commands/backlog.md` | **new** — where the prose the charter cannot afford lives, incl. B3 bar derivation and the A3 release list |
@@ -818,7 +854,7 @@ Written in the existing table's shape so they can be pasted:
 | the arm gate's tool matcher in `hooks.json`           | keep `Bash` OUT of it (G2) and update the deny message, `commands/backlog.md`, and the *"arm gate"* cases                                                                                                        |
 | the AC↔gate-id convention `<backlog-id>#ac<N>`        | update `ops-backlog.sh --audit`, the charter's EVIDENCE GATE line, and the bar-derivation helper — the id is the join key between two projects' files                                                            |
 | `PROTECTED=` in `ops-claims.sh` (now incl. `backlog/`)| the existing row already covers it: `validate_plugin.check_claims` pins the literal AND its `matches_protected` application (F30), plus the *"ops-claims verifies diff-matches-claims"* cases                     |
-| the BAR-block hash input or its recorded boundary (A2) | update `ops-bar.sh lock` + `--verify` and `ops-backlog.sh --audit`; a hash over a different byte range silently un-pins every locked bar. `ops-verdict.sh` is deliberately NOT in this list — the comparison does not run there (A2) |
+| the BAR-block hash input or its recorded boundary (A2) | update `ops-verdict.sh --lock-bar` (the only producer) and `ops-backlog.sh --audit` (the only consumer); a hash over a different byte range silently un-pins every locked bar. Note the asymmetry: `ops-verdict.sh` produces the hash but never *compares* it — A2.6 pins that it computes none on the write path |
 
 **New validator obligations.** The earlier draft got this paragraph wrong in both
 directions and it is worth stating correctly, because it is the kind of error
@@ -848,10 +884,17 @@ Genuinely new: `check_armgate`, pinning the matcher set and asserting `Bash` is
 absent from it — the one property whose silent loss would turn a rail into a
 wedge. And note the charter-line consequence of the first bullet: every CLI added
 to `CHARTER_REQUIRED_CLIS` costs a charter line beyond §6.2's four. That is the
-argument for keeping `ops-backlog.sh` and `ops-bar.sh` OUT of the constant —
-they are engagement setup, invoked from `commands/backlog.md`, not session
-mechanics the operator needs named in every session's charter. After the reflow
-the room exists either way; this is a scoping decision, not a budget one.
+argument for keeping `ops-backlog.sh` OUT of the constant — it is engagement
+setup, invoked from `commands/backlog.md`, not session mechanics the operator
+needs named in every session's charter. After the reflow the room exists either
+way; this is a scoping decision, not a budget one. (`ops-bar.sh` is no longer a
+candidate at all — Q3 dissolved it.)
+
+Also new, and a direct consequence of Q3: a check that the bar-hash **comparison**
+appears only in `ops-backlog.sh`. `--lock-bar` computes a hash in
+`ops-verdict.sh`, so the naive "no `sha` in the writer" assertion is no longer
+available — the property to pin is that the writer never *compares*, which is
+what keeps the write path free of an unbounded read (A2, A2.6).
 
 ---
 
@@ -1008,14 +1051,15 @@ exist yet; rows marked **(regression)** pin behaviour that must not change.
 
 | # | Command | Expected |
 |---|---|---|
-| A1.1 | `ops-bar.sh lock eng-1` | exit 0; one `BAR-LOCK` line carrying a hash, the block boundary, the blast-radius globs, the budget and the caps **(new)** |
-| A1.2 | `ops-bar.sh lock eng-1` again | exit non-zero — a bar locks once **(new)** |
-| A2.1 | `ops-bar.sh --verify eng-1` on an untouched bar | exit 0, no output **(new)** |
-| A2.2 | edit one byte inside the bar block, then `--verify` | exit non-zero naming the drift; one `GATE-EXCEPTION` written **(new)** |
-| A2.3 | append 100 rows to VERDICTS.md *outside* the block, then `--verify` | exit 0 — the recorded boundary means growth is not drift **(new)** |
-| A2.4 | after A2.2, `ops-verdict.sh <id> crit ev PASS --owner $S` | **exit 0** — the hash is not checked at verdict time; the drift is already recorded **(new)** |
-| A2.5 | `ops-backlog.sh --audit` with a drifted bar | exit non-zero — the audit is what refuses, and it is mandatory in the release path **(new)** |
-| A2.6 | `grep -c 'sha' scripts/ops-verdict.sh` | 0 — no hash computation on the write path **(new)** |
+| A1.1 | `ops-verdict.sh --lock-bar eng-1 --owner $S` | exit 0; one `BAR-LOCK` line carrying a hash, the block boundary, the blast-radius globs, the budget and the caps **(new)** |
+| A1.2 | the same command again | exit non-zero — a bar locks once **(new)** |
+| A1.3 | `--lock-bar` with no `--owner` | exit non-zero — an unowned BAR-LOCK is the same unowned-blocks-all hazard as G1.4 **(new)** |
+| A2.1 | `ops-backlog.sh --audit` on an untouched bar | exit 0; no drift reported **(new)** |
+| A2.2 | edit one byte inside the bar block, then `--audit` | exit non-zero naming the drift; one `GATE-EXCEPTION` written **(new)** |
+| A2.3 | append 100 rows to VERDICTS.md *outside* the block, then `--audit` | exit 0 — the recorded boundary means growth is not drift **(new)** |
+| A2.4 | after A2.2, `ops-verdict.sh <id> crit ev PASS --owner $S` | **exit 0** — the hash is not compared at verdict time; the drift is the audit's to find **(new)** |
+| A2.5 | the release path with a drifted bar | exit non-zero — the audit is what refuses, and it runs there by construction **(new)** |
+| A2.6 | the hash is computed on the `--lock-bar` path and **compared** nowhere in `ops-verdict.sh` | asserted by a check that the comparison lives only in `ops-backlog.sh`. A bare `grep -c sha` would now fail on `--lock-bar`'s own computation, so the assertion is about the *comparison*, not the string **(new)** |
 
 ### B — the backlog integration
 
@@ -1046,32 +1090,73 @@ rather than a prose promise.
 
 ---
 
-## 9. Open questions for the human
+## 9. Resolved — the five open questions (2026-08-07)
 
-1. **Q1 — does G2 ship opt-in?** This spec says yes and argues from issue #9.
-   The counter-argument is real: an opt-in gate does not close E1, it makes it
-   closable. Ship-default-on is defensible if the appetite for a wedged session
-   is higher than assumed.
-2. **Q2 — per-AC sentinels (B2) vs per-task + `--keep-open`.** Per-AC needs no
-   change to the single writer, which is why it is recommended; the cost is N
-   open sentinels and an N-row statusline for an N-criterion task. If that reads
-   as noise in practice, the trade flips.
-3. **Q3 — `ops-bar.sh` as a new CLI, or `ops-verdict.sh --lock-bar`?** A new CLI
-   grows the install set and every parity check that pins it. A new flag widens
-   the single writer, which is the most dangerous file in the repo. Leaning to
-   the flag, on the grounds that the lock is a ledger write and the ledger has
-   exactly one writer by design. *(Note the same reasoning decided G3: `--exempt`
-   delegates its write rather than duplicating the lock. If Q3 goes the same way,
-   `ops-bar.sh` shrinks to a `--verify` reader and the lock write lands as an
-   `ops-verdict.sh` flag.)*
-4. **Q4 — does `backlog/` in `PROTECTED` (B7) over-restrict?** It forbids an
-   implementer from writing `--notes` / `implementation_notes` back to its own
-   task, which is a genuinely useful worker behaviour. The alternative is a
-   field-level rule (notes writable, acceptance criteria not), which needs a
-   parser for the neighbour project's file grammar — squarely against B5.
-5. **Q5 — is `definition_of_done` per-engagement or per-task?** B3 applies it to
-   every task in the engagement. If a project's DoD is heavyweight, that
-   multiplies criteria by task count and the bar becomes unreadable.
+All five were put to the human and decided. Recorded with the reasoning, because
+four of them turned on a fact that was not in the original framing.
+
+**Q1 — G2 ships opt-in. CONFIRMED as specified.**
+The counter-argument (an opt-in gate does not close E1) is true but not
+decisive, because **default-on does not close it either**: `Bash` is ungated by
+design, so `bash -c 'cat > f'` walks past the gate at any setting. Both options
+deliver *closable*, and only one of them can wedge a session. Precedent is
+directly on point — issue #9 was a gate stage shipped default-on that
+phantom-blocked every ledger with a long row and whose clearing path was
+unreachable. The asymmetry the original framing missed: **G1 is default-on and
+covers the same ground retroactively.** A session that bypasses the arm gate
+still earns a `GATE-EXCEPTION` at verdict time. Opt-in G2 is a second layer over
+a layer that already runs, not a hole. Revisit in 0.8.0 on field evidence.
+
+**Q2 — per-AC sentinels. CONFIRMED as recommended.**
+The stated cost was "N open sentinels and an N-row statusline". The second half
+is wrong: the statusline renders a **count**, not rows (`op[2]`, `op[1+2*]` —
+`statusline.sh:4-6`). A five-criterion task reads `op[5]`, one character wider,
+not five lines. What per-AC buys is the thing that matters: each criterion gets
+its own evidence row. Per-task + `--keep-open` closes five criteria with one
+row, which pushes "which criterion is proven" back into prose in the evidence
+cell — the duplication B1 exists to forbid. One consequence to carry into the
+implementation: `op[12]` no longer means "12 tasks", and `statusline.sh`'s
+header comment should say so when B2 lands.
+
+**Q3 — neither. `ops-bar.sh` is not created.** *(the one that changed)*
+The question assumed the lock and the verify travel together. Once A2 moved the
+hash off the write path they stopped being one thing:
+
+- the **lock write** is a DECISIONS.md append → belongs to the single writer,
+  under the lock it already holds. Same reasoning that decided G3.
+- the **verify** is a read → needs no lock, and must not live in the writer,
+  which A2.6 pins.
+
+So: `ops-verdict.sh --lock-bar` and `ops-backlog.sh --audit`. A CLI holding one
+flag on each side of that split is a CLI whose halves belong in two places. This
+removes an install-set entry, a `check_scripts` entry, and a charter line.
+
+The cost, stated: `ops-verdict.sh` is 613 lines and the most dangerous file in
+the repo, and this is its fourth flag (`--defer`, `--reconcile`,
+`--mark-handoff`, `--lock-bar`). That is the price, and it is deliberate — the
+alternative price is a fourth lock site.
+
+**Q4 — `backlog/` stays wholly in `PROTECTED`.**
+The proposed escape (a field-level rule: notes writable, criteria not) needs a
+parser for the neighbour project's frontmatter grammar, which is exactly what B5
+forbids — that grammar is theirs to change, and a hand-rolled parser here is a
+silent-breakage surface with no owner. The third way the framing missed: **the
+implementer does not need write access to record notes.** It reports them in its
+REPORT; the operator writes them with `backlog task edit --notes`. That is the
+pattern A5 already sets for checking ACs (only after a PASS row) and the one G3
+just took for the ledger write. No parser, no field-level rule, no exception to
+B7.
+
+**Q5 — per-task, with a filter.**
+Per-engagement was the tempting answer to "a heavy DoD × N tasks makes the bar
+unreadable", but it converts the DoD from a done-condition into an end-of-run
+check that can fail everything without naming which task failed. B3's own rule
+resolves it: every criterion must be **command + expected output**, and an item
+that cannot be expressed that way is not yet a criterion. A DoD item that is
+per-task testable ("the suite passes") belongs in every task's bar; one that is
+not ("documentation updated") becomes a single engagement-wide AC instead of N
+unfalsifiable copies. B3 already has the lens that sorts them (`testable: no`) —
+it must be aimed at DoD items too, not only at ACs.
 
 ---
 
