@@ -1182,11 +1182,15 @@ acceptance criteria intact.
 >   reden (en B7's beredenering dat de grammar vreemd is) weg. B5/B7 moeten hier
 >   op herbegrepen worden vóór de B-items gebouwd worden — het zijn geen
 >   blokkers, maar hun *"waarom"* is herschreven.
-> - **B10 drempel = release-postuur, niet alleen grootte (U3).** Exploratie /
->   MVP / test / wip → vrijgesteld; een project met een **release-schema** → de
->   onbekenden-scan is een *must*. Grootte (B10.1 census) blijft een
->   secundair signaal, maar de trekker is of het project released, niet hoe
->   groot het is.
+> - **B10 drempel = eindgebruiker-getriggerd (U3).** "Release-postuur" is
+>   intentie, geen code-meetbaar feit — dus de onbekenden-scan wordt aangezet
+>   door de **gebruiker die verklaart** "dit is release-gebonden" bij taak-open,
+>   niet afgeleid van grootte of bestandsstructuur. Exploratie / MVP / test / wip
+>   → vrijgesteld (default); release-gebonden → de scan is een *must*. Dit is
+>   hetzelfde model als G2 (opt-in `armgate.on`) en G3 (gebruiker vraagt
+>   exemptie): de trekker is menselijk, het mechanisme dwingt af. Grootte
+>   (B10.1 census) degradeert tot informatief signaal — een proxy die soms
+>   gelijk heeft en soms niet, geen trekker.
 > Een volgende lezer ziet hier "bewust stil, en de voorwaarden zijn
 > herschreven," niet "vergeten."
 
