@@ -1960,6 +1960,27 @@ runclaims --since "$BASE_SHA" --claimed "tests/" --gate-task >/dev/null 2>&1; C3
 check "C3 pass: protected path allowed with --gate-task" "$([ "$C3P" = 0 ] && echo 0 || echo 1)"
 clean_tree
 
+# B7.1 — backlog/ is PROTECTED (B7): a worker that edits backlog/tasks/*.md can
+# edit the acceptance criteria it is judged against — the F48 vacuous-guard class
+# relocated to the plan layer. The WHOLE directory (Q4): a notes file under
+# backlog/ is equally off-limits. Touch a path under it, claim it honestly, and
+# C3 must still fire gate-trespass (the claim does not authorize the trespass).
+mkdir -p "$P/backlog/tasks"; printf 'x\n' > "$P/backlog/tasks/x.md"
+B7OUT="$(runclaims --since "$BASE_SHA" --claimed "backlog/tasks/x.md" 2>/dev/null)"; B7RC=$?
+clean_tree
+check "B7.1 backlog/tasks/*.md touched without --gate-task → non-zero" "$([ "$B7RC" != 0 ] && echo 0 || echo 1)"
+check "B7.1 names 'gate-trespass'" "$(printf '%s' "$B7OUT" | grep -q gate-trespass && echo 0 || echo 1)"
+# B7.1b: a notes file under backlog/ is equally off-limits (Q4 — whole dir).
+mkdir -p "$P/backlog"; printf 'n\n' > "$P/backlog/notes.md"
+runclaims --since "$BASE_SHA" --claimed "backlog/notes.md" >/dev/null 2>&1; B7BRC=$?
+clean_tree
+check "B7.1b backlog/notes.md (not a task) is equally protected (whole dir, Q4)" "$([ "$B7BRC" != 0 ] && echo 0 || echo 1)"
+# B7.1c: --gate-task authorizes the backlog edit (the task IS the gate).
+mkdir -p "$P/backlog/tasks"; printf 'y\n' > "$P/backlog/tasks/y.md"
+runclaims --since "$BASE_SHA" --claimed "backlog/tasks/y.md" --gate-task >/dev/null 2>&1; B7CRC=$?
+clean_tree
+check "B7.1c backlog/ edit allowed with --gate-task" "$([ "$B7CRC" = 0 ] && echo 0 || echo 1)"
+
 # CHANGED: none — clean working tree, no claims, no trespass.
 runclaims --since "$BASE_SHA" --claimed none >/dev/null 2>&1; CNG=$?
 check "CHANGED none: clean tree, no claims → exit 0" "$([ "$CNG" = 0 ] && echo 0 || echo 1)"

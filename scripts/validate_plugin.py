@@ -722,6 +722,12 @@ def check_claims(root, problems):
     `statusline.sh` is in the set per the F66 amendment: it is a full sentinel
     reader bound by gate semantics, so a worker weakening its parser re-opens a
     laundering path invisibly — and no prior glob covered it.
+
+    `backlog/` is in the set per B7 (backlog-charter spec): an implementer that
+    can edit backlog/tasks/*.md can edit the acceptance criteria it is judged
+    against — the F48 vacuous-guard class relocated to the plan layer, harder to
+    spot than a weakened validator. The whole directory (no notes carve-out);
+    the escape needs a parser for the neighbour's grammar, which B5 forbids.
     """
     p = root / "scripts" / "ops-claims.sh"
     if not p.is_file():
@@ -731,7 +737,7 @@ def check_claims(root, problems):
     # ops-claims.sh. A divergence here is two different ideas of "the grader".
     literal = re.search(r'^PROTECTED="(.*)"$', text, re.MULTILINE)
     canonical = ("scripts/validate_plugin.py tests/ .operator/bin/ hooks/ "
-                 "scripts/ops-*.sh scripts/statusline.sh")
+                 "scripts/ops-*.sh scripts/statusline.sh backlog/")
     if not literal:
         problems.append(
             "scripts/ops-claims.sh: PROTECTED literal not found — the "
