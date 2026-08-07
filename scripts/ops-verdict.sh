@@ -697,15 +697,25 @@ retro_gate() {
   # so the newest row is at the tail, but for a binary "does any row exist?"
   # check, forward scan is equivalent and cross-platform. Bounded by
   # FRAG_MAX_BYTES — the PLAYBOOK "touching the lock" step-3 hazard.
+  #
+  # The id-prefix `| <id> |` is always at a LINE START. So we test EVERY line
+  # start, never skipping a chunk: a long evidence cell (>512B) splits a row
+  # across read chunks, and the chunk that STARTS the row is the one carrying
+  # the prefix — skipping it (the issue-#9 long-row blindness class) misfiles a
+  # genuine duplicate as never-armed and writes a spurious GATE-EXCEPTION.
+  # A continuation chunk (mid-cell) never begins with `| <id> |`, so matching
+  # every line start is both necessary and safe. The per-line bound is generous:
+  # rows are ~80B honest, but an evidence cell can run to several KB, and the
+  # file is already size-capped above, so a corrupted newline-less line yields a
+  # few bounded non-matching chunks, not an unbounded slurp.
   local frag="$FRAGDIR/${tag_owner}.md" fragsz=0 found=1 line n=0
   if [ -f "$frag" ]; then
     fragsz="$(wc -c < "$frag" 2>/dev/null || echo 0)"
     if [ "$fragsz" -gt "$FRAG_MAX_BYTES" ]; then
       echo "ops-verdict: fragment ${frag##*/} exceeds FRAG_MAX_BYTES (${fragsz}); prior-row scan refused — treating as never-armed" >&2
     else
-      while IFS= read -r -n 512 line || [ -n "$line" ]; do
+      while IFS= read -r -n 1048576 line || [ -n "$line" ]; do
         n=$((n+1)); [ "$n" -le 200000 ] || break  # backstop: ~100k rows at ~80 bytes
-        [ "${#line}" -lt 512 ] || continue         # skip capped chunks (not a complete row)
         case "$line" in
           "| $ID |"*) found=0; break ;;
         esac

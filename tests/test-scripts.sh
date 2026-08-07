@@ -2401,6 +2401,24 @@ FRAG="$P/.operator/verdicts.d/$S.md"
 ( cd "$P" && bash "$VERDICT" na-g16b crit ev PASS --owner "$S" 2>/dev/null ); G16=$?
 check "G1.6 oversized-fragment verdict exits 0 (not wedged)" "$([ "$G16" -eq 0 ] && echo 0 || echo 1)"
 
+# G1.7 — long-evidence duplicate must not be misfiled as never-armed (issue-#9
+# class: the prior-row scan skips a chunk that starts the row). A 700-byte
+# evidence cell splits the fragment row across read chunks; the chunk carrying
+# the `| <id> |` prefix must be matched, not skipped. Repro from the G3 review.
+# Fresh project + session: G1.6 above left SESS-G1's fragment padded to 9MB
+# (past FRAG_MAX_BYTES), which would make THIS scan refuse and false-positive —
+# so this case must not inherit that state.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+S7="SESS-G17"
+LONGEV="$(printf 'x%.0s' $(seq 1 700))"
+( cd "$P" && bash "$TASK" g1t7 --owner "$S7" >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" g1t7 crit "$LONGEV" PASS --owner "$S7" >/dev/null 2>&1 )
+DEC_BEFORE="$(grep -cE '^[0-9]{4}.*GATE-EXCEPTION' "$P/.operator/DECISIONS.md" || true)"
+( cd "$P" && bash "$VERDICT" g1t7 crit2 short PASS --owner "$S7" 2>&1 ) | grep -qi 'duplicate\|amending' && DUP17=0 || DUP17=1
+DEC_AFTER="$(grep -cE '^[0-9]{4}.*GATE-EXCEPTION' "$P/.operator/DECISIONS.md" || true)"
+check "G1.7 long-evidence duplicate is duplicate, not never-armed (no spurious GATE-EXCEPTION)" \
+  "$([ "${DEC_AFTER:-0}" = "${DEC_BEFORE:-0}" ] && [ "$DUP17" -eq 0 ] && echo 0 || echo 1)"
+
 rm -rf "$P"
 
 ########################################################################
