@@ -391,11 +391,11 @@ check "the v2 migration keeps the user's v1 file as .v1.bak" \
 # The load-bearing half: ledgers and fragments stay TRACKED, machine state does
 # not. A migration that ignores a ledger loses evidence silently.
 check "v2 re-admits both ledgers, tiers.env and the merge=union fragments" \
-  "$( for a in '!VERDICTS.md' '!DECISIONS.md' '!tiers.env' '!verdicts.d/\*.md'; do
-        grep -qF "$(printf '%s' "$a" | tr -d '\\\\')" "$GIP/.operator/.gitignore" || exit 1
+  "$( for a in '!VERDICTS.md' '!DECISIONS.md' '!tiers.env' '!verdicts.d/*.md'; do
+        grep -qF "$a" "$GIP/.operator/.gitignore" || exit 1
       done; echo 0 )"
 check "v2 ignores everything else by default (bare '*')" \
-  "$(grep -qx '\*' "$GIP/.operator/.gitignore" && echo 0 || echo 1)"
+  "$(grep -qxF '*' "$GIP/.operator/.gitignore" && echo 0 || echo 1)"
 # The compressor ephemera are now covered by '*' — no per-directory line, which
 # is the whole point of the inversion.
 check "v2 needs no explicit .compress-spill/ line (covered by '*')" \
