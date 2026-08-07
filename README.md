@@ -64,8 +64,13 @@ models. `/cc-operator:tiers` wraps both.
 scrubs/dedups/elides re-billed tool output on a strict allowlist — never
 Read/Edit/Write/NotebookEdit, never `mcp__*`, never evidence-gate output
 (ledger paths and gate CLIs are carved out by path). Elided output is spilled
-verbatim (pre-scrub) to `.operator/.compress-spill/` and cited, so evidence
-stays recoverable byte-for-byte.
+verbatim (pre-scrub) and cited, so evidence stays recoverable byte-for-byte —
+to `.operator/.compress-spill/` in an initialized project, or to a cwd-keyed
+tempdir in one that never ran `/cc-operator:start`, so the hook never
+materializes a `.operator/` in a project that did not ask for it. Either root
+carries its own `*` ignore, and `.operator/.gitignore` is an allowlist: the two
+ledgers, the `verdicts.d/` fragments and `tiers.env` are tracked; everything
+else the plugin creates is ignored by default.
 
 ## Commands
 

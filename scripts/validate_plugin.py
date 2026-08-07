@@ -718,6 +718,54 @@ def check_install_set_parity(root, problems):
             f"must stay equal)")
 
 
+def check_gitignore_parity(root, problems):
+    r"""The .operator/.gitignore v2 allowlist body is written in TWO places:
+    ops-init.sh (_gi_write, on /cc-operator:start) and ops-sessionstart-hook.sh
+    (the every-session v1 migration). Drift means a project migrated by one path
+    ignores a different set than one migrated by the other — and the direction
+    that bites is silent: an allow line present in ops-init but missing in the
+    hook un-tracks a ledger the moment a session starts. Same F30 shape as
+    check_install_set_parity: two copies, uniform drift is the realistic failure.
+
+    Pins the ALLOW lines (the load-bearing half — `*` ignores everything else by
+    construction) and the marker both files grep for to detect a v1 file.
+    """
+    MARK = "# cc-operator gitignore v2 (allowlist)"
+    ALLOW = ("!.gitignore", "!.gitattributes", "!VERDICTS.md", "!DECISIONS.md",
+             "!tiers.env", "!verdicts.d/", "!verdicts.d/*.md")
+    sets = {}
+    for name in ("ops-init.sh", "ops-sessionstart-hook.sh"):
+        p = root / "scripts" / name
+        if not p.is_file():
+            problems.append(f"scripts/{name}: missing — cannot check gitignore parity")
+            continue
+        text = p.read_text(encoding="utf-8")
+        if MARK not in text:
+            problems.append(
+                f"scripts/{name}: does not carry the v2 gitignore marker "
+                f"{MARK!r} — both writers must emit it AND grep for it, or a v1 "
+                f"blocklist is never migrated (it would be appended to instead, "
+                f"and the two schemes contradict)")
+        # Allow lines are line-anchored: a '!VERDICTS.md' inside prose is not a
+        # heredoc body line, and would make this check vacuous.
+        lines = {ln.strip() for ln in text.splitlines()}
+        sets[name] = tuple(a for a in ALLOW if a in lines)
+    a, b = sets.get("ops-init.sh"), sets.get("ops-sessionstart-hook.sh")
+    for name, got in sets.items():
+        missing = [x for x in ALLOW if x not in got]
+        if missing:
+            problems.append(
+                f"scripts/{name}: v2 gitignore body is missing allow line(s) "
+                f"{missing} — an ignored ledger is evidence that silently never "
+                f"reaches the teammate reading the repo")
+    if a is not None and b is not None and a != b:
+        problems.append(
+            f"gitignore allowlist drift: ops-init.sh admits {list(a)} but "
+            f"ops-sessionstart-hook.sh admits {list(b)} — the two writers must "
+            f"stay equal (F30; a project's tracked set must not depend on which "
+            f"path migrated it)")
+
+
 def check_lock_parity(root, problems):
     """ops-verdict.sh and ops-adopt.sh must carry the SAME lock implementation.
 
@@ -1357,6 +1405,7 @@ CHECKS = (
     check_guard_parity,
     check_claims,
     check_install_set_parity,
+    check_gitignore_parity,
     check_compressor,
     check_lock_parity,
     check_resolver_renderer_parity,

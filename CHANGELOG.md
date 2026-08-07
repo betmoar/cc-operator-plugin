@@ -9,6 +9,41 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+### Fixed — the compressor materialized `.operator/` in projects that never opted in
+
+`ops-compress.mjs` is a PostToolUse hook, so it fires wherever the plugin is
+*installed* — and its spill/dedup roots were created with `mkdir -p`, which
+created `.operator/` itself. A project that never ran `/cc-operator:start` got a
+directory it did not ask for, with no `.gitignore` (that is written by
+`ops-init.sh`, which never ran there) and therefore untracked dirty state.
+
+- Each ephemera root now writes its own `.gitignore` holding `*`, so the tree
+  stays clean without depending on `ops-init.sh` or the SessionStart append.
+- When `.operator/` is absent the roots move to `$TMPDIR/cc-operator/<sha256(cwd)
+  [:16]>/` instead of creating one. Spill and cite keep working; an out-of-tree
+  spill is cited by absolute path rather than a `../..` walk.
+- SessionStart wipes the tempdir root too — it is the one copy never visible in
+  the tree, so it was also the one that would have grown forever.
+
+### Changed — `.operator/.gitignore` is an allowlist
+
+The v1 blocklist defaulted new machine state to *tracked*, so every directory
+added since had to be remembered and appended — twice (`.lock/` for F05, then
+`.compress-spill/`). v2 ignores `*` and re-admits only evidence: both ledgers,
+the `verdicts.d/` fragments that `merge=union` operates on, and `tiers.env`.
+Future ephemera are covered by construction.
+
+Existing projects are migrated (not appended to — the two schemes contradict) by
+both `ops-init.sh` and the SessionStart hook, keeping the previous file as
+`.gitignore.v1.bak`. New `check_gitignore_parity` pins the two writers equal.
+
+### Changed — `templates/OPERATOR.md` reflowed to 95 columns
+
+The charter was wrapped at ~75–83 columns against a 100-column cap, so 13 of its
+149 lines were formatting rather than content: 149→136 lines, 8194→8188 bytes,
+word stream and citation tags verified identical. The binding cap is now bytes
+(~812 spare) rather than lines (14 spare), and no further reflow can buy room.
+
 ## [0.6.1] - 2026-08-05
 
 ### Fixed — deviation gate was blind on ledgers with long rows (#9)

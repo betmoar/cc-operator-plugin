@@ -28,36 +28,61 @@ fi
 
 mkdir -p "$OPDIR/pending" "$OPDIR/verdicts.d"
 
-# Lock ephemera are transient mutual-exclusion markers, not evidence. Without
-# this they show up as untracked noise inside a tracked tree and can be committed
-# by an over-broad `git add`, at which point a checked-out stale lock makes every
-# writer pay the full crash-presumption budget. (Audit F05.)
-if [ ! -f "$OPDIR/.gitignore" ]; then
-  cat > "$OPDIR/.gitignore" <<'EOF'
-# Transient lock markers — never evidence, never committed.
-.lock/
-.lock.reclaim/
-.adopt.*
-# Compressor ephemera: session-scoped spills + dedup hashes, wiped on every
-# SessionStart. Spilled output is a RECOVERY aid, not evidence — the ledger row
-# is the evidence, and it cites the spill by path.
-.compress-spill/
-.compress-state/
+# ALLOWLIST, not a blocklist (v2). The original listed the ephemera to ignore —
+# and every directory added since had to be remembered and appended, twice (F05
+# for .lock/, then .compress-spill/ once a user's tree went dirty). A blocklist
+# defaults new state to TRACKED, so the failure mode is silent and recurring: the
+# entry ships, nobody notices, and it is committed by an over-broad `git add`.
+# (A checked-out stale lock then makes every writer pay the crash-presumption
+# budget.) Inverting the default costs one migration and ends the class.
+#
+# What stays tracked is exactly what a teammate needs to reconstruct the
+# engagement: the two ledgers, their per-session fragments (verdicts.d/ is what
+# `merge=union` in .gitattributes operates on — un-tracking it breaks the
+# clean-merge property the fragment scheme exists for), and the tier config.
+# Everything else — pending/, bin/, locks, compressor ephemera, whatever is added
+# next — is machine state that the plugin recreates.
+#
+# OPERATOR.md is NOT here: /cc-operator:start writes it to the project ROOT.
+_GI_MARK='# cc-operator gitignore v2 (allowlist)'
+_gi_write() {
+  cat > "$OPDIR/.gitignore" <<EOF
+$_GI_MARK
+# Ignore everything under .operator/ by default, then re-admit the evidence.
+# New machine state is ignored automatically — that is the point of the
+# inversion; do not add ignore lines here, add allow lines only when a NEW file
+# is genuinely evidence a teammate must read.
+*
+!.gitignore
+!.gitattributes
+!VERDICTS.md
+!DECISIONS.md
+!tiers.env
+!verdicts.d/
+!verdicts.d/*.md
 EOF
-  echo "created $OPDIR/.gitignore (lock + compressor ephemera)"
+}
+if [ ! -f "$OPDIR/.gitignore" ]; then
+  _gi_write
+  echo "created $OPDIR/.gitignore (allowlist: ledgers + fragments + tiers.env)"
+elif ! grep -qF "$_GI_MARK" "$OPDIR/.gitignore" 2>/dev/null; then
+  # MIGRATION. A v1 blocklist cannot be appended to — the two schemes contradict
+  # (v1 tracks by default, v2 ignores by default), and appending `*` to a v1 file
+  # would ignore the ledgers while the earlier lines say nothing about them.
+  # Replace it, keeping a copy: this file is the user's, and a rewrite they did
+  # not ask for must be recoverable.
+  cp "$OPDIR/.gitignore" "$OPDIR/.gitignore.v1.bak" 2>/dev/null
+  _gi_write
+  echo "migrated $OPDIR/.gitignore to the v2 allowlist (previous kept as .gitignore.v1.bak)"
 fi
 
-# An ALREADY-initialized project has a .gitignore without the compressor lines
-# (the block above only writes when the file is absent), so spills would show up
-# as untracked noise and could be swept in by an over-broad `git add` — the same
-# failure F05 fixed for stale locks. Append idempotently.
-if [ -f "$OPDIR/.gitignore" ] && ! grep -q '^\.compress-spill/$' "$OPDIR/.gitignore" 2>/dev/null; then
-  {
-    printf '# Compressor ephemera (added by upgrade): session-scoped, wiped on SessionStart.\n'
-    printf '.compress-spill/\n.compress-state/\n'
-  } >> "$OPDIR/.gitignore"
-  echo "updated $OPDIR/.gitignore (compressor ephemera)"
-fi
+# (The compressor-ephemera append that used to live here is gone: under the v2
+# allowlist `*` already covers .compress-spill/ and .compress-state/, and every
+# future ephemera directory, without anyone having to remember them. The
+# migration branch above is what carries a v1 project across. The compressor
+# additionally writes its own `*` ignore inside each ephemera root, so a project
+# that never ran this script at all still stays clean — see
+# ops-compress.mjs:ephemeralRoot.)
 
 # Per-session verdict fragments (verdicts.d/<owner>.md) exist so two branches
 # append to two different files and git merges them cleanly. VERDICTS.md can

@@ -21,6 +21,7 @@
 // to "broken tool pipeline".
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 
@@ -150,9 +151,43 @@ function elide(text, K) {
 // MUST cite the spill file. Without this, a mid-log failure that misses the
 // salvage regex can turn a FAIL into a recorded PASS — the falsification I2
 // exists to prevent, and the reason the gate-CLI exclusion alone was vacuous.
+// Both ephemera roots below are created with `recursive: true`, which CREATES
+// `.operator/` itself when it is absent. The compressor is a PostToolUse hook: it
+// fires in every project where the plugin is merely INSTALLED, including ones
+// that never ran /cc-operator:start. So the naive path materialized a `.operator/`
+// — and, because `ops-init.sh` never ran there, one with no `.gitignore` — in
+// unrelated repos, showing up as untracked dirty state the user never asked for.
+//
+// Containment, both halves required:
+//   (A) self-sufficient ignore. Each ephemera root carries its OWN `.gitignore`
+//       holding `*`, written at creation. It does not depend on ops-init or the
+//       SessionStart append ever having run, so the tree stays clean even in a
+//       project that has no `.operator/.gitignore` at all.
+//   (B) no uninvited directory. When `.operator/` does not exist we do NOT create
+//       it; the root moves to the system tempdir, keyed by a hash of cwd so two
+//       projects never share one. Spill/dedup keep working (the charter's
+//       spilled-to cite names whatever path is returned) without leaving a
+//       footprint in a project that never opted in.
+function ephemeralRoot(cwd, kind) {
+  const opdir = path.join(cwd, ".operator");
+  const inProject = fs.existsSync(opdir);
+  const root = inProject
+    ? path.join(opdir, kind)
+    : path.join(os.tmpdir(), "cc-operator",
+        crypto.createHash("sha256").update(cwd).digest("hex").slice(0, 16), kind);
+  fs.mkdirSync(root, { recursive: true });
+  // `*` ignores the directory's whole contents including itself; idempotent, and
+  // best-effort because a failed ignore must never cost the session its spill.
+  try {
+    const gi = path.join(root, ".gitignore");
+    if (!fs.existsSync(gi)) fs.writeFileSync(gi, "*\n");
+  } catch { /* best effort — containment is a nicety, the spill is the contract */ }
+  return root;
+}
+
 function spill(original, { cwd, session, toolUseId, keep }) {
   try {
-    const dir = path.join(cwd, ".operator", ".compress-spill", session || "nosession");
+    const dir = path.join(ephemeralRoot(cwd, ".compress-spill"), session || "nosession");
     fs.mkdirSync(dir, { recursive: true });
     const name = String(toolUseId || `t${Date.now()}`).replace(/[^A-Za-z0-9_.-]/g, "_");
     const file = path.join(dir, name);
@@ -165,7 +200,11 @@ function spill(original, { cwd, session, toolUseId, keep }) {
     for (const e of entries.slice(0, Math.max(0, entries.length - keep))) {
       try { fs.unlinkSync(path.join(dir, e.f)); } catch { /* best effort */ }
     }
-    return path.relative(cwd, file);
+    // Relative while the spill lives under cwd (the readable, citable form the
+    // charter rule assumes); absolute once it does not, because a `../../..`
+    // walk out of the project is neither readable nor stable to cite.
+    const rel = path.relative(cwd, file);
+    return rel.startsWith("..") ? file : rel;
   } catch {
     return null; // spill failure must not break compression, only remove the cite
   }
@@ -179,7 +218,7 @@ function spill(original, { cwd, session, toolUseId, keep }) {
 function dedupCheck(text, { cwd, session, tool }) {
   if (!session) return false;
   try {
-    const dir = path.join(cwd, ".operator", ".compress-state", session);
+    const dir = path.join(ephemeralRoot(cwd, ".compress-state"), session);
     fs.mkdirSync(dir, { recursive: true });
     const f = path.join(dir, String(tool).replace(/[^A-Za-z0-9_.-]/g, "_"));
     const h = crypto.createHash("sha256").update(text).digest("hex");

@@ -375,22 +375,36 @@ check "sessionstart hook emits additionalContext with the id" "$(printf '%s' "$S
 Q="$(newproj)"
 SSQ="$(sed "s|<tmp>|$Q|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"; SSQRC=$?
 check "sessionstart hook silent outside operator projects" "$([ "$SSQRC" -eq 0 ] && [ -z "$SSQ" ] && echo 0 || echo 1)"
-# SessionStart ensures the compressor ephemera are git-ignored: a target project
-# whose .operator/.gitignore predates the compressor would otherwise show
-# .compress-spill/ as dirty state the moment the PostToolUse compressor fires
-# (user-reported 2026-08-04). The hook appends the lines idempotently.
+# SessionStart migrates a v1 (blocklist) .operator/.gitignore to the v2
+# allowlist. The v1 scheme tracked by default, so every ephemera directory added
+# since had to be remembered and appended — twice (.lock/ for F05, then
+# .compress-spill/ once a user's tree went dirty, 2026-08-04). v2 inverts the
+# default: `*` covers everything new, and only evidence is re-admitted. The two
+# schemes CONTRADICT, so this replaces rather than appends.
 GIP="$(newproj)"; ( cd "$GIP" && bash "$INIT" >/dev/null 2>&1 )
-# Strip the compressor lines to simulate a pre-compressor gitignore.
 printf '# legacy\n.lock/\n' > "$GIP/.operator/.gitignore"
 sed "s|<tmp>|$GIP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
-check "sessionstart ensures .compress-spill/ is git-ignored" \
-  "$(grep -q '^\.compress-spill/$' "$GIP/.operator/.gitignore" && echo 0 || echo 1)"
-check "sessionstart ensures .compress-state/ is git-ignored" \
-  "$(grep -q '^\.compress-state/$' "$GIP/.operator/.gitignore" && echo 0 || echo 1)"
-# Idempotent: a second fire does not duplicate the block.
+check "sessionstart migrates a v1 gitignore to the v2 allowlist" \
+  "$(grep -qF '# cc-operator gitignore v2 (allowlist)' "$GIP/.operator/.gitignore" && echo 0 || echo 1)"
+check "the v2 migration keeps the user's v1 file as .v1.bak" \
+  "$(grep -q '^# legacy$' "$GIP/.operator/.gitignore.v1.bak" 2>/dev/null && echo 0 || echo 1)"
+# The load-bearing half: ledgers and fragments stay TRACKED, machine state does
+# not. A migration that ignores a ledger loses evidence silently.
+check "v2 re-admits both ledgers, tiers.env and the merge=union fragments" \
+  "$( for a in '!VERDICTS.md' '!DECISIONS.md' '!tiers.env' '!verdicts.d/\*.md'; do
+        grep -qF "$(printf '%s' "$a" | tr -d '\\\\')" "$GIP/.operator/.gitignore" || exit 1
+      done; echo 0 )"
+check "v2 ignores everything else by default (bare '*')" \
+  "$(grep -qx '\*' "$GIP/.operator/.gitignore" && echo 0 || echo 1)"
+# The compressor ephemera are now covered by '*' — no per-directory line, which
+# is the whole point of the inversion.
+check "v2 needs no explicit .compress-spill/ line (covered by '*')" \
+  "$(grep -q '^\.compress-spill/$' "$GIP/.operator/.gitignore" && echo 1 || echo 0)"
+# Idempotent: a second fire re-detects the marker and does not rewrite.
+cp "$GIP/.operator/.gitignore" "$GIP/gi.before"
 sed "s|<tmp>|$GIP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
-check "sessionstart gitignore-ensure is idempotent (no duplicate block)" \
-  "$( [ "$(grep -c '^\.compress-spill/$' "$GIP/.operator/.gitignore")" = 1 ] && echo 0 || echo 1)"
+check "the v2 migration is idempotent (a second fire is a no-op)" \
+  "$(cmp -s "$GIP/gi.before" "$GIP/.operator/.gitignore" && echo 0 || echo 1)"
 rm -rf "$Q" "$P" "$GIP"
 
 # --- automated upgrade path (version-gated bin/ refresh, 2026-08-04) ----------
@@ -1062,7 +1076,13 @@ Q="$(newproj)"
 IOUT="$( cd "$Q" && bash "$INIT" 2>&1 )"
 check "ops-init warns when the target is not a git repository" "$(printf '%s' "$IOUT" | grep -qi 'not a git repo' && echo 0 || echo 1)"
 check "ops-init still scaffolds (warn, never hard-fail)" "$([ -d "$Q/.operator/pending" ] && echo 0 || echo 1)"
-check "ops-init ignores its own lock ephemera" "$(grep -q '.lock' "$Q/.operator/.gitignore" 2>/dev/null && echo 0 || echo 1)"
+# Under the v2 allowlist there is no per-directory `.lock/` line — `*` covers it
+# and every ephemera directory added later. Assert the BEHAVIOUR (git ignores a
+# lock) rather than the literal, so this case cannot pass a file that merely
+# mentions the word.
+check "ops-init ignores its own lock ephemera" \
+  "$( cd "$Q" && git init -q . >/dev/null 2>&1; mkdir -p .operator/.lock; : > .operator/.lock/held
+      git check-ignore -q .operator/.lock/held && echo 0 || echo 1 )"
 rm -rf "$Q"
 
 ########################################################################

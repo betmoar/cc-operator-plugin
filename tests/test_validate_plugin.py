@@ -105,12 +105,24 @@ def make_good_tree(root):
     write(root / ".claude-plugin" / "statusline.json", json.dumps({
         "name": "cc-operator", "render": "scripts/statusline.sh", "order": 30,
     }))
-    write(root / "scripts" / "ops-init.sh", "#!/usr/bin/env bash\nset -eu\necho ok\n")
+    # Both writers of .operator/.gitignore must carry the v2 allowlist body,
+    # byte-equal (check_gitignore_parity — same F30 shape as the install set).
+    gitignore_v2 = ("# cc-operator gitignore v2 (allowlist)\n"
+                    "*\n"
+                    "!.gitignore\n!.gitattributes\n"
+                    "!VERDICTS.md\n!DECISIONS.md\n!tiers.env\n"
+                    "!verdicts.d/\n!verdicts.d/*.md\n")
+    write(root / "scripts" / "ops-init.sh",
+          "#!/usr/bin/env bash\nset -eu\n"
+          "cat > \"$OPDIR/.gitignore\" <<'EOF'\n" + gitignore_v2 + "EOF\n"
+          "echo ok\n")
     # SessionStart clears the compressor's session-scoped artifacts; the guard
-    # checks for both directory names, so the stub must carry them.
+    # checks for both directory names, so the stub must carry them. It also
+    # migrates a v1 gitignore, so it carries the same allowlist body.
     write(root / "scripts" / "ops-sessionstart-hook.sh",
           "#!/usr/bin/env bash\nset -eu\n"
           "rm -rf \"$cwd/.operator/.compress-spill\" \"$cwd/.operator/.compress-state\"\n"
+          "cat > \"$_gi\" <<'EOF'\n" + gitignore_v2 + "EOF\n"
           "echo ok\n")
     # The readers/CLIs need bodies that satisfy the byte-bound, guard-parity and
     # lock-parity checks — a bare `echo ok` stub fails all three.
@@ -1466,6 +1478,59 @@ class InstallSetParityTest(unittest.TestCase):
             "ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh ops-future.sh", 1)
         self.assertTrue(any("install-set drift" in p for p in self._probs(src)),
                         self._probs(src))
+
+
+class GitignoreParityTest(unittest.TestCase):
+    """check_gitignore_parity: the v2 allowlist body is written by ops-init.sh
+    AND ops-sessionstart-hook.sh. Drift means a project's tracked set depends on
+    which path migrated it — and the silent direction is an allow line present in
+    one and missing in the other, which un-tracks a ledger. Mutates the REAL
+    scripts (not a stub) so the test cannot pass a body the shipped code lacks.
+    """
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        make_good_tree(self.dir)
+        root = pathlib.Path(__file__).resolve().parent.parent
+        self._real_init = (root / "scripts" / "ops-init.sh").read_text(encoding="utf-8")
+        self._real_ssh = (root / "scripts" / "ops-sessionstart-hook.sh").read_text(encoding="utf-8")
+        write(self.dir / "scripts" / "ops-init.sh", self._real_init)
+        write(self.dir / "scripts" / "ops-sessionstart-hook.sh", self._real_ssh)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _probs(self):
+        probs = []
+        vp.check_gitignore_parity(self.dir, probs)
+        return probs
+
+    def test_shipped_scripts_are_in_parity(self):
+        self.assertEqual(self._probs(), [])
+
+    def test_dropping_an_allow_line_from_one_writer_fires(self):
+        # The realistic silent failure: one writer stops admitting a ledger.
+        write(self.dir / "scripts" / "ops-sessionstart-hook.sh",
+              self._real_ssh.replace("!DECISIONS.md\n", "", 1))
+        probs = self._probs()
+        self.assertTrue(any("missing allow line" in p for p in probs), probs)
+        self.assertTrue(any("drift" in p for p in probs), probs)
+
+    def test_losing_the_v2_marker_fires(self):
+        # Without the marker neither writer can DETECT a v1 file, so a blocklist
+        # is appended to instead of replaced — and the two schemes contradict.
+        write(self.dir / "scripts" / "ops-init.sh",
+              self._real_init.replace("# cc-operator gitignore v2 (allowlist)", "# v2", 1))
+        self.assertTrue(any("v2 gitignore marker" in p for p in self._probs()),
+                        self._probs())
+
+    def test_fragment_allow_line_is_pinned(self):
+        # verdicts.d/*.md is what merge=union operates on: un-tracking it breaks
+        # the clean-merge property the whole fragment scheme exists for.
+        write(self.dir / "scripts" / "ops-init.sh",
+              self._real_init.replace("!verdicts.d/*.md\n", "", 1))
+        self.assertTrue(any("verdicts.d/*.md" in str(p) for p in self._probs()),
+                        self._probs())
 
 
 if __name__ == "__main__":

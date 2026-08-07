@@ -109,15 +109,9 @@ if [ -n "$_newver" ] && [ "$_newver" != "$_oldver" ]; then
   else
     _upgrade_ok=0
   fi
-  # Ensure the compressor-ephemera ignore lines (same upgrade-append ops-init
-  # does) so a refreshed version's compressor does not dirty the tree.
-  _gi="$cwd/.operator/.gitignore"
-  if [ -f "$_gi" ] && ! grep -q '^\.compress-spill/$' "$_gi" 2>/dev/null; then
-    {
-      printf '# Compressor ephemera (ensured by upgrade): session-scoped, wiped on SessionStart.\n'
-      printf '.compress-spill/\n.compress-state/\n'
-    } >> "$_gi" 2>/dev/null
-  fi
+  # (The compressor-ephemera append that used to sit here is gone with the v2
+  # allowlist; the migration below handles a v1 project, and it runs every
+  # session rather than only on the upgrade path.)
   # Re-stamp ONLY if every CLI copy succeeded. A failure leaves the old stamp →
   # next session retries. (gitignore-ensure is best-effort and does not gate.)
   if [ "$_upgrade_ok" = 1 ]; then
@@ -137,21 +131,51 @@ fi
 for _cdir in "$cwd/.operator/.compress-spill" "$cwd/.operator/.compress-state"; do
   [ -d "$_cdir" ] && rm -rf "$_cdir" 2>/dev/null
 done
+# The compressor falls back to a tempdir root when the project has no .operator/
+# (it must not materialize one in a repo that never ran /cc-operator:start), so
+# that copy needs the same session-scoped wipe — otherwise the ONE path that is
+# never visible in the tree is also the one that grows forever. Key must match
+# ops-compress.mjs:ephemeralRoot — sha256(cwd), first 16 hex chars.
+_ccdir=""
+if command -v shasum >/dev/null 2>&1; then
+  _ccdir="$(printf '%s' "$cwd" | shasum -a 256 2>/dev/null | cut -c1-16)"
+elif command -v sha256sum >/dev/null 2>&1; then
+  _ccdir="$(printf '%s' "$cwd" | sha256sum 2>/dev/null | cut -c1-16)"
+fi
+if [ -n "$_ccdir" ]; then
+  for _cdir in \
+    "${TMPDIR:-/tmp}/cc-operator/$_ccdir/.compress-spill" \
+    "${TMPDIR:-/tmp}/cc-operator/$_ccdir/.compress-state"; do
+    [ -d "$_cdir" ] && rm -rf "$_cdir" 2>/dev/null
+  done
+fi
 
-# Ensure the compressor's ephemera are git-ignored BEFORE the compressor can
-# recreate them this session. ops-init writes these lines, but a target project
-# whose .operator/.gitignore predates the compressor (or was written by an older
-# ops-init) lacks them — so .compress-spill/ shows up as untracked dirty state
-# the moment the PostToolUse compressor fires, and stays dirty until the user
-# re-runs /cc-operator:start. The upgrade-append ops-init does only fires on
-# re-init; this runs every session. Idempotent append, best-effort (a write
-# failure must never cost the session its banner).
+# Migrate a v1 (blocklist) .operator/.gitignore to the v2 allowlist BEFORE the
+# compressor can recreate its ephemera this session. ops-init does this too, but
+# only on re-init; this runs every session, which is what carries a project that
+# never re-runs /cc-operator:start. The two schemes contradict — v1 tracks by
+# default, v2 ignores by default — so this REPLACES rather than appends, keeping
+# the user's file as .gitignore.v1.bak. Best-effort: a write failure must never
+# cost the session its banner. Keep the body identical to ops-init.sh's _gi_write
+# (validate_plugin.check_gitignore_parity pins the two equal).
 _gi="$cwd/.operator/.gitignore"
-if [ -f "$_gi" ] && ! grep -q '^\.compress-spill/$' "$_gi" 2>/dev/null; then
-  {
-    printf '# Compressor ephemera (ensured by SessionStart): session-scoped, wiped on every start.\n'
-    printf '.compress-spill/\n.compress-state/\n'
-  } >> "$_gi" 2>/dev/null
+if [ -f "$_gi" ] && ! grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi" 2>/dev/null; then
+  cp "$_gi" "$_gi.v1.bak" 2>/dev/null
+  cat > "$_gi" <<'EOF' 2>/dev/null
+# cc-operator gitignore v2 (allowlist)
+# Ignore everything under .operator/ by default, then re-admit the evidence.
+# New machine state is ignored automatically — that is the point of the
+# inversion; do not add ignore lines here, add allow lines only when a NEW file
+# is genuinely evidence a teammate must read.
+*
+!.gitignore
+!.gitattributes
+!VERDICTS.md
+!DECISIONS.md
+!tiers.env
+!verdicts.d/
+!verdicts.d/*.md
+EOF
 fi
 
 ctx="cc-operator: this session's id is ${session}. Pass --owner ${session} when opening or closing tracked tasks — .operator/bin/ops-task.sh <id> --owner ${session}, .operator/bin/ops-verdict.sh <id> ... --owner ${session}. Sentinels you open are then yours alone: the Stop hook blocks only on your own open tasks and reports other sessions' as informational. After a /clear your id changes — run .operator/bin/ops-adopt.sh --owner ${session} <id>... to re-claim tasks you are still working."
