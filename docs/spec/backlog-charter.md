@@ -423,12 +423,25 @@ A dependency **cycle** is not a scheduling problem — it is a plan-level
 contradiction, escalation ladder rung 4, and one of the few things that reaches
 the human (§4, R3).
 
-### B5 — read the backlog through its own machine interfaces
+### B5 — read task state through a machine interface, never a hand-rolled parser
 
-`backlog task list --json` / `backlog task <id> --plain` are canonical. We never
-parse `backlog/tasks/*.md` ourselves: their frontmatter and section grammar are
-the neighbour project's to change, and a hand-rolled parser is a silent-breakage
-surface with no owner here.
+**Amended 2026-08-08 (issue #17): the original premise is gone, the rule stands.**
+This section used to argue that `backlog task list --json` is canonical *because
+the frontmatter grammar is the neighbour project's to change*. With the
+no-third-party decision (§10, U2) there is no neighbour — we own the grammar — so
+that reason no longer applies and cannot be cited.
+
+The rule survives on a different and stronger footing: **a hand-rolled parser is a
+silent-breakage surface regardless of who owns the grammar.** Ownership changes
+who can break it, not whether the break is silent. The failure this repo keeps
+re-learning is the *silent* half (F02's unbounded reads, F30's copy parity, #9's
+long rows) — every one of them a reader that kept working while meaning something
+different.
+
+Concretely, post-U2, the machine interface is **`gh issue` and its `--json`
+output** (see #16): issue state is open/closed, `p0`–`p5` labels are priority.
+That is an interface we already depend on, maintained by someone else's tests, and
+it has no file for us to mis-parse.
 
 ### B6 — CLI over MCP
 
@@ -460,9 +473,17 @@ diff-matches-claims"* cases together.
 objection is that this forbids an implementer from writing `--notes` /
 `implementation_notes` back to its own task, which is genuinely useful. The
 tempting fix — a field-level rule, notes writable and criteria not — requires
-parsing the neighbour project's frontmatter grammar, which B5 forbids precisely
-because that grammar is theirs to change and a hand-rolled parser here would be a
-silent-breakage surface with no owner.
+parsing a frontmatter grammar field-by-field, which B5 forbids.
+
+**Amended 2026-08-08 (issue #17):** B5's reason used to be "that grammar is
+theirs to change"; post-U2 we own it, so the carve-out must be refused on its own
+merits rather than by borrowing a premise that no longer holds. It is, and the
+merits are sharper: a field-level rule means the guard's correctness depends on
+**parsing the very file the worker is editing.** A worker that can shape that file
+can shape how the guard reads it — the F48 vacuous-guard class, with the guard's
+input under the guarded party's control. Whole-directory needs no parse, so there
+is nothing to subvert. Ownership of the grammar does not change that; if anything
+it removes the last excuse for the weaker rule.
 
 It is also unnecessary: **the implementer does not need write access to record a
 note.** It reports the note in its REPORT and the operator writes it with
