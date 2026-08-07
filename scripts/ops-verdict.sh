@@ -564,6 +564,55 @@ ownership_gate() {
 
 clear_sentinel() { rm -f "$OPDIR/pending/$ID"; }
 
+# --- Retro-gate: three-state arm check (G1) ---------------------------------
+# Runs inside the lock, after ownership_gate. Determines whether this verdict
+# is armed (sentinel present), never-armed (no sentinel, no prior row), or a
+# duplicate/amending row (no sentinel, prior row exists).
+#
+# Sets RETRO_STATE to one of: armed, never-armed, duplicate.
+# A never-armed verdict with no session to tag (no --owner, no sentinel) dies
+# (G1.4). The prior-row scan is a reverse-tail read of the session fragment,
+# bounded by FRAG_MAX_BYTES (G1.6).
+retro_gate() {
+  RETRO_STATE="armed"
+  # Sentinel FILE present → armed, even if its body is empty/unparseable
+  # (an unowned-but-present sentinel is a real open task — fails closed).
+  [ -e "$OPDIR/pending/$ID" ] && return 0
+
+  # Sentinel absent. We need a session to tag the GATE-EXCEPTION.
+  local tag_owner="${OWNER:-$SOWNER}"
+  if [ -z "$tag_owner" ]; then
+    die "never-armed verdict requires --owner <session-id> — the GATE-EXCEPTION must carry a [sid:] tag, and there is no sentinel to supply one"
+  fi
+
+  # Check for prior rows in the session fragment. The fragment is append-only
+  # so the newest row is at the tail, but for a binary "does any row exist?"
+  # check, forward scan is equivalent and cross-platform. Bounded by
+  # FRAG_MAX_BYTES — the PLAYBOOK "touching the lock" step-3 hazard.
+  local frag="$FRAGDIR/${tag_owner}.md" fragsz=0 found=1 line n=0
+  if [ -f "$frag" ]; then
+    fragsz="$(wc -c < "$frag" 2>/dev/null || echo 0)"
+    if [ "$fragsz" -gt "$FRAG_MAX_BYTES" ]; then
+      echo "ops-verdict: fragment ${frag##*/} exceeds FRAG_MAX_BYTES (${fragsz}); prior-row scan refused — treating as never-armed" >&2
+    else
+      while IFS= read -r -n 512 line || [ -n "$line" ]; do
+        n=$((n+1)); [ "$n" -le 200000 ] || break  # backstop: ~100k rows at ~80 bytes
+        [ "${#line}" -lt 512 ] || continue         # skip capped chunks (not a complete row)
+        case "$line" in
+          "| $ID |"*) found=0; break ;;
+        esac
+      done < "$frag"
+    fi
+  fi
+
+  if [ "$found" -eq 0 ]; then
+    RETRO_STATE="duplicate"
+    echo "ops-verdict: warning — no sentinel for '$ID' but a prior row exists in the fragment; treating as duplicate/amending row" >&2
+  else
+    RETRO_STATE="never-armed"
+  fi
+}
+
 # --- Defer path -------------------------------------------------------------
 if [ "${2:-}" = "--defer" ]; then
   REASON="${3:-}"
@@ -598,6 +647,7 @@ esac
 
 lock_acquire
 ownership_gate            # inside the lock: adoption cannot slip in behind it
+retro_gate                # three-state arm check (G1) — also inside the lock
 ROW="$(printf '| %s | %s | %s | %s |' "$ID" "$CRITERION" "$EVIDENCE" "$VERDICT")"
 # Fragment FIRST. Under `set -e` a failed write aborts the script, so the order
 # decides what a partial failure leaves behind: a fragment without a ledger row
@@ -607,7 +657,18 @@ ROW="$(printf '| %s | %s | %s | %s |' "$ID" "$CRITERION" "$EVIDENCE" "$VERDICT")
 # anywhere above leaves the task OPEN — the gate holds.
 append_fragment "$FRAG_OWNER" "$ROW"
 printf '%s\n' "$ROW" >> "$VERDICTS"
+# G1: never-armed verdict → write GATE-EXCEPTION to DECISIONS.md under the same lock.
+if [ "$RETRO_STATE" = "never-armed" ]; then
+  printf '%s | %s | GATE-EXCEPTION | [sid:%s] verdict %s recorded without an open sentinel — the arm gate was not used | never-armed via ops-verdict.sh\n' \
+    "$(date +%F)" "$ID" "${OWNER:-$SOWNER}" "$ID" >> "$DECISIONS"
+fi
 clear_sentinel
 lock_release
-echo "recorded $ID = $VERDICT (row appended, sentinel cleared)"
+if [ "$RETRO_STATE" = "never-armed" ]; then
+  echo "recorded $ID = $VERDICT (never-armed — GATE-EXCEPTION written to DECISIONS.md)"
+elif [ "$RETRO_STATE" = "duplicate" ]; then
+  echo "recorded $ID = $VERDICT (duplicate/amending row — no sentinel, prior row exists)"
+else
+  echo "recorded $ID = $VERDICT (row appended, sentinel cleared)"
+fi
 exit 0

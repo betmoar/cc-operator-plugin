@@ -543,7 +543,7 @@ N=50
 racer() { # racer <tag>
   local tag="$1" i
   for i in $(seq 1 "$N"); do
-    ( cd "$P" && bash "$VERDICT" "T-$tag-$i" "criterion $tag $i" "evidence $tag $i" PASS >/dev/null 2>&1 )
+    ( cd "$P" && bash "$VERDICT" "T-$tag-$i" "criterion $tag $i" "evidence $tag $i" PASS --owner "SESS-$tag" >/dev/null 2>&1 )
   done
 }
 racer A & RA=$!
@@ -2339,6 +2339,66 @@ check "statusline counts a long mine DEVIATION with no trailing newline (#10 rev
 rm -f "$DEC" "$ATT"; rmdir "$ATT" 2>/dev/null || true
 # Restore a real (empty) DECISIONS.md for any later use.
 printf '# Decisions\n' > "$DEC"
+
+rm -rf "$P"
+
+########################################################################
+echo "-- Case: G1 retro-gate — three-state arm check (never-armed → GATE-EXCEPTION)"
+# A verdict with no open sentinel is either never-armed (→ GATE-EXCEPTION) or
+# a duplicate/amending row (→ warning). A never-armed verdict with no --owner is
+# refused: the GATE-EXCEPTION must carry a [sid:] tag. The prior-row scan reads
+# the session fragment, bounded by FRAG_MAX_BYTES. See backlog-charter.md §8c.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+S="SESS-G1"
+
+# G1.1 — armed verdict: sentinel present, no GATE-EXCEPTION (regression).
+( cd "$P" && bash "$TASK" g1t1 --owner "$S" >/dev/null 2>&1 )
+DEC_BEFORE="$(wc -c < "$P/.operator/DECISIONS.md" | tr -d ' ')"
+( cd "$P" && bash "$VERDICT" g1t1 crit ev PASS --owner "$S" >/dev/null 2>&1 ); G11=$?
+check "G1.1 armed verdict exits 0" "$([ "$G11" -eq 0 ] && echo 0 || echo 1)"
+check "G1.1 armed verdict writes zero GATE-EXCEPTION lines" \
+  "$([ "$(wc -c < "$P/.operator/DECISIONS.md" | tr -d ' ')" = "$DEC_BEFORE" ] && echo 0 || echo 1)"
+
+# G1.2 — never-armed verdict with --owner: row appended, one GATE-EXCEPTION tagged [sid:$S].
+DEC_BEFORE="$(grep -c 'GATE-EXCEPTION' "$P/.operator/DECISIONS.md" 2>/dev/null || echo 0)"
+( cd "$P" && bash "$VERDICT" na-g12 crit ev PASS --owner "$S" >/dev/null 2>&1 ); G12=$?
+check "G1.2 never-armed with --owner exits 0" "$([ "$G12" -eq 0 ] && echo 0 || echo 1)"
+DEC_AFTER="$(grep -c 'GATE-EXCEPTION' "$P/.operator/DECISIONS.md" 2>/dev/null || echo 0)"
+check "G1.2 writes exactly one GATE-EXCEPTION" \
+  "$([ $((DEC_AFTER - DEC_BEFORE)) -eq 1 ] && echo 0 || echo 1)"
+check "G1.2 GATE-EXCEPTION what-cell carries [sid:$S]" \
+  "$(grep 'GATE-EXCEPTION' "$P/.operator/DECISIONS.md" | tail -1 | grep -q "\[sid:$S\]" && echo 0 || echo 1)"
+
+# G1.3 — repeat the never-armed verdict: duplicate/amending, no second GATE-EXCEPTION.
+DEC_BEFORE="$(grep -c 'GATE-EXCEPTION' "$P/.operator/DECISIONS.md" 2>/dev/null || echo 0)"
+G13OUT="$( cd "$P" && bash "$VERDICT" na-g12 crit2 ev2 PASS --owner "$S" 2>&1 )"; G13=$?
+check "G1.3 duplicate verdict exits 0" "$([ "$G13" -eq 0 ] && echo 0 || echo 1)"
+check "G1.3 stderr names duplicate/amending" \
+  "$(printf '%s' "$G13OUT" | grep -qi 'duplicate\|amending' && echo 0 || echo 1)"
+DEC_AFTER="$(grep -c 'GATE-EXCEPTION' "$P/.operator/DECISIONS.md" 2>/dev/null || echo 0)"
+check "G1.3 writes no second GATE-EXCEPTION" \
+  "$([ $((DEC_AFTER - DEC_BEFORE)) -eq 0 ] && echo 0 || echo 1)"
+
+# G1.4 — never-armed verdict with no --owner: refused, VERDICTS.md unchanged.
+V_BEFORE="$(wc -c < "$P/.operator/VERDICTS.md" | tr -d ' ')"
+( cd "$P" && bash "$VERDICT" na-g14 crit ev PASS 2>/dev/null ); G14=$?
+check "G1.4 never-armed without --owner exits non-zero" "$([ "$G14" -ne 0 ] && echo 0 || echo 1)"
+check "G1.4 VERDICTS.md unchanged (byte-compare)" \
+  "$([ "$(wc -c < "$P/.operator/VERDICTS.md" | tr -d ' ')" = "$V_BEFORE" ] && echo 0 || echo 1)"
+
+# G1.5 — armed verdict with no --owner: still exits 0 (sentinel supplies owner).
+( cd "$P" && bash "$TASK" g1t5 --owner "$S" >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" g1t5 crit ev PASS >/dev/null 2>&1 ); G15=$?
+check "G1.5 armed verdict without --owner exits 0" "$([ "$G15" -eq 0 ] && echo 0 || echo 1)"
+
+# G1.6 — a fragment padded past FRAG_MAX_BYTES: the scan is refused, not slurped.
+# Set up a session with a fragment, then pad it past the cap and verdict again.
+( cd "$P" && bash "$VERDICT" na-g16a crit ev PASS --owner "$S" >/dev/null 2>&1 )
+FRAG="$P/.operator/verdicts.d/$S.md"
+# Pad the fragment past FRAG_MAX_BYTES (8 MiB) with a single long non-row line.
+{ cat "$FRAG"; printf '%s' "$(printf 'x%.0s' $(seq 1 9000000))"; } > "$FRAG.pad" && mv "$FRAG.pad" "$FRAG"
+( cd "$P" && bash "$VERDICT" na-g16b crit ev PASS --owner "$S" 2>/dev/null ); G16=$?
+check "G1.6 oversized-fragment verdict exits 0 (not wedged)" "$([ "$G16" -eq 0 ] && echo 0 || echo 1)"
 
 rm -rf "$P"
 
