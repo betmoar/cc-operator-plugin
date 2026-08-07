@@ -1166,33 +1166,33 @@ Items to schedule once `backlog/` exists (B1–B9). Until the CLI is wired this
 section IS the backlog; each entry must be portable to a `backlog task` with its
 acceptance criteria intact.
 
-> **Stil-introductie-beleid (beslist 2026-08-07, verfijnd).** De
-> CLI-afhankelijke B-items en B11's register-audit zijn **bewust niet gebouwd**.
-> De reden is de issue-#9-les, op één niveau hoger: bouw geen luidruchtige
-> detectie voor een probleem dat het veld nog niet aantoonde. Het proces zelf
-> moet de harde blokkers ontdekken — "spreken is zilver, zwijgen is goud." Drie
-> beslissingen, bijgesteld na review:
-> - **B11 classificatie (U1) = de backlog-eigen p1–p5 prioriteit/status-indicator.**
->   Geen uitgevonden `[OPEN]`/`[CLOSED]`-tag; de status zit al in het
->   prioriteitsveld. B11 leest dat, als het ooit gebouwd wordt.
-> - **Geen `backlog.md`-afhankelijkheid (U2, beslist).** De functionaliteit
->   wordt zelf gedekt, zonder third-party bloat. **Dit heft B5's premise op:**
->   B5 zei "lees via de CLI, parse de buur-grammar nooit zelf" omdat die grammar
->   van een ander is. Zonder externe tool zijn *wij* de eigenaar, en valt die
->   reden (en B7's beredenering dat de grammar vreemd is) weg. B5/B7 moeten hier
->   op herbegrepen worden vóór de B-items gebouwd worden — het zijn geen
->   blokkers, maar hun *"waarom"* is herschreven.
-> - **B10 drempel = eindgebruiker-getriggerd (U3).** "Release-postuur" is
->   intentie, geen code-meetbaar feit — dus de onbekenden-scan wordt aangezet
->   door de **gebruiker die verklaart** "dit is release-gebonden" bij taak-open,
->   niet afgeleid van grootte of bestandsstructuur. Exploratie / MVP / test / wip
->   → vrijgesteld (default); release-gebonden → de scan is een *must*. Dit is
->   hetzelfde model als G2 (opt-in `armgate.on`) en G3 (gebruiker vraagt
->   exemptie): de trekker is menselijk, het mechanisme dwingt af. Grootte
->   (B10.1 census) degradeert tot informatief signaal — een proxy die soms
->   gelijk heeft en soms niet, geen trekker.
-> Een volgende lezer ziet hier "bewust stil, en de voorwaarden zijn
-> herschreven," niet "vergeten."
+> **Quiet-introduction policy (decided 2026-08-07, refined).** The
+> CLI-dependent B-items and B11's register-audit are **deliberately unbuilt.**
+> The reason is the issue-#9 lesson one level up: do not build a loud detection
+> for a problem the field has not yet demonstrated. The process itself surfaces
+> the hard blockers — "speech is silver, silence is golden." Three decisions,
+> adjusted after review:
+> - **B11 classification (U1) = the backlog-native p1–p5 priority/status
+>   indicator.** No invented `[OPEN]`/`[CLOSED]` tag; the status already lives
+>   in the priority field. B11 reads that, should it ever be built.
+> - **No `backlog.md` dependency (U2, decided).** The functionality is covered
+>   in-house, without third-party bloat. **This dissolves B5's premise:** B5
+>   said "read through the CLI, never parse the neighbour's grammar yourself"
+>   because that grammar was someone else's. Without an external tool *we* are
+>   the owner, and that reason (and B7's "the grammar is foreign" rationale)
+>   falls away. B5/B7 must be re-read against this before the B-items are built
+>   — they are not blockers, but their *"why"* is rewritten.
+> - **B10 threshold = end-user-triggered (U3).** "Release posture" is intent,
+>   not a code-measurable fact — so the unknowns scan is turned on by the **user
+>   declaring** "this is release-bound" at task-open, not inferred from size or
+>   file structure. Exploration / MVP / test / wip → exempt (default);
+>   release-bound → the scan is a *must*. This is the same model as G2 (opt-in
+>   `armgate.on`) and G3 (the user requests the exemption): the trigger is
+>   human, the mechanism enforces. Size (B10.1 census) degrades to an
+>   informational signal — a proxy that is sometimes right and sometimes not,
+>   not a trigger.
+> A later reader sees "deliberately quiet, and the preconditions rewritten,"
+> not "forgotten."
 
 ### BL-1 — cache-aware dispatch: keep cheap-tier seats hitting a warm prefix
 
