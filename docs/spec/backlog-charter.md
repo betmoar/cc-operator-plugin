@@ -1166,21 +1166,29 @@ Items to schedule once `backlog/` exists (B1–B9). Until the CLI is wired this
 section IS the backlog; each entry must be portable to a `backlog task` with its
 acceptance criteria intact.
 
-> **Stil-introductie-beleid (beslist 2026-08-07).** De CLI-afhankelijke
-> B-items (B2/B3/B4/B5/B8/B9/B10.2-3) en B11's register-audit zijn **bewust
-> niet gebouwd**. De reden is de issue-#9-les, op één niveau hoger: bouw geen
-> luidruchtige detectie voor een probleem dat het veld nog niet aantoonde. Het
-> proces zelf moet de harde blokkers ontdekken — "spreken is zilver, zwijgen is
-> goud." Drie beslissingen, genoten op basis van één gemeten repo:
-> - **B11 formaat = label-op-regel (`[OPEN]`/`[CLOSED]`/`[UNKNOWN]`)** (U1),
->   gekozen om de bestaande tag-gewoontes; het wordt pas gebouwd als een echt
->   register drift vertoont.
-> - **Backlog CLI-integratie uitgesteld** (U2) — de CLI-onafhankelijke
->   cherry-picks (B7, B10.1) zijn binnen; de rest wacht tot `backlog.md` actief
->   is en een `backlog/` corpus heeft om te testen.
-> - **B10 drempelgetal uitgesteld** (U3) — één gemeten repo is geen basis voor
->   een constante; meet er drie van verschillende grootte eerst.
-> Een volgende lezer ziet hier "bewust stil," niet "vergeten."
+> **Stil-introductie-beleid (beslist 2026-08-07, verfijnd).** De
+> CLI-afhankelijke B-items en B11's register-audit zijn **bewust niet gebouwd**.
+> De reden is de issue-#9-les, op één niveau hoger: bouw geen luidruchtige
+> detectie voor een probleem dat het veld nog niet aantoonde. Het proces zelf
+> moet de harde blokkers ontdekken — "spreken is zilver, zwijgen is goud." Drie
+> beslissingen, bijgesteld na review:
+> - **B11 classificatie (U1) = de backlog-eigen p1–p5 prioriteit/status-indicator.**
+>   Geen uitgevonden `[OPEN]`/`[CLOSED]`-tag; de status zit al in het
+>   prioriteitsveld. B11 leest dat, als het ooit gebouwd wordt.
+> - **Geen `backlog.md`-afhankelijkheid (U2, beslist).** De functionaliteit
+>   wordt zelf gedekt, zonder third-party bloat. **Dit heft B5's premise op:**
+>   B5 zei "lees via de CLI, parse de buur-grammar nooit zelf" omdat die grammar
+>   van een ander is. Zonder externe tool zijn *wij* de eigenaar, en valt die
+>   reden (en B7's beredenering dat de grammar vreemd is) weg. B5/B7 moeten hier
+>   op herbegrepen worden vóór de B-items gebouwd worden — het zijn geen
+>   blokkers, maar hun *"waarom"* is herschreven.
+> - **B10 drempel = release-postuur, niet alleen grootte (U3).** Exploratie /
+>   MVP / test / wip → vrijgesteld; een project met een **release-schema** → de
+>   onbekenden-scan is een *must*. Grootte (B10.1 census) blijft een
+>   secundair signaal, maar de trekker is of het project released, niet hoe
+>   groot het is.
+> Een volgende lezer ziet hier "bewust stil, en de voorwaarden zijn
+> herschreven," niet "vergeten."
 
 ### BL-1 — cache-aware dispatch: keep cheap-tier seats hitting a warm prefix
 
