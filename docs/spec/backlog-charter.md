@@ -1211,3 +1211,79 @@ judgment tier to reuse its cache. Model routing is charter-fixed — correctness
 the product beats token savings, and judgment work never runs below judgment tier
 [D:CHART-route]. A cache design that quietly re-routes work is a routing change
 wearing a cost argument.
+
+### BL-2 — FDE coverage: map the forward-deployed-engineer skill surface to the charter
+
+**Investigate**, not yet a design. The operator charter is, in industry terms, a
+_forward-deployed engineer_ (FDE) framework: it is deployed into a live project,
+bridges tool-to-outcome for a specific engagement rather than building a product
+in the abstract, and trades tight oversight for high autonomy — "oversight
+batched to the handoff" is the spec's own thesis (§0). The question this item
+asks is not whether to *become* an FDE framework but where the charter's current
+capabilities leave a gap against the FDE skill surface the role is now named for,
+and whether closing any gap is worth a feature.
+
+The FDE role, as it is described across current sources (DataCamp, Glocomms,
+Invisible Tech, Salesforce — the GeeksforGeeks roadmap the human pointed at was
+unreachable at search time, but the role definition converges), bundles four
+competencies:
+
+1. **Deployment & integration** — operationalizing a system inside a *customer's
+   live environment*, not a clean lab. This maps directly to the charter's "run
+   in the user's project, not the plugin repo" stance (the `.operator/bin/`
+   install path, the SessionStart id injection).
+2. **Systems glue** — APIs, cloud infra, deployment pipelines, model-eval /
+   DevOps layers. The charter has the dispatch + review + tier machinery but
+   nothing in the gate vocabulary names deployment pipelines, evals, or infra
+   state as first-class BAR criteria.
+3. **Customer communication & product judgment** — the bridge between a product
+   and its client, often the person who "can make or break a launch." This is
+   the handoff, and the charter's six-section operator→human handoff is already a
+   disciplined version of it.
+4. **Operational tuning after deploy** — ongoing evals, pipeline tuning, model
+   iteration. The charter's evidence gate stops at a verified done-state; it has
+   no notion of a *living* engagement that drifts and needs re-tuning.
+
+What makes this non-obvious, and why it is an investigation rather than a task:
+
+- **Most of the surface is already covered by analogy, not by name.** Claiming an
+  FDE "gap" risks adding vocabulary the charter already expresses better under
+  its own names (the handoff IS the customer-communication competency). The first
+  job is to state which FDE competencies are *already* covered and by what
+  charter mechanism, so the residual is honest rather than a re-skinning.
+- **The genuine residual looks narrow.** The two that do not map cleanly are (a)
+  deployment-pipeline / infra-state as first-class gated criteria, and (b)
+  ongoing tuning of a deployed engagement. Both may be better served by the
+  backlog-as-charter work (B) than by an FDE feature — the backlog is already the
+  "living plan" surface, and a `definition_of_done` item that names a pipeline or
+  an eval gate is already expressible (B3).
+- **The charter's autonomy bargain is the FDE's too.** An FDE is trusted with
+  judgment once the goal is locked; the charter buys that with the arm + verdict
+  + deviation gates (G1/G2/G3). The risk in adding "FDE coverage" as a feature is
+  duplicating the gate under a new name — the same state-duplication failure B1
+  forbids.
+
+Acceptance criteria (each needs a command + expected output before this leaves
+the backlog):
+
+1. A written competency map: each of the four FDE competencies above, marked
+   `{covered, partial, gap}`, each `covered`/`partial` citing the charter
+   mechanism (section + the `[D:…]` or `[DOC:spec-…]` tag) that already provides
+   it. The map's purpose is to make the residual falsifiable, not aspirational.
+2. For every `gap`, a one-line statement of whether the backlog-as-charter work
+   (B3 `definition_of_done`, B9 audit) already closes it — and if so, point at
+   the AC. If the gap is not closed by B, it stays on this backlog with a
+   candidate command + expected output.
+3. A measured statement of the charter's current stopping point on a "living"
+   engagement: can the gate express "re-tune after deploy" today, or does a
+   re-tuning engagement have to start a fresh BAR? Answer with the mechanism or
+   its absence, not an opinion.
+4. If a feature follows (not assumed): a candidate mechanism that does NOT
+   duplicate the handoff or the evidence gate under a new name — and the AC that
+   would discriminate it from "B with a different label."
+
+Explicitly out of scope: renaming the charter's vocabulary to match FDE
+industry terms. The charter's names (engagement, verdict, BAR, deviation) are
+load-bearing inside the gate; aliasing them to "FDE deployment artifact" etc. is
+a documentation cost with no functional return, and it severs the coupling rows
+in CLAUDE.md from the code they describe.
