@@ -76,6 +76,33 @@ forgetting, not evasion.
 - **CLAUDE.md coupling table** gains two G2 rows (the `.armed/` marker convention
   across three writers + the hook; the matcher keeping `Bash` out).
 
+### Verified — first release measured on Linux, and the arm gate proved live
+
+- **G2 blocks a real `Edit` in a live session**, not merely at the hook's exit
+  code. Four controls on the same tool and file: gate off → allowed; gate on and
+  unarmed → **denied**, with the hook's stderr reaching the model verbatim
+  (all four lines, including the three repair commands); armed via `ops-task.sh`
+  → allowed; marker removed → denied again. Each deny confirmed by reading the
+  file back, so the write genuinely never lands. `ops-adopt.sh` then restored the
+  marker exactly as the deny message advertises.
+- **Linux parity.** Full suite **442/0 on ubuntu:24.04** (bash 5.2.21, GNU grep
+  3.11, `sh` = dash) as a normal uid, identical to macOS 24.6 (bash 3.2.57 and
+  5.3.15, BSD grep 2.6.0). Prior releases were measured on macOS only.
+  - `grep -z` is genuine null-data on both, tested with the discriminating case
+    rather than "does it run": a filename containing an embedded newline yields
+    one record, so `$` anchors at the NUL.
+  - `statusline.sh`'s `stat` dual-path took the GNU branch (`-c` OK, `-f` fails)
+    — the fallback's first run on the platform it was written for.
+  - The gate holds under `env -i` (no PATH, HOME, TMPDIR) and still fails **open**
+    when no JSON parser is reachable.
+- **The hooks are self-contained.** Zero `CLAUDE_PLUGIN_ROOT` references in the
+  code of `ops-armgate-hook.sh`, `ops-stop-hook.sh`, `ops-sessionstart-hook.sh`
+  and `statusline.sh` (every match is comment prose), and nothing is sourced.
+  Driven by absolute path from `cd /` against a project that never installed the
+  plugin, all four answered correctly and the ledger row landed in that foreign
+  project; the walk-up stops at a `.git` boundary rather than adopting an
+  unrelated ancestor.
+
 ### Decided — quiet-introduction policy (§10 of backlog-charter.md)
 
 The CLI-dependent B-items (B2/B3/B4/B5/B8/B9) and B11's register-audit are
@@ -83,6 +110,25 @@ The CLI-dependent B-items (B2/B3/B4/B5/B8/B9) and B11's register-audit are
 has not demonstrated. U1 (B11 reads the p1–p5 field, not an invented tag), U2
 (no backlog.md dependency — covered in-house, dissolving B5's premise), U3 (the
 unknowns scan is end-user-triggered by release posture, size is informational).
+
+### Known limitations (stated, not hidden)
+
+- **G2 is opt-in**, so the hole is closable, not closed (G4). `Bash` is ungated
+  by design — classifying shell writes is unwinnable, and gating Bash deadlocks
+  the repair path.
+- **The arm gate's unusable-`.armed` guard is inert under uid 0** ([#19]). Its
+  documented fail-OPEN branch tests `[ ! -x .armed ]`, which is TRUE-blocked for
+  root, so it cannot fire under the identity CI and devcontainers use by default.
+  Measured severity is low, and the reason is worth stating: root is not blocked
+  by mode bits either — `ls`, `cd` and `touch` inside a `chmod 000` directory all
+  succeed for uid 0 — so the marker writes still work and the repair path stays
+  alive. The defect is a false contract, not a wedged project, and no capability
+  probe fixes it because nothing actually fails. Untested and uid-independent:
+  `.armed` as a regular file or a symlink, the modes `[ ! -d ]` does catch.
+- **B10's threshold is unmeasured** (one repo); U3 makes the trigger a user
+  declaration rather than that number.
+
+[#19]: https://github.com/betmoar/cc-operator-plugin/issues/19
 
 ## [0.6.1] - 2026-08-05
 
