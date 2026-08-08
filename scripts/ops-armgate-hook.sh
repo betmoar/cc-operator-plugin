@@ -133,6 +133,28 @@ esac
 # contract already promised this ("an unreadable or unusable marker"); it was
 # documented and not implemented (PR-review finding, 2026-08-07).
 #
+# THE TWO HALVES ARE NOT EQUALLY LOAD-BEARING (issue #19, measured 2026-08-08).
+# `[ ! -d ]` is the half that works, on every uid: a regular file or a bad
+# restore is caught and fails open (cases below). `[ ! -x ]` is BEST-EFFORT and
+# is INERT for uid 0 — root's `[ -x ]` on a `chmod 000` directory returns TRUE,
+# so this branch cannot fire under the identity CI and devcontainers use by
+# default. That is stated rather than papered over, and it is acceptable for a
+# reason that had to be measured rather than assumed: root is not blocked by
+# mode bits either. On a `chmod 000` .armed as uid 0, `ls`/`cd`/`touch` all
+# succeed, and — the decisive test — the marker lookup stays ACCURATE:
+# `[ -e .armed/<present> ]` is TRUE and `[ -e .armed/<absent> ]` is FALSE, read
+# straight through the unreadable directory. So for the permission case root
+# never reaches a wrong verdict, the marker writes still work, and the three
+# repairs this deny message prints are all alive. The failure the fail-open
+# exists to prevent does not occur for the uid whose guard is inert.
+# Do NOT "fix" this by probing the capability (ls/cd/touch): measured, every
+# such probe SUCCEEDS under root, so it distinguishes nothing. There is no test
+# that fails, because nothing fails.
+#
+# A BROKEN SYMLINK named .armed is absence, not unusability: `[ -e ]` is false
+# on a dangling link, so it falls through to the deny below — which is the
+# documented never-armed answer, and correct.
+#
 # Why this is the critical direction and not a nicety: with `.armed` unusable,
 # every marker write in the repo fails, and the three repairs this deny message
 # prints are ALL dead — `ops-task.sh` and `ops-adopt.sh` swallow their marker

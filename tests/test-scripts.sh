@@ -2616,6 +2616,43 @@ run_armhook "$P" "$S"
 check "G2.11 .armed absent + unarmed session → still exit 2 (absence is not an infra fault)" \
   "$([ "$ARC" -eq 2 ] && echo 0 || echo 1)"
 
+# G2.12 — the OTHER unusable modes, and the property the guard's inertness rests
+# on (issue #19). The `[ ! -x ]` half of the guard is INERT for uid 0 (root's
+# `[ -x ]` on a chmod 000 dir is TRUE), so these cases pin the half that does
+# work on every uid — `[ ! -d ]` — plus the reason the inert half is tolerable.
+#
+# A DANGLING SYMLINK is absence, not unusability: `[ -e ]` is false on a broken
+# link, so it must reach the ordinary never-armed DENY. Asserting it stops a
+# future reader from "fixing" the guard with `[ -L ]` and silently converting a
+# real never-armed session into a fail-open.
+( cd "$P/.operator" && rm -rf .armed && ln -s ./nowhere-at-all .armed )
+run_armhook "$P" "$S"
+check "G2.12 .armed is a DANGLING symlink → exit 2 (a broken link is absence, not an infra fault)" \
+  "$([ "$ARC" -eq 2 ] && echo 0 || echo 1)"
+
+# THE LOAD-BEARING ONE. The fail-open for a chmod-000 .armed cannot fire under
+# uid 0, and that is only acceptable because root's marker LOOKUP stays accurate
+# through the unreadable directory — present reads TRUE, absent reads FALSE — so
+# root never reaches a wrong verdict. If that ever stopped holding, the inert
+# guard would become a real defect. This case is the tripwire for that.
+# Skipped for a non-root runner, where the chmod genuinely denies and the
+# question does not arise (see #20: chmod-based cases are uid-dependent).
+( cd "$P/.operator" && rm -rf .armed && mkdir .armed && : > ".armed/$S" && chmod 000 .armed )
+if [ "$(id -u)" = 0 ]; then
+  ARMED_PRESENT=$([ -e "$P/.operator/.armed/$S" ] && echo yes || echo no)
+  ARMED_ABSENT=$([ -e "$P/.operator/.armed/NO-SUCH-SESSION" ] && echo yes || echo no)
+  check "G2.12 as uid 0, the marker lookup stays accurate through a chmod-000 .armed" \
+    "$([ "$ARMED_PRESENT" = yes ] && [ "$ARMED_ABSENT" = no ] && echo 0 || echo 1)"
+  run_armhook "$P" "$S"
+  check "G2.12 as uid 0, an armed session is ALLOWED even with .armed chmod 000" \
+    "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
+else
+  run_armhook "$P" "$S"
+  check "G2.12 as non-root, a chmod-000 .armed fails OPEN (the -x half fires)" \
+    "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
+fi
+( cd "$P/.operator" && chmod 755 .armed 2>/dev/null; rm -rf .armed )
+
 # G2.7 — `Bash` is never in the PreToolUse matcher. Asserted against hooks.json
 # itself (check_armgate pins the same property in the build gate).
 G27="$(python3 - "$REPO/hooks/hooks.json" <<'PY'

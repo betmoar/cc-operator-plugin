@@ -116,15 +116,20 @@ unknowns scan is end-user-triggered by release posture, size is informational).
 - **G2 is opt-in**, so the hole is closable, not closed (G4). `Bash` is ungated
   by design — classifying shell writes is unwinnable, and gating Bash deadlocks
   the repair path.
-- **The arm gate's unusable-`.armed` guard is inert under uid 0** ([#19]). Its
-  documented fail-OPEN branch tests `[ ! -x .armed ]`, which is TRUE-blocked for
-  root, so it cannot fire under the identity CI and devcontainers use by default.
-  Measured severity is low, and the reason is worth stating: root is not blocked
-  by mode bits either — `ls`, `cd` and `touch` inside a `chmod 000` directory all
-  succeed for uid 0 — so the marker writes still work and the repair path stays
-  alive. The defect is a false contract, not a wedged project, and no capability
-  probe fixes it because nothing actually fails. Untested and uid-independent:
-  `.armed` as a regular file or a symlink, the modes `[ ! -d ]` does catch.
+- **The arm gate's unusable-`.armed` guard has one inert half under uid 0**
+  ([#19], resolved as documented-and-tested rather than patched). `[ ! -d ]` is
+  the half that works on every uid; `[ ! -x ]` is best-effort and cannot fire for
+  root, whose `[ -x ]` on a `chmod 000` directory returns TRUE. That is tolerable
+  for a reason that had to be measured rather than assumed: root is not blocked
+  by mode bits either. `ls`, `cd` and `touch` all succeed, and — decisively — the
+  marker lookup stays **accurate** through the unreadable directory (present
+  reads TRUE, absent reads FALSE), so root never reaches a wrong verdict and the
+  three repairs the deny message prints stay alive. No capability probe fixes the
+  inert half, because under root nothing fails. Now pinned by cases (G2.12): the
+  dangling-symlink mode must DENY (a broken link is absence, not an infra fault),
+  and under uid 0 an armed session is allowed through a `chmod 000` `.armed` with
+  the lookup asserted accurate — the tripwire for the property the tolerance
+  rests on. Both mutation-verified.
 - **B10's threshold is unmeasured** (one repo); U3 makes the trigger a user
   declaration rather than that number.
 
