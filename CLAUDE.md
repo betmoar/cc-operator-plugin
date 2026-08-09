@@ -137,6 +137,14 @@ way. None of it is loaded by the plugin at runtime; the validator reads only
   tree or the git history, not in the clone.
 - `docs/PLAYBOOK.md` — the executable procedures (adding a guard, adding a
   reader, touching the lock), each derived from a bug that happened here.
+- `docs/REPLAY-CHARTER.md` — the live-session replay protocol (R0–R8): re-proves
+  the harness seam the bash suite cannot reach (live Stop block, arm-gate deny,
+  SessionStart id injection, the U10 stamp end-to-end), every phase recorded as
+  a verdict row through the gate it audits. Run it after plugin or harness
+  upgrades and before any release claiming a live-verified gate. Expected-output
+  strings in it quote the real scripts — a message change in `ops-stop-hook.sh`,
+  `ops-armgate-hook.sh`, `ops-task.sh --exempt`, or `ops-init.sh`'s F67 warning
+  must update the charter's quoted expectations too (no validator pin; prose).
 - `docs/INFOGRAPHICS.md` + `docs/img/` — visual explainers. **Non-normative and
   partly forward-looking**: two of the three sheets depict a "2.0" target state
   whose isolation, security-lens, attestation and hash-chain claims are open
