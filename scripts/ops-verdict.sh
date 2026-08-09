@@ -55,6 +55,72 @@ check_cell() { # check_cell <label> <value>
   esac
 }
 
+# --- The source-state stamp (U10, issue #22) --------------------------------
+# Every verdict row carries the source state it was produced from, appended
+# inside the evidence cell as `@<sha>` / `@<sha>+dirty` / `@<sha>+unknown` /
+# `@no-commit` / `@no-vcs`.
+#
+# Why it exists: a PASS used to survive unstaged, staged, committed and
+# untracked mutation of the very source it verified, with the Stop hook silent
+# through all four — because the row named no tree at all. Measured, issue #22.
+#
+# Why INSIDE the cell and not a fifth column: the 4-cell header is a published
+# schema. Every existing ledger, every grep consumer, and validate_plugin's
+# VERDICTS_HEADER pin are written against it, and CLAUDE.md's coupling table
+# says plainly that changing it breaks grep-compatibility with every ledger
+# already in the field. A token inside the cell binds the row at none of that
+# cost.
+#
+# What it proves, stated so nobody claims more: the stamp is written by the same
+# process that writes the row. It is PROVENANCE — "this row was written from
+# that tree" — and never attestation — "that tree passes". The staleness reader
+# (#22 step 2), independent execution (#23) and external reproduction (#25) are
+# each still open.
+#
+# It never refuses. A verdict is real evidence and the charter's rule is that
+# the gate never refuses real evidence, so every failure degrades to an explicit
+# marker. Explicit, not silent: an UNSTAMPED row means "written by a version
+# older than this stamp", and an audit that cannot separate that from "git was
+# missing" cannot begin.
+source_stamp() {
+  local sha porc rc
+  # Two separate questions — git absent, and git present but this is not a repo.
+  # Both answer no-vcs; splitting them would only add a marker nobody can act on.
+  command -v git >/dev/null 2>&1 || { printf 'no-vcs'; return 0; }
+  git rev-parse --git-dir >/dev/null 2>&1 || { printf 'no-vcs'; return 0; }
+  sha="$(git rev-parse --verify --short=12 HEAD 2>/dev/null || true)"
+  # Unborn HEAD — a repo with no commits. There is a tree; there is no name for
+  # it. Recorded as such rather than refused.
+  [ -n "$sha" ] || { printf 'no-commit'; return 0; }
+  # The sha becomes ledger content, and this file treats every external string
+  # as untrusted (the 2026-07-10 traversal came back through exactly that door).
+  # Non-hex means git answered something we do not understand: degrade, never
+  # embed it.
+  case "$sha" in
+    *[!0-9a-f]*) printf 'no-vcs'; return 0 ;;
+  esac
+  # Dirty = any change to the SOURCE. `.operator/` is excluded because the
+  # gate's own bookkeeping is not the tree under test: it is untracked in any
+  # project that has not committed its ledger — nearly all of them — so counting
+  # it would pin every row everywhere to +dirty, and a marker that can never be
+  # off is the vacuous-guard class (#21) shipped as a feature. This is the same
+  # boundary `ops-claims.sh --expect-clean` already draws.
+  #
+  # Scope is the whole repository, not the project subdirectory: a change
+  # anywhere in it can change what a command prints, and a stamp that
+  # under-reports dirt is worse than no stamp.
+  #
+  # `local porc; porc=…` on two lines, deliberately: `local porc="$(…)"` returns
+  # the exit status of `local`, which is always 0, so the rc branch below would
+  # be dead code.
+  porc="$(git status --porcelain -- ':(exclude).operator' 2>/dev/null)" && rc=0 || rc=$?
+  # An infra failure must not read as CLEAN — that is the strong claim here, and
+  # fail-toward-the-strong-claim is the polarity the PLAYBOOK forbids.
+  [ "$rc" -eq 0 ] || { printf '%s+unknown' "$sha"; return 0; }
+  [ -z "$porc" ] || { printf '%s+dirty' "$sha"; return 0; }
+  printf '%s' "$sha"
+}
+
 # A bare name: it is also a filename (sentinel + fragment file), so a '/' would
 # let clear_sentinel's rm -f reach outside .operator/ (the 2026-07-10 traversal
 # bug). A leading dot is refused because the Stop hook enumerates pending/ with
@@ -796,10 +862,17 @@ case "$VERDICT" in
 esac
 [ -f "$VERDICTS" ]  || die "missing $VERDICTS — run ops-init.sh first"
 
+# Resolved BEFORE the lock. `git status` is unbounded work on a large repo, and
+# a holder that outruns LOCK_LIVE_SPINS does not lose its lock — its waiters
+# give up and proceed UNLOCKED. Nothing waits on the stamp, so nothing is gained
+# by paying for it inside the critical section (PLAYBOOK, "touching the lock",
+# step 3).
+SOURCE_STAMP="$(source_stamp)"
+
 lock_acquire
 ownership_gate            # inside the lock: adoption cannot slip in behind it
 retro_gate                # three-state arm check (G1) — also inside the lock
-ROW="$(printf '| %s | %s | %s | %s |' "$ID" "$CRITERION" "$EVIDENCE" "$VERDICT")"
+ROW="$(printf '| %s | %s | %s @%s | %s |' "$ID" "$CRITERION" "$EVIDENCE" "$SOURCE_STAMP" "$VERDICT")"
 # Fragment FIRST. Under `set -e` a failed write aborts the script, so the order
 # decides what a partial failure leaves behind: a fragment without a ledger row
 # is repaired by --reconcile and a duplicate fragment row is deduped there, but

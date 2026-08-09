@@ -123,6 +123,17 @@ tool environment — only hooks receive it. The SessionStart hook
 (`scripts/ops-sessionstart-hook.sh`) injects it into the session's context, and
 the charter instructs the operator to pass it as `--owner`.
 
+**What a row is bound to:** the evidence cell ends with a source-state stamp
+that `ops-verdict.sh` resolves itself — `@<sha>` for a clean tree, `@<sha>+dirty`
+when anything outside `.operator/` was uncommitted, `@no-commit` in a repo with
+no commits, `@no-vcs` outside git, `@<sha>+unknown` when git could not answer.
+Without it a PASS survived unstaged, staged, committed and untracked mutation of
+the source it had just verified, with nothing marking the row stale. Read it for
+what it is: the stamp is written by the same process that writes the row, so it
+says *this row came from that tree*, not *that tree passes*. It is deliberately
+inside the cell rather than a fifth column, so every existing ledger and every
+`grep` written against the 4-cell schema keeps working.
+
 **Across branches:** each session's rows also live in its own
 `verdicts.d/<owner>.md`, which git merges cleanly, and `.operator/.gitattributes`
 marks the ledgers `merge=union`. If `VERDICTS.md` still comes out of a merge
