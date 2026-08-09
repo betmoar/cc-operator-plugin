@@ -214,6 +214,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for conventions and
 [CLAUDE.md](CLAUDE.md) for the maintainer handoff (the "if you touch X, update
 Y" couplings). The design spec lives under `docs/spec/`; build and pilot
 history lives in the git history (tree ≤ v0.2.0).
+[docs/INFOGRAPHICS.md](docs/INFOGRAPHICS.md) collects the visual explainers —
+one of the shipped model, two of a **target state**, each with a table saying
+which of its claims the tree actually backs today.
 
 ## License
 

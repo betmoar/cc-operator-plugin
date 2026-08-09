@@ -134,6 +134,12 @@ way. None of it is loaded by the plugin at runtime; the validator reads only
   tree or the git history, not in the clone.
 - `docs/PLAYBOOK.md` — the executable procedures (adding a guard, adding a
   reader, touching the lock), each derived from a bug that happened here.
+- `docs/INFOGRAPHICS.md` + `docs/img/` — visual explainers. **Non-normative and
+  partly forward-looking**: two of the three sheets depict a "2.0" target state
+  whose isolation, security-lens, attestation and hash-chain claims are open
+  unknowns (#22–#25, #14), so the page carries a per-claim status table. When
+  one of those lands, move its row rather than deleting it. Nothing here is read
+  at runtime and the validator does not parse it.
 - `docs/audits/audit-2026-07-27-{findings,handoff}.md` — the departing-architect
   audit (gate hardening, F01–F06). Local-only: `docs/audits/` is gitignored
   wholesale; a fresh clone gets the F01–F06 summary from `AUDIT_LOG.md` Phase 2.
