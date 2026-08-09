@@ -249,6 +249,29 @@ def check_ledger_schema(root, problems):
             f"{VERDICTS_HEADER!r} (schema must byte-match the proven ledger)")
 
 
+# The dispatch packet's spine, as the charter states it. HANDOUT.md re-teaches
+# the packet in plain English and drifted (F69): it dropped TEXT, the SHA and
+# the `CHANGED:` line — and CHANGED is the input ops-claims.sh verifies, so a
+# user taught from the handout runs the worker-boundary layer unchecked. The pin
+# is against teaching a WRONG packet, so it applies only when the file exists:
+# deleting the handout is a visible act; drifting it is not.
+HANDOUT_PACKET_SPINE = ("TASK / TEXT / SCENE", "CHANGED: <paths>|none")
+
+
+def check_handout_packet(root, problems):
+    h = root / "docs" / "HANDOUT.md"
+    if not h.is_file():
+        return
+    text = h.read_text(encoding="utf-8")
+    for token in HANDOUT_PACKET_SPINE:
+        if token not in text:
+            problems.append(
+                f"docs/HANDOUT.md: missing the packet literal {token!r} — the "
+                f"handout must teach the charter's dispatch packet verbatim "
+                f"(templates/OPERATOR.md), or ops-claims.sh gets reports it "
+                f"cannot check (F69)")
+
+
 # The source-state stamp (U10, issue #22): every verdict row's evidence cell ends
 # with the state that produced it, so a PASS names exactly one tree. Pinned here
 # because the failure it closes is invisible by construction — an UNSTAMPED row
@@ -1600,6 +1623,7 @@ CHECKS = (
     check_changelog,
     check_charter,
     check_ledger_schema,
+    check_handout_packet,
     check_source_stamp,
     check_decisions_schema,
     check_agents,

@@ -373,6 +373,23 @@ class ValidatorTest(unittest.TestCase):
         self._mutate_verdict("# --- Verdict path ---", "# --- verdict stuff ---")
         self.assertFires("Verdict path")
 
+    # --- the handout packet pin (check_handout_packet, F69) ---
+    def test_handout_packet_pin(self):
+        # Absent file: the check must skip — prose is optional, and the good
+        # tree has no handout. Then a handout carrying the charter packet is
+        # clean, and one that drops the CHANGED line (the measured F69 drift —
+        # it is ops-claims.sh's input) fires.
+        probs = []
+        vp.check_handout_packet(self.dir, probs)
+        self.assertEqual(probs, [])
+        h = self.dir / "docs" / "HANDOUT.md"
+        write(h, "packet:\nTASK / TEXT / SCENE / ... / CHANGED: <paths>|none\n")
+        probs = []
+        vp.check_handout_packet(self.dir, probs)
+        self.assertEqual(probs, [])
+        write(h, "packet:\nTASK / SCENE / INPUTS / DONE MEANS / REPORT\n")
+        self.assertFires("missing the packet literal")
+
     # --- 1. manifests ---
     def test_wrong_plugin_name(self):
         p = self.dir / ".claude-plugin" / "plugin.json"

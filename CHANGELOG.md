@@ -48,6 +48,31 @@ forgetting, not evasion.
   counts (one-pass LOC, sub-1s on a 12K-file repo). A reporting CLI, not a gate
   CLI — joins the install set, not CHARTER_REQUIRED_CLIS/GATE_CLIS.
 
+### Added — assurance-model audit pass (F67–F69)
+
+The first audit whose handoff ships in-tree: `docs/audit-2026-08-09-handoff.md`
+(every prior audit writeup was maintainer-local and never committed — which is
+itself finding F68).
+
+- **F67 (P2)** — `ops-init.sh` now warns, naming the exact rule, when a parent
+  `.gitignore` excludes `.operator/` and thereby silently defeats the v2
+  allowlist (git never descends into an excluded directory, so the nested
+  negations re-admit nothing; measured on issue #25). Warn-never-fail: the
+  exclusion can be deliberate, as in this repo's own dogfooding. Five bash
+  cases, proven discriminating against the reverted script.
+- **F68 (P3)** — CLAUDE.md's audit-trail pointers referenced `AUDIT_LOG.md` and
+  `docs/audit-2026-07-31-handoff.md`, which exist in no commit; reworded to the
+  maintainer-local rule, resolvable trail now points at the shipped handoff.
+- **F69 (P3)** — `docs/HANDOUT.md` had drifted from the authorities on three
+  load-bearing points: the IMPLEMENT default model, the read-only-seats claim
+  (it is a tool-policy, not a sandbox — PLAYBOOK's own words), and a dispatch
+  packet missing TEXT, SHA and the `CHANGED:` line that `ops-claims.sh`
+  verifies. Corrected; `validate_plugin.check_handout_packet` now pins the
+  packet spine whenever the handout exists, with a pytest mutation test.
+- PLAYBOOK "adding a reader" gains item 5: a stamp reader takes the **last**
+  `@`-token of the evidence cell and treats an unstamped row as pre-stamp
+  history — provenance, never attestation (#22).
+
 ### Added — verdict rows name the source state that produced them (U10, #22)
 
 Audit finding, reproduced before fixing: a PASS survived **unstaged, staged,

@@ -2979,5 +2979,41 @@ check "S1.10 stamp is resolved before lock_acquire (critical section unchanged)"
 # so the next reader does not mistake a green S1 for either of them.
 
 ########################################################################
+echo "-- Case: init warns when a parent gitignore defeats the v2 allowlist (#25)"
+# F67. The v2 allowlist lives INSIDE .operator/ and cannot beat a rule that
+# excludes the directory itself — git never descends into an excluded dir, so
+# the negations have nothing to re-admit. Before this warning, ops-init reported
+# success while every ledger stayed silently untracked. The warning must NAME
+# the defeating rule (file:line via check-ignore -v), never fail the init, and
+# never fire on a healthy project or outside git.
+if command -v git >/dev/null 2>&1; then
+P="$(newproj)"
+( cd "$P" && git init -q . && git config user.email t@example.com && git config user.name t ) >/dev/null 2>&1
+printf '/.operator/\n' > "$P/.gitignore"
+W1ERR="$(cd "$P" && bash "$INIT" 2>&1 >/dev/null)"; W1RC=$?
+check "defeated project: init still exits 0 (warn, never fail)" \
+  "$([ "$W1RC" = 0 ] && echo 0 || echo 1)"
+check "defeated project: warning fires" \
+  "$(printf '%s' "$W1ERR" | grep -q 'gitignored by a rule outside' && echo 0 || echo 1)"
+check "defeated project: warning names the defeating rule" \
+  "$(printf '%s' "$W1ERR" | grep -q '/.operator/' && echo 0 || echo 1)"
+rm -rf "$P"
+P="$(newproj)"
+( cd "$P" && git init -q . && git config user.email t@example.com && git config user.name t ) >/dev/null 2>&1
+W2ERR="$(cd "$P" && bash "$INIT" 2>&1 >/dev/null)"
+check "healthy git project: no warning" \
+  "$(printf '%s' "$W2ERR" | grep -q 'gitignored by a rule outside' && echo 1 || echo 0)"
+rm -rf "$P"
+else
+  echo "  SKIP init-warning cases (no git on PATH)"
+fi
+# Outside git the check must not run at all (and must not break the scaffold).
+P="$(newproj)"
+W3ERR="$(cd "$P" && bash "$INIT" 2>&1 >/dev/null)"; W3RC=$?
+check "non-git project: init exits 0, no warning" \
+  "$([ "$W3RC" = 0 ] && ! printf '%s' "$W3ERR" | grep -q 'gitignored by a rule outside' && echo 0 || echo 1)"
+rm -rf "$P"
+
+########################################################################
 echo "== summary: $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]

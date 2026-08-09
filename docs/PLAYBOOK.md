@@ -81,6 +81,13 @@ Any new code that reads a sentinel, a fragment, a ledger, or DECISIONS.md.
 4. **Never use `read -N`** (capital). It ignores newlines, returned an empty
    chunk here, and made every sentinel parse as unowned — every session blocking
    on every task, with the whole suite still green.
+5. **A VERDICTS row's evidence cell ends with the U10 source stamp**
+   (`@<sha>`, `@<sha>+dirty`, `@<sha>+unknown`, `@no-commit`, `@no-vcs` —
+   written by `ops-verdict.sh:source_stamp`, pinned by `check_source_stamp`).
+   A stamp reader takes the **last** `@`-token of the cell — evidence prose may
+   itself contain `@` — and treats an unstamped row as pre-stamp history, never
+   as clean (#22). The stamp is provenance, not attestation: do not build a
+   reader that presents it as proof the tree still passes.
 
 ## Decision procedure: touching the lock
 

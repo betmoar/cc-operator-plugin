@@ -76,6 +76,26 @@ elif ! grep -qF "$_GI_MARK" "$OPDIR/.gitignore" 2>/dev/null; then
   echo "migrated $OPDIR/.gitignore to the v2 allowlist (previous kept as .gitignore.v1.bak)"
 fi
 
+# The allowlist above lives INSIDE .operator/ and cannot beat a rule that
+# excludes the directory itself: git never descends into an excluded directory,
+# so the negations have nothing to re-admit. A root .gitignore carrying
+# `/.operator/` ships NO evidence — silently, with this scaffold reporting
+# success (issue #25, measured 2026-08-09). Detect it and say so. Warn, never
+# fail: the exclusion may be deliberate (this repo's own dogfooding does exactly
+# that, which is why the failure was never seen here). This lives in ops-init
+# only, NOT the SessionStart refresh — that hook runs on every session and must
+# stay quiet.
+if command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
+  if git check-ignore -q "$OPDIR/VERDICTS.md" 2>/dev/null; then
+    _gi_rule="$(git check-ignore -v "$OPDIR/VERDICTS.md" 2>/dev/null | head -n 1)"
+    {
+      echo "ops-init: WARNING — the evidence ledger is gitignored by a rule outside $OPDIR/.gitignore:"
+      echo "ops-init:   ${_gi_rule:-<rule unresolvable>}"
+      echo "ops-init:   committed evidence cannot leave this machine while that rule stands (issue #25)"
+    } >&2
+  fi
+fi
+
 # (The compressor-ephemera append that used to live here is gone: under the v2
 # allowlist `*` already covers .compress-spill/ and .compress-state/, and every
 # future ephemera directory, without anyone having to remember them. The
