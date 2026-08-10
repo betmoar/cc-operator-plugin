@@ -47,6 +47,29 @@ GOOD_LOCK_BLOCK = (
     "lock_release() { rm -f \"$LOCKDIR/holder\"; rmdir \"$LOCKDIR\"; }\n"
     "# <<< LOCK BLOCK\n")
 
+# The U10 source-state stamp (check_source_stamp). A compliant stub carries the
+# resolver, every marker it can emit, the `.operator` dirty-exclusion, the 4-cell
+# row format, the APPLIED SOURCE_STAMP, and the verdict-path marker with the
+# stamp resolved before lock_acquire. Appended AFTER the lock block on purpose:
+# the ordering assertion reads the first lock_acquire that follows the marker,
+# and the block's own definition sits above it.
+GOOD_SOURCE_STAMP = (
+    "source_stamp() {\n"
+    "  command -v git >/dev/null 2>&1 || { printf 'no-vcs'; return 0; }\n"
+    "  sha=\"$(git rev-parse --verify --short=12 HEAD 2>/dev/null || true)\"\n"
+    "  [ -n \"$sha\" ] || { printf 'no-commit'; return 0; }\n"
+    "  porc=\"$(git status --porcelain -- ':(exclude).operator' 2>/dev/null)\""
+    " && rc=0 || rc=$?\n"
+    "  [ \"$rc\" -eq 0 ] || { printf '%s+unknown' \"$sha\"; return 0; }\n"
+    "  [ -z \"$porc\" ] || { printf '%s+dirty' \"$sha\"; return 0; }\n"
+    "  printf '%s' \"$sha\"\n"
+    "}\n"
+    "# --- Verdict path ---\n"
+    "SOURCE_STAMP=\"$(source_stamp)\"\n"
+    "lock_acquire\n"
+    "ROW=\"$(printf '| %s | %s | %s @%s | %s |'"
+    " \"$ID\" \"$C\" \"$E\" \"$SOURCE_STAMP\" \"$V\")\"\n")
+
 
 def write(p, text):
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -149,7 +172,7 @@ def make_good_tree(root):
           "#!/usr/bin/env bash\n" + guards + nolink + bounded +
           "while IFS= read -r -n 512 row; do :; done < \"$frag\"\n" +
           "# --mark-handoff writes a HANDOFF-MARK line under the lock\n" +
-          GOOD_LOCK_BLOCK)
+          GOOD_LOCK_BLOCK + GOOD_SOURCE_STAMP)
     write(root / "scripts" / "ops-adopt.sh",
           "#!/usr/bin/env bash\n" + guards + nolink + bounded + GOOD_LOCK_BLOCK)
     # ops-claims.sh: a fourth gate CLI. check_claims pins its PROTECTED literal
@@ -292,6 +315,80 @@ class ValidatorTest(unittest.TestCase):
     # --- baseline ---
     def test_good_tree_is_clean(self):
         self.assertEqual(self.problems(), [])
+
+    # --- the U10 source-state stamp (check_source_stamp) ---
+    # Each mutation is one way the stamp stops binding a row to a tree. The
+    # last two are the ones that matter most, because neither changes any
+    # observable output: a stamp that never reaches the row, and a check that
+    # cannot see the difference, both look exactly like a working build.
+    def _verdict(self):
+        return self.dir / "scripts" / "ops-verdict.sh"
+
+    def _mutate_verdict(self, old, new):
+        p = self._verdict()
+        text = p.read_text(encoding="utf-8")
+        self.assertIn(old, text)
+        write(p, text.replace(old, new))
+
+    def test_source_stamp_resolver_removed(self):
+        self._mutate_verdict("source_stamp() {", "_removed_stamp() {")
+        self.assertFires("no source_stamp()")
+
+    def test_source_stamp_marker_dropped(self):
+        # A failure path that degrades to silence instead of an explicit state.
+        self._mutate_verdict("printf '%s+unknown' \"$sha\"", "printf '%s' \"$sha\"")
+        self.assertFires("'+unknown' marker")
+
+    def test_source_stamp_dirty_exclusion_dropped(self):
+        # Counting .operator/ pins every row to +dirty — a marker that can never
+        # be off, which is the vacuous-guard class (#21) wearing a feature's
+        # clothes. Nothing errors; the signal just stops meaning anything.
+        self._mutate_verdict(" -- ':(exclude).operator'", "")
+        self.assertFires("must exclude")
+
+    def test_source_stamp_fifth_cell(self):
+        self._mutate_verdict("| %s | %s | %s @%s | %s |",
+                             "| %s | %s | %s | @%s | %s |")
+        self.assertFires("four cells")
+
+    def test_source_stamp_resolved_but_never_applied(self):
+        # F30: declared and not applied. The resolver still exists, still
+        # returns the right token, and the row still carries none of it.
+        self._mutate_verdict("SOURCE_STAMP", "UNUSED_STAMP")
+        self.assertFires("never applied to the row")
+
+    def test_source_stamp_resolved_inside_the_lock(self):
+        # The PLAYBOOK's step-3 hazard: git work inside the critical section.
+        # This is the mutation the first draft of the check PASSED — it split on
+        # a comment marker it had already stripped, found nothing, and skipped
+        # the assertion. Pinned so the fail-open cannot come back.
+        self._mutate_verdict(
+            "SOURCE_STAMP=\"$(source_stamp)\"\nlock_acquire",
+            "lock_acquire\nSOURCE_STAMP=\"$(source_stamp)\"")
+        self.assertFires("BEFORE lock_acquire")
+
+    def test_source_stamp_verdict_path_marker_lost(self):
+        # Not-found must be a reported problem, never a silent skip: a guard
+        # whose landmark disappeared cannot tell "compliant" from "unreadable".
+        self._mutate_verdict("# --- Verdict path ---", "# --- verdict stuff ---")
+        self.assertFires("Verdict path")
+
+    # --- the handout packet pin (check_handout_packet, F69) ---
+    def test_handout_packet_pin(self):
+        # Absent file: the check must skip — prose is optional, and the good
+        # tree has no handout. Then a handout carrying the charter packet is
+        # clean, and one that drops the CHANGED line (the measured F69 drift —
+        # it is ops-claims.sh's input) fires.
+        probs = []
+        vp.check_handout_packet(self.dir, probs)
+        self.assertEqual(probs, [])
+        h = self.dir / "docs" / "HANDOUT.md"
+        write(h, "packet:\nTASK / TEXT / SCENE / ... / CHANGED: <paths>|none\n")
+        probs = []
+        vp.check_handout_packet(self.dir, probs)
+        self.assertEqual(probs, [])
+        write(h, "packet:\nTASK / SCENE / INPUTS / DONE MEANS / REPORT\n")
+        self.assertFires("missing the packet literal")
 
     # --- 1. manifests ---
     def test_wrong_plugin_name(self):

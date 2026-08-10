@@ -249,6 +249,122 @@ def check_ledger_schema(root, problems):
             f"{VERDICTS_HEADER!r} (schema must byte-match the proven ledger)")
 
 
+# The dispatch packet's spine, as the charter states it. HANDOUT.md re-teaches
+# the packet in plain English and drifted (F69): it dropped TEXT, the SHA and
+# the `CHANGED:` line — and CHANGED is the input ops-claims.sh verifies, so a
+# user taught from the handout runs the worker-boundary layer unchecked. The pin
+# is against teaching a WRONG packet, so it applies only when the file exists:
+# deleting the handout is a visible act; drifting it is not.
+HANDOUT_PACKET_SPINE = ("TASK / TEXT / SCENE", "CHANGED: <paths>|none")
+
+
+def check_handout_packet(root, problems):
+    h = root / "docs" / "HANDOUT.md"
+    if not h.is_file():
+        return
+    text = h.read_text(encoding="utf-8")
+    for token in HANDOUT_PACKET_SPINE:
+        if token not in text:
+            problems.append(
+                f"docs/HANDOUT.md: missing the packet literal {token!r} — the "
+                f"handout must teach the charter's dispatch packet verbatim "
+                f"(templates/OPERATOR.md), or ops-claims.sh gets reports it "
+                f"cannot check (F69)")
+
+
+# The source-state stamp (U10, issue #22): every verdict row's evidence cell ends
+# with the state that produced it, so a PASS names exactly one tree. Pinned here
+# because the failure it closes is invisible by construction — an UNSTAMPED row
+# looks exactly like a stamped one until someone tries to audit it, and there is
+# no runtime consumer whose breakage would announce a regression. The bash
+# suite's S1 cases are the only other thing standing on this.
+#
+# Four properties. The third and fourth are the F30 lesson (a literal declared
+# and never applied is the defect one level up) and the #21 lesson (a marker
+# that can never be off is not a marker):
+#   1. every marker the resolver can emit is present in CODE, not just prose;
+#   2. the row printf still builds FOUR cells, with the stamp inside cell 3 —
+#      a fifth cell would break every ledger and grep in the field;
+#   3. the resolved value is APPLIED at the row site;
+#   4. `.operator/` is excluded from the dirty test, or every row everywhere
+#      stamps +dirty and the marker stops distinguishing anything.
+# Plus the ordering the PLAYBOOK's "touching the lock" step 3 demands: git work
+# is resolved BEFORE lock_acquire, never inside the critical section.
+STAMP_MARKERS = ("no-vcs", "no-commit", "+dirty", "+unknown")
+STAMP_ROW_FORMAT = "'| %s | %s | %s @%s | %s |'"
+STAMP_DIRTY_EXCLUDE = "':(exclude).operator'"
+
+
+def check_source_stamp(root, problems):
+    p = root / "scripts" / "ops-verdict.sh"
+    if not p.is_file():
+        problems.append("scripts/ops-verdict.sh: missing")
+        return
+    text = p.read_text(encoding="utf-8")
+    # Comments stripped for every assertion below: the header prose names each
+    # marker, so a function gutted to `printf ''` would satisfy a naive scan of
+    # the whole file. That is the vacuous-guard shape this check exists to avoid
+    # becoming.
+    code = "\n".join(
+        ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+    if "source_stamp()" not in code:
+        problems.append(
+            "scripts/ops-verdict.sh: no source_stamp() — the verdict row must "
+            "name the source state that produced it (issue #22)")
+        return
+    for marker in STAMP_MARKERS:
+        if marker not in code:
+            problems.append(
+                f"scripts/ops-verdict.sh: source_stamp lost the {marker!r} "
+                f"marker — every failure path must degrade to an explicit "
+                f"state, never to silence")
+    if STAMP_DIRTY_EXCLUDE not in code:
+        problems.append(
+            f"scripts/ops-verdict.sh: the dirty test must exclude "
+            f"{STAMP_DIRTY_EXCLUDE} — .operator/ is untracked in most projects, "
+            f"so counting it stamps every row +dirty and the marker becomes "
+            f"vacuous (#21)")
+    if STAMP_ROW_FORMAT not in code:
+        problems.append(
+            f"scripts/ops-verdict.sh: the verdict row format must be "
+            f"{STAMP_ROW_FORMAT} — four cells with the stamp inside the "
+            f"evidence cell; a fifth cell breaks every existing ledger")
+    if "SOURCE_STAMP" not in code:
+        problems.append(
+            "scripts/ops-verdict.sh: source_stamp() is defined but its result "
+            "is never applied to the row (F30: declared-but-not-applied)")
+        return
+    # Ordering, on the verdict path's own section: a `git status` inside the
+    # lock lengthens the critical section, and a holder that outruns
+    # LOCK_LIVE_SPINS leaves its waiters proceeding UNLOCKED.
+    #
+    # The split runs on the RAW text and the comment strip happens after, in
+    # that order and not the other way round: the section marker is itself a
+    # comment, so splitting `code` finds nothing, takes the not-found branch,
+    # and skips the assertion entirely. That draft passed a mutation that moved
+    # the stamp inside the lock — the check was fail-open, which is the one
+    # direction the PLAYBOOK does not allow a guard to fail. Not-found is now a
+    # reported problem for the same reason.
+    section = text.split("# --- Verdict path ---", 1)
+    if len(section) != 2:
+        problems.append(
+            "scripts/ops-verdict.sh: no '# --- Verdict path ---' marker — the "
+            "stamp-before-lock ordering cannot be checked; restore the marker "
+            "or rewrite this check, never leave it silently unenforced")
+        return
+    lines = [ln for ln in section[1].splitlines()
+             if not ln.lstrip().startswith("#")]
+    stamp_at = next(
+        (i for i, ln in enumerate(lines) if "source_stamp" in ln), None)
+    lock_at = next(
+        (i for i, ln in enumerate(lines) if "lock_acquire" in ln), None)
+    if stamp_at is None or lock_at is None or stamp_at > lock_at:
+        problems.append(
+            "scripts/ops-verdict.sh: the source stamp must be resolved "
+            "BEFORE lock_acquire on the verdict path — git work inside the "
+            "critical section is the PLAYBOOK's step-3 hazard")
+
+
 # The DECISIONS-header kind set — split into GATED (block Stop until presented),
 # RECORD (logged, never block), and the HANDOFF-MARK marker (clears the gated
 # set). The hook/statusline deviation gate counts ONLY the GATED kinds; the
@@ -1507,6 +1623,8 @@ CHECKS = (
     check_changelog,
     check_charter,
     check_ledger_schema,
+    check_handout_packet,
+    check_source_stamp,
     check_decisions_schema,
     check_agents,
     check_render_templates,

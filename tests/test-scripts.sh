@@ -100,9 +100,13 @@ P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
 mkdir -p "$P/.operator/pending"; : > "$P/.operator/pending/T-1"
 ( cd "$P" && bash "$VERDICT" T-1 "tests pass" "42 passed, 0 failed" PASS >/dev/null 2>&1 )
 VRC=$?
-ROW='| T-1 | tests pass | 42 passed, 0 failed | PASS |'
+# The evidence cell ends with the source-state stamp (S1). It is matched as a
+# token rather than pinned to `no-vcs`, because a suite run with TMPDIR inside
+# someone's git repo legitimately stamps a sha here — pinning the value would
+# make these cases fail on a correct build, for a reason nobody would guess.
+ROW='^\| T-1 \| tests pass \| 42 passed, 0 failed @[^ |]+ \| PASS \|$'
 if [ -f "$P/.operator/VERDICTS.md" ]; then
-  N="$(grep -Fxc "$ROW" "$P/.operator/VERDICTS.md" 2>/dev/null)"
+  N="$(grep -Ec "$ROW" "$P/.operator/VERDICTS.md" 2>/dev/null)"
 else N=0; fi
 check "verdict exits 0 on valid args" "$([ "$VRC" -eq 0 ] && echo 0 || echo 1)"
 check "exactly one conformant row appended" "$([ "$N" = "1" ] && echo 0 || echo 1)"
@@ -205,7 +209,7 @@ run_hook stop-basic.json "$P"
 check "hook blocks (exit 2) on ops-task-opened sentinel" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
 check "block message names .operator/bin/ops-verdict.sh" "$(printf '%s' "$HERR" | grep -q '\.operator/bin/ops-verdict\.sh' && echo 0 || echo 1)"
 ( cd "$P" && ./.operator/bin/ops-verdict.sh T-6 "crit" "output" PASS >/dev/null 2>&1 )
-check "installed verdict CLI appends row + clears sentinel" "$(grep -Fq '| T-6 | crit | output | PASS |' "$P/.operator/VERDICTS.md" && [ ! -e "$P/.operator/pending/T-6" ] && echo 0 || echo 1)"
+check "installed verdict CLI appends row + clears sentinel" "$(grep -Eq '^\| T-6 \| crit \| output @[^ |]+ \| PASS \|$' "$P/.operator/VERDICTS.md" && [ ! -e "$P/.operator/pending/T-6" ] && echo 0 || echo 1)"
 # ops-task refusals: no id; no .operator/
 ( cd "$P" && ./.operator/bin/ops-task.sh >/dev/null 2>&1 ); NRC=$?
 check "ops-task refuses a missing task-id" "$([ "$NRC" -ne 0 ] && echo 0 || echo 1)"
@@ -551,7 +555,7 @@ racer A & RA=$!
 racer B & RB=$!
 wait "$RA" "$RB"
 TOTAL=$((N * 2))
-GOOD="$(grep -cE '^\| T-[AB]-[0-9]+ \| criterion [AB] [0-9]+ \| evidence [AB] [0-9]+ \| PASS \|$' "$P/.operator/VERDICTS.md" || true)"
+GOOD="$(grep -cE '^\| T-[AB]-[0-9]+ \| criterion [AB] [0-9]+ \| evidence [AB] [0-9]+ @[^ |]+ \| PASS \|$' "$P/.operator/VERDICTS.md" || true)"
 ANYROW="$(grep -cE '^\| T-' "$P/.operator/VERDICTS.md" || true)"
 check "concurrent: all $TOTAL rows present" "$([ "$ANYROW" = "$TOTAL" ] && echo 0 || echo 1)"
 check "concurrent: every row matches the 4-cell schema (zero interleaving)" "$([ "$GOOD" = "$TOTAL" ] && echo 0 || echo 1)"
@@ -949,7 +953,7 @@ while [ "$waited" -lt 20 ]; do
 done
 if kill -0 "$ABPID" 2>/dev/null; then kill -9 "$ABPID" 2>/dev/null; ABRC=99; fi
 check "abandoned reclaim claim recovers (does not wedge forever)" "$([ "$ABRC" -eq 0 ] && echo 0 || echo 1)"
-check "abandoned claim: verdict actually recorded" "$(grep -Fq '| T-AB | crit | ev | PASS |' "$P/.operator/VERDICTS.md" && [ ! -e "$P/.operator/pending/T-AB" ] && echo 0 || echo 1)"
+check "abandoned claim: verdict actually recorded" "$(grep -Eq '^\| T-AB \| crit \| ev @[^ |]+ \| PASS \|$' "$P/.operator/VERDICTS.md" && [ ! -e "$P/.operator/pending/T-AB" ] && echo 0 || echo 1)"
 check "abandoned claim: no lock or marker left behind" "$([ ! -d "$P/.operator/.lock" ] && [ ! -d "$P/.operator/.lock.reclaim" ] && echo 0 || echo 1)"
 
 # A LINE cap is not a BYTE cap: one newline-less line is a single "line" and
@@ -1117,7 +1121,7 @@ DRC=$?
 SEC1=$(date +%s)
 check "dead holder: writer succeeds" "$([ "$DRC" -eq 0 ] && echo 0 || echo 1)"
 check "dead holder: reclaimed promptly, not after the full budget (<10s)" "$([ "$((SEC1 - SEC0))" -lt 10 ] && echo 0 || echo 1)"
-check "dead holder: verdict actually recorded" "$(grep -Fq '| T-DEAD | crit | ev | PASS |' "$P/.operator/VERDICTS.md" && [ ! -e "$P/.operator/pending/T-DEAD" ] && echo 0 || echo 1)"
+check "dead holder: verdict actually recorded" "$(grep -Eq '^\| T-DEAD \| crit \| ev @[^ |]+ \| PASS \|$' "$P/.operator/VERDICTS.md" && [ ! -e "$P/.operator/pending/T-DEAD" ] && echo 0 || echo 1)"
 check "dead holder: no lock or claim marker left behind" "$([ ! -d "$LK" ] && [ ! -d "$LK.reclaim" ] && echo 0 || echo 1)"
 
 # (b) A LIVE holder is never reclaimed, however far past the budget the waiter
@@ -1197,7 +1201,7 @@ for _i in $(seq 1 25); do
   case "$RCERR" in *"reclaimed while this process held it"*) DISPLACED=$((DISPLACED+1)) ;; esac
 done
 check "two simultaneous reclaimers: neither is displaced from the lock" "$([ "$DISPLACED" = "0" ] && echo 0 || echo 1)"
-check "two simultaneous reclaimers: both verdicts recorded" "$(grep -Fq '| T-X1 | c | e | PASS |' "$P/.operator/VERDICTS.md" && grep -Fq '| T-X2 | c | e | PASS |' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
+check "two simultaneous reclaimers: both verdicts recorded" "$(grep -Eq '^\| T-X1 \| c \| e @[^ |]+ \| PASS \|$' "$P/.operator/VERDICTS.md" && grep -Eq '^\| T-X2 \| c \| e @[^ |]+ \| PASS \|$' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
 check "two simultaneous reclaimers: nothing left behind" "$([ ! -d "$LK" ] && [ ! -d "$LK.reclaim" ] && echo 0 || echo 1)"
 
 # (d) An unjudgeable holder record must fall back to the time-based path, never
@@ -2934,6 +2938,174 @@ check "G3.7 a genuine --exempt for the same base session still lands" \
   "$([ -e "$X7P/.operator/.armed/victim.exempt" ] && echo 0 || echo 1)"
 rm -rf "$X7P"
 
+rm -rf "$P"
+
+########################################################################
+echo "-- Case: S1 source-state stamp — a verdict row names the tree it came from"
+# U10 (issue #22). A PASS survived unstaged, staged, committed and untracked
+# mutation of the source it verified, because the row named no source state at
+# all: four cells, no sha, and ops-verdict.sh never called git. These cases pin
+# the stamp that closes the attribution half — the row is now attributable to
+# one tree, which is NOT the same as that tree still passing (see S1.9).
+#
+# Every project here is a REAL git repo, because the ordinary path is the one
+# that must be exercised end-to-end: the suite's other cases run in bare
+# mktemp dirs, which take the no-vcs branch. That asymmetry is the whole reason
+# the PLAYBOOK says to verify the normal path through the real parser.
+gitproj() { # gitproj -> path of a fresh git project with .operator scaffolded
+  local p; p="$(newproj)"
+  (
+    cd "$p" || exit 1
+    git init -q .
+    git config user.email t@example.com
+    git config user.name t
+    printf 'def add(a,b):\n    return a+b\n' > src.py
+    git add -A
+    git commit -qm init
+    bash "$INIT" >/dev/null 2>&1
+  ) >/dev/null 2>&1
+  printf '%s' "$p"
+}
+# The stamp cell, extracted from the ledger's last row: cell 3, trailing token.
+stamp_of() { # stamp_of <project> -> the @-token of the last VERDICTS row
+  awk -F' *\\| *' 'END{n=split($4,a," "); print a[n]}' "$1/.operator/VERDICTS.md"
+}
+
+if ! command -v git >/dev/null 2>&1; then
+  echo "  SKIP S1 (no git on PATH — the stamp's own no-vcs branch is all that is testable here)"
+else
+P="$(gitproj)"
+SHA="$(cd "$P" && git rev-parse --verify --short=12 HEAD)"
+( cd "$P" && bash "$TASK" S1-a --owner SESS-S1 >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" S1-a "src.py imports" "python3 -c 'import src' -> ok" PASS --owner SESS-S1 >/dev/null 2>&1 )
+check "S1.1 clean tree → evidence cell carries @<sha>" \
+  "$([ "$(stamp_of "$P")" = "@$SHA" ] && echo 0 || echo 1)"
+# The 4-cell schema is what every grep consumer depends on; a stamp that split a
+# row would be the 5-cell injection this suite already guards against elsewhere.
+NC="$(awk -F'|' 'END{print NF}' "$P/.operator/VERDICTS.md")"
+check "S1.2 stamped row is still exactly 4 cells" \
+  "$([ "$NC" = "6" ] && echo 0 || echo 1)"
+# The fragment and the ledger must carry the SAME bytes, or --reconcile's
+# verbatim dedup re-appends every stamped row on the next repair.
+LROW="$(tail -1 "$P/.operator/VERDICTS.md")"
+FROW="$(tail -1 "$P/.operator/verdicts.d/SESS-S1.md")"
+check "S1.3 fragment row and ledger row are byte-identical" \
+  "$([ "$LROW" = "$FROW" ] && echo 0 || echo 1)"
+
+# Dirty source → the stamp says so. This is the U10 experiment's first class.
+printf 'def add(a,b):\n    return a*b\n' > "$P/src.py"
+( cd "$P" && bash "$TASK" S1-b --owner SESS-S1 >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" S1-b "crit" "ev" PASS --owner SESS-S1 >/dev/null 2>&1 )
+check "S1.4 modified tracked file → @<sha>+dirty" \
+  "$([ "$(stamp_of "$P")" = "@$SHA+dirty" ] && echo 0 || echo 1)"
+# Untracked source counts too — the fourth class in the U10 table, and the one
+# a naive `git diff` check would miss.
+( cd "$P" && git checkout -q -- src.py )
+printf 'x\n' > "$P/new_source.py"
+( cd "$P" && bash "$TASK" S1-c --owner SESS-S1 >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" S1-c "crit" "ev" PASS --owner SESS-S1 >/dev/null 2>&1 )
+check "S1.5 untracked source file → @<sha>+dirty" \
+  "$([ "$(stamp_of "$P")" = "@$SHA+dirty" ] && echo 0 || echo 1)"
+rm -f "$P/new_source.py"
+
+# THE DISCRIMINATING CASE for the exclusion rule. .operator/ is the gate's own
+# bookkeeping and is untracked in a project that has not committed its ledger —
+# i.e. almost every project, including this fixture. Count it as dirt and every
+# row everywhere reads +dirty, which is a marker that cannot be off: the
+# vacuous-guard class (#21) shipped as a feature. Same boundary ops-claims.sh
+# --expect-clean already draws.
+( cd "$P" && bash "$TASK" S1-d --owner SESS-S1 >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" S1-d "crit" "ev" PASS --owner SESS-S1 >/dev/null 2>&1 )
+check "S1.6 .operator/ churn alone does NOT read as dirty" \
+  "$([ "$(stamp_of "$P")" = "@$SHA" ] && echo 0 || echo 1)"
+rm -rf "$P"
+
+# A repo with no commits: there is a tree, but no name to bind to. Recorded,
+# never refused — the charter's rule is that the gate never refuses real
+# evidence, and an unnameable tree is not the operator's fault.
+P="$(newproj)"
+( cd "$P" && git init -q . && git config user.email t@example.com && git config user.name t && bash "$INIT" ) >/dev/null 2>&1
+( cd "$P" && bash "$TASK" S1-e --owner SESS-S1 >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" S1-e "crit" "ev" PASS --owner SESS-S1 >/dev/null 2>&1 ); S1E=$?
+check "S1.7 unborn HEAD → @no-commit, row still recorded" \
+  "$([ "$S1E" = 0 ] && [ "$(stamp_of "$P")" = "@no-commit" ] && echo 0 || echo 1)"
+rm -rf "$P"
+fi
+
+# No git repository at all (the bare mktemp project every other case uses).
+# Explicit marker, not silence: an UNSTAMPED row means "written before this
+# existed", and an audit that cannot tell the two apart cannot start.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+( cd "$P" && bash "$TASK" S1-f --owner SESS-S1 >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" S1-f "crit" "ev" PASS --owner SESS-S1 >/dev/null 2>&1 ); S1F=$?
+check "S1.8 no git repo → @no-vcs, row still recorded (never refuses evidence)" \
+  "$([ "$S1F" = 0 ] && [ "$(stamp_of "$P")" = "@no-vcs" ] && echo 0 || echo 1)"
+# --defer is deliberately NOT stamped: it records that no verdict was reached,
+# so there is no evidence to bind to a tree. Pinned so the asymmetry is a
+# decision a later reader can find, not an omission they re-add by accident.
+( cd "$P" && bash "$TASK" S1-g --owner SESS-S1 >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" S1-g --defer "blocked upstream" --owner SESS-S1 >/dev/null 2>&1 )
+check "S1.9 --defer line carries no stamp (nothing was verified)" \
+  "$(grep -q 'DEFERRED-VERDICT' "$P/.operator/DECISIONS.md" && ! grep -q '@no-vcs' "$P/.operator/DECISIONS.md" && echo 0 || echo 1)"
+rm -rf "$P"
+
+# STRUCTURAL: the stamp is computed BEFORE lock_acquire. `git status` is
+# unbounded work on a large repo, and the PLAYBOOK's "never lengthen the
+# critical section" rule is what keeps a waiter from giving up and proceeding
+# UNLOCKED. Asserted on the verdict path's own section of the file.
+# Comment lines are dropped AFTER the section is found: the marker is a comment
+# (so the section must be located in the raw file), but the prose inside the
+# section also names source_stamp — matching it made the first draft of this
+# case pass against a build with the stamp moved inside the lock. The validator's
+# twin check had the same hole, found by the same mutation.
+VSEC="$(awk '/^# --- Verdict path ---/{f=1} f' "$VERDICT" | grep -v '^[[:space:]]*#')"
+SL="$(printf '%s\n' "$VSEC" | grep -n 'source_stamp' | head -1 | cut -d: -f1)"
+LL="$(printf '%s\n' "$VSEC" | grep -n 'lock_acquire' | head -1 | cut -d: -f1)"
+check "S1.10 stamp is resolved before lock_acquire (critical section unchanged)" \
+  "$([ -n "$SL" ] && [ -n "$LL" ] && [ "$SL" -lt "$LL" ] && echo 0 || echo 1)"
+
+# HONESTY NOTE. What S1 proves is ATTRIBUTION: a row names one tree. It does
+# NOT prove that tree still passes, and nothing here re-runs anything. The
+# stamp is written by the same process that writes the row, so it is provenance,
+# not attestation — a lying operator can still record a PASS it never ran, and
+# the tree it names will be stamped correctly. The staleness reader (#22 step 2)
+# and independent execution (#23) are separate, still open, and this case exists
+# so the next reader does not mistake a green S1 for either of them.
+
+########################################################################
+echo "-- Case: init warns when a parent gitignore defeats the v2 allowlist (#25)"
+# F67. The v2 allowlist lives INSIDE .operator/ and cannot beat a rule that
+# excludes the directory itself — git never descends into an excluded dir, so
+# the negations have nothing to re-admit. Before this warning, ops-init reported
+# success while every ledger stayed silently untracked. The warning must NAME
+# the defeating rule (file:line via check-ignore -v), never fail the init, and
+# never fire on a healthy project or outside git.
+if command -v git >/dev/null 2>&1; then
+P="$(newproj)"
+( cd "$P" && git init -q . && git config user.email t@example.com && git config user.name t ) >/dev/null 2>&1
+printf '/.operator/\n' > "$P/.gitignore"
+W1ERR="$(cd "$P" && bash "$INIT" 2>&1 >/dev/null)"; W1RC=$?
+check "defeated project: init still exits 0 (warn, never fail)" \
+  "$([ "$W1RC" = 0 ] && echo 0 || echo 1)"
+check "defeated project: warning fires" \
+  "$(printf '%s' "$W1ERR" | grep -q 'gitignored by a rule outside' && echo 0 || echo 1)"
+check "defeated project: warning names the defeating rule" \
+  "$(printf '%s' "$W1ERR" | grep -q '/.operator/' && echo 0 || echo 1)"
+rm -rf "$P"
+P="$(newproj)"
+( cd "$P" && git init -q . && git config user.email t@example.com && git config user.name t ) >/dev/null 2>&1
+W2ERR="$(cd "$P" && bash "$INIT" 2>&1 >/dev/null)"
+check "healthy git project: no warning" \
+  "$(printf '%s' "$W2ERR" | grep -q 'gitignored by a rule outside' && echo 1 || echo 0)"
+rm -rf "$P"
+else
+  echo "  SKIP init-warning cases (no git on PATH)"
+fi
+# Outside git the check must not run at all (and must not break the scaffold).
+P="$(newproj)"
+W3ERR="$(cd "$P" && bash "$INIT" 2>&1 >/dev/null)"; W3RC=$?
+check "non-git project: init exits 0, no warning" \
+  "$([ "$W3RC" = 0 ] && ! printf '%s' "$W3ERR" | grep -q 'gitignored by a rule outside' && echo 0 || echo 1)"
 rm -rf "$P"
 
 ########################################################################

@@ -107,7 +107,9 @@ the diff on DONE [DOC:spec-D4]. Stop is blocked while a sentinel **you own** is 
 others' are reported, never yours to close. A blocked task ends honestly via `--defer
 "<reason>"`, writing DEFERRED-VERDICT to DECISIONS.md [DOC:spec-D4]. Evidence from output
 marked `[full output spilled to …]` MUST cite that spill path: the compressor elided the middle
-[DOC:spec-compress].
+[DOC:spec-compress]. Every row is auto-stamped with the source state that produced it —
+`@<sha>`, `+dirty` when the tree was uncommitted, `@no-vcs` outside git; that is provenance,
+never proof the tree still passes [DOC:spec-D4].
 
 ## HANDOFF
 

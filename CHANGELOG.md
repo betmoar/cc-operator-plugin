@@ -55,6 +55,70 @@ forgetting, not evasion.
   counted as code. GNU grep answers correctly, so a Linux run could not have
   caught it; case B10.4 pins it and must run on macOS to mean anything.
 
+### Added — assurance-model audit pass (F67–F69)
+
+The first audit whose handoff ships in-tree: `docs/audit-2026-08-09-handoff.md`
+(every prior audit writeup was maintainer-local and never committed — which is
+itself finding F68).
+
+- **F67 (P2)** — `ops-init.sh` now warns, naming the exact rule, when a parent
+  `.gitignore` excludes `.operator/` and thereby silently defeats the v2
+  allowlist (git never descends into an excluded directory, so the nested
+  negations re-admit nothing; measured on issue #25). Warn-never-fail: the
+  exclusion can be deliberate, as in this repo's own dogfooding. Five bash
+  cases, proven discriminating against the reverted script.
+- **F68 (P3)** — CLAUDE.md's audit-trail pointers referenced `AUDIT_LOG.md` and
+  `docs/audit-2026-07-31-handoff.md`, which exist in no commit; reworded to the
+  maintainer-local rule, resolvable trail now points at the shipped handoff.
+- **F69 (P3)** — `docs/HANDOUT.md` had drifted from the authorities on three
+  load-bearing points: the IMPLEMENT default model, the read-only-seats claim
+  (it is a tool-policy, not a sandbox — PLAYBOOK's own words), and a dispatch
+  packet missing TEXT, SHA and the `CHANGED:` line that `ops-claims.sh`
+  verifies. Corrected; `validate_plugin.check_handout_packet` now pins the
+  packet spine whenever the handout exists, with a pytest mutation test.
+- PLAYBOOK "adding a reader" gains item 5: a stamp reader takes the **last**
+  `@`-token of the evidence cell and treats an unstamped row as pre-stamp
+  history — provenance, never attestation (#22).
+
+### Added — verdict rows name the source state that produced them (U10, #22)
+
+Audit finding, reproduced before fixing: a PASS survived **unstaged, staged,
+committed and untracked** mutation of the source it had just verified — the
+criterion exiting 1 while the row still read PASS, the Stop hook silent through
+all four (positive control: it exits 2 with an owned sentinel open). The row
+named no tree at all, and `ops-verdict.sh` contained no `git` call.
+
+- `ops-verdict.sh` now resolves a **source-state stamp** and appends it inside
+  the evidence cell: `@<sha>`, `@<sha>+dirty` when anything outside `.operator/`
+  is uncommitted, `@<sha>+unknown` when `git status` itself fails (an infra
+  failure must not read as *clean* — that is the strong claim here),
+  `@no-commit` on an unborn HEAD, `@no-vcs` outside git. Explicit in every
+  branch: an **unstamped** row means "written before this existed", and an audit
+  that cannot separate that from "git was missing" cannot start.
+- **Inside the cell, not a fifth column.** `VERDICTS_HEADER`, every ledger in
+  the field, and every grep written against the 4-cell schema keep working.
+- **`.operator/` is excluded from the dirty test.** It is untracked in any
+  project that has not committed its ledger — nearly all of them — so counting
+  it would pin every row everywhere to `+dirty`, which is the vacuous-guard
+  class (#21) shipped as a feature. Same boundary `ops-claims.sh
+  --expect-clean` already draws.
+- **Resolved before `lock_acquire`.** `git status` is unbounded work on a large
+  repo and nothing waits on the stamp; a holder that outruns `LOCK_LIVE_SPINS`
+  leaves its waiters proceeding unlocked.
+- It **never refuses**: every failure path degrades to a marker, because a
+  verdict is real evidence and the gate does not refuse real evidence.
+- Scope, stated so nobody claims more: this is **provenance** ("this row was
+  written from that tree"), not attestation ("that tree passes") — the stamp is
+  written by the same process that writes the row. The staleness reader (#22
+  step 2), execution isolation (#23) and external reproduction (#25) stay open.
+  `--defer` is deliberately unstamped: nothing was verified.
+- Pinned by `validate_plugin.check_source_stamp` (markers, exclusion, row
+  format, application, ordering) and 10 `S1` cases. Both guards shipped
+  **fail-open in their first draft** — each searched for the verdict-path marker
+  in text it had already stripped of comments, so a mutation moving the stamp
+  inside the lock passed a green build. Found by mutation, fixed in both, and
+  recorded in `docs/LANDMINES.md`.
+
 ### Fixed
 
 - **Retro-gate long-row blindness (G1.7)** — the prior-row scan skipped any
