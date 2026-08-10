@@ -137,8 +137,11 @@ esac
 # `[ ! -d ]` is the half that works, on every uid: a regular file or a bad
 # restore is caught and fails open (cases below). `[ ! -x ]` is BEST-EFFORT and
 # is INERT for uid 0 — root's `[ -x ]` on a `chmod 000` directory returns TRUE,
-# so this branch cannot fire under the identity CI and devcontainers use by
-# default. That is stated rather than papered over, and it is acceptable for a
+# so this branch cannot fire for a root session: `docker run` without `--user`,
+# or a devcontainer left at the default root user. NOT this project's CI, which
+# was checked rather than assumed — GitHub Actions `ubuntu-latest` runs as the
+# `runner` user (uid 1000, `/home/runner/...`), so the branch fires normally
+# there. That is stated rather than papered over, and it is acceptable for a
 # reason that had to be measured rather than assumed: root is not blocked by
 # mode bits either. On a `chmod 000` .armed as uid 0, `ls`/`cd`/`touch` all
 # succeed, and — the decisive test — the marker lookup stays ACCURATE:
