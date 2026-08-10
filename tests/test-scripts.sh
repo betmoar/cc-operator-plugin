@@ -2653,6 +2653,40 @@ else
 fi
 ( cd "$P/.operator" && chmod 755 .armed 2>/dev/null; rm -rf .armed )
 
+# G2.13 — a NON-WRITABLE .armed (mode 555) must fail OPEN (issue #27). Mode 555
+# passes both `-d` and `-x`, so before the `-w` half existed the guard stayed
+# silent while the project wedged: a new session denied, ops-task.sh reporting
+# success while writing no marker (it swallows the write by design), its sentinel
+# landing anyway so Stop blocked too, and all three advertised repairs writing
+# into that same unwritable directory. Measured end to end off-root — which is
+# what makes this the real unwritable-and-unrepairable case (#19 examined
+# chmod 000, concluded root is never blocked by mode bits, and stopped there).
+#
+# UID-CONDITIONAL, and the asymmetry is the point rather than an inconvenience.
+# `-w` is inert for uid 0 exactly as `-x` is: root's `[ -w ]` on a 555 directory
+# is TRUE, so the guard does not fire and an unarmed root session gets the
+# ordinary never-armed DENY. That is CORRECT, not a gap — root's writes into 555
+# genuinely succeed, so ops-task.sh really does arm it and the repair path is
+# alive. The wedge only exists for a uid whose writes actually fail.
+# (An earlier draft of this case asserted exit 0 unconditionally and failed under
+# root for exactly this reason; the hook was right and the assertion was wrong.)
+( cd "$P/.operator" && rm -rf .armed && mkdir .armed && chmod 555 .armed )
+run_armhook "$P" "$S"
+if [ "$(id -u)" = 0 ]; then
+  check "G2.13 as uid 0, a mode-555 .armed still DENIES (the -w half is inert, and root is not wedged)" \
+    "$([ "$ARC" -eq 2 ] && echo 0 || echo 1)"
+  # The property that makes the inertness safe, asserted rather than assumed:
+  # root can actually write the marker into a 555 directory, so the repair works.
+  ( : > "$P/.operator/.armed/root-write-probe" ) 2>/dev/null
+  check "G2.13 as uid 0, a marker write into a mode-555 .armed SUCCEEDS (repair path alive)" \
+    "$([ -e "$P/.operator/.armed/root-write-probe" ] && echo 0 || echo 1)"
+  rm -f "$P/.operator/.armed/root-write-probe" 2>/dev/null
+else
+  check "G2.13 .armed exists but is NOT WRITABLE (mode 555) → exit 0 (fails open)" \
+    "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
+fi
+( cd "$P/.operator" && chmod 755 .armed 2>/dev/null; rm -rf .armed )
+
 # G2.7 — `Bash` is never in the PreToolUse matcher. Asserted against hooks.json
 # itself (check_armgate pins the same property in the build gate).
 G27="$(python3 - "$REPO/hooks/hooks.json" <<'PY'

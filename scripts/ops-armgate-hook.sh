@@ -154,9 +154,30 @@ esac
 # such probe SUCCEEDS under root, so it distinguishes nothing. There is no test
 # that fails, because nothing fails.
 #
+# `[ ! -w ]` is the THIRD half, and it is the one that catches a real wedge on
+# every uid (issue #27, found reviewing #19's fix). Mode 555 — readable and
+# traversable but NOT writable, reachable from a restrictive umask or a restore
+# — passes both `-d` and `-x`, so before this the guard stayed silent while:
+# already-armed sessions kept working (their marker reads fine), a NEW session
+# was denied, `ops-task.sh` reported success and wrote no marker (it swallows
+# the write by design), its sentinel landed anyway so Stop was blocked too, and
+# the deny message's three repairs all wrote into that same unwritable dir.
+# Measured end to end, off-root. That is the unwritable-and-unrepairable project
+# this polarity exists to prevent — the chmod-000 analysis above was right about
+# the mode it examined and wrong to stop there. `-w` is inert for uid 0 exactly
+# as `-x` is, so an unarmed ROOT session in a 555 project gets the ordinary
+# never-armed DENY rather than a fail-open. That is correct, not a residual gap:
+# root's writes into 555 genuinely succeed, so ops-task.sh really does arm it and
+# every advertised repair works. The wedge only exists for a uid whose writes
+# actually fail, which is exactly the uid for which `-w` fires.
+#
 # A BROKEN SYMLINK named .armed is absence, not unusability: `[ -e ]` is false
 # on a dangling link, so it falls through to the deny below — which is the
-# documented never-armed answer, and correct.
+# documented never-armed answer, and correct. Note this means NO mutation placed
+# INSIDE the brace group can change that outcome: `[ -e ]` short-circuits first,
+# so the group is never evaluated for a dangling link. The mutation that would
+# actually threaten it moves `-L` to the OUTER test (`{ [ -e ] || [ -L ]; }`),
+# and that is what the dangling-symlink case discriminates against (#27 review).
 #
 # Why this is the critical direction and not a nicety: with `.armed` unusable,
 # every marker write in the repo fails, and the three repairs this deny message
@@ -170,7 +191,8 @@ esac
 #
 # ABSENCE of `.armed` must still DENY — that is the honest never-armed case, and
 # it is the common one. Only an existing-but-unusable `.armed` fails open.
-if [ -e "$opdir/.armed" ] && { [ ! -d "$opdir/.armed" ] || [ ! -x "$opdir/.armed" ]; }; then
+if [ -e "$opdir/.armed" ] && { [ ! -d "$opdir/.armed" ] || [ ! -x "$opdir/.armed" ] \
+     || [ ! -w "$opdir/.armed" ]; }; then
   exit 0
 fi
 
