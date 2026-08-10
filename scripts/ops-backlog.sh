@@ -48,8 +48,28 @@ if [ "${1:-}" = "--census" ]; then
   # is code. The set is deliberately ordinary — the threshold (B10 AC4, unmeasured)
   # is the tuning knob, not the extension list, and a missing extension under-
   # counts slightly (safe) where a wrong threshold mis-classifies the whole repo.
-  CODE_RE='\.(sh|py|js|mjs|cjs|ts|tsx|jsx|go|rs|c|h|cpp|cc|hpp|java|rb|pl|php|kt|swift|lua|vim|el|clj|ex|exs|erl|scala|r|jl|dart|sql)$'
-  n_code="$(git ls-files -z 2>/dev/null | grep -zE "$CODE_RE" | tr -dc '\0' | wc -c | tr -d ' ')"
+  #
+  # FILTERED BY GIT, NOT BY `grep -z` (issue #28). The previous version piped the
+  # NUL list through `grep -zE '<exts>$'`, which is WRONG on BSD/macOS grep: `-z`
+  # there does not anchor `$` at the NUL, so a record is still split on newlines
+  # internally. A tracked filename containing a newline — legal in git — then
+  # matches on an inner line. Measured on BSD grep 2.6.0 with a repo holding
+  # `real.py`, `plain.md`, and a file literally named "evil.py\nactually.md":
+  # census said code-files 2 / code-loc 5 against a ground truth of 1 / 2. The
+  # `.md` file was counted as code because its FIRST line ends in `.py`.
+  # GNU grep 3.11 gets it right, which is why this survived a Linux run.
+  #
+  # `git ls-files -- <pathspec>` does the filtering instead: git matches against
+  # whole pathnames by construction, so there is no record-splitting question at
+  # all, and the fix removes a dependency rather than adding a workaround. The
+  # globs must be single-quoted so the SHELL does not expand them — git receives
+  # and applies them itself, which is also what makes `*.sh` match at any depth.
+  set -- \
+    '*.sh' '*.py' '*.js' '*.mjs' '*.cjs' '*.ts' '*.tsx' '*.jsx' '*.go' '*.rs' \
+    '*.c' '*.h' '*.cpp' '*.cc' '*.hpp' '*.java' '*.rb' '*.pl' '*.php' '*.kt' \
+    '*.swift' '*.lua' '*.vim' '*.el' '*.clj' '*.ex' '*.exs' '*.erl' '*.scala' \
+    '*.r' '*.jl' '*.dart' '*.sql'
+  n_code="$(git ls-files -z -- "$@" 2>/dev/null | tr -dc '\0' | wc -c | tr -d ' ')"
   # Code LOC: non-blank lines in the code files. The first draft forked
   # `git show | grep -c` PER FILE — 24K process spawns on a 12K-file repo, 167s,
   # failing B10 AC1 (<1s). One pass instead: the code-file list piped through a
@@ -73,7 +93,10 @@ if [ "${1:-}" = "--census" ]; then
     # (the F30 "declared but not applied" class), so the temp file is the price
     # of the guarantee. One extra pipe stage, no second traversal.
     _caterr="$(mktemp "${TMPDIR:-/tmp}/opscensus.XXXXXX")"
-    loc="$(git ls-files -z 2>/dev/null | grep -zE "$CODE_RE" \
+    # Same pathspec filter as n_code above — see the #28 note there for why this
+    # must not be a `grep -z`. The two counts MUST come from the same predicate,
+    # or code-loc reports on a different file set than code-files names.
+    loc="$(git ls-files -z -- "$@" 2>/dev/null \
       | xargs -0 cat 2>"$_caterr" | grep -cE '[^[:space:]]' || true)"
     [ ! -s "$_caterr" ] || partial=1
     if [ "$partial" -eq 1 ]; then

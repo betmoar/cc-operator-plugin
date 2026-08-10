@@ -2018,6 +2018,27 @@ B10SPOUT="$(cd "$B10SP" && bash "$SCRIPTS/ops-backlog.sh" --census 2>/dev/null)"
 check "B10.2 --census counts a file whose name contains a space (code-loc: 3)" \
   "$(printf '%s' "$B10SPOUT" | grep -q '^code-loc: 3$' && echo 0 || echo 1)"
 
+# B10.4 — a tracked filename containing a NEWLINE must not be miscounted (#28).
+# This is the case that `grep -zE` got wrong on BSD/macOS: `-z` there does not
+# anchor `$` at the NUL, so the record is still split on newlines internally and
+# a name whose FIRST line ends in `.py` matched even though the name ends `.md`.
+# Measured before the fix on BSD grep 2.6.0: code-files 2 / code-loc 5 against a
+# ground truth of 1 / 2. GNU grep 3.11 answered correctly, which is exactly why
+# a Linux-only run could not have caught it — the case must run on macOS.
+# Filtering with `git ls-files -- <pathspec>` removes the question entirely:
+# git matches whole pathnames, so there is no record-splitting to get wrong.
+B10NL="$(newproj)"
+( cd "$B10NL" && git init -q -b work && git config user.email t@t && git config user.name t )
+printf 'a = 1\nb = 2\n' > "$B10NL/real.py"                     # 2 non-blank lines
+printf 'q\n'            > "$B10NL/plain.md"                    # doc, not counted
+printf 'x\ny\nz\n'      > "$B10NL/$(printf 'evil.py\nactually.md')"  # doc, newline in NAME
+( cd "$B10NL" && git add -A && git commit -qm base >/dev/null 2>&1 )
+B10NLOUT="$(cd "$B10NL" && bash "$SCRIPTS/ops-backlog.sh" --census 2>/dev/null)"
+check "B10.4 --census does not count a .md whose name contains a newline as code (code-files: 1)" \
+  "$(printf '%s' "$B10NLOUT" | grep -q '^code-files: 1$' && echo 0 || echo 1)"
+check "B10.4 --census code-loc ignores the newline-named .md (code-loc: 2)" \
+  "$(printf '%s' "$B10NLOUT" | grep -q '^code-loc: 2$' && echo 0 || echo 1)"
+
 # B10.3 — an unreadable code file must be REPORTED, never silently undercounted.
 # A census that prints a confident number over a partial read misinforms exactly
 # the B10 decision it exists to inform. Simulated by deleting a tracked file so

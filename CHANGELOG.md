@@ -46,7 +46,14 @@ forgetting, not evasion.
   Two-site F30 pin (ops-claims.sh + validator).
 - **B10.1** — `ops-backlog.sh --census`: tracked-file / code-file / code-LOC
   counts (one-pass LOC, sub-1s on a 12K-file repo). A reporting CLI, not a gate
-  CLI — joins the install set, not CHARTER_REQUIRED_CLIS/GATE_CLIS.
+  CLI — joins the install set, not CHARTER_REQUIRED_CLIS/GATE_CLIS. Code files
+  are selected by `git ls-files -- <pathspec>`, **not** by `grep -zE` ([#28]):
+  BSD/macOS `grep -z` does not anchor `$` at the NUL, so a tracked filename
+  containing a newline — legal in git — matched on an inner line. Measured
+  before the fix on BSD grep 2.6.0: `code-files: 2 / code-loc: 5` against a
+  ground truth of `1 / 2`, because a `.md` whose first line ended in `.py` was
+  counted as code. GNU grep answers correctly, so a Linux run could not have
+  caught it; case B10.4 pins it and must run on macOS to mean anything.
 
 ### Fixed
 
@@ -85,14 +92,18 @@ forgetting, not evasion.
   → allowed; marker removed → denied again. Each deny confirmed by reading the
   file back, so the write genuinely never lands. `ops-adopt.sh` then restored the
   marker exactly as the deny message advertises.
-- **Linux parity.** Full suite **444/0 on ubuntu:24.04** (bash 5.2.21, GNU grep
+- **Linux parity.** Full suite **447/0 on ubuntu:24.04** (bash 5.2.21, GNU grep
   3.11, `sh` = dash) as a normal uid, identical to macOS 24.6 (bash 3.2.57 and
-  5.3.15, BSD grep 2.6.0). Prior releases were measured on macOS only. (The
-  parity run that first established this was 442/0; the two G2.12 cases below
-  took the suite to 444, and both platforms were re-measured at that count.)
-  - `grep -z` is genuine null-data on both, tested with the discriminating case
-    rather than "does it run": a filename containing an embedded newline yields
-    one record, so `$` anchors at the NUL.
+  5.3.15, BSD grep 2.6.0). Prior releases were measured on macOS only. (Parity
+  was first established at 442; review findings then added G2.12, G2.13 and
+  B10.4, and both platforms were re-measured at each step. This number has now
+  gone stale twice inside one PR, which is its own small argument for citing a
+  count only where a command can be re-run against it.)
+  - ~~`grep -z` is genuine null-data on both~~ — **retracted, and it was a real
+    bug.** The "discriminating case" behind that claim did not discriminate:
+    both semantics gave the same answer for the input I used, so it proved
+    nothing. A genuinely discriminating input shows BSD/macOS `grep -z` does
+    **not** anchor `$` at the NUL — see the census fix below.
   - `statusline.sh`'s `stat` dual-path took the GNU branch (`-c` OK, `-f` fails)
     — the fallback's first run on the platform it was written for.
   - The gate holds under `env -i` (no PATH, HOME, TMPDIR) and still fails **open**
@@ -136,6 +147,7 @@ unknowns scan is end-user-triggered by release posture, size is informational).
   declaration rather than that number.
 
 [#19]: https://github.com/betmoar/cc-operator-plugin/issues/19
+[#28]: https://github.com/betmoar/cc-operator-plugin/issues/28
 
 ## [0.6.1] - 2026-08-05
 
