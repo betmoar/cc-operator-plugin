@@ -2895,6 +2895,45 @@ X6="$(grep -c 'lock_acquire' "$TASK" || true)"
 check "G3.6 grep -c 'lock_acquire' ops-task.sh = 0 (the write is delegated)" \
   "$([ "$X6" = "0" ] && echo 0 || echo 1)"
 
+# G3.7 — an owner ending in `.exempt` is REFUSED by all three writers (#29).
+# `.armed/` carries two marker kinds in one flat namespace, so that suffix is
+# forgeable in both directions. Measured before the fix, on a real project:
+#   grant   — `ops-task.sh <ordinary-task> --owner foo.exempt` wrote
+#             `.armed/foo.exempt`; session `foo` went from arm-gate exit 2 to
+#             exit 0 with ZERO GATE-EXCEPTION rows. G3's whole premise is that
+#             bypassing the gate costs a handoff presentation; this cost nothing
+#             and left no trace.
+#   destroy — a session named `foo.exempt` closing an ordinary task ran
+#             `recompute_arm_marker foo.exempt`, deleting foo's REAL exemption
+#             while the GATE-EXCEPTION row still asserted it held.
+# Refused at the WRITERS, deliberately not in the hook's reject set: that set
+# fails OPEN, so rejecting there would ALLOW such a session rather than deny it.
+X7P="$(newproj)"; ( cd "$X7P" && bash "$INIT" >/dev/null 2>&1 )
+( cd "$X7P" && bash "$TASK" ordinary --owner "victim.exempt" >/dev/null 2>&1 ); X7T=$?
+check "G3.7 ops-task.sh refuses an owner ending in .exempt (would forge a G3 grant)" \
+  "$([ "$X7T" != 0 ] && echo 0 || echo 1)"
+check "G3.7 the refused open wrote no .armed marker" \
+  "$([ ! -e "$X7P/.operator/.armed/victim.exempt" ] && echo 0 || echo 1)"
+# The adopt case needs a REAL open sentinel first. Without one, ops-adopt.sh
+# fails with "no open task" whatever the owner is, and the assertion passes for
+# the wrong reason — mutation-verified: removing the guard from ops-adopt.sh
+# still gave a green suite until this line existed. That is the repo's own
+# vacuous-guard class (F48) reproduced inside its own test.
+( cd "$X7P" && bash "$TASK" adoptable --owner legit-sid >/dev/null 2>&1 )
+( cd "$X7P" && bash "$ADOPT" --owner "victim.exempt" adoptable >/dev/null 2>&1 ); X7A=$?
+check "G3.7 ops-adopt.sh refuses the same owner (second, independent grant path)" \
+  "$([ "$X7A" != 0 ] && echo 0 || echo 1)"
+check "G3.7 the refused adopt wrote no .armed marker either" \
+  "$([ ! -e "$X7P/.operator/.armed/victim.exempt" ] && echo 0 || echo 1)"
+( cd "$X7P" && bash "$VERDICT" ordinary crit ev PASS --owner "victim.exempt" >/dev/null 2>&1 ); X7V=$?
+check "G3.7 ops-verdict.sh refuses it too (the recompute would delete a real grant)" \
+  "$([ "$X7V" != 0 ] && echo 0 || echo 1)"
+# A REAL exemption still works — the guard must reject the owner, not the feature.
+( cd "$X7P" && bash "$TASK" --exempt "genuine reason" --owner victim >/dev/null 2>&1 )
+check "G3.7 a genuine --exempt for the same base session still lands" \
+  "$([ -e "$X7P/.operator/.armed/victim.exempt" ] && echo 0 || echo 1)"
+rm -rf "$X7P"
+
 rm -rf "$P"
 
 ########################################################################
