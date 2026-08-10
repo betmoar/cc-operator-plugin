@@ -85,9 +85,11 @@ forgetting, not evasion.
   → allowed; marker removed → denied again. Each deny confirmed by reading the
   file back, so the write genuinely never lands. `ops-adopt.sh` then restored the
   marker exactly as the deny message advertises.
-- **Linux parity.** Full suite **442/0 on ubuntu:24.04** (bash 5.2.21, GNU grep
+- **Linux parity.** Full suite **444/0 on ubuntu:24.04** (bash 5.2.21, GNU grep
   3.11, `sh` = dash) as a normal uid, identical to macOS 24.6 (bash 3.2.57 and
-  5.3.15, BSD grep 2.6.0). Prior releases were measured on macOS only.
+  5.3.15, BSD grep 2.6.0). Prior releases were measured on macOS only. (The
+  parity run that first established this was 442/0; the two G2.12 cases below
+  took the suite to 444, and both platforms were re-measured at that count.)
   - `grep -z` is genuine null-data on both, tested with the discriminating case
     rather than "does it run": a filename containing an embedded newline yields
     one record, so `$` anchors at the NUL.
