@@ -39,6 +39,10 @@ when violated:
      not set in the Bash tool environment), and without that id every sentinel
      is opened unowned and blocks every concurrent session.
   8. The gate scripts exist and are syntactically valid bash (`bash -n`).
+  9. Issue references in tracked markdown are internally consistent: every
+     `[#N]` has a matching link definition and vice versa, and every issue URL
+     resolves under plugin.json's `repository` at the number its label claims.
+     Existence, state, and subject are NOT checked — that needs the network.
 
 Run from anywhere: python3 scripts/validate_plugin.py [repo-root]
 Exit 0 = all contracts hold; exit 1 = failures listed on stderr.
@@ -1702,6 +1706,139 @@ def check_compressor(root, problems):
                 problems.append(f"ops-sessionstart-hook.sh: does not clear `{d}` — a stale dedup hash after a compact collapses output the model can no longer see")
 
 
+# Issue references. Three FORMS ship in this tree, and only two are checkable:
+#
+#   [#27]                       reference-style use, needs a matching link def
+#   [#27]: https://…/issues/27  the link def
+#   [#22](https://…/issues/22)  inline link (docs/INFOGRAPHICS.md)
+#   (#21) / `issue #9`          BARE — deliberately NOT checked, see below
+#
+# `ISSUE_LINK_RE` matches the two linked forms; the number and the URL are
+# separately captured so the pair can be cross-checked.
+ISSUE_USE_RE = re.compile(r"\[#(\d+)\](?!\s*[:(])")
+ISSUE_DEF_RE = re.compile(r"^\[#(\d+)\]:[ \t]*(\S+)", re.MULTILINE)
+ISSUE_INLINE_RE = re.compile(r"\[#(\d+)\]\((\S+?)\)")
+ISSUE_URL_RE = re.compile(r"https?://\S*?/issues/(\d+)")
+
+
+def check_issue_refs(root, problems):
+    r"""Issue references in tracked markdown must resolve to THIS repo and to
+    the number they claim.
+
+    Three failure modes, all of which have shipped here:
+
+      1. **Label/URL mismatch.** `[#28]: …/issues/29` renders as "#28", links to
+         29, and reads correct in every review. Two commits in the 0.7.0 cycle
+         carried inverted refs (#28,#29 written for #29,#30); they were found by
+         hand, at the cost of a corrective commit.
+      2. **Dangling / orphan.** A `[#N]` with no link def renders as literal
+         "[#N]" in the published output; a def nobody uses is a leftover from a
+         rewrite that silently stops being maintained.
+      3. **Foreign repo.** A URL pasted from another project's tracker resolves,
+         200s, and points at someone else's issue. Pinned to plugin.json's
+         `repository`, which is already the manifest's single source of truth.
+
+    **What this deliberately does NOT check: that the issue exists, is open, or
+    is about what the sentence says.** That needs `gh issue view` — network,
+    a token, and a rate limit — inside a validator that is otherwise pure local
+    file reading (its only subprocess is `bash -n`). A build that fails because
+    GitHub is slow teaches maintainers to skip the build. The inverted-ref bug
+    that motivated this check is therefore only PARTLY caught: a `[#28]` whose
+    URL says 29 is caught; a `[#29]` whose URL agrees but whose *sentence*
+    describes issue 30 is not, and never will be from here.
+
+    **Bare `#N` is out of scope, by measurement.** Tracked markdown uses `#N`
+    for things that are not issues at all — `Backlog #2` (docs/LANDMINES.md),
+    `task #1` and `#1..#13` finding ids (docs/spec/backlog-charter.md),
+    `F48 #5`. Requiring those to be linked would force either wrong links or an
+    exception list, and an exception list for prose is a rot generator. The
+    convention this check enforces is narrower and honest: *if* you write a
+    reference-style or inline issue link, it must be internally consistent.
+
+    Scope is `git ls-files '*.md'` — tracked files only. Untracked local audit
+    trails (`docs/audits/`, `AUDIT_LOG.md`) are maintainer scratch that no
+    reader of the clone can follow anyway, and `docs/spec/` is gitignored
+    wholesale; a gate whose verdict depends on files absent from the repo gives
+    two clones two answers. When git is unavailable OR lists nothing (a
+    checkout with nothing added), the scope falls back to a dot-directory-
+    skipping glob — a SUPERSET, so the fallback can only add findings, never
+    hide one. An empty git listing must never be taken at face value: that is
+    the F48 vacuous-guard shape, a check that passes because it examined
+    nothing.
+    """
+    plugin = root / ".claude-plugin" / "plugin.json"
+    try:
+        repo_url = json.loads(
+            plugin.read_text(encoding="utf-8")).get("repository")
+    except (FileNotFoundError, json.JSONDecodeError):
+        return  # already reported by check_manifests
+    if not repo_url:
+        problems.append(
+            "plugin.json: no `repository` — check_issue_refs cannot tell a "
+            "reference to this project's tracker from a foreign one")
+        return
+    expected_base = repo_url.rstrip("/") + "/issues/"
+
+    files = []
+    try:
+        listing = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z", "*.md"],
+            capture_output=True, text=True, check=True)
+        files = [n for n in listing.stdout.split("\0") if n]
+    except (OSError, subprocess.CalledProcessError):
+        pass  # not a checkout (or no git) — the glob below is the fallback
+    if not files:
+        files = sorted(
+            str(p.relative_to(root))
+            for p in root.rglob("*.md")
+            if not any(part.startswith(".") for part in p.relative_to(root).parts))
+
+    for rel in sorted(files):
+        path = root / rel
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue  # a listed-but-unreadable .md is not this check's business
+
+        uses = set(ISSUE_USE_RE.findall(text))
+        defs = dict(ISSUE_DEF_RE.findall(text))
+        inline = ISSUE_INLINE_RE.findall(text)
+
+        for num in sorted(uses - set(defs), key=int):
+            problems.append(
+                f"{rel}: `[#{num}]` is used reference-style but has no "
+                f"`[#{num}]: <url>` definition — it publishes as the literal "
+                f"text `[#{num}]`, not a link")
+        for num in sorted(set(defs) - uses, key=int):
+            problems.append(
+                f"{rel}: `[#{num}]:` is defined but never used — a leftover "
+                f"from a rewrite; delete it or restore the reference")
+
+        # Label vs URL, for both linked forms. This is the inverted-ref catch.
+        for num, url in sorted(defs.items(), key=lambda kv: int(kv[0])) + inline:
+            if not url.startswith(expected_base):
+                problems.append(
+                    f"{rel}: `[#{num}]` points at {url!r}, which is not "
+                    f"{expected_base}<n> — an issue link must resolve in THIS "
+                    f"repo's tracker (plugin.json `repository`)")
+                continue
+            target = url[len(expected_base):].rstrip("/")
+            if target != num:
+                problems.append(
+                    f"{rel}: `[#{num}]` links to issue {target} — the label and "
+                    f"the URL disagree, so it reads as #{num} everywhere and "
+                    f"navigates to #{target} (the inverted-ref class)")
+
+        # A bare issue URL carrying no label cannot be cross-checked, but it can
+        # still be foreign. Check the base of every issue URL in the file.
+        for m in ISSUE_URL_RE.finditer(text):
+            url = m.group(0)
+            if not url.startswith(expected_base):
+                problems.append(
+                    f"{rel}: issue URL {url!r} is not under {expected_base} — "
+                    f"a reference to another project's tracker")
+
+
 # The registry, in run order. Both main() and the test suite iterate THIS —
 # a hand-copied second list is how three guardrails (reader bounds, guard
 # parity, lock parity) ended up running in the build but not in the test that
@@ -1710,6 +1847,7 @@ CHECKS = (
     check_manifests,
     check_statusline,
     check_changelog,
+    check_issue_refs,
     check_charter,
     check_ledger_schema,
     check_handout_packet,

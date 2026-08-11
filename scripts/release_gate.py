@@ -30,14 +30,32 @@ TAG_RE = re.compile(r"^v(\d+\.\d+\.\d+)$")
 
 def extract_section(changelog_text, version):
     """Return the CHANGELOG body between '## [version]' and the next
-    '## [' heading or the trailing link-reference block."""
+    '## [' heading or the trailing link-reference block.
+
+    The section's own `[#N]` references are re-appended as link definitions.
+    Without that, a section using reference-style issue links publishes with
+    literal `[#27]` text and no link: the body is cut at `^\\[`, which IS the
+    def block, so the defs never travel with the section that needs them.
+    Measured on v0.7.0 before this fix — 9 dead references in the release body.
+    Only the defs this section actually uses are carried, so the other
+    versions' references do not leak into the notes.
+    """
     start = re.search(rf"^## \[{re.escape(version)}\][^\n]*\n",
                       changelog_text, re.MULTILINE)
     if not start:
         return ""
     rest = changelog_text[start.end():]
     stop = re.search(r"^## \[|^\[", rest, re.MULTILINE)
-    return (rest[:stop.start()] if stop else rest).strip()
+    body = (rest[:stop.start()] if stop else rest).strip()
+
+    used = set(re.findall(r"\[#(\d+)\](?!\s*[:(])", body))
+    if not used:
+        return body
+    defs = [f"[#{n}]: {url}"
+            for n, url in re.findall(r"^\[#(\d+)\]:[ \t]*(\S+)",
+                                     changelog_text, re.MULTILINE)
+            if n in used]
+    return body + "\n\n" + "\n".join(defs) if defs else body
 
 
 def gate(root, tag):

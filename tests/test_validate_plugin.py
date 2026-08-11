@@ -77,9 +77,14 @@ def write(p, text):
 
 
 def make_good_tree(root):
+    # `repository` is load-bearing, not decorative: check_issue_refs compares
+    # every issue link against it, and without it the check can only report that
+    # it has no baseline — which would make every other issue-ref assertion pass
+    # for the wrong reason.
     write(root / ".claude-plugin" / "plugin.json", json.dumps({
         "name": "cc-operator", "version": "0.1.0",
         "description": "d", "license": "MIT",
+        "repository": "https://github.com/betmoar/cc-operator-plugin",
     }))
     write(root / ".claude-plugin" / "marketplace.json", json.dumps({
         "name": "cc-operator-plugin", "owner": {"name": "b"},
@@ -432,6 +437,84 @@ class ValidatorTest(unittest.TestCase):
     def test_changelog_missing(self):
         (self.dir / "CHANGELOG.md").unlink()
         self.assertFires("CHANGELOG.md: missing")
+
+    # --- issue references (check_issue_refs) ---
+    # The good tree carries NO issue refs, so every test here writes the refs it
+    # asserts on. That is deliberate: a fixture pre-loaded with a valid ref set
+    # would make the "clean tree" assertion carry the check's weight, and a
+    # check that only ever sees good input proves nothing (F48).
+    _ISSUE_BASE = "https://github.com/betmoar/cc-operator-plugin/issues/"
+
+    def _changelog_with(self, body):
+        write(self.dir / "CHANGELOG.md",
+              "# C\n\n## [Unreleased]\n\n## [0.1.0] - 2026-07-06\n\n" + body)
+
+    def test_issue_refs_good_pair_is_clean(self):
+        # The positive control. Without it, every assertion below would also
+        # pass against a check that rejects all issue references.
+        self._changelog_with(f"- fixed [#27]\n\n[#27]: {self._ISSUE_BASE}27\n")
+        self.assertEqual(self.problems(), [])
+
+    def test_issue_ref_label_url_mismatch_fires(self):
+        # The inverted-ref class: renders as #27, navigates to #28. Two commits
+        # in the 0.7.0 cycle shipped this and were caught only by hand.
+        self._changelog_with(f"- fixed [#27]\n\n[#27]: {self._ISSUE_BASE}28\n")
+        self.assertFires("links to issue 28")
+
+    def test_issue_ref_dangling_use_fires(self):
+        self._changelog_with("- fixed [#27]\n")
+        self.assertFires("has no `[#27]: <url>` definition")
+
+    def test_issue_ref_orphan_def_fires(self):
+        self._changelog_with(f"- nothing\n\n[#27]: {self._ISSUE_BASE}27\n")
+        self.assertFires("defined but never used")
+
+    def test_issue_ref_foreign_repo_fires(self):
+        self._changelog_with(
+            "- fixed [#27]\n\n"
+            "[#27]: https://github.com/someone/other/issues/27\n")
+        self.assertFires("not https://github.com/betmoar/cc-operator-plugin")
+
+    def test_issue_ref_inline_form_mismatch_fires(self):
+        # docs/INFOGRAPHICS.md uses the inline form, so it needs the same pin —
+        # checking only the reference-style form would leave that file unguarded.
+        write(self.dir / "docs" / "X.md",
+              f"See [#22]({self._ISSUE_BASE}23) for the open unknown.\n")
+        self.assertFires("links to issue 23")
+
+    def test_issue_ref_bare_number_is_not_flagged(self):
+        # `#N` in prose is NOT an issue reference here: tracked docs write
+        # `Backlog #2`, `task #1`, `F48 #5`. Flagging bare numbers would force
+        # wrong links or an exception list. This test pins that scope decision,
+        # so a later "tighten it up" edit fails instead of quietly breaking docs.
+        write(self.dir / "docs" / "X.md",
+              "Backlog #2 asked for a discriminating test; see task #1 and "
+              "F48 #5. Issue #9 is closed.\n")
+        self.assertEqual(self.problems(), [])
+
+    def test_issue_ref_bare_url_from_foreign_repo_fires(self):
+        # An unlabelled URL cannot be cross-checked against a number, but it can
+        # still point at someone else's tracker.
+        write(self.dir / "docs" / "X.md",
+              "Discussed at https://github.com/someone/other/issues/5 today.\n")
+        self.assertFires("another project's tracker")
+
+    def test_issue_refs_untracked_file_is_out_of_scope(self):
+        # Scope is tracked markdown. The fixture has no git repo, so the check
+        # falls back to a glob — a SUPERSET. This asserts the fallback really is
+        # a superset (it sees the file) rather than silently examining nothing:
+        # a check that passes because it read no files is the vacuous shape.
+        write(self.dir / "docs" / "scratch.md", f"[#1]({self._ISSUE_BASE}2)\n")
+        self.assertFires("links to issue 2")
+
+    def test_issue_refs_missing_repository_fires(self):
+        # Without plugin.json `repository` there is no base to compare against.
+        # Passing silently would make every foreign URL legal.
+        write(self.dir / ".claude-plugin" / "plugin.json", json.dumps({
+            "name": "cc-operator", "version": "0.1.0",
+            "description": "d", "license": "MIT",
+        }))
+        self.assertFires("no `repository`")
 
     # --- 4. charter gates ---
     def test_charter_too_long(self):

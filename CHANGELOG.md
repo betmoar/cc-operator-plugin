@@ -9,6 +9,34 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+### Added — issue references are validated, not trusted
+
+- **`validate_plugin.check_issue_refs`** — every `[#N]` in tracked markdown must
+  have a matching link definition (and every definition a use), and every issue
+  URL must resolve under `plugin.json`'s `repository` at the number its label
+  claims. The motivating failure is the **inverted ref**: `[#28]` pointing at
+  `/issues/29` renders as "#28", navigates to 29, and reads correct in review —
+  two commits in the 0.7.0 cycle shipped exactly that and were caught by hand.
+  Scope is `git ls-files '*.md'`, with a dot-skipping glob (a superset) as the
+  fallback so a non-checkout can never make the check vacuous.
+  - **Not checked, deliberately: that the issue exists, is open, or is about
+    what the sentence says.** That needs `gh issue view` — network, token, rate
+    limit — inside a validator whose only subprocess is `bash -n`. A build that
+    fails because GitHub is slow teaches maintainers to skip the build.
+  - **Bare `#N` is out of scope, by measurement.** Tracked docs write
+    `Backlog #2`, `task #1`, `F48 #5`; requiring those to be linked would force
+    wrong links or an exception list. A test pins the scope decision so a later
+    "tighten it up" edit fails instead of quietly breaking prose.
+
+### Fixed — release notes dropped every issue link they used
+
+- `release_gate.extract_section` cut the section body at `^\[`, which *is* the
+  link-definition block — so a CHANGELOG section using reference-style `[#N]`
+  published as literal `[#N]` text with no link. Measured on the v0.7.0 body
+  before the fix: **9 dead references**. The section now carries the definitions
+  it actually uses, and only those (a test pins that other versions' refs do not
+  leak in).
+
 ## [0.7.0] - 2026-08-07
 
 ### Added — the arm-gate layer (opt-in): every write accountable to an open task
