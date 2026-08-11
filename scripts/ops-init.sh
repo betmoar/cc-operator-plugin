@@ -88,6 +88,16 @@ fi
 # only, NOT the SessionStart refresh — that hook runs on every session and must
 # stay quiet.
 if command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
+  # TWO CALLS ON PURPOSE — do not collapse them into one `-v`.
+  # `-q` answers "is this ignored?" via EXIT STATUS. `-v` answers "which rule
+  # matched?" and prints a line for a `!` negation too, exit 0, even though a
+  # negation means the path is explicitly ALLOWED. So "non-empty -v output"
+  # is NOT "ignored", and folding the test into the message lookup inverts this
+  # warning for every project whose allowlist matches VERDICTS.md — which is
+  # every project the v2 scaffold creates. Tried and reverted twice: once by a
+  # simplifier pass (suite went 477/1 on "healthy git project: no warning"),
+  # once by hand while verifying the #28/#31 allowlist fix, where it produced a
+  # confident and wrong "the fix failed" reading. The exit status is the truth.
   if git check-ignore -q "$OPDIR/VERDICTS.md" 2>/dev/null; then
     _gi_rule="$(git check-ignore -v "$OPDIR/VERDICTS.md" 2>/dev/null | head -n 1)"
     {

@@ -240,3 +240,15 @@ being re-read every session.
   "100 well-formed rows" passes on the unlocked code too. The *"concurrent
   appends"* case therefore also takes the lock dir by hand and asserts a writer
   waits — that is the assertion that would fail if the lock were removed. Keep it.
+- **`git check-ignore -v` is not a test for "is this ignored".** It prints the
+  last *matching* rule and exits 0 for a `!` negation too — and a negation means
+  the path is explicitly **allowed**. So "non-empty `-v` output" reads as
+  *ignored* when the truth is the opposite. `-q`'s exit status is the only
+  honest answer. This has now cost the project twice in one release: once by
+  hand, where it produced a confident "the allowlist fix failed" reading against
+  a fix that had in fact worked; once by a simplifier collapsing `ops-init.sh`'s
+  deliberate two calls (`-q` to test, `-v` to name the rule in the message) into
+  a single `-v`, which inverted the #25 warning for every project the v2
+  scaffold creates and was caught only because a case asserts a healthy project
+  stays quiet. The two calls in `ops-init.sh` are load-bearing; the comment
+  there says so.
