@@ -444,14 +444,23 @@ sed "s|<tmp>|$UP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/n
 check "sessionstart is a no-op when the version matches (steady-state)" \
   "$( [ "$(wc -c < "$UP/.operator/bin/ops-verdict.sh")" = "$_pre" ] && echo 0 || echo 1)"
 # CR3: a FAILED copy must NOT advance the stamp (a truncated CLI + "current"
-# stamp would never retry). Make bin/ unwritable so cp fails; the old stamp
-# stays, so the next session retries.
+# stamp would never retry). The old stamp stays, so the next session retries.
+#
+# The failure is induced by REPLACING bin/ with a regular file, not by
+# `chmod 000` (#20). uid 0 ignores mode bits — `cp` into a chmod-000 directory
+# SUCCEEDS as root, the stamp advanced, and this case failed for a reason that
+# had nothing to do with the invariant: the suite was 441/1 as root and 442/0
+# otherwise. A copy into a path that is a regular file fails for EVERY uid,
+# root included, because it is a type error rather than a permission one.
+# tests/test-scripts.sh already uses this class of trick for B10.3 ("chmod is
+# not portable under every test runner"); CR3 had not been given it.
 printf '0.1.0-old\n' > "$UP/.operator/.version"   # force an upgrade attempt
-chmod 000 "$UP/.operator/bin" 2>/dev/null
+rm -rf "$UP/.operator/bin" && : > "$UP/.operator/bin"
 sed "s|<tmp>|$UP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
 check "a failed upgrade copy does NOT advance the stamp (retry next session)" \
   "$([ "$(cat "$UP/.operator/.version")" = "0.1.0-old" ] && echo 0 || echo 1)"
-chmod 755 "$UP/.operator/bin" 2>/dev/null
+rm -f "$UP/.operator/bin"          # the blocking regular file; restore a usable dir
+mkdir -p "$UP/.operator/bin"
 # CR3: bin/ is CREATED if absent (a project with .operator/ but no bin/ must not
 # stamp itself current while installing nothing).
 UP2="$(newproj)"; ( cd "$UP2" && bash "$INIT" >/dev/null 2>&1 )
