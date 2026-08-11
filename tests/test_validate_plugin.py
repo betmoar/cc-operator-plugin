@@ -202,12 +202,19 @@ def make_good_tree(root):
     # ops-armgate-hook.sh: the G2 PreToolUse gate. check_armgate pins that it
     # consults armgate.on, reads the .armed/ marker, honours .exempt, and carries
     # a `-d` test so an unusable marker dir fails OPEN.
+    #
+    # The `-x` and `-w` halves are here because check_permission_guards pins
+    # their COUNT (#21): it fails both when a new permission test appears and
+    # when an existing one is removed, so a fixture missing them reads as the
+    # #19/#27 guards having regressed. A synthetic tree that does not track a
+    # pin makes the pin vacuous — the same lesson the timeout pin taught.
     write(root / "scripts" / "ops-armgate-hook.sh",
           "#!/usr/bin/env bash\n"
           '[ -f "$opdir/armgate.on" ] || exit 0\n'
           '[ -e "$opdir/.armed/$session" ] && exit 0\n'
           '[ -e "$opdir/.armed/$session.exempt" ] && exit 0\n'
-          'if [ -e "$opdir/.armed" ] && [ ! -d "$opdir/.armed" ]; then exit 0; fi\n'
+          'if [ -e "$opdir/.armed" ] && { [ ! -d "$opdir/.armed" ] || '
+          '[ ! -x "$opdir/.armed" ] || [ ! -w "$opdir/.armed" ]; }; then exit 0; fi\n'
           "exit 2\n")
     write(root / "scripts" / "statusline.sh", GOOD_STATUSLINE)
     # Every shipped slash command: frontmatter the harness registers it by,
@@ -780,6 +787,29 @@ class ValidatorTest(unittest.TestCase):
     # The plugin's entry points are its slash commands. An empty frontmatter
     # block, a missing key, or a bare scripts/ path are all silent shipping
     # bugs — the command either won't register or will fail in a target project.
+
+    def test_a_new_permission_guard_fires(self):
+        # #21: a permission test is INERT for uid 0, so a NEW one must not enter
+        # a gate script unreviewed. The class went 1 -> 2 instances when #27's
+        # fix added the -w half while the issue still said one; this is what
+        # stops the third from arriving silently.
+        real = (self.dir / "scripts" / "ops-task.sh").read_text(encoding="utf-8")
+        write(self.dir / "scripts" / "ops-task.sh",
+              real.replace("#!/usr/bin/env bash\n",
+                           '#!/usr/bin/env bash\n[ -w /tmp ] || true\n', 1))
+        probs = self.problems()
+        self.assertTrue(any("permission test" in p and "ops-task.sh" in p
+                            for p in probs), probs)
+
+    def test_removing_a_permission_guard_fires(self):
+        # The OTHER direction, and the one that matters more: dropping the -w
+        # half silently reopens #27 (a non-writable .armed wedges the project
+        # off-root). The count is pinned both ways for that reason.
+        real = (self.dir / "scripts" / "ops-armgate-hook.sh").read_text(encoding="utf-8")
+        write(self.dir / "scripts" / "ops-armgate-hook.sh",
+              real.replace(' || [ ! -w "$opdir/.armed" ]', "", 1))
+        probs = self.problems()
+        self.assertTrue(any("was REMOVED" in p for p in probs), probs)
 
     def test_commands_dir_optional(self):
         # A plugin that ships only agents need not have commands/. The good-tree

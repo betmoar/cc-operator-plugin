@@ -534,6 +534,67 @@ def check_hook(root, problems):
                 "${CLAUDE_PLUGIN_ROOT}")
 
 
+def check_permission_guards(root, problems):
+    r"""No NEW permission test may enter a gate script unreviewed (#21, F48 #5).
+
+    THE CLASS. A guard whose correctness depends on a condition that cannot
+    occur in the environment it runs in. It reads as protection, it is inert,
+    and nothing fails loudly to say so — the F30 declared-but-not-applied shape,
+    reached through the ENVIRONMENT rather than through a copy-paste.
+
+    `[ -r ]`, `[ -w ]`, `[ -x ]` answer "would the mode bits allow this", not
+    "can I actually do this", and uid 0 bypasses the bits entirely. Measured:
+    root's `[ -x ]` on a chmod-000 directory is TRUE, and `ls`/`cd`/`touch`
+    inside it all succeed — so there is no capability probe that distinguishes
+    the state either. A permission test is therefore never a complete guard on
+    its own; it is at best a best-effort half that must be paired with one that
+    holds on every uid (`-d` is a TYPE test and does).
+
+    WHY AN ALLOWLIST RATHER THAN A BAN. Both surviving sites are load-bearing:
+    `-x` and `-w` catch the real off-root wedges (#19, #27) and are documented
+    inert for uid 0 at the call site. Banning them outright would delete working
+    guards to satisfy a rule. What must not happen is a NEW one arriving without
+    that reasoning, which is exactly what happened when #27's fix added the `-w`
+    half — the class went from one instance to two while #21 still said one.
+
+    So: pin the count and the file. A new permission test anywhere in scripts/
+    fails the build with the question it has to answer.
+    """
+    # site -> why it is allowed to exist. Comments are stripped before counting,
+    # so the header prose in that same file does not inflate the number.
+    ALLOWED = {
+        "ops-armgate-hook.sh": 2,   # the -x and -w halves of the unusable-.armed
+                                    # guard (#19, #27), both paired with `! -d`,
+                                    # both documented inert for uid 0 in place.
+    }
+    pat = re.compile(r"\[\s+!?\s*-[rwx]\s")
+    for path in sorted((root / "scripts").glob("*.sh")):
+        code = [ln for ln in path.read_text(encoding="utf-8").splitlines()
+                if not ln.lstrip().startswith("#")]
+        # OCCURRENCES, not lines. A line-based count makes the pin depend on
+        # formatting: the two halves of the unusable-.armed guard read as 2 when
+        # the condition wraps across lines and 1 when it does not, so a reflow
+        # would fail the build and a fixture written on one line would silently
+        # under-report. Measured both ways while writing this.
+        n = sum(len(pat.findall(ln)) for ln in code)
+        allowed = ALLOWED.get(path.name, 0)
+        if n > allowed:
+            problems.append(
+                f"scripts/{path.name}: {n} permission test(s) `[ -r/-w/-x ]` in "
+                f"code, allowlist permits {allowed} (#21). A permission test is "
+                f"INERT for uid 0 — root bypasses mode bits, and no capability "
+                f"probe distinguishes the state (measured). If this new one is a "
+                f"complete guard it is wrong; if it is a best-effort half, pair "
+                f"it with a test that holds on every uid (`-d` is a type test), "
+                f"document the inertness at the call site, and raise the count "
+                f"here with that reasoning")
+        elif n < allowed:
+            problems.append(
+                f"scripts/{path.name}: {n} permission test(s), allowlist expects "
+                f"{allowed} — a guard was REMOVED. If deliberate, lower the count "
+                f"in check_permission_guards; if not, #19/#27 have regressed")
+
+
 def check_armgate(root, problems):
     r"""The PreToolUse arm gate must never match `Bash` (G2/G2.7).
 
@@ -1658,6 +1719,7 @@ CHECKS = (
     check_render_templates,
     check_hook,
     check_armgate,
+    check_permission_guards,
     check_scripts,
     check_reader_bounds,
     check_platform_idioms,
