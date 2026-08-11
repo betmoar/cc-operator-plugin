@@ -126,9 +126,14 @@ def make_good_tree(root):
             # The G2 arm gate. `Bash` must NEVER appear in this matcher —
             # check_armgate pins the set exactly (gating Bash deadlocks the
             # repair path, since ops-task.sh is itself a Bash call).
+            # The `timeout` is pinned too (#33): this hook blocks every file
+            # mutation synchronously, so an unbounded one lets a hung JSON
+            # parser stall the session (measured: still blocked at 6s against a
+            # ~44ms normal path).
             "PreToolUse": [{"matcher": "Write|Edit|MultiEdit|NotebookEdit", "hooks": [{
                 "type": "command",
                 "command": 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-armgate-hook.sh"',
+                "timeout": 5,
             }]}],
         }
     }))
@@ -141,7 +146,11 @@ def make_good_tree(root):
                     "*\n"
                     "!.gitignore\n!.gitattributes\n"
                     "!VERDICTS.md\n!DECISIONS.md\n!tiers.env\n"
-                    "!verdicts.d/\n!verdicts.d/*.md\n")
+                    "!verdicts.d/\n!verdicts.d/*.md\n"
+                    # Evidence and policy, not machine state (#30/#31): the
+                    # handoff is what the charter's HANDOFF section produces,
+                    # and armgate.on is the project's committable opt-in.
+                    "!handoff-*.md\n!armgate.on\n")
     write(root / "scripts" / "ops-init.sh",
           "#!/usr/bin/env bash\nset -eu\n"
           "cat > \"$OPDIR/.gitignore\" <<'EOF'\n" + gitignore_v2 + "EOF\n"

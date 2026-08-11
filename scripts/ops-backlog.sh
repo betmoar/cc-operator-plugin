@@ -49,7 +49,7 @@ if [ "${1:-}" = "--census" ]; then
   # is the tuning knob, not the extension list, and a missing extension under-
   # counts slightly (safe) where a wrong threshold mis-classifies the whole repo.
   #
-  # FILTERED BY GIT, NOT BY `grep -z` (issue #28). The previous version piped the
+  # FILTERED BY GIT, NOT BY `grep -z` (issue #29). The previous version piped the
   # NUL list through `grep -zE '<exts>$'`, which is WRONG on BSD/macOS grep: `-z`
   # there does not anchor `$` at the NUL, so a record is still split on newlines
   # internally. A tracked filename containing a newline — legal in git — then
@@ -93,7 +93,7 @@ if [ "${1:-}" = "--census" ]; then
     # (the F30 "declared but not applied" class), so the temp file is the price
     # of the guarantee. One extra pipe stage, no second traversal.
     _caterr="$(mktemp "${TMPDIR:-/tmp}/opscensus.XXXXXX")"
-    # Same pathspec filter as n_code above — see the #28 note there for why this
+    # Same pathspec filter as n_code above — see the #29 note there for why this
     # must not be a `grep -z`. The two counts MUST come from the same predicate,
     # or code-loc reports on a different file set than code-files names.
     loc="$(git ls-files -z -- "$@" 2>/dev/null \

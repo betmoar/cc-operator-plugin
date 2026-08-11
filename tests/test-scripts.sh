@@ -2022,7 +2022,7 @@ B10SPOUT="$(cd "$B10SP" && bash "$SCRIPTS/ops-backlog.sh" --census 2>/dev/null)"
 check "B10.2 --census counts a file whose name contains a space (code-loc: 3)" \
   "$(printf '%s' "$B10SPOUT" | grep -q '^code-loc: 3$' && echo 0 || echo 1)"
 
-# B10.4 — a tracked filename containing a NEWLINE must not be miscounted (#28).
+# B10.4 — a tracked filename containing a NEWLINE must not be miscounted (#29).
 # This is the case that `grep -zE` got wrong on BSD/macOS: `-z` there does not
 # anchor `$` at the NUL, so the record is still split on newlines internally and
 # a name whose FIRST line ends in `.py` matched even though the name ends `.md`.
@@ -2899,7 +2899,7 @@ X6="$(grep -c 'lock_acquire' "$TASK" || true)"
 check "G3.6 grep -c 'lock_acquire' ops-task.sh = 0 (the write is delegated)" \
   "$([ "$X6" = "0" ] && echo 0 || echo 1)"
 
-# G3.7 — an owner ending in `.exempt` is REFUSED by all three writers (#29).
+# G3.7 — an owner ending in `.exempt` is REFUSED by all three writers (#30).
 # `.armed/` carries two marker kinds in one flat namespace, so that suffix is
 # forgeable in both directions. Measured before the fix, on a real project:
 #   grant   — `ops-task.sh <ordinary-task> --owner foo.exempt` wrote
@@ -3107,6 +3107,77 @@ W3ERR="$(cd "$P" && bash "$INIT" 2>&1 >/dev/null)"; W3RC=$?
 check "non-git project: init exits 0, no warning" \
   "$([ "$W3RC" = 0 ] && ! printf '%s' "$W3ERR" | grep -q 'gitignored by a rule outside' && echo 0 || echo 1)"
 rm -rf "$P"
+
+echo "-- Case: the v2 allowlist admits the handoff and the gate switch (#28, #31)"
+# BEHAVIOURAL, not textual: the validator pins the allow LINES, this pins what
+# git actually does with them. Two findings, both measured on the real scaffold:
+#   #28 — `.operator/handoff-<date>.md` (commands/handoff.md:9 writes exactly
+#         this) was ignored by the bare `*`, so the operator→human handoff — the
+#         artifact the charter's HANDOFF section exists to produce — shipped
+#         untracked. A REGRESSION: v1's blocklist tracked it (verified by running
+#         main's ops-init.sh in a fresh repo).
+#   #31 — `.operator/armgate.on` is the project's opt-in DECISION, not machine
+#         state. Ignored, a team could not commit it and every fresh clone got
+#         the gate silently OFF. tiers.env is allow-listed for the same reason.
+# The negative control matters as much: a NEW ephemera file must still be
+# ignored, or the allowlist has quietly become a blocklist again.
+if command -v git >/dev/null 2>&1; then
+P="$(newproj)"
+( cd "$P" && git init -q . && git config user.email t@example.com && git config user.name t ) >/dev/null 2>&1
+( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+: > "$P/.operator/handoff-2026-08-11.md"
+: > "$P/.operator/armgate.on"
+: > "$P/.operator/some-new-ephemera.tmp"
+# `git check-ignore -q` EXIT STATUS is the truth — `-v` prints the last matching
+# rule even when that rule is a `!` negation, which reads as "ignored" and is not.
+( cd "$P" && git check-ignore -q .operator/handoff-2026-08-11.md ) && GIH=1 || GIH=0
+check "#28 the handoff file is TRACKED (not ignored by the v2 allowlist)" \
+  "$([ "$GIH" = 0 ] && echo 0 || echo 1)"
+( cd "$P" && git check-ignore -q .operator/armgate.on ) && GIA=1 || GIA=0
+check "#31 armgate.on is TRACKED (a team can commit its own opt-in)" \
+  "$([ "$GIA" = 0 ] && echo 0 || echo 1)"
+( cd "$P" && git check-ignore -q .operator/some-new-ephemera.tmp ) && GIE=1 || GIE=0
+check "the allowlist still IGNORES a new ephemera file (it is not a blocklist)" \
+  "$([ "$GIE" = 1 ] && echo 0 || echo 1)"
+# End to end: does `git add -A` actually stage them?
+( cd "$P" && git add -A >/dev/null 2>&1 )
+GIST="$(cd "$P" && git status --porcelain)"
+check "#28/#31 git add -A stages both the handoff and armgate.on" \
+  "$(printf '%s' "$GIST" | grep -q 'handoff-2026-08-11.md' \
+     && printf '%s' "$GIST" | grep -q 'armgate.on' && echo 0 || echo 1)"
+check "git add -A does NOT stage the new ephemera file" \
+  "$(printf '%s' "$GIST" | grep -q 'some-new-ephemera.tmp' && echo 1 || echo 0)"
+rm -rf "$P"
+else
+  echo "  SKIP allowlist-content cases (no git on PATH)"
+fi
+
+echo "-- Case: the SessionStart v1→v2 migration announces itself (#32)"
+# The migration REPLACES a file the user may have edited, and the .v1.bak it
+# leaves is itself hidden by the new bare `*` — so before this, a project with a
+# hand-added rule lost it with no message anywhere: stdout carried only the
+# SessionStart JSON and `git status` showed no trace of the backup. ops-init.sh
+# echoes a notice for the identical destructive write; this path — the one that
+# exists precisely to carry projects that never re-run /cc-operator:start — was
+# silent by construction. The notice rides additionalContext, the hook's only
+# channel to the model. It must NOT fire when there is nothing to migrate.
+MIGP="$(newproj)"
+mkdir -p "$MIGP/.operator"
+printf '# cc-operator gitignore (v1)\nbin/\npending/\n!my-own-rule.md\n' > "$MIGP/.operator/.gitignore"
+MIGOUT="$(sed "s|<tmp>|$MIGP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+check "#32 the migration notice reaches the model via additionalContext" \
+  "$(printf '%s' "$MIGOUT" | grep -q 'MIGRATED' && echo 0 || echo 1)"
+check "#32 the notice names the .v1.bak recovery path" \
+  "$(printf '%s' "$MIGOUT" | grep -q 'gitignore.v1.bak' && echo 0 || echo 1)"
+check "#32 the notice says the backup is itself ignored (git status --ignored)" \
+  "$(printf '%s' "$MIGOUT" | grep -q '\-\-ignored' && echo 0 || echo 1)"
+check "#32 the migration really did replace the user's rule (so the notice is earned)" \
+  "$(grep -q 'my-own-rule' "$MIGP/.operator/.gitignore" && echo 1 || echo 0)"
+# Second fire: already v2, nothing to migrate — the banner must stay clean.
+MIGOUT2="$(sed "s|<tmp>|$MIGP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+check "#32 a second session (already v2) does NOT repeat the notice" \
+  "$(printf '%s' "$MIGOUT2" | grep -q 'MIGRATED' && echo 1 || echo 0)"
+rm -rf "$MIGP"
 
 ########################################################################
 echo "== summary: $PASS passed, $FAIL failed =="

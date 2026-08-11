@@ -56,7 +56,7 @@ check_owner_name() { # check_owner_name <value>
     # `.armed/` holds TWO marker kinds in ONE flat namespace: `<sid>` (derived
     # cache, the recompute may delete it) and `<sid>.exempt` (a G3 grant, the
     # recompute must never touch it). An owner ending in `.exempt` collides with
-    # the second, in BOTH directions (issue #29, measured):
+    # the second, in BOTH directions (issue #30, measured):
     #   grant   — `ops-task.sh <any-task> --owner foo.exempt` writes
     #             `.armed/foo.exempt`, which the hook reads as session `foo`'s
     #             G3 grant. Session foo goes from denied to allowed with ZERO

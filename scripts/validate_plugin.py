@@ -573,10 +573,30 @@ def check_armgate(root, problems):
             f"expected exactly {'|'.join(sorted(expected))} (structured "
             f"file-mutation tools only — see scripts/ops-armgate-hook.sh SCOPE)")
     try:
-        cmd = block["hooks"][0]["command"]
+        entry = block["hooks"][0]
+        cmd = entry["command"]
     except (KeyError, IndexError, TypeError):
         problems.append("hooks/hooks.json: PreToolUse block has no hook command")
         return
+    # A BOUND on the blocking gate (issue #33). This hook runs synchronously
+    # before every file mutation and its whole polarity is fail-open-FAST; with
+    # no timeout, a hung parser stalls every edit indefinitely. Measured: a `jq`
+    # on PATH containing `sleep 300` left the hook still blocked at 6s, while the
+    # normal path costs ~44ms — so any small bound is ~100x headroom and the
+    # pathological case becomes bounded instead of unbounded. The PostToolUse
+    # compressor in the same file already carries one; this block did not.
+    t = entry.get("timeout")
+    if not isinstance(t, (int, float)) or isinstance(t, bool) or t <= 0:
+        problems.append(
+            "hooks/hooks.json: the PreToolUse arm-gate hook has no positive "
+            "`timeout` — it blocks every Write/Edit/MultiEdit/NotebookEdit "
+            "synchronously, so a hung JSON parser stalls the session with no "
+            "bound (measured: still blocked at 6s against a ~44ms normal path)")
+    elif t > 30:
+        problems.append(
+            f"hooks/hooks.json: the PreToolUse arm-gate timeout is {t}s — far "
+            f"above the ~44ms the hook costs; a gate that can stall an edit for "
+            f"that long is not the fail-open-fast contract its header states")
     if "ops-armgate-hook.sh" not in cmd:
         problems.append(
             f"hooks/hooks.json: PreToolUse command does not point at "
@@ -951,8 +971,16 @@ def check_gitignore_parity(root, problems):
     """
     MARK = "# cc-operator gitignore v2 (allowlist)"
     IGNORE_ALL = "*"
+    # `handoff-*.md` and `armgate.on` are evidence/policy, not machine state:
+    # the handoff is the artifact the charter's HANDOFF section exists to
+    # produce (commands/handoff.md writes `.operator/handoff-<date>.md`), and
+    # armgate.on is the project's opt-in DECISION, which a team must be able to
+    # commit once rather than re-make in every clone. Both were ignored by the
+    # v2 allowlist's bare `*` — the handoff a REGRESSION from v1, which tracked
+    # it (measured against main's ops-init.sh in a fresh repo). Issues #28/#31.
     ALLOW = ("!.gitignore", "!.gitattributes", "!VERDICTS.md", "!DECISIONS.md",
-             "!tiers.env", "!verdicts.d/", "!verdicts.d/*.md")
+             "!tiers.env", "!verdicts.d/", "!verdicts.d/*.md",
+             "!handoff-*.md", "!armgate.on")
     sets = {}
     for name in ("ops-init.sh", "ops-sessionstart-hook.sh"):
         p = root / "scripts" / name

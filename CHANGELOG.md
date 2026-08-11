@@ -47,7 +47,7 @@ forgetting, not evasion.
 - **B10.1** — `ops-backlog.sh --census`: tracked-file / code-file / code-LOC
   counts (one-pass LOC, sub-1s on a 12K-file repo). A reporting CLI, not a gate
   CLI — joins the install set, not CHARTER_REQUIRED_CLIS/GATE_CLIS. Code files
-  are selected by `git ls-files -- <pathspec>`, **not** by `grep -zE` ([#28]):
+  are selected by `git ls-files -- <pathspec>`, **not** by `grep -zE` ([#29]):
   BSD/macOS `grep -z` does not anchor `$` at the NUL, so a tracked filename
   containing a newline — legal in git — matched on an inner line. Measured
   before the fix on BSD grep 2.6.0: `code-files: 2 / code-loc: 5` against a
@@ -118,6 +118,39 @@ named no tree at all, and `ops-verdict.sh` contained no `git` call.
   in text it had already stripped of comments, so a mutation moving the stamp
   inside the lock passed a green build. Found by mutation, fixed in both, and
   recorded in `docs/LANDMINES.md`.
+
+### Fixed — review-pass findings, each reproduced before fixing
+
+Six defects found by the PR-review agents and `/code-review max` on PR #12. Each
+was measured first, and three of them corrected something this changelog or a
+code comment had asserted.
+
+- **A non-writable `.armed` wedged the project on every uid** ([#27]). The
+  unusable-marker guard tested `-d` and `-x`, never `-w` — the permission the
+  marker writes actually need. Mode 555 passed both halves, so the guard stayed
+  silent while a new session was denied, `ops-task.sh` reported success writing
+  no marker, its sentinel landed anyway (blocking Stop too), and all three
+  advertised repairs wrote into that same unwritable directory. Measured end to
+  end off-root: the unrepairable project this hook's polarity exists to prevent.
+- **The census miscounted a filename containing a newline** ([#29]). See B10.1
+  above; the claim that `grep -z` was safe here is retracted with it.
+- **An owner ending in `.exempt` forged or destroyed a G3 grant** ([#30]).
+  `.armed/` holds two marker kinds in one flat namespace and the suffix was
+  unguarded, so `--owner foo.exempt` on any ordinary task granted session `foo` a
+  full exemption with **zero** GATE-EXCEPTION rows, and a session named
+  `foo.exempt` closing a task **deleted** foo's real exemption while the ledger
+  row still asserted it held. Rejected at all three writers; deliberately not in
+  the hook's reject set, which fails open.
+- **The handoff file was untracked** ([#28]) — a regression from v1, which
+  tracked it. `!handoff-*.md` re-admitted.
+- **`armgate.on` was untracked** ([#31]), so a team could not commit its own
+  opt-in and every clone got the gate silently off.
+- **The SessionStart gitignore migration was silent** ([#32]). It replaces a
+  file the user may have edited and leaves a `.v1.bak` that the new allowlist
+  itself hides; the notice now rides `additionalContext` and names both.
+- **The PreToolUse arm gate had no timeout** ([#33]). Measured: a hung `jq` left
+  it blocked past 6s against a ~44ms normal path, on the one hook that gates
+  every edit. Bounded at 5s, pinned in both directions.
 
 ### Fixed
 
@@ -211,7 +244,13 @@ unknowns scan is end-user-triggered by release posture, size is informational).
   declaration rather than that number.
 
 [#19]: https://github.com/betmoar/cc-operator-plugin/issues/19
+[#27]: https://github.com/betmoar/cc-operator-plugin/issues/27
 [#28]: https://github.com/betmoar/cc-operator-plugin/issues/28
+[#29]: https://github.com/betmoar/cc-operator-plugin/issues/29
+[#30]: https://github.com/betmoar/cc-operator-plugin/issues/30
+[#31]: https://github.com/betmoar/cc-operator-plugin/issues/31
+[#32]: https://github.com/betmoar/cc-operator-plugin/issues/32
+[#33]: https://github.com/betmoar/cc-operator-plugin/issues/33
 
 ## [0.6.1] - 2026-08-05
 

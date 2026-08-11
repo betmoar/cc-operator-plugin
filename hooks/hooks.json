@@ -27,7 +27,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/ops-armgate-hook.sh\""
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/ops-armgate-hook.sh\"",
+            "timeout": 5
           }
         ]
       }

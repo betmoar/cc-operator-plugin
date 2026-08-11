@@ -170,8 +170,20 @@ done
 # the user's file as .gitignore.v1.bak. Best-effort: a write failure must never
 # cost the session its banner. Keep the body identical to ops-init.sh's _gi_write
 # (validate_plugin.check_gitignore_parity pins the two equal).
+#
+# IT MUST SAY SO (issue #32). This overwrites a file the user may have edited,
+# and the .v1.bak it leaves is itself hidden by the new bare `*` — so a project
+# with a hand-added rule lost it with no message anywhere: stdout carried only
+# the SessionStart JSON, and `git status` showed no trace of the backup (it
+# appears only under --ignored). ops-init.sh echoes a migration notice for the
+# identical destructive write; this path — the one that exists precisely to
+# carry projects that never re-run /cc-operator:start — was silent by
+# construction. The hook's one channel to the model is additionalContext, so the
+# notice goes there rather than to stdout, which Claude Code does not surface.
 _gi="$cwd/.operator/.gitignore"
+_gi_migrated=0
 if [ -f "$_gi" ] && ! grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi" 2>/dev/null; then
+  _gi_migrated=1
   cp "$_gi" "$_gi.v1.bak" 2>/dev/null
   cat > "$_gi" <<'EOF' 2>/dev/null
 # cc-operator gitignore v2 (allowlist)
@@ -187,10 +199,21 @@ if [ -f "$_gi" ] && ! grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi" 2
 !tiers.env
 !verdicts.d/
 !verdicts.d/*.md
+!handoff-*.md
+!armgate.on
 EOF
 fi
 
 ctx="cc-operator: this session's id is ${session}. Pass --owner ${session} when opening or closing tracked tasks — .operator/bin/ops-task.sh <id> --owner ${session}, .operator/bin/ops-verdict.sh <id> ... --owner ${session}. Sentinels you open are then yours alone: the Stop hook blocks only on your own open tasks and reports other sessions' as informational. After a /clear your id changes — run .operator/bin/ops-adopt.sh --owner ${session} <id>... to re-claim tasks you are still working."
+
+# Append the migration notice (#32) — a destructive overwrite the operator must
+# be told about, naming the backup path because the new allowlist hides it from
+# a bare `git status`.
+if [ "$_gi_migrated" = 1 ]; then
+  ctx="$ctx
+
+cc-operator: .operator/.gitignore was MIGRATED from the v1 blocklist to the v2 allowlist this session. The two schemes contradict, so the file was REPLACED, not appended — any rule you added by hand is gone from it. Your previous file is kept at .operator/.gitignore.v1.bak, which the new allowlist itself ignores (\`git status\` will not show it; use \`git status --ignored\`). If it carried a rule you still need, re-add it as an allow line (\`!<path>\`) in the v2 file."
+fi
 
 if [ "$PARSER" = "jq" ]; then
   jq -n --arg c "$ctx" \
