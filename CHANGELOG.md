@@ -84,6 +84,35 @@ the fix is reverted.
   `code-loc: 0` against a ground truth of 3. The `PARTIAL` flag fired, so the
   number was honest — and useless. `cat --` terminates option parsing.
 
+### Fixed — the gate CLIs a project runs could be arbitrarily far behind ([#34])
+
+Found by executing `docs/REPLAY-CHARTER.md` live rather than reading it — the
+first finding the replay protocol has produced.
+
+- **`.operator/bin/` refreshed only on a version-string change.** Every
+  intra-version fix to a gate CLI therefore never reached an existing project.
+  Measured in this repo mid-session: `.operator/bin/ops-verdict.sh` was
+  byte-identical to a commit **two behind HEAD** (`sha256 e20ee4ab…`), missing
+  the non-regular-sentinel guard, with all five `bin/` mtimes 24h old across
+  three commits and `.version` already reading `0.7.0`. Since the charter points
+  the model at `.operator/bin/…`, that stale copy **is** the gate the session
+  runs — the plugin's own tests pass against code the project does not execute.
+  The refresh now also fires when a shipped CLI is newer than its installed
+  copy, keeping the all-or-nothing re-stamp (CR3/H2) and adding a negative
+  control that a current `bin/` is not rewritten.
+- **Recorded asymmetry**: hooks resolve through `${CLAUDE_PLUGIN_ROOT}/scripts/…`
+  and are current immediately, so hooks and `bin/` can sit at different commits
+  in one session. Proven live: `.operator/.compress-state/.gitignore` was
+  written mode `0600` — a property only the current `writeSelfIgnore` produces —
+  while `bin/` was two commits back. This is what made the earlier "stale bin"
+  confusion during the #22 verification so hard to see.
+- **`check_install_set_parity` went vacuous while fixing this.** Refactoring one
+  writer's loop to a variable made the check unable to parse that side; it
+  returned `None`, the `if a and b` guard swallowed it, and the check passed
+  while pinning nothing. It now accepts either spelling, requires the loop to
+  iterate the declared variable, and **reports** an unlocatable set instead of
+  skipping.
+
 ### Fixed — two validator guards that named one invariant and pinned another
 
 Both surfaced by the same review, both the F30 shape *inside* the checks written
@@ -358,6 +387,7 @@ unknowns scan is end-user-triggered by release posture, size is informational).
 [#31]: https://github.com/betmoar/cc-operator-plugin/issues/31
 [#32]: https://github.com/betmoar/cc-operator-plugin/issues/32
 [#33]: https://github.com/betmoar/cc-operator-plugin/issues/33
+[#34]: https://github.com/betmoar/cc-operator-plugin/issues/34
 
 ## [0.6.1] - 2026-08-05
 

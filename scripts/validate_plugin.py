@@ -1013,15 +1013,44 @@ def check_install_set_parity(root, problems):
     green — every upgraded project silently never receives it (CR4, code-review
     2026-08-04). This is the F30 shape the repo's check_claims docstring argues
     against. Pin the two literals equal.
+
+    Either writer may spell the set inline (`for _tool in ops-verdict.sh …`) or
+    via a variable it assigns (`_OPS_TOOLS="…"` / `for _tool in $_OPS_TOOLS`);
+    ops-sessionstart-hook.sh needs the variable because its staleness probe and
+    its copy loop must iterate the SAME set, and a second inline copy would be
+    one more place to drift. Both spellings resolve to the same list here.
+
+    A writer whose set cannot be located is REPORTED, not skipped. The earlier
+    version returned None for an unmatched file and then guarded with
+    `if a and b`, so refactoring one writer to a variable silently reduced the
+    comparison to nothing — the check passed while pinning zero (measured
+    2026-08-12 while fixing #34). A parity check that goes quiet when it stops
+    understanding its input is worse than no parity check.
     """
-    pat = re.compile(r'for _?tool in (ops-verdict\.sh ops-task\.sh ops-adopt\.sh[^;]*)')
+    inline = re.compile(r'for _?tool in (ops-verdict\.sh ops-task\.sh ops-adopt\.sh[^;]*)')
+    via_var = re.compile(r'^_OPS_TOOLS="([^"]*)"', re.MULTILINE)
     sets = {}
     for name in ("ops-init.sh", "ops-sessionstart-hook.sh"):
         p = root / "scripts" / name
         if not p.is_file():
             continue
-        m = pat.search(p.read_text(encoding="utf-8"))
-        sets[name] = m.group(1).strip() if m else None
+        text = p.read_text(encoding="utf-8")
+        m = inline.search(text) or via_var.search(text)
+        if not m:
+            problems.append(
+                f"scripts/{name}: cannot locate the .operator/bin install set "
+                f"(neither `for _tool in ops-verdict.sh …` nor `_OPS_TOOLS=\"…\"`) "
+                f"— check_install_set_parity is reporting rather than skipping, "
+                f"because a parity check that cannot read one side pins nothing "
+                f"(CR4)")
+            continue
+        sets[name] = " ".join(m.group(1).split())
+        # A variable spelling only helps if it is what the copy loop iterates.
+        if via_var.search(text) and not re.search(r'for _?tool in \$_OPS_TOOLS', text):
+            problems.append(
+                f"scripts/{name}: declares _OPS_TOOLS but its copy loop does not "
+                f"iterate it — the declared set and the installed set are then "
+                f"two different lists (F30: declared-but-not-applied)")
     a, b = sets.get("ops-init.sh"), sets.get("ops-sessionstart-hook.sh")
     if a and b and a != b:
         problems.append(

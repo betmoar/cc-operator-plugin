@@ -160,8 +160,13 @@ def make_good_tree(root):
     # Both writers must DETECT a v1 file as well as emit the v2 body, and must
     # refuse to overwrite it without a backup they verified. Emitting alone used
     # to satisfy the check; a stub that only emits would now (correctly) fail.
+    # Both writers declare the .operator/bin install set, and check_install_set_parity
+    # now REPORTS a writer whose set it cannot locate rather than skipping it —
+    # so a stub without one is a fixture that models a shape the check rejects.
+    _install_loop = ("for _tool in ops-verdict.sh ops-task.sh ops-adopt.sh "
+                     "ops-claims.sh ops-backlog.sh; do :; done\n")
     write(root / "scripts" / "ops-init.sh",
-          "#!/usr/bin/env bash\nset -eu\n"
+          "#!/usr/bin/env bash\nset -eu\n" + _install_loop +
           "_GI_MARK='# cc-operator gitignore v2 (allowlist)'\n"
           "if ! grep -qF \"$_GI_MARK\" \"$OPDIR/.gitignore\" 2>/dev/null; then\n"
           "  if [ -e \"$OPDIR/.gitignore.v1.bak\" ] && [ ! -f \"$OPDIR/.gitignore.v1.bak\" ]; then\n"
@@ -177,7 +182,7 @@ def make_good_tree(root):
     # migrates a v1 gitignore, so it carries the same allowlist body — behind
     # the same verified backup.
     write(root / "scripts" / "ops-sessionstart-hook.sh",
-          "#!/usr/bin/env bash\nset -eu\n"
+          "#!/usr/bin/env bash\nset -eu\n" + _install_loop +
           "rm -rf \"$cwd/.operator/.compress-spill\" \"$cwd/.operator/.compress-state\"\n"
           "if ! grep -qF '# cc-operator gitignore v2 (allowlist)' \"$_gi\" 2>/dev/null; then\n"
           "  if [ -e \"$_gi.v1.bak\" ] && [ ! -f \"$_gi.v1.bak\" ]; then\n"
@@ -1875,6 +1880,35 @@ class InstallSetParityTest(unittest.TestCase):
             "ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh ops-future.sh", 1)
         self.assertTrue(any("install-set drift" in p for p in self._probs(src)),
                         self._probs(src))
+
+    def test_unlocatable_install_set_is_reported_not_skipped(self):
+        # The check used to return None for a writer it could not parse and then
+        # guard with `if a and b`, so refactoring ONE writer's loop to a variable
+        # silently reduced the comparison to nothing — green while pinning zero.
+        # Measured 2026-08-12 while fixing #34: ops-sessionstart-hook.sh moved to
+        # `for _tool in $_OPS_TOOLS` and the parity check went quiet.
+        src = self._real_init.replace("for tool in ops-verdict.sh", "for tool in $NOPE", 1) \
+            if "for tool in ops-verdict.sh" in self._real_init else \
+            self._real_init.replace("for _tool in ops-verdict.sh", "for _tool in $NOPE", 1)
+        probs = self._probs(src)
+        self.assertTrue(any("cannot locate the .operator/bin install set" in p
+                            for p in probs), probs)
+
+    def test_declared_but_uniterated_tool_list_fires(self):
+        # A variable spelling only helps if the copy loop iterates it. Declaring
+        # _OPS_TOOLS and looping over a hand-written list means the declared set
+        # and the installed set are two different lists (F30) — and the variable
+        # is what this check reads, so it would report the one nobody runs.
+        # Built from a synthetic writer rather than by mutating the real
+        # ops-init.sh, whose loop is spelled `for tool in` (no underscore); an
+        # earlier draft keyed off `for _tool in`, matched nothing, and SKIPPED —
+        # a test that proves nothing while reading as present.
+        src = ('#!/usr/bin/env bash\n'
+               '_OPS_TOOLS="ops-verdict.sh ops-task.sh ops-adopt.sh '
+               'ops-claims.sh ops-backlog.sh"\n'
+               'for _tool in ops-verdict.sh ops-task.sh; do :; done\n')
+        probs = self._probs(src)
+        self.assertTrue(any("does not iterate it" in p for p in probs), probs)
 
 
 class GitignoreParityTest(unittest.TestCase):

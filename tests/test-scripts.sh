@@ -3161,6 +3161,35 @@ else
   echo "  SKIP allowlist-content cases (no git on PATH)"
 fi
 
+echo "-- Case: SessionStart refreshes a STALE bin/ even when the version has not moved (#34)"
+# The upgrade used to fire only on a version-string change. Every intra-version
+# fix to a gate CLI therefore never reached .operator/bin/ — and the charter
+# points the model at THAT copy, so the project keeps running the broken
+# predecessor of a fix while the plugin tree's own tests pass. Found by the
+# replay charter on 2026-08-12: bin/ops-verdict.sh was byte-identical to a
+# commit two behind HEAD, with .version already reading the current version.
+STALEP="$(newproj)"
+( cd "$STALEP" && git init -q . 2>/dev/null && "$BASH_ABS" "$SCRIPTS/ops-init.sh" >/dev/null 2>&1 )
+STALEV="$(cat "$STALEP/.operator/.version" 2>/dev/null)"
+# Plant a stale CLI: wrong content, mtime OLDER than the plugin's copy, while
+# the version stamp already reads current (the exact #34 condition).
+printf '#!/usr/bin/env bash\n# STALE COPY\n' > "$STALEP/.operator/bin/ops-verdict.sh"
+touch -t 200001010000 "$STALEP/.operator/bin/ops-verdict.sh"
+sed "s|<tmp>|$STALEP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
+check "#34 a stale bin/ CLI is refreshed with the version unchanged" \
+  "$(grep -q 'STALE COPY' "$STALEP/.operator/bin/ops-verdict.sh" && echo 1 || echo 0)"
+check "#34 the refreshed CLI is byte-identical to the plugin's copy" \
+  "$(cmp -s "$STALEP/.operator/bin/ops-verdict.sh" "$SCRIPTS/ops-verdict.sh" && echo 0 || echo 1)"
+check "#34 the version stamp is unchanged (this was never a version event)" \
+  "$([ "$(cat "$STALEP/.operator/.version" 2>/dev/null)" = "$STALEV" ] && echo 0 || echo 1)"
+# Negative control: nothing stale ⇒ no rewrite. Without this the case would pass
+# against a hook that copies unconditionally on every session start.
+STALE_MTIME_BEFORE="$(ls -l "$STALEP/.operator/bin/ops-task.sh" 2>/dev/null)"
+sed "s|<tmp>|$STALEP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
+check "#34 a current bin/ is NOT rewritten (the probe is staleness, not a timer)" \
+  "$([ "$STALE_MTIME_BEFORE" = "$(ls -l "$STALEP/.operator/bin/ops-task.sh" 2>/dev/null)" ] && echo 0 || echo 1)"
+rm -rf "$STALEP"
+
 echo "-- Case: the SessionStart v1→v2 migration announces itself (#32)"
 # The migration REPLACES a file the user may have edited, and the .v1.bak it
 # leaves is itself hidden by the new bare `*` — so before this, a project with a

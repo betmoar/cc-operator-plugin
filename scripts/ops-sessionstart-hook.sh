@@ -121,10 +121,38 @@ fi
 _stamp="$cwd/.operator/.version"
 _oldver=""
 [ -f "$_stamp" ] && _oldver="$(cat "$_stamp" 2>/dev/null)"
-# Refresh only when the version actually differs (newer OR the stamp is absent).
-# A simple string inequality is enough: versions are single-source from
-# plugin.json, and a downgrade is still a change worth reflecting in bin/.
-if [ -n "$_newver" ] && [ "$_newver" != "$_oldver" ]; then
+
+# The install set, declared once — the loop below and the staleness probe must
+# agree, or a CLI is checked for freshness and never copied (or vice versa).
+_OPS_TOOLS="ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh ops-backlog.sh"
+
+# Is any installed CLI older than the plugin's copy? A version-string test alone
+# is NOT enough, and this is issue #34, measured live by the replay charter on
+# 2026-08-12: `.operator/bin/ops-verdict.sh` was byte-identical to a commit two
+# ahead of it in the log — every intra-version fix to a gate CLI stayed
+# invisible because plugin.json still said 0.7.0 and the stamp already agreed.
+# The charter points the model at `.operator/bin/...`, so THAT copy is the gate
+# a session actually runs: a stale bin/ means the project runs a fixed CLI's
+# broken predecessor while every test in the plugin tree passes.
+#
+# `-nt` is also true when the destination is ABSENT, which is the "never
+# installed" case and equally deserves a copy. Content compare (cmp) would be
+# stricter, but mtime is enough here and costs one stat per tool on a hot path
+# that runs at every session start.
+_bin_stale() {
+  local _t
+  for _t in $_OPS_TOOLS; do
+    [ -f "$_ssdir/$_t" ] || continue
+    [ "$_ssdir/$_t" -nt "$cwd/.operator/bin/$_t" ] && return 0
+  done
+  return 1
+}
+
+# Refresh when the version differs (newer, older, or the stamp is absent) OR
+# when the shipped CLIs are simply newer than what is installed. The second
+# clause is what makes a hotfix — and any development tree, where the version
+# legitimately does not move between commits — actually reach the project.
+if [ -n "$_newver" ] && { [ "$_newver" != "$_oldver" ] || _bin_stale; }; then
   # Refresh the bin/ CLIs the way ops-init does (always-refresh: generated
   # artifacts tracking the installed plugin version). mkdir the bin/ dir first
   # (ops-init does; without it a project whose .operator/bin was never created
@@ -135,7 +163,7 @@ if [ -n "$_newver" ] && [ "$_newver" != "$_oldver" ]; then
   # review 2026-08-04). Best-effort for the banner; the stamp is the contract.
   _upgrade_ok=1
   if [ -d "$_ssdir" ] && mkdir -p "$cwd/.operator/bin" 2>/dev/null; then
-    for _tool in ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh ops-backlog.sh; do
+    for _tool in $_OPS_TOOLS; do
       [ -f "$_ssdir/$_tool" ] || continue
       if cp "$_ssdir/$_tool" "$cwd/.operator/bin/$_tool" 2>/dev/null \
          && chmod +x "$cwd/.operator/bin/$_tool" 2>/dev/null; then
