@@ -183,7 +183,9 @@ nothing about how it got there:
   fixture — precisely the GNU-only shape it guards. Replaced with `os.utime` in
   the `python3` call the case already required.
 - Adding `LENS_NAMESPACES` to the parity check's **in-body** fragment list made
-  it fire on every tree (12 pytest failures, good-tree fixtures included): that
+  it fire on every tree (11 pytest failures, good-tree fixtures included — an
+  earlier draft of this line and `679e9af`'s commit message both said 12, which
+  no mutation reproduces; the review panel's comment lens caught it): that
   loop searches the function body, which by construction cannot contain a
   file-scope assignment.
 - A reference-style `[#35]` in `CLAUDE.md` tripped `check_issue_refs` — the
@@ -200,12 +202,53 @@ nothing about how it got there:
   - What the panel does **not** establish, unchanged from [#23]: every seat ran
     in the builder's own tree. A CONFIRMED from it would have been verification
     by a different reader of the same tree, not by a clean checkout.
+- **A second review round found five more, two of them introduced by the first
+  round's own fixes.** Recorded in that shape deliberately: a fix written under
+  review pressure is not safer than the code it replaces, and this release has
+  now demonstrated that twice.
+  - **The ignored-state count was stuck at 1.** `-z` output captured through
+    command substitution loses its NUL separators — every record joins onto one
+    line and `grep -c '^!!'` answers 1 for any non-zero count. Measured: a
+    3-entry tree reported 1, this repo's 34 reported 0. The two tests could not
+    see it because their fixtures held exactly 0 and exactly 1 entry — a
+    constant that reads as a count. Now captured to a file; a third case uses
+    3 entries.
+  - **The lens ordering broke OpenRouter's variant suffixes.** `vendor/model:free`
+    and `:nitro` are legal ids that cc-proxy routes through `rankRoutes`; testing
+    the lens first made the guard refuse them, with a message calling
+    `deepseek/deepseek-r1:` a provider namespace. Measured against `origin/main`:
+    pre-PR rc 0, post-fix rc 2. A slash *before* the colon now means a variant,
+    not a lens — and the bypass stays closed, because there the slash is after.
+  - **The `LENS_NAMESPACES` parity pin was vacuous.** Editing **both** copies to
+    `"bogus"` passed the entire validator: the tuples still matched. `CLAUDE.md`
+    claimed the value was pinned; it was pinned only to itself. Now pinned to a
+    canonical literal, mutation-verified.
+  - **The four workflows' `ROUTABLE` regex never learned the lens.** An operator
+    binding `MECHANICAL=qwen:deepseek-v4-pro` in `tiers.env` — legal since this
+    release — got a hard throw the moment that map reached a workflow.
+    `check_workflows` could not catch it: all four copies drifted uniformly, the
+    F30 shape. `docs/PLAYBOOK.md` names this coupling.
+  - **The bytecode hygiene had no test at all.** Reverting `conftest.py` to a
+    no-op left 2 `__pycache__` dirs with pytest still green; dropping
+    `norecursedirs` reproduced the 4 collection errors while both suites passed.
+    Two cases added — and the first draft of the `conftest` case did not
+    discriminate either, because it inherited the suite-wide
+    `PYTHONDONTWRITEBYTECODE` that hides exactly what it was testing.
+- **A number in this changelog was wrong and is corrected above.** The comment
+  lens re-derived every measured figure in the diff; one did not reproduce (the
+  "12 pytest failures", actually 11). Every other number held, including the
+  204-vs-34 line counts, the 4-of-12 mtime flakiness, the 505/2 and 506/1
+  mutation counts, and the PEP 552 header layout.
 
 ### Gates
 
-bash 519/0 from a neutral cwd (507/0 on ubuntu:24.04 as uid 1000, measured at
-the [#23] commit — five cases predate the two post-review fixes) · validator 0 ·
-pytest 177/0 · node 73/0 + 75/0 · shellcheck 0.11 rc 0 and pinned 0.10 rc 0.
+bash 526/0 from a neutral cwd (507/0 on ubuntu:24.04 as uid 1000, measured at
+the [#23] commit — eleven cases postdate it) · validator 0 · pytest 178/0 ·
+node 73/0 + 75/0 · shellcheck 0.11 rc 0 and pinned 0.10 rc 0.
+
+Round-2 revert-discrimination, each mutation restoring one defect the review
+found: NUL-losing capture → 525/1; variant carve-out removed → 524/2;
+`conftest.py` neutered → 525/1; `norecursedirs` dropped → 525/1. Control 526/0.
 
 [#21]: https://github.com/betmoar/cc-operator-plugin/issues/21
 [#35]: https://github.com/betmoar/cc-operator-plugin/issues/35

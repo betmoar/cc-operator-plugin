@@ -330,7 +330,7 @@ def make_good_tree(root):
     write(root / "agents" / "_templates" / "default.tmpl",
           '---\nname: op-NAME\nmodel: MODEL\ntools: Read\n---\nbody\n')
     WF_SHARED = (
-        'const ROUTABLE = /^glm-|\\/|^claude-/;\n'
+        'const ROUTABLE = /^glm-|\\/|^claude-|^(?:glm|openrouter|deepseek|qwen|claude):./;\n'
         'const BAD_CHARSET = /[^\\w./:@[\\]-]/;\n'
         'const KNOWN_TIERS = ["JUDGMENT","IMPLEMENT","MECHANICAL","RECON"];\n'
         'for (const [n, id] of Object.entries({JUDGMENT:"claude-opus-5"})) {\n'
@@ -1143,7 +1143,7 @@ class ValidatorTest(unittest.TestCase):
         """A conforming workflow with the shared invariants."""
         return (
             f'export const meta = {{ name: "{name}", description: "d" }};\n'
-            'const ROUTABLE = /^glm-|\\/|^claude-/;\n'
+            'const ROUTABLE = /^glm-|\\/|^claude-|^(?:glm|openrouter|deepseek|qwen|claude):./;\n'
             'const BAD_CHARSET = /[^\\w./:@[\\]-]/;\n'
             'for (const [n, id] of Object.entries({JUDGMENT:"claude-opus-5"})) {\n'
             '  if (!ROUTABLE.test(id) || BAD_CHARSET.test(id)) throw new Error("x");\n'
@@ -1157,7 +1157,7 @@ class ValidatorTest(unittest.TestCase):
 
     def test_workflow_divergent_routable_fires(self):
         write(self.dir / "workflows" / "review.js",
-              self._wf("review").replace("const ROUTABLE = /^glm-|\\/|^claude-/;",
+              self._wf("review").replace("const ROUTABLE = /^glm-|\\/|^claude-|^(?:glm|openrouter|deepseek|qwen|claude):./;",
                                          "const ROUTABLE = /^glm-5|^claude-5/;"))
         self.assertFires("ROUTABLE regex is")
 
@@ -1304,7 +1304,7 @@ class ValidatorTest(unittest.TestCase):
         # A conforming workflow that omits KNOWN_TIERS entirely.
         write(self.dir / "workflows" / "review.js",
               'export const meta = { name: "review", description: "d" };\n'
-              'const ROUTABLE = /^glm-|\\/|^claude-/;\n'
+              'const ROUTABLE = /^glm-|\\/|^claude-|^(?:glm|openrouter|deepseek|qwen|claude):./;\n'
               'const BAD_CHARSET = /[^\\w./:@[\\]-]/;\n'
               'for (const [n, id] of Object.entries({JUDGMENT:"claude-opus-5"})) {\n'
               '  if (!ROUTABLE.test(id)) throw new Error("x");\n'
@@ -1645,6 +1645,19 @@ class ResolverRendererParityTest(unittest.TestCase):
         probs = self.problems()
         self.assertTrue(any("does not match the resolver's" in p
                             for p in probs), probs)
+
+    def test_uniformly_wrong_lens_fires(self):
+        # Equality across the two copies is satisfied by two IDENTICALLY wrong
+        # allowlists — measured: editing BOTH shipped scripts to
+        # `LENS_NAMESPACES="bogus"` passed the entire validator. The canonical
+        # pin is what closes it, the same way CANONICAL_BAD_CHARSET does for the
+        # workflow regexes. Uniform drift is the realistic failure when two
+        # files are copy-pasted by design.
+        gutted = 'LENS_NAMESPACES="bogus"\n'
+        self._write(tiers=self.ROUTABLE + gutted + self.TIERS,
+                    render=self.ROUTABLE + gutted + self.TIERS)
+        probs = self.problems()
+        self.assertTrue(any("PROVIDER_IDS" in p for p in probs), probs)
 
     def test_missing_lens_namespaces_fires(self):
         # A rename or retype must update the validator's regex, not silence it

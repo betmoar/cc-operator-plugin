@@ -80,9 +80,13 @@ check_routable() { # check_routable <label> <id>
     *:*)
       _lens_head="${2%%:*}"; _lens_tail="${2#*:}"
       [ -n "$_lens_tail" ] || die "$1='$2' has an empty model after the '$_lens_head:' lens"
-      case " $LENS_NAMESPACES " in
-        *" $_lens_head "*) return 0 ;;
-        *) die "$1='$2' names the unknown provider lens '$_lens_head:' (known: $LENS_NAMESPACES) — cc-proxy strips only a lens it knows, so this would reach the default backend as a literal model id" ;;
+      # A slash before the colon means a variant suffix, not a lens — see the
+      # resolver's copy (OpenRouter's `vendor/model:free`).
+      case "$_lens_head" in */*) ;; *)
+        case " $LENS_NAMESPACES " in
+          *" $_lens_head "*) return 0 ;;
+          *) die "$1='$2' names the unknown provider lens '$_lens_head:' (known: $LENS_NAMESPACES) — cc-proxy strips only a lens it knows, so this would reach the default backend as a literal model id" ;;
+        esac ;;
       esac ;;
   esac
   case "$2" in

@@ -89,9 +89,22 @@ check_routable() {
     *:*)
       _lens_head="${2%%:*}"; _lens_tail="${2#*:}"
       [ -n "$_lens_tail" ] || die "$1='$2' has an empty model after the '$_lens_head:' lens"
-      case " $LENS_NAMESPACES " in
-        *" $_lens_head "*) return 0 ;;
-        *) die "$1='$2' names the unknown provider lens '$_lens_head:' (known: $LENS_NAMESPACES) — cc-proxy strips only a lens it knows, so this would reach the default backend as a literal model id" ;;
+      # A SLASH BEFORE THE COLON MEANS IT IS NOT A LENS. OpenRouter ids carry
+      # variant suffixes — `deepseek/deepseek-r1:free`, `qwen/qwen3-max:nitro`,
+      # and cc-proxy's own models.js matches a `:batch` suffix — so the colon
+      # there names a variant, not a provider. cc-proxy agrees: its
+      # parseModelSelector returns providerId=null for those and resolve() then
+      # routes the WHOLE string through rankRoutes, the documented OpenRouter
+      # path. Refusing them is not conservatism, it is a regression: they were
+      # routable before this guard learned the lens (measured against
+      # origin/main — pre-PR rc 0, post-PR rc 2), and the refusal message
+      # claimed `deepseek/deepseek-r1:` was a provider namespace. Fall through
+      # to the bare shapes, where `*/*` accepts them as it always did.
+      case "$_lens_head" in */*) ;; *)
+        case " $LENS_NAMESPACES " in
+          *" $_lens_head "*) return 0 ;;
+          *) die "$1='$2' names the unknown provider lens '$_lens_head:' (known: $LENS_NAMESPACES) — cc-proxy strips only a lens it knows, so this would reach the default backend as a literal model id" ;;
+        esac ;;
       esac ;;
   esac
   case "$2" in

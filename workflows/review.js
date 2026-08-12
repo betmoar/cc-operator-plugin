@@ -24,7 +24,7 @@ const DEFAULT_TIERS = {
   MECHANICAL: "glm-5-turbo",
 };
 
-const ROUTABLE = /^glm-|\/|^claude-/;
+const ROUTABLE = /^glm-|\/|^claude-|^(?:glm|openrouter|deepseek|qwen|claude):./;
 // Charset mirror of ops-tiers.sh's check_routable: a model id must be inside
 // [A-Za-z0-9._:/@[]-]. ROUTABLE checks SHAPE only — it accepts "claude opus/x"
 // (contains /) that the shell gate rejects for whitespace. Without this, a

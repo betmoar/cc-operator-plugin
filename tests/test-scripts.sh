@@ -1546,6 +1546,25 @@ check "a KNOWN lens with a slashed model half is still routable" \
 TIERSENV --set MECHANICAL=openai/gpt-5 >/dev/null 2>&1; LENSBARE=$?
 check "a bare vendor/model id is unaffected by the lens ordering" \
   "$([ "$LENSBARE" -eq 0 ] && echo 0 || echo 1)"
+# A SLASH BEFORE THE COLON IS A VARIANT SUFFIX, NOT A LENS. OpenRouter spells
+# `vendor/model:free`, `:nitro`, `:online` (cc-proxy's models.js matches a
+# `:batch` suffix), and cc-proxy routes the WHOLE string via rankRoutes because
+# parseModelSelector returns providerId=null for them. Ordering the lens first
+# made the guard refuse ids that were routable before this PR — measured
+# against origin/main: pre-PR rc 0, post-PR rc 2 — with a message calling
+# `deepseek/deepseek-r1:` a provider namespace. Both spellings are pinned
+# because one is not evidence for the other.
+TIERSENV --set MECHANICAL=deepseek/deepseek-r1:free >/dev/null 2>&1; LENSVAR1=$?
+check "an OpenRouter variant suffix stays routable (vendor/model:free)" \
+  "$([ "$LENSVAR1" -eq 0 ] && echo 0 || echo 1)"
+TIERSENV --set MECHANICAL=qwen/qwen3-max:nitro >/dev/null 2>&1; LENSVAR2=$?
+check "a variant whose vendor half NAMES a known lens is still routable" \
+  "$([ "$LENSVAR2" -eq 0 ] && echo 0 || echo 1)"
+# The bypass stays closed: here the slash is AFTER the colon, so `bogus` is
+# still the head and still unknown.
+TIERSENV --set MECHANICAL=bogus:vendor/model >/dev/null 2>&1; LENSVAR3=$?
+check "the variant carve-out does not reopen the slash bypass" \
+  "$([ "$LENSVAR3" -ne 0 ] && echo 0 || echo 1)"
 # tiers.env carries TWO line kinds (the renderer's seat bindings share the
 # file). The resolver must SKIP a seat line, not die on it — the scaffold's own
 # documented example ('#op-scout=MECHANICAL', ops-init.sh) used to kill every
@@ -2170,6 +2189,17 @@ printf '__pycache__/\n' > "$P/.gitignore"
 mkdir -p "$P/__pycache__"; printf 'stale\n' > "$P/__pycache__/a.cpython-311.pyc"
 runclaims --expect-clean 2>/dev/null | grep -q '{item ignored-state} report: 1 ' && ECI1=0 || ECI1=1
 check "--expect-clean counts a gitignored __pycache__ the tracked check cannot see" "$ECI1"
+# THREE, NOT ONE. A 0-vs-1 pair is satisfied by a counter stuck at 1, which is
+# exactly what shipped in the first draft: `-z` output captured through command
+# substitution loses its NUL separators, every record joins onto one line, and
+# `grep -c '^!!'` answers 1 for any non-zero count (measured: a 3-entry tree
+# reported 1, this repo's 34 reported 0). The fixtures could not see it because
+# neither held more than one entry. Any future case here needs >= 2.
+printf '__pycache__/\nbuild/\ndist/\n' > "$P/.gitignore"
+( cd "$P" && git add .gitignore && git commit -qm ignore3 )
+mkdir -p "$P/build" "$P/dist"; : > "$P/build/x"; : > "$P/dist/x"
+runclaims --expect-clean 2>/dev/null | grep -q '{item ignored-state} report: 3 ' && ECI3=0 || ECI3=1
+check "--expect-clean counts THREE ignored entries as 3 (not a stuck 1)" "$ECI3"
 runclaims --expect-clean >/dev/null 2>&1; ECI2=$?
 check "--expect-clean stays green on ignored state (report, never fail)" \
   "$([ "$ECI2" = 0 ] && echo 0 || echo 1)"
@@ -2180,11 +2210,15 @@ check "--expect-clean stays green on ignored state (report, never fail)" \
 # now captured before any counting. GIT_INDEX_FILE pointing at a non-directory
 # is the cheapest reproducible failure; the script must still exit 0 (this is a
 # report line, not a gate) and must still print the tracked-tree verdict.
-ECIU="$( cd "$P" && GIT_INDEX_FILE=/dev/null/nope bash "$CLAIMS" --expect-clean 2>/dev/null )"; ECIURC=$?
-check "a failed git read reports 'unknown', never '0'" \
-  "$(printf '%s' "$ECIU" | grep -q '{item ignored-state} report: unknown ' && echo 0 || echo 1)"
-check "the unknown path still exits 0 (a report line is not a gate)" \
-  "$([ "$ECIURC" = 0 ] && echo 0 || echo 1)"
+ECIUERR="$( cd "$P" && GIT_INDEX_FILE=/dev/null/nope bash "$CLAIMS" --expect-clean 2>&1 )"; ECIURC=$?
+check "a failed git status REFUSES --expect-clean rather than reporting clean" \
+  "$(printf '%s' "$ECIUERR" | grep -q 'must not read as a clean tree' && echo 0 || echo 1)"
+check "the refusal exits non-zero (the gate must not pass on an unreadable tree)" \
+  "$([ "$ECIURC" != 0 ] && echo 0 || echo 1)"
+# And it must NOT have claimed the tree was clean on its way out — the failure
+# mode being pinned is a green verdict, not merely a missing error.
+check "the refusal prints no 'ok: clean' verdict" \
+  "$(printf '%s' "$ECIUERR" | grep -q '{item working-tree} ok' && echo 1 || echo 0)"
 clean_tree
 
 # --expect-clean exempts .operator/ ledger paths: scaffold + a verdict row, then
@@ -3419,6 +3453,62 @@ check "dash-named file: code-loc counts it (3, not 0)" \
 check "dash-named file: the count is not PARTIAL" \
   "$(printf '%s' "$DASHOUT" | grep -q 'PARTIAL' && echo 1 || echo 0)"
 rm -rf "$DASHP"
+
+########################################################################
+echo "-- Case: the suites do not contaminate the tree with bytecode"
+# THE HYGIENE BEHAVIOUR HAD NO TEST AT ALL. Measured: reverting conftest.py to
+# a no-op leaves 2 __pycache__ dirs and pytest still reports 178 passed;
+# deleting `norecursedirs` reproduces the 4 collection errors while both suites
+# stay green. Prose in three files asserted this and nothing checked it — which
+# is the same "a claim with no gate" shape the #23 case below exists to expose.
+# Found by the review panel's test lens, PR #36.
+#
+# Asserted against a COPY, not this tree: the real scripts/ and tests/ may
+# legitimately hold a __pycache__ from a maintainer's earlier hand-run, so
+# asserting on them would be a test of the developer's shell history.
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "  skip bytecode hygiene: python3 not available"
+else
+  HYG="$(newproj)"
+  mkdir -p "$HYG/scripts" "$HYG/tests"
+  cp "$REPO/pyproject.toml" "$HYG/" 2>/dev/null
+  cp "$REPO/tests/conftest.py" "$HYG/tests/" 2>/dev/null
+  # A module to import and a test that imports it — the shape that produces a
+  # __pycache__ in BOTH directories.
+  printf 'def f():\n    return 1\n' > "$HYG/scripts/mod_under_test.py"
+  cat > "$HYG/tests/test_hyg.py" <<'PYEOF'
+import pathlib, sys
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
+from mod_under_test import f
+def test_f():
+    assert f() == 1
+PYEOF
+  # THE SUITE-WIDE EXPORT MUST BE UNSET HERE, or this case proves nothing about
+  # conftest.py. Measured: with PYTHONDONTWRITEBYTECODE inherited, neutering
+  # conftest to a no-op still leaves scripts/__pycache__ absent — the env var
+  # already did the work, so the case passed against the mutation (M3 of the
+  # round-2 discrimination sweep: 526/0, no flip). Unset, it discriminates
+  # cleanly: real conftest -> no scripts/__pycache__, no-op conftest -> one
+  # appears. Same opt-out the #23 fixture takes, for the same reason: a case
+  # about a mechanism must not inherit a second mechanism that hides it.
+  #
+  # pyproject's testpaths names the plugin's own modules, which do not exist
+  # here; point pytest at the local file explicitly.
+  ( unset PYTHONDONTWRITEBYTECODE; cd "$HYG" && python3 -m pytest tests/test_hyg.py -q >/dev/null 2>&1 )
+  # conftest.py's OWN .pyc is the documented residue — it is compiled before the
+  # line that disables bytecode runs — so tests/__pycache__ may exist. What must
+  # NOT appear is a cache for the imported module, i.e. scripts/__pycache__.
+  check "pytest writes no __pycache__ for imported modules (conftest suppression works)" \
+    "$([ ! -d "$HYG/scripts/__pycache__" ] && echo 0 || echo 1)"
+  # And the seed-dir prune: a directory named like the pilot seeds, holding an
+  # unimportable test_*, must not break collection.
+  mkdir -p "$HYG/tests/pilot-seeds/E9"
+  printf 'import nonexistent_module_xyz\n' > "$HYG/tests/pilot-seeds/E9/test_broken.py"
+  ( cd "$HYG" && python3 -m pytest tests/ -q >/dev/null 2>&1 ); HYGRC=$?
+  check "norecursedirs keeps an unimportable seed dir out of collection" \
+    "$([ "$HYGRC" = 0 ] && echo 0 || echo 1)"
+  rm -rf "$HYG"
+fi
 
 ########################################################################
 echo "-- Case: gitignored build state diverges in-tree from a clean checkout (#23)"

@@ -1300,7 +1300,9 @@ def check_resolver_renderer_parity(root, problems):
         # NOT "LENS_NAMESPACES" here: this loop searches the FUNCTION BODY, and
         # the assignment is a file-scope variable outside the braces, so the
         # fragment could never be found and the check would fire on every tree
-        # (measured: 12 pytest failures, including the good-tree fixtures). Its
+        # (re-measured on this tree: 11 pytest failures, the good-tree fixtures
+        # among them — an earlier draft of this comment and 679e9af's commit
+        # message both said 12, which no mutation reproduces). Its
         # USE inside the body is what belongs here; the assignment's VALUE is
         # pinned separately below, where the two files are compared.
         for frag, why in (
@@ -1316,11 +1318,19 @@ def check_resolver_renderer_parity(root, problems):
 
     # LENS_NAMESPACES lives OUTSIDE check_routable's braces, so routable_body()
     # above never sees it and two copies carrying DIFFERENT allowlists would
-    # compare equal. Pinned separately, and by VALUE: the set mirrors cc-proxy's
-    # PROVIDER_IDS, and a lens naming a provider cc-proxy does not know is not
-    # stripped — it reaches the default backend as a literal model id, which is
-    # the silent mis-route this whole function exists to prevent. Two files
-    # drifting apart here means one writes a binding the other refuses.
+    # compare equal. Pinned separately, and TWICE: equal across the two files,
+    # AND equal to the canonical set below. Equality alone was the vacuous shape
+    # — editing BOTH copies to `LENS_NAMESPACES="bogus"` passed the whole
+    # validator (measured), because the tuples still matched and the in-body
+    # `$LENS_NAMESPACES` lookup was still present. That is the same hole
+    # CANONICAL_BAD_CHARSET closes for the workflow regexes, and CLAUDE.md
+    # claimed this check already closed it. Now it does.
+    #
+    # The set mirrors PROVIDER_IDS in cc-proxy's src/providers.js. Adding a
+    # provider there means updating this literal AND both scripts — deliberately
+    # three edits, because a namespace cc-proxy does not know is not stripped and
+    # reaches the default backend as a literal model id.
+    canonical_lens = ("glm", "openrouter", "deepseek", "qwen", "claude")
     lens = {}
     for name, text in src.items():
         m = re.search(r"^LENS_NAMESPACES=([\"'])(.*?)\1", text, re.MULTILINE)
@@ -1336,6 +1346,13 @@ def check_resolver_renderer_parity(root, problems):
             f"scripts/ops-render.sh: LENS_NAMESPACES={list(lens['ops-render.sh'])} "
             f"does not match the resolver's {list(lens['ops-tiers.sh'])} in "
             f"ops-tiers.sh — one of them would accept a lens the other refuses")
+    elif lens["ops-tiers.sh"] != canonical_lens:
+        problems.append(
+            f"scripts/ops-tiers.sh + ops-render.sh: LENS_NAMESPACES="
+            f"{list(lens['ops-tiers.sh'])} does not match cc-proxy's PROVIDER_IDS "
+            f"{list(canonical_lens)} — the two copies agree, which is what makes "
+            f"this worth checking: a uniformly wrong allowlist refuses ids "
+            f"cc-proxy routes, or admits a namespace it does not strip")
 
     names = {}
     for name, text in src.items():
@@ -1384,7 +1401,17 @@ def check_workflows(root, problems):
     files = sorted(wf_dir.glob("*.js")) if wf_dir.is_dir() else []
     if not files:
         return  # workflows/ is optional; the plugin ships review.js only at need
-    CANONICAL_ROUTABLE = r"/^glm-|\/|^claude-/"
+    # Carries the `<provider>:<model>` lens alternation as of 0.7.1: the shell
+    # guard learned a fourth id shape and this mirror had to move with it, or an
+    # operator who legally binds `MECHANICAL=qwen:deepseek-v4-pro` in tiers.env
+    # gets a hard throw the moment that map reaches a workflow. Divergence here
+    # fails LOUD rather than silently mis-routing (the F01 polarity), but it is
+    # still the coupling docs/PLAYBOOK.md names — and check_workflows could not
+    # have caught it, because all four copies drifted uniformly (the F30 shape).
+    # The alternation is spelled out rather than built from LENS_NAMESPACES:
+    # these are four literal source files, and a generated regex would be one
+    # more thing to keep in sync.
+    CANONICAL_ROUTABLE = r"/^glm-|\/|^claude-|^(?:glm|openrouter|deepseek|qwen|claude):./"
     CANONICAL_BAD_CHARSET = r"/[^\w./:@[\]-]/"
     for f in files:
         rel = f"workflows/{f.name}"
