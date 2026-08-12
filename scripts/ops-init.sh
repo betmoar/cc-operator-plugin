@@ -28,36 +28,105 @@ fi
 
 mkdir -p "$OPDIR/pending" "$OPDIR/verdicts.d"
 
-# Lock ephemera are transient mutual-exclusion markers, not evidence. Without
-# this they show up as untracked noise inside a tracked tree and can be committed
-# by an over-broad `git add`, at which point a checked-out stale lock makes every
-# writer pay the full crash-presumption budget. (Audit F05.)
-if [ ! -f "$OPDIR/.gitignore" ]; then
-  cat > "$OPDIR/.gitignore" <<'EOF'
-# Transient lock markers — never evidence, never committed.
-.lock/
-.lock.reclaim/
-.adopt.*
-# Compressor ephemera: session-scoped spills + dedup hashes, wiped on every
-# SessionStart. Spilled output is a RECOVERY aid, not evidence — the ledger row
-# is the evidence, and it cites the spill by path.
-.compress-spill/
-.compress-state/
+# ALLOWLIST, not a blocklist (v2). The original listed the ephemera to ignore —
+# and every directory added since had to be remembered and appended, twice (F05
+# for .lock/, then .compress-spill/ once a user's tree went dirty). A blocklist
+# defaults new state to TRACKED, so the failure mode is silent and recurring: the
+# entry ships, nobody notices, and it is committed by an over-broad `git add`.
+# (A checked-out stale lock then makes every writer pay the crash-presumption
+# budget.) Inverting the default costs one migration and ends the class.
+#
+# What stays tracked is exactly what a teammate needs to reconstruct the
+# engagement: the two ledgers, their per-session fragments (verdicts.d/ is what
+# `merge=union` in .gitattributes operates on — un-tracking it breaks the
+# clean-merge property the fragment scheme exists for), and the tier config.
+# Everything else — pending/, bin/, locks, compressor ephemera, whatever is added
+# next — is machine state that the plugin recreates.
+#
+# OPERATOR.md is NOT here: /cc-operator:start writes it to the project ROOT.
+_GI_MARK='# cc-operator gitignore v2 (allowlist)'
+_gi_write() {
+  cat > "$OPDIR/.gitignore" <<EOF
+$_GI_MARK
+# Ignore everything under .operator/ by default, then re-admit the evidence.
+# New machine state is ignored automatically — that is the point of the
+# inversion; do not add ignore lines here, add allow lines only when a NEW file
+# is genuinely evidence a teammate must read.
+*
+!.gitignore
+!.gitattributes
+!VERDICTS.md
+!DECISIONS.md
+!tiers.env
+!verdicts.d/
+!verdicts.d/*.md
+!handoff-*.md
+!armgate.on
 EOF
-  echo "created $OPDIR/.gitignore (lock + compressor ephemera)"
+}
+if [ ! -f "$OPDIR/.gitignore" ]; then
+  _gi_write
+  echo "created $OPDIR/.gitignore (allowlist: ledgers + fragments + tiers.env)"
+elif ! grep -qF "$_GI_MARK" "$OPDIR/.gitignore" 2>/dev/null; then
+  # MIGRATION. A v1 blocklist cannot be appended to — the two schemes contradict
+  # (v1 tracks by default, v2 ignores by default), and appending `*` to a v1 file
+  # would ignore the ledgers while the earlier lines say nothing about them.
+  # Replace it, keeping a copy: this file is the user's, and a rewrite they did
+  # not ask for must be recoverable.
+  # BACKUP FIRST, AND ONLY OVERWRITE IF IT SUCCEEDED. The old order copied with
+  # errors swallowed and then wrote unconditionally, so a failed backup still
+  # destroyed the user's file while this message claimed it was recoverable
+  # (measured 2026-08-12: a pre-existing `.gitignore.v1.bak` DIRECTORY makes
+  # `cp` land the file inside it, leaving the advertised path pointing at a
+  # directory; an unwritable one loses the rules outright). The backup must be a
+  # regular file we can replace — anything else at that path is not ours.
+  if [ -e "$OPDIR/.gitignore.v1.bak" ] && [ ! -f "$OPDIR/.gitignore.v1.bak" ]; then
+    echo "cc-operator: $OPDIR/.gitignore.v1.bak exists and is not a regular file — refusing to migrate .gitignore (move it aside, then re-run)" >&2
+  elif ! cp "$OPDIR/.gitignore" "$OPDIR/.gitignore.v1.bak" 2>/dev/null; then
+    echo "cc-operator: could not write $OPDIR/.gitignore.v1.bak — refusing to migrate .gitignore without a backup (the v1 and v2 schemes contradict, so migration REPLACES the file)" >&2
+  else
+    _gi_write
+    echo "migrated $OPDIR/.gitignore to the v2 allowlist (previous kept as .gitignore.v1.bak)"
+  fi
 fi
 
-# An ALREADY-initialized project has a .gitignore without the compressor lines
-# (the block above only writes when the file is absent), so spills would show up
-# as untracked noise and could be swept in by an over-broad `git add` — the same
-# failure F05 fixed for stale locks. Append idempotently.
-if [ -f "$OPDIR/.gitignore" ] && ! grep -q '^\.compress-spill/$' "$OPDIR/.gitignore" 2>/dev/null; then
-  {
-    printf '# Compressor ephemera (added by upgrade): session-scoped, wiped on SessionStart.\n'
-    printf '.compress-spill/\n.compress-state/\n'
-  } >> "$OPDIR/.gitignore"
-  echo "updated $OPDIR/.gitignore (compressor ephemera)"
+# The allowlist above lives INSIDE .operator/ and cannot beat a rule that
+# excludes the directory itself: git never descends into an excluded directory,
+# so the negations have nothing to re-admit. A root .gitignore carrying
+# `/.operator/` ships NO evidence — silently, with this scaffold reporting
+# success (issue #25, measured 2026-08-09). Detect it and say so. Warn, never
+# fail: the exclusion may be deliberate (this repo's own dogfooding does exactly
+# that, which is why the failure was never seen here). This lives in ops-init
+# only, NOT the SessionStart refresh — that hook runs on every session and must
+# stay quiet.
+if command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
+  # TWO CALLS ON PURPOSE — do not collapse them into one `-v`.
+  # `-q` answers "is this ignored?" via EXIT STATUS. `-v` answers "which rule
+  # matched?" and prints a line for a `!` negation too, exit 0, even though a
+  # negation means the path is explicitly ALLOWED. So "non-empty -v output"
+  # is NOT "ignored", and folding the test into the message lookup inverts this
+  # warning for every project whose allowlist matches VERDICTS.md — which is
+  # every project the v2 scaffold creates. Tried and reverted twice: once by a
+  # simplifier pass (suite went 477/1 on "healthy git project: no warning"),
+  # once by hand while verifying the #28/#31 allowlist fix, where it produced a
+  # confident and wrong "the fix failed" reading. The exit status is the truth.
+  if git check-ignore -q "$OPDIR/VERDICTS.md" 2>/dev/null; then
+    _gi_rule="$(git check-ignore -v "$OPDIR/VERDICTS.md" 2>/dev/null | head -n 1)"
+    {
+      echo "ops-init: WARNING — the evidence ledger is gitignored by a rule outside $OPDIR/.gitignore:"
+      echo "ops-init:   ${_gi_rule:-<rule unresolvable>}"
+      echo "ops-init:   committed evidence cannot leave this machine while that rule stands (issue #25)"
+    } >&2
+  fi
 fi
+
+# (The compressor-ephemera append that used to live here is gone: under the v2
+# allowlist `*` already covers .compress-spill/ and .compress-state/, and every
+# future ephemera directory, without anyone having to remember them. The
+# migration branch above is what carries a v1 project across. The compressor
+# additionally writes its own `*` ignore inside each ephemera root, so a project
+# that never ran this script at all still stays clean — see
+# ops-compress.mjs:ephemeralRoot.)
 
 # Per-session verdict fragments (verdicts.d/<owner>.md) exist so two branches
 # append to two different files and git merges them cleanly. VERDICTS.md can
@@ -122,11 +191,11 @@ fi
 # no ${CLAUDE_PLUGIN_ROOT}). Unlike the ledgers these are always refreshed:
 # they are generated artifacts tracking the installed plugin version.
 mkdir -p "$OPDIR/bin"
-for tool in ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh; do
+for tool in ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh ops-backlog.sh; do
   cp "$SCRIPT_DIR/$tool" "$OPDIR/bin/$tool"
   chmod +x "$OPDIR/bin/$tool"
 done
-echo "installed $OPDIR/bin/{ops-verdict.sh,ops-task.sh,ops-adopt.sh,ops-claims.sh}"
+echo "installed $OPDIR/bin/{ops-verdict.sh,ops-task.sh,ops-adopt.sh,ops-claims.sh,ops-backlog.sh}"
 
 # Stamp the installed plugin version. SessionStart compares this to the running
 # plugin's version and auto-refreshes bin/ when it differs — the automated

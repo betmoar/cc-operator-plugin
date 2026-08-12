@@ -11,6 +11,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
+import crypto from "node:crypto";
 import { pathToFileURL } from "node:url";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
@@ -210,10 +211,14 @@ if (vm) {
 console.log("-- Case: spill failure leaves an explicit TRUNCATED marker, not silence");
 // spill() returns null on any write failure (disk full, perms). Elided text
 // with no marker is indistinguishable from complete output — the I2.3
-// falsification class through the failure path. Force the failure by pointing
-// cwd at a regular FILE, so mkdirSync inside spill() throws.
-const badCwd = path.join(TMP, "not-a-dir");
-fs.writeFileSync(badCwd, "");
+// falsification class through the failure path. Force the failure inside the
+// IN-PROJECT branch: a cwd that has `.operator/` (so containment does not divert
+// to the tempdir) whose `.compress-spill` is a regular FILE, making mkdirSync
+// throw. Pointing cwd at a file no longer works as injection — that path now
+// falls back to the tempdir and succeeds, which is the containment fix working.
+const badCwd = fs.mkdtempSync(path.join(os.tmpdir(), "opsbadspill-"));
+fs.mkdirSync(path.join(badCwd, ".operator"));
+fs.writeFileSync(path.join(badCwd, ".operator", ".compress-spill"), "");
 const failRes = compress({ ...bash("y".repeat(50000)), tool_input: { command: "npm test" } },
   { env: {}, cwd: badCwd });
 {
@@ -231,6 +236,78 @@ ok(run({ ...bash(big), tool_input: { command: "npm test" } }, { CC_OPERATOR_COMP
 const noElide = run({ ...bash(big), tool_input: { command: "npm test" } },
   { CC_OPERATOR_COMPRESS_MAX_CHARS: "999999" });
 ok(noElide === null, "a raised MAX_CHARS threshold suppresses the elide tier");
+
+// ── ephemera containment ────────────────────────────────────────────────────
+// The compressor fires in every project where the plugin is merely INSTALLED.
+// Before containment it created `.operator/` (mkdir recursive) in repos that
+// never ran /cc-operator:start — and, with no ops-init to write one, a
+// `.operator/` carrying no .gitignore at all: untracked dirty state the user
+// never asked for.
+console.log("-- Case: ephemera are self-ignoring and never materialize .operator/");
+{
+  // (A) a project WITH .operator/ keeps spilling in-tree, and each ephemera root
+  //     carries its own `*` ignore so the tree is clean without ops-init.
+  const spillRoot = path.join(TMP, ".operator", ".compress-spill");
+  ok(fs.existsSync(spillRoot), "an initialized project spills under .operator/");
+  ok(fs.readFileSync(path.join(spillRoot, ".gitignore"), "utf8").trim() === "*",
+    "the spill root carries its own .gitignore holding '*'");
+  ok(fs.readFileSync(path.join(TMP, ".operator", ".compress-state", ".gitignore"), "utf8").trim() === "*",
+    "the dedup-state root carries its own .gitignore holding '*'");
+
+  // (B) a project WITHOUT .operator/ gets no directory at all — the roots move
+  //     to a cwd-keyed tempdir, and spill/cite keep working.
+  const virgin = fs.mkdtempSync(path.join(os.tmpdir(), "opsvirgin-"));
+  const vres = compress({ ...bash(big), tool_input: { command: "npm test" } },
+    { env: {}, cwd: virgin });
+  const vout = vres?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
+  ok(!fs.existsSync(path.join(virgin, ".operator")),
+    "a project that never ran /cc-operator:start gets NO .operator/ directory");
+  const vm = vout.match(/full output spilled to (\S+)/);
+  ok(vm != null, "the spill still happens and is still cited");
+  if (vm) {
+    ok(path.isAbsolute(vm[1]), "an out-of-tree spill is cited by ABSOLUTE path, never a ../.. walk");
+    ok(fs.readFileSync(vm[1], "utf8") === big, "the out-of-tree spill holds the verbatim original");
+  }
+  // The wipe path the SessionStart hook recomputes in shell must match. The
+  // shared segment carries the uid: /tmp is world-writable on Linux and the key
+  // is a plain sha256 of cwd, so a uid-less shared root was readable — and
+  // pre-plantable — by any other local user.
+  const key = crypto.createHash("sha256").update(virgin).digest("hex").slice(0, 16);
+  const uid = typeof process.getuid === "function" ? process.getuid() : "nouid";
+  const tmpBase = path.join(os.tmpdir(), `cc-operator-${uid}`);
+  ok(fs.existsSync(path.join(tmpBase, key, ".compress-spill")),
+    "the tempdir root is <tmp>/cc-operator-<uid>/sha256(cwd)[:16] — the path SessionStart wipes");
+  ok(!fs.existsSync(path.join(os.tmpdir(), "cc-operator", key)),
+    "nothing is written to the legacy uid-less shared root");
+
+  // Modes: the spill holds UNREDACTED tool output, so no group/other bits on
+  // any segment or on the file itself.
+  for (const p of [tmpBase, path.join(tmpBase, key),
+                   path.join(tmpBase, key, ".compress-spill")]) {
+    ok((fs.lstatSync(p).mode & 0o077) === 0, `tempdir segment is 0700-tight: ${path.basename(p)}`);
+  }
+  if (vm) ok((fs.lstatSync(vm[1]).mode & 0o077) === 0, "the spill FILE is 0600 — pre-scrub output is not world-readable");
+
+  // A hijacked root must not be written through. Point the keyed segment at a
+  // symlink and assert the compressor declines rather than following it.
+  const hijackCwd = fs.mkdtempSync(path.join(os.tmpdir(), "opshijack-"));
+  const hkey = crypto.createHash("sha256").update(hijackCwd).digest("hex").slice(0, 16);
+  const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "opselsewhere-"));
+  fs.mkdirSync(tmpBase, { recursive: true, mode: 0o700 });
+  fs.symlinkSync(elsewhere, path.join(tmpBase, hkey));
+  const hres = compress({ ...bash(big), tool_input: { command: "npm test" } },
+    { env: {}, cwd: hijackCwd });
+  const hout = hres?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
+  ok(!/full output spilled to/.test(hout),
+    "a symlinked tempdir root is refused — no spill, no cite, rather than writing pre-scrub output where another user chose");
+  ok(fs.readdirSync(elsewhere).length === 0,
+    "nothing was written through the planted symlink");
+  fs.unlinkSync(path.join(tmpBase, hkey));
+  fs.rmSync(elsewhere, { recursive: true, force: true });
+  fs.rmSync(hijackCwd, { recursive: true, force: true });
+  fs.rmSync(virgin, { recursive: true, force: true });
+  fs.rmSync(path.join(tmpBase, key), { recursive: true, force: true });
+}
 
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log(`\n== summary: ${pass} passed, ${fail} failed ==`);

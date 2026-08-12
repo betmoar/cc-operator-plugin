@@ -6,6 +6,7 @@ import json
 import pathlib
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -47,6 +48,29 @@ GOOD_LOCK_BLOCK = (
     "lock_release() { rm -f \"$LOCKDIR/holder\"; rmdir \"$LOCKDIR\"; }\n"
     "# <<< LOCK BLOCK\n")
 
+# The U10 source-state stamp (check_source_stamp). A compliant stub carries the
+# resolver, every marker it can emit, the `.operator` dirty-exclusion, the 4-cell
+# row format, the APPLIED SOURCE_STAMP, and the verdict-path marker with the
+# stamp resolved before lock_acquire. Appended AFTER the lock block on purpose:
+# the ordering assertion reads the first lock_acquire that follows the marker,
+# and the block's own definition sits above it.
+GOOD_SOURCE_STAMP = (
+    "source_stamp() {\n"
+    "  command -v git >/dev/null 2>&1 || { printf 'no-vcs'; return 0; }\n"
+    "  sha=\"$(git rev-parse --verify --short=12 HEAD 2>/dev/null || true)\"\n"
+    "  [ -n \"$sha\" ] || { printf 'no-commit'; return 0; }\n"
+    "  porc=\"$(git status --porcelain -- ':(exclude).operator' 2>/dev/null)\""
+    " && rc=0 || rc=$?\n"
+    "  [ \"$rc\" -eq 0 ] || { printf '%s+unknown' \"$sha\"; return 0; }\n"
+    "  [ -z \"$porc\" ] || { printf '%s+dirty' \"$sha\"; return 0; }\n"
+    "  printf '%s' \"$sha\"\n"
+    "}\n"
+    "# --- Verdict path ---\n"
+    "SOURCE_STAMP=\"$(source_stamp)\"\n"
+    "lock_acquire\n"
+    "ROW=\"$(printf '| %s | %s | %s @%s | %s |'"
+    " \"$ID\" \"$C\" \"$E\" \"$SOURCE_STAMP\" \"$V\")\"\n")
+
 
 def write(p, text):
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -54,9 +78,14 @@ def write(p, text):
 
 
 def make_good_tree(root):
+    # `repository` is load-bearing, not decorative: check_issue_refs compares
+    # every issue link against it, and without it the check can only report that
+    # it has no baseline — which would make every other issue-ref assertion pass
+    # for the wrong reason.
     write(root / ".claude-plugin" / "plugin.json", json.dumps({
         "name": "cc-operator", "version": "0.1.0",
         "description": "d", "license": "MIT",
+        "repository": "https://github.com/betmoar/cc-operator-plugin",
     }))
     write(root / ".claude-plugin" / "marketplace.json", json.dumps({
         "name": "cc-operator-plugin", "owner": {"name": "b"},
@@ -100,17 +129,69 @@ def make_good_tree(root):
                 "type": "command",
                 "command": 'node "${CLAUDE_PLUGIN_ROOT}/scripts/ops-compress.mjs"',
             }]}],
+            # The G2 arm gate. `Bash` must NEVER appear in this matcher —
+            # check_armgate pins the set exactly (gating Bash deadlocks the
+            # repair path, since ops-task.sh is itself a Bash call).
+            # The `timeout` is pinned too (#33): this hook blocks every file
+            # mutation synchronously, so an unbounded one lets a hung JSON
+            # parser stall the session (measured: still blocked at 6s against a
+            # ~44ms normal path).
+            "PreToolUse": [{"matcher": "Write|Edit|MultiEdit|NotebookEdit", "hooks": [{
+                "type": "command",
+                "command": 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-armgate-hook.sh"',
+                "timeout": 5,
+            }]}],
         }
     }))
     write(root / ".claude-plugin" / "statusline.json", json.dumps({
         "name": "cc-operator", "render": "scripts/statusline.sh", "order": 30,
     }))
-    write(root / "scripts" / "ops-init.sh", "#!/usr/bin/env bash\nset -eu\necho ok\n")
+    # Both writers of .operator/.gitignore must carry the v2 allowlist body,
+    # byte-equal (check_gitignore_parity — same F30 shape as the install set).
+    gitignore_v2 = ("# cc-operator gitignore v2 (allowlist)\n"
+                    "*\n"
+                    "!.gitignore\n!.gitattributes\n"
+                    "!VERDICTS.md\n!DECISIONS.md\n!tiers.env\n"
+                    "!verdicts.d/\n!verdicts.d/*.md\n"
+                    # Evidence and policy, not machine state (#30/#31): the
+                    # handoff is what the charter's HANDOFF section produces,
+                    # and armgate.on is the project's committable opt-in.
+                    "!handoff-*.md\n!armgate.on\n")
+    # Both writers must DETECT a v1 file as well as emit the v2 body, and must
+    # refuse to overwrite it without a backup they verified. Emitting alone used
+    # to satisfy the check; a stub that only emits would now (correctly) fail.
+    # Both writers declare the .operator/bin install set, and check_install_set_parity
+    # now REPORTS a writer whose set it cannot locate rather than skipping it —
+    # so a stub without one is a fixture that models a shape the check rejects.
+    _install_loop = ("for _tool in ops-verdict.sh ops-task.sh ops-adopt.sh "
+                     "ops-claims.sh ops-backlog.sh; do :; done\n")
+    write(root / "scripts" / "ops-init.sh",
+          "#!/usr/bin/env bash\nset -eu\n" + _install_loop +
+          "_GI_MARK='# cc-operator gitignore v2 (allowlist)'\n"
+          "if ! grep -qF \"$_GI_MARK\" \"$OPDIR/.gitignore\" 2>/dev/null; then\n"
+          "  if [ -e \"$OPDIR/.gitignore.v1.bak\" ] && [ ! -f \"$OPDIR/.gitignore.v1.bak\" ]; then\n"
+          "    echo refusing >&2\n"
+          "  elif ! cp \"$OPDIR/.gitignore\" \"$OPDIR/.gitignore.v1.bak\" 2>/dev/null; then\n"
+          "    echo refusing >&2\n"
+          "  else\n"
+          "cat > \"$OPDIR/.gitignore\" <<'EOF'\n" + gitignore_v2 + "EOF\n"
+          "  fi\nfi\n"
+          "echo ok\n")
     # SessionStart clears the compressor's session-scoped artifacts; the guard
-    # checks for both directory names, so the stub must carry them.
+    # checks for both directory names, so the stub must carry them. It also
+    # migrates a v1 gitignore, so it carries the same allowlist body — behind
+    # the same verified backup.
     write(root / "scripts" / "ops-sessionstart-hook.sh",
-          "#!/usr/bin/env bash\nset -eu\n"
+          "#!/usr/bin/env bash\nset -eu\n" + _install_loop +
           "rm -rf \"$cwd/.operator/.compress-spill\" \"$cwd/.operator/.compress-state\"\n"
+          "if ! grep -qF '# cc-operator gitignore v2 (allowlist)' \"$_gi\" 2>/dev/null; then\n"
+          "  if [ -e \"$_gi.v1.bak\" ] && [ ! -f \"$_gi.v1.bak\" ]; then\n"
+          "    _gi_backup_failed=1\n"
+          "  elif ! cp \"$_gi\" \"$_gi.v1.bak\" 2>/dev/null; then\n"
+          "    _gi_backup_failed=1\n"
+          "  else\n"
+          "cat > \"$_gi\" <<'EOF'\n" + gitignore_v2 + "EOF\n"
+          "  fi\nfi\n"
           "echo ok\n")
     # The readers/CLIs need bodies that satisfy the byte-bound, guard-parity and
     # lock-parity checks — a bare `echo ok` stub fails all three.
@@ -130,7 +211,7 @@ def make_good_tree(root):
           "#!/usr/bin/env bash\n" + guards + nolink + bounded +
           "while IFS= read -r -n 512 row; do :; done < \"$frag\"\n" +
           "# --mark-handoff writes a HANDOFF-MARK line under the lock\n" +
-          GOOD_LOCK_BLOCK)
+          GOOD_LOCK_BLOCK + GOOD_SOURCE_STAMP)
     write(root / "scripts" / "ops-adopt.sh",
           "#!/usr/bin/env bash\n" + guards + nolink + bounded + GOOD_LOCK_BLOCK)
     # ops-claims.sh: a fourth gate CLI. check_claims pins its PROTECTED literal
@@ -140,9 +221,31 @@ def make_good_tree(root):
     write(root / "scripts" / "ops-claims.sh",
           "#!/usr/bin/env bash\n"
           'PROTECTED="scripts/validate_plugin.py tests/ .operator/bin/ hooks/ '
-          'scripts/ops-*.sh scripts/statusline.sh"\n'
+          'scripts/ops-*.sh scripts/statusline.sh backlog/"\n'
           "matches_protected() { :; }\n"
           'for p in $ACTUAL; do matches_protected "$p"; done\n')
+    # ops-backlog.sh: the planning/reporting CLI (B10.1). In check_scripts (so it
+    # gets bash -n) but NOT a gate CLI — not in CHARTER_REQUIRED_CLIS/GATE_CLIS.
+    write(root / "scripts" / "ops-backlog.sh",
+          "#!/usr/bin/env bash\n"
+          'if [ "${1:-}" = "--census" ]; then echo "files: 0"; exit 0; fi\n')
+    # ops-armgate-hook.sh: the G2 PreToolUse gate. check_armgate pins that it
+    # consults armgate.on, reads the .armed/ marker, honours .exempt, and carries
+    # a `-d` test so an unusable marker dir fails OPEN.
+    #
+    # The `-x` and `-w` halves are here because check_permission_guards pins
+    # their COUNT (#21): it fails both when a new permission test appears and
+    # when an existing one is removed, so a fixture missing them reads as the
+    # #19/#27 guards having regressed. A synthetic tree that does not track a
+    # pin makes the pin vacuous — the same lesson the timeout pin taught.
+    write(root / "scripts" / "ops-armgate-hook.sh",
+          "#!/usr/bin/env bash\n"
+          '[ -f "$opdir/armgate.on" ] || exit 0\n'
+          '[ -e "$opdir/.armed/$session" ] && exit 0\n'
+          '[ -e "$opdir/.armed/$session.exempt" ] && exit 0\n'
+          'if [ -e "$opdir/.armed" ] && { [ ! -d "$opdir/.armed" ] || '
+          '[ ! -x "$opdir/.armed" ] || [ ! -w "$opdir/.armed" ]; }; then exit 0; fi\n'
+          "exit 2\n")
     write(root / "scripts" / "statusline.sh", GOOD_STATUSLINE)
     # Every shipped slash command: frontmatter the harness registers it by,
     # and plugin-root script paths (a bare scripts/ path resolves only inside
@@ -259,6 +362,95 @@ class ValidatorTest(unittest.TestCase):
     def test_good_tree_is_clean(self):
         self.assertEqual(self.problems(), [])
 
+    # --- the U10 source-state stamp (check_source_stamp) ---
+    # Each mutation is one way the stamp stops binding a row to a tree. The
+    # last two are the ones that matter most, because neither changes any
+    # observable output: a stamp that never reaches the row, and a check that
+    # cannot see the difference, both look exactly like a working build.
+    def _verdict(self):
+        return self.dir / "scripts" / "ops-verdict.sh"
+
+    def _mutate_verdict(self, old, new):
+        p = self._verdict()
+        text = p.read_text(encoding="utf-8")
+        self.assertIn(old, text)
+        write(p, text.replace(old, new))
+
+    def test_source_stamp_resolver_removed(self):
+        self._mutate_verdict("source_stamp() {", "_removed_stamp() {")
+        self.assertFires("no source_stamp()")
+
+    def test_source_stamp_marker_dropped(self):
+        # A failure path that degrades to silence instead of an explicit state.
+        self._mutate_verdict("printf '%s+unknown' \"$sha\"", "printf '%s' \"$sha\"")
+        self.assertFires("'+unknown' marker")
+
+    def test_source_stamp_dirty_exclusion_dropped(self):
+        # Counting .operator/ pins every row to +dirty — a marker that can never
+        # be off, which is the vacuous-guard class (#21) wearing a feature's
+        # clothes. Nothing errors; the signal just stops meaning anything.
+        self._mutate_verdict(" -- ':(exclude).operator'", "")
+        self.assertFires("must exclude")
+
+    def test_source_stamp_fifth_cell(self):
+        self._mutate_verdict("| %s | %s | %s @%s | %s |",
+                             "| %s | %s | %s | @%s | %s |")
+        self.assertFires("four cells")
+
+    def test_source_stamp_resolved_but_never_applied(self):
+        # F30: declared and not applied. The resolver still exists, still
+        # returns the right token, and the row still carries none of it.
+        self._mutate_verdict("SOURCE_STAMP", "UNUSED_STAMP")
+        self.assertFires("never applied to the row")
+
+    def test_source_stamp_dropped_from_the_row_argument_only(self):
+        # The narrower mutation the substring test could not see: the assignment
+        # `SOURCE_STAMP="$(source_stamp)"` stays, so `"SOURCE_STAMP" in code` is
+        # still true, but the ROW's own argument becomes a literal and every row
+        # ships unstamped (Copilot review of PR #12). "Applied" has to mean the
+        # printf carries it, not that the identifier occurs somewhere.
+        self._mutate_verdict('"$E" "$SOURCE_STAMP" "$V"', '"$E" "BOGUS" "$V"')
+        self.assertFires('does not pass "$SOURCE_STAMP"')
+
+    def test_source_stamp_row_site_missing_is_reported(self):
+        # Not-found must be a reported problem, never a silent skip — the
+        # PLAYBOOK's rule for every guard that locates its target by regex.
+        self._mutate_verdict('ROW="$(printf ', 'ROW2="$(printf ')
+        self.assertFires("check_source_stamp cannot verify")
+
+    def test_source_stamp_resolved_inside_the_lock(self):
+        # The PLAYBOOK's step-3 hazard: git work inside the critical section.
+        # This is the mutation the first draft of the check PASSED — it split on
+        # a comment marker it had already stripped, found nothing, and skipped
+        # the assertion. Pinned so the fail-open cannot come back.
+        self._mutate_verdict(
+            "SOURCE_STAMP=\"$(source_stamp)\"\nlock_acquire",
+            "lock_acquire\nSOURCE_STAMP=\"$(source_stamp)\"")
+        self.assertFires("BEFORE lock_acquire")
+
+    def test_source_stamp_verdict_path_marker_lost(self):
+        # Not-found must be a reported problem, never a silent skip: a guard
+        # whose landmark disappeared cannot tell "compliant" from "unreadable".
+        self._mutate_verdict("# --- Verdict path ---", "# --- verdict stuff ---")
+        self.assertFires("Verdict path")
+
+    # --- the handout packet pin (check_handout_packet, F69) ---
+    def test_handout_packet_pin(self):
+        # Absent file: the check must skip — prose is optional, and the good
+        # tree has no handout. Then a handout carrying the charter packet is
+        # clean, and one that drops the CHANGED line (the measured F69 drift —
+        # it is ops-claims.sh's input) fires.
+        probs = []
+        vp.check_handout_packet(self.dir, probs)
+        self.assertEqual(probs, [])
+        h = self.dir / "docs" / "HANDOUT.md"
+        write(h, "packet:\nTASK / TEXT / SCENE / ... / CHANGED: <paths>|none\n")
+        probs = []
+        vp.check_handout_packet(self.dir, probs)
+        self.assertEqual(probs, [])
+        write(h, "packet:\nTASK / SCENE / INPUTS / DONE MEANS / REPORT\n")
+        self.assertFires("missing the packet literal")
+
     # --- 1. manifests ---
     def test_wrong_plugin_name(self):
         p = self.dir / ".claude-plugin" / "plugin.json"
@@ -285,6 +477,205 @@ class ValidatorTest(unittest.TestCase):
     def test_changelog_missing(self):
         (self.dir / "CHANGELOG.md").unlink()
         self.assertFires("CHANGELOG.md: missing")
+
+    # --- issue references (check_issue_refs) ---
+    # The good tree carries NO issue refs, so every test here writes the refs it
+    # asserts on. That is deliberate: a fixture pre-loaded with a valid ref set
+    # would make the "clean tree" assertion carry the check's weight, and a
+    # check that only ever sees good input proves nothing (F48).
+    _ISSUE_BASE = "https://github.com/betmoar/cc-operator-plugin/issues/"
+
+    def _changelog_with(self, body):
+        write(self.dir / "CHANGELOG.md",
+              "# C\n\n## [Unreleased]\n\n## [0.1.0] - 2026-07-06\n\n" + body)
+
+    def test_issue_refs_good_pair_is_clean(self):
+        # The positive control. Without it, every assertion below would also
+        # pass against a check that rejects all issue references.
+        self._changelog_with(f"- fixed [#27]\n\n[#27]: {self._ISSUE_BASE}27\n")
+        self.assertEqual(self.problems(), [])
+
+    def test_issue_ref_label_url_mismatch_fires(self):
+        # The inverted-ref class: renders as #27, navigates to #28. Preventive —
+        # no commit in this repo's history carries this shape (an earlier
+        # docstring claimed two did; measured false, see check_issue_refs).
+        self._changelog_with(f"- fixed [#27]\n\n[#27]: {self._ISSUE_BASE}28\n")
+        self.assertFires("links to issue 28")
+
+    def test_issue_ref_url_fragment_is_not_a_mismatch(self):
+        # `#issuecomment-N` is what GitHub's "copy link" produces on a comment.
+        # It addresses a location WITHIN the right issue; comparing it against
+        # the label reported a legitimate deep link as inverted.
+        self._changelog_with(
+            f"- fixed [#27]\n\n[#27]: {self._ISSUE_BASE}27#issuecomment-999\n")
+        self.assertEqual(self.problems(), [])
+
+    def test_issue_ref_url_query_and_slash_are_not_mismatches(self):
+        self._changelog_with(f"- a [#27]\n\n[#27]: {self._ISSUE_BASE}27?tab=x\n")
+        self.assertEqual(self.problems(), [])
+        self._changelog_with(f"- a [#27]\n\n[#27]: {self._ISSUE_BASE}27/\n")
+        self.assertEqual(self.problems(), [])
+
+    def test_issue_ref_wrong_number_with_fragment_still_fires(self):
+        # The suffix is ignored, not the number — otherwise the fragment fix
+        # would have opened a hole exactly where the check earns its keep.
+        self._changelog_with(
+            f"- fixed [#27]\n\n[#27]: {self._ISSUE_BASE}28#issuecomment-1\n")
+        self.assertFires("links to issue 28")
+
+    def test_issue_ref_dangling_use_fires(self):
+        self._changelog_with("- fixed [#27]\n")
+        self.assertFires("has no `[#27]: <url>` definition")
+
+    def test_issue_ref_orphan_def_fires(self):
+        self._changelog_with(f"- nothing\n\n[#27]: {self._ISSUE_BASE}27\n")
+        self.assertFires("defined but never used")
+
+    def test_issue_ref_foreign_repo_fires(self):
+        self._changelog_with(
+            "- fixed [#27]\n\n"
+            "[#27]: https://github.com/someone/other/issues/27\n")
+        self.assertFires("not https://github.com/betmoar/cc-operator-plugin")
+
+    def test_issue_ref_inline_form_mismatch_fires(self):
+        # docs/INFOGRAPHICS.md uses the inline form, so it needs the same pin —
+        # checking only the reference-style form would leave that file unguarded.
+        write(self.dir / "docs" / "X.md",
+              f"See [#22]({self._ISSUE_BASE}23) for the open unknown.\n")
+        self.assertFires("links to issue 23")
+
+    def test_issue_ref_bare_number_is_not_flagged(self):
+        # `#N` in prose is NOT an issue reference here: tracked docs write
+        # `Backlog #2`, `task #1`, `F48 #5`. Flagging bare numbers would force
+        # wrong links or an exception list. This test pins that scope decision,
+        # so a later "tighten it up" edit fails instead of quietly breaking docs.
+        write(self.dir / "docs" / "X.md",
+              "Backlog #2 asked for a discriminating test; see task #1 and "
+              "F48 #5. Issue #9 is closed.\n")
+        self.assertEqual(self.problems(), [])
+
+    def test_issue_ref_bare_url_from_foreign_repo_fires(self):
+        # An unlabelled URL cannot be cross-checked against a number, but it can
+        # still point at someone else's tracker.
+        write(self.dir / "docs" / "X.md",
+              "Discussed at https://github.com/someone/other/issues/5 today.\n")
+        self.assertFires("another project's tracker")
+
+    def test_issue_ref_code_span_is_not_a_reference(self):
+        # Prose QUOTING a reference to document it is not a reference. This
+        # repo's own changelog writes `[#28]` in backticks while explaining the
+        # inverted-ref class; without stripping, the check read its own prose as
+        # a live ref and dragged an unrelated definition into the release body.
+        self._changelog_with(
+            "- the class is `[#28]` pointing at `/issues/29`\n")
+        self.assertEqual(self.problems(), [])
+
+    def test_issue_ref_fenced_block_is_not_a_reference(self):
+        write(self.dir / "docs" / "X.md",
+              "Example:\n\n```\n[#5]: https://github.com/other/x/issues/5\n```\n")
+        self.assertEqual(self.problems(), [])
+
+    def test_issue_ref_duplicate_def_fires(self):
+        # dict(findall) kept the LAST definition; CommonMark resolves the FIRST.
+        # So a duplicated def let the check validate a URL the renderer never
+        # uses — here the first is foreign and must still be reported.
+        self._changelog_with(
+            "- fixed [#5]\n\n"
+            "[#5]: https://github.com/other/repo/issues/5\n"
+            f"[#5]: {self._ISSUE_BASE}5\n")
+        self.assertFires("defined more than once")
+        self.assertFires("not https://github.com/betmoar/cc-operator-plugin")
+
+    def test_issue_ref_foreign_url_reports_once(self):
+        # One fault, one problem line. The labelled-URL loop and the bare-URL
+        # scan both see this string; the second must defer to the first, which
+        # carries the better message.
+        self._changelog_with(
+            "- fixed [#5]\n\n[#5]: https://github.com/other/repo/issues/5\n")
+        hits = [p for p in self.problems() if "other/repo/issues/5" in p]
+        self.assertEqual(len(hits), 1, hits)
+
+    def test_issue_ref_foreign_url_with_fragment_reports_once(self):
+        # The dedup matches by prefix: ISSUE_DEF_RE captures the fragment,
+        # ISSUE_URL_RE stops at the number, so equality would miss here.
+        self._changelog_with(
+            "- fixed [#5]\n\n[#5]: https://github.com/other/repo/issues/5#c1\n")
+        hits = [p for p in self.problems() if "other/repo/issues/5" in p]
+        self.assertEqual(len(hits), 1, hits)
+
+    def test_issue_ref_use_before_parenthetical_is_a_use(self):
+        # CommonMark requires an inline link's `(` to follow `]` immediately, so
+        # `[#9] (a note)` IS reference-style. An `\s*` in the exclusion lookahead
+        # silently dropped it from `uses` — a dangling ref that never reported.
+        self._changelog_with("- see [#9] (a note)\n")
+        self.assertFires("has no `[#9]: <url>` definition")
+
+    def test_issue_ref_multiple_faults_in_one_file(self):
+        # Faults must not mask each other: one file, three kinds, three reports.
+        self._changelog_with(
+            f"- a [#1] and [#2]\n\n[#2]: {self._ISSUE_BASE}2\n"
+            f"[#3]: {self._ISSUE_BASE}3\n")
+        self.assertFires("has no `[#1]: <url>` definition")
+        self.assertFires("`[#3]:` is defined but never used")
+
+    def test_issue_refs_untracked_file_is_out_of_scope(self):
+        # Scope is tracked markdown. The fixture has no git repo, so the check
+        # falls back to a glob — a SUPERSET. This asserts the fallback really is
+        # a superset (it sees the file) rather than silently examining nothing:
+        # a check that passes because it read no files is the vacuous shape.
+        write(self.dir / "docs" / "scratch.md", f"[#1]({self._ISSUE_BASE}2)\n")
+        self.assertFires("links to issue 2")
+
+    def test_issue_refs_missing_repository_fires(self):
+        # Without plugin.json `repository` there is no base to compare against.
+        # Passing silently would make every foreign URL legal.
+        write(self.dir / ".claude-plugin" / "plugin.json", json.dumps({
+            "name": "cc-operator", "version": "0.1.0",
+            "description": "d", "license": "MIT",
+        }))
+        self.assertFires("no `repository`")
+
+    # The tests above all run against a tmpdir with no `.git`, so they exercise
+    # the GLOB fallback — `git ls-files` exits 128 there. The two below are the
+    # only coverage of the primary path, and of the sparse-checkout read. Without
+    # them the branch the docstring spends the most words justifying is unproven,
+    # which is the F48 shape aimed at this check itself.
+    def _git(self, *args):
+        return subprocess.run(("git", "-C", str(self.dir)) + args,
+                              capture_output=True, text=True)
+
+    def _init_repo(self, *tracked):
+        self._git("init", "-q")
+        self._git("config", "user.email", "t@example.invalid")
+        self._git("config", "user.name", "t")
+        self._git("add", "--", *tracked)
+        self._git("commit", "-qm", "t")
+        # The listing must be non-empty, or the check falls back to the glob and
+        # this test silently proves nothing about the git path.
+        listed = self._git("ls-files", "*.md").stdout.split()
+        self.assertTrue(listed, "fixture did not track any markdown")
+        return listed
+
+    def test_issue_refs_scope_is_tracked_files_only(self):
+        write(self.dir / "docs" / "tracked.md",
+              f"a [#1]({self._ISSUE_BASE}2)\n")
+        write(self.dir / "docs" / "untracked.md",
+              f"b [#3]({self._ISSUE_BASE}4)\n")
+        listed = self._init_repo("docs/tracked.md")
+        self.assertNotIn("docs/untracked.md", listed)
+        probs = [p for p in self.problems() if "issue" in p or "#" in p]
+        self.assertTrue(any("links to issue 2" in p for p in probs), probs)
+        self.assertFalse(any("untracked.md" in p for p in probs), probs)
+
+    def test_issue_refs_tracked_but_absent_file_is_reported(self):
+        # `git ls-files` reports INDEX entries, so a sparse checkout lists files
+        # the working tree does not have. Swallowing that FileNotFoundError made
+        # the gate quietly cover less than it claimed.
+        write(self.dir / "docs" / "gone.md",
+              "b https://github.com/someone/other/issues/9\n")
+        self._init_repo("docs/gone.md")
+        (self.dir / "docs" / "gone.md").unlink()
+        self.assertFires("tracked by git but absent from the working tree")
 
     # --- 4. charter gates ---
     def test_charter_too_long(self):
@@ -640,6 +1031,29 @@ class ValidatorTest(unittest.TestCase):
     # The plugin's entry points are its slash commands. An empty frontmatter
     # block, a missing key, or a bare scripts/ path are all silent shipping
     # bugs — the command either won't register or will fail in a target project.
+
+    def test_a_new_permission_guard_fires(self):
+        # #21: a permission test is INERT for uid 0, so a NEW one must not enter
+        # a gate script unreviewed. The class went 1 -> 2 instances when #27's
+        # fix added the -w half while the issue still said one; this is what
+        # stops the third from arriving silently.
+        real = (self.dir / "scripts" / "ops-task.sh").read_text(encoding="utf-8")
+        write(self.dir / "scripts" / "ops-task.sh",
+              real.replace("#!/usr/bin/env bash\n",
+                           '#!/usr/bin/env bash\n[ -w /tmp ] || true\n', 1))
+        probs = self.problems()
+        self.assertTrue(any("permission test" in p and "ops-task.sh" in p
+                            for p in probs), probs)
+
+    def test_removing_a_permission_guard_fires(self):
+        # The OTHER direction, and the one that matters more: dropping the -w
+        # half silently reopens #27 (a non-writable .armed wedges the project
+        # off-root). The count is pinned both ways for that reason.
+        real = (self.dir / "scripts" / "ops-armgate-hook.sh").read_text(encoding="utf-8")
+        write(self.dir / "scripts" / "ops-armgate-hook.sh",
+              real.replace(' || [ ! -w "$opdir/.armed" ]', "", 1))
+        probs = self.problems()
+        self.assertTrue(any("was REMOVED" in p for p in probs), probs)
 
     def test_commands_dir_optional(self):
         # A plugin that ships only agents need not have commands/. The good-tree
@@ -1466,6 +1880,148 @@ class InstallSetParityTest(unittest.TestCase):
             "ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh ops-future.sh", 1)
         self.assertTrue(any("install-set drift" in p for p in self._probs(src)),
                         self._probs(src))
+
+    def test_unlocatable_install_set_is_reported_not_skipped(self):
+        # The check used to return None for a writer it could not parse and then
+        # guard with `if a and b`, so refactoring ONE writer's loop to a variable
+        # silently reduced the comparison to nothing — green while pinning zero.
+        # Measured 2026-08-12 while fixing #34: ops-sessionstart-hook.sh moved to
+        # `for _tool in $_OPS_TOOLS` and the parity check went quiet.
+        src = self._real_init.replace("for tool in ops-verdict.sh", "for tool in $NOPE", 1) \
+            if "for tool in ops-verdict.sh" in self._real_init else \
+            self._real_init.replace("for _tool in ops-verdict.sh", "for _tool in $NOPE", 1)
+        probs = self._probs(src)
+        self.assertTrue(any("cannot locate the .operator/bin install set" in p
+                            for p in probs), probs)
+
+    def test_declared_but_uniterated_tool_list_fires(self):
+        # A variable spelling only helps if the copy loop iterates it. Declaring
+        # _OPS_TOOLS and looping over a hand-written list means the declared set
+        # and the installed set are two different lists (F30) — and the variable
+        # is what this check reads, so it would report the one nobody runs.
+        # Built from a synthetic writer rather than by mutating the real
+        # ops-init.sh, whose loop is spelled `for tool in` (no underscore); an
+        # earlier draft keyed off `for _tool in`, matched nothing, and SKIPPED —
+        # a test that proves nothing while reading as present.
+        src = ('#!/usr/bin/env bash\n'
+               '_OPS_TOOLS="ops-verdict.sh ops-task.sh ops-adopt.sh '
+               'ops-claims.sh ops-backlog.sh"\n'
+               'for _tool in ops-verdict.sh ops-task.sh; do :; done\n')
+        probs = self._probs(src)
+        self.assertTrue(any("does not iterate it" in p for p in probs), probs)
+
+
+class GitignoreParityTest(unittest.TestCase):
+    """check_gitignore_parity: the v2 allowlist body is written by ops-init.sh
+    AND ops-sessionstart-hook.sh. Drift means a project's tracked set depends on
+    which path migrated it — and the silent direction is an allow line present in
+    one and missing in the other, which un-tracks a ledger. Mutates the REAL
+    scripts (not a stub) so the test cannot pass a body the shipped code lacks.
+    """
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        make_good_tree(self.dir)
+        root = pathlib.Path(__file__).resolve().parent.parent
+        self._real_init = (root / "scripts" / "ops-init.sh").read_text(encoding="utf-8")
+        self._real_ssh = (root / "scripts" / "ops-sessionstart-hook.sh").read_text(encoding="utf-8")
+        write(self.dir / "scripts" / "ops-init.sh", self._real_init)
+        write(self.dir / "scripts" / "ops-sessionstart-hook.sh", self._real_ssh)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _probs(self):
+        probs = []
+        vp.check_gitignore_parity(self.dir, probs)
+        return probs
+
+    def test_shipped_scripts_are_in_parity(self):
+        self.assertEqual(self._probs(), [])
+
+    def test_dropping_an_allow_line_from_one_writer_fires(self):
+        # The realistic silent failure: one writer stops admitting a ledger.
+        write(self.dir / "scripts" / "ops-sessionstart-hook.sh",
+              self._real_ssh.replace("!DECISIONS.md\n", "", 1))
+        probs = self._probs()
+        self.assertTrue(any("missing allow line" in p for p in probs), probs)
+        self.assertTrue(any("drift" in p for p in probs), probs)
+
+    def test_dropping_the_bare_star_fires(self):
+        # The `*` is what makes this an ALLOWLIST. Drop it and the file inverts
+        # to a v1 blocklist: bin/, pending/, .lock/ and every compressor spill
+        # ship TRACKED, which is the failure v2 exists to end. This went
+        # unpinned while the docstring called `*` "the load-bearing half" —
+        # dropping it left the build green (Copilot review, PR #12). Both
+        # writers are mutated independently: a check that only covers one is
+        # the same half-applied guard it is meant to catch.
+        for name, real in (("ops-init.sh", self._real_init),
+                           ("ops-sessionstart-hook.sh", self._real_ssh)):
+            with self.subTest(writer=name):
+                write(self.dir / "scripts" / name,
+                      real.replace(
+                          "# is genuinely evidence a teammate must read.\n*\n!.gitignore",
+                          "# is genuinely evidence a teammate must read.\n!.gitignore",
+                          1))
+                probs = self._probs()
+                self.assertTrue(any("no bare `*` line" in p for p in probs), probs)
+                write(self.dir / "scripts" / name, real)   # restore for the next subTest
+        self.assertEqual(self._probs(), [])
+
+    def test_losing_the_v2_marker_fires(self):
+        # Without the marker neither writer can DETECT a v1 file, so a blocklist
+        # is appended to instead of replaced — and the two schemes contradict.
+        write(self.dir / "scripts" / "ops-init.sh",
+              self._real_init.replace("# cc-operator gitignore v2 (allowlist)", "# v2", 1))
+        self.assertTrue(any("v2 gitignore marker" in p for p in self._probs()),
+                        self._probs())
+
+    def test_losing_only_the_DETECTION_grep_fires(self):
+        # EMIT and DETECT are two claims. The heredoc body contains the marker,
+        # so a substring test passes even with the migration `grep` deleted —
+        # and then every existing v1 project silently stops being detected
+        # (Copilot review of PR #12; measured green in both writers before this).
+        # One mutation per writer: covering only one leaves the other on the
+        # same half-applied guard this check exists to catch.
+        for name, real, detect, replacement in (
+                ("ops-init.sh", self._real_init,
+                 'elif ! grep -qF "$_GI_MARK" "$OPDIR/.gitignore" 2>/dev/null; then',
+                 'elif false; then'),
+                ("ops-sessionstart-hook.sh", self._real_ssh,
+                 "! grep -qF '# cc-operator gitignore v2 (allowlist)' \"$_gi\" 2>/dev/null",
+                 "false")):
+            with self.subTest(writer=name):
+                self.assertIn(detect, real, f"{name}: detection anchor moved")
+                write(self.dir / "scripts" / name, real.replace(detect, replacement, 1))
+                probs = self._probs()
+                self.assertTrue(any("never greps for it" in p for p in probs), probs)
+                write(self.dir / "scripts" / name, real)
+        self.assertEqual(self._probs(), [])
+
+    def test_migration_without_a_tested_backup_fires(self):
+        # The write must be reachable ONLY through a successful backup. The
+        # shipped shape was `cp … 2>/dev/null` then an unconditional overwrite,
+        # so a failed backup destroyed the user's rules while the notice claimed
+        # they were recoverable (measured in BOTH writers, 2026-08-12).
+        shipped_init = (
+            '  cp "$OPDIR/.gitignore" "$OPDIR/.gitignore.v1.bak" 2>/dev/null\n'
+            '  _gi_write\n')
+        start = self._real_init.index("  # BACKUP FIRST")
+        end = self._real_init.index("  fi\nfi\n", start) + len("  fi\nfi\n")
+        write(self.dir / "scripts" / "ops-init.sh",
+              self._real_init[:start] + shipped_init + "fi\n" + self._real_init[end:])
+        probs = self._probs()
+        self.assertTrue(any("without testing whether the copy" in p for p in probs), probs)
+        self.assertTrue(any("non-regular entry at .gitignore.v1.bak" in p
+                            for p in probs), probs)
+
+    def test_fragment_allow_line_is_pinned(self):
+        # verdicts.d/*.md is what merge=union operates on: un-tracking it breaks
+        # the clean-merge property the whole fragment scheme exists for.
+        write(self.dir / "scripts" / "ops-init.sh",
+              self._real_init.replace("!verdicts.d/*.md\n", "", 1))
+        self.assertTrue(any("verdicts.d/*.md" in str(p) for p in self._probs()),
+                        self._probs())
 
 
 if __name__ == "__main__":

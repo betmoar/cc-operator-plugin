@@ -10,8 +10,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The runner's shellcheck is whatever ubuntu-latest ships, and that is NOT
+      # what a maintainer runs locally: 0.11 stopped failing on SC2015 while
+      # 0.9/0.10 still do, so five commits reported "shellcheck clean" from a
+      # 0.11 workstation while every CI run went red on the same bytes. Pin it,
+      # and print the version so a future divergence is visible in the log
+      # rather than inferred from a mysterious failure.
       - name: Shellcheck gate scripts
-        run: shellcheck scripts/*.sh tests/test-scripts.sh
+        run: |
+          docker run --rm -v "$PWD":/w -w /w koalaman/shellcheck-alpine:v0.10.0 \
+            sh -c 'shellcheck --version | grep version:; shellcheck scripts/*.sh tests/test-scripts.sh'
       - name: Validate plugin contracts
         run: python3 scripts/validate_plugin.py
       - name: Run Python tests

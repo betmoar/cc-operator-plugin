@@ -251,6 +251,23 @@ check_owner_name() { # check_owner_name <value>
   check_bare_name "owner" "$1"
   case "$1" in
     *[[:space:]]*) die "owner must not contain whitespace — it could never match a real session id, leaving the task permanently unblockable" ;;
+    # `.armed/` holds TWO marker kinds in ONE flat namespace: `<sid>` (derived
+    # cache, the recompute may delete it) and `<sid>.exempt` (a G3 grant, the
+    # recompute must never touch it). An owner ending in `.exempt` collides with
+    # the second, in BOTH directions (issue #30, measured):
+    #   grant   — `ops-task.sh <any-task> --owner foo.exempt` writes
+    #             `.armed/foo.exempt`, which the hook reads as session `foo`'s
+    #             G3 grant. Session foo goes from denied to allowed with ZERO
+    #             GATE-EXCEPTION rows: the audited escape hatch, unaudited.
+    #   destroy — a session literally named `foo.exempt` closing an ordinary
+    #             task runs `recompute_arm_marker foo.exempt`, whose `rm -f`
+    #             deletes foo's REAL exemption while the ledger row still
+    #             asserts it holds. The gate silently re-arms against foo.
+    # Rejecting the suffix at every writer is the cheap fix; separating the two
+    # namespaces (`.armed/derived/` vs `.armed/granted/`) is the structural one
+    # and would be a migration. Real session ids are UUIDs, so nothing legitimate
+    # is refused here.
+    *.exempt) die "owner must not end in '.exempt' — that suffix is reserved for G3 exemption markers in .armed/, and an owner carrying it would forge or destroy one" ;;
   esac
 }
 
@@ -365,6 +382,21 @@ for ID in ${IDS+"${IDS[@]}"}; do
     die "task '$ID' was closed while adopting — not resurrecting its sentinel"
   fi
   mv "$TMP" "$F"
+
+  # --- arm marker (G2.1) -----------------------------------------------------
+  # AFTER the sentinel carries the new owner, under the lock this loop already
+  # holds. Adoption is the documented repair for a desynced marker (the arm
+  # gate's deny message names this command verbatim): re-stamping ownership and
+  # re-creating the marker are the same operation from the operator's side.
+  # Failure is swallowed — a marker we could not write degrades to stale-false,
+  # repaired by the next verdict's recompute, and dying here would abort an
+  # adoption that already succeeded.
+  # Explicit `if`, not `A && B || C`: with the chained form a FAILED truncate
+  # still runs the `|| true`, which reads as "success tolerated" when it is the
+  # one outcome worth the (swallowed) failure being distinct. SC2015.
+  if mkdir -p "$OPDIR/.armed" 2>/dev/null; then
+    : > "$OPDIR/.armed/$OWNER" 2>/dev/null || true
+  fi
 
   echo "adopted $ID: ${PREV:-<unowned>} -> $OWNER"
 done

@@ -53,6 +53,45 @@ session="$(json_get session_id)"
 # cwd rather than going silent — a missing banner costs the whole mechanism.
 cwd="$(json_get cwd)"
 [ -n "$cwd" ] || cwd="$PWD"
+
+# --- tempdir-ephemera cleanup (runs for EVERY project, even one with no -----
+# .operator/). The compressor's containment-(B) falls back to a tempdir root
+# keyed by sha256(cwd) precisely when .operator/ is ABSENT (a project that never
+# ran /cc-operator:start must not have one materialized in it). That copy is
+# session-scoped ephemera that accumulates forever if never wiped — and the
+# `.operator/` gate below used to make this wipe unreachable for exactly the
+# projects that use the tempdir path. So this runs FIRST, before the gate. The
+# in-project .operator/.compress-* wipe stays behind the gate (it needs the
+# directory it wipes). Key must match ops-compress.mjs:ephemeralRoot.
+_ccdir=""
+if command -v shasum >/dev/null 2>&1; then
+  _ccdir="$(printf '%s' "$cwd" | shasum -a 256 2>/dev/null | cut -c1-16)"
+elif command -v sha256sum >/dev/null 2>&1; then
+  _ccdir="$(printf '%s' "$cwd" | sha256sum 2>/dev/null | cut -c1-16)"
+fi
+if [ -n "$_ccdir" ]; then
+  # The shared segment carries the uid and is created 0700 by the compressor:
+  # `/tmp` is world-writable on Linux and the key is a plain sha256 of cwd, so a
+  # uid-less shared root let another local user read pre-scrub tool output or
+  # pre-plant a symlink and capture every later spill. This name MUST match
+  # ops-compress.mjs:TMP_ROOT_NAME — the two derive the same path independently.
+  # The legacy uid-less root is swept too, so an upgrade does not strand the
+  # world-readable spills the old version already wrote.
+  _ccuid="$(id -u 2>/dev/null || echo nouid)"
+  for _croot in "cc-operator-$_ccuid" "cc-operator"; do
+    for _cdir in \
+      "${TMPDIR:-/tmp}/$_croot/$_ccdir/.compress-spill" \
+      "${TMPDIR:-/tmp}/$_croot/$_ccdir/.compress-state"; do
+      # Never follow a symlink planted at these paths.
+      [ -d "$_cdir" ] && [ ! -L "$_cdir" ] && rm -rf "$_cdir" 2>/dev/null
+    done
+  done
+fi
+
+# Gate everything that operates ON .operator/ (the banner, the bin/ upgrade, the
+# in-project ephemera wipe, the gitignore migration): a project without one has
+# nothing to upgrade or migrate. The tempdir wipe above is the exception — it
+# serves precisely the projects that fail this gate.
 [ -d "$cwd/.operator" ] || exit 0
 
 # --- automated upgrade path (version-gated) ----------------------------------
@@ -82,10 +121,38 @@ fi
 _stamp="$cwd/.operator/.version"
 _oldver=""
 [ -f "$_stamp" ] && _oldver="$(cat "$_stamp" 2>/dev/null)"
-# Refresh only when the version actually differs (newer OR the stamp is absent).
-# A simple string inequality is enough: versions are single-source from
-# plugin.json, and a downgrade is still a change worth reflecting in bin/.
-if [ -n "$_newver" ] && [ "$_newver" != "$_oldver" ]; then
+
+# The install set, declared once — the loop below and the staleness probe must
+# agree, or a CLI is checked for freshness and never copied (or vice versa).
+_OPS_TOOLS="ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh ops-backlog.sh"
+
+# Is any installed CLI older than the plugin's copy? A version-string test alone
+# is NOT enough, and this is issue #34, measured live by the replay charter on
+# 2026-08-12: `.operator/bin/ops-verdict.sh` was byte-identical to a commit two
+# ahead of it in the log — every intra-version fix to a gate CLI stayed
+# invisible because plugin.json still said 0.7.0 and the stamp already agreed.
+# The charter points the model at `.operator/bin/...`, so THAT copy is the gate
+# a session actually runs: a stale bin/ means the project runs a fixed CLI's
+# broken predecessor while every test in the plugin tree passes.
+#
+# `-nt` is also true when the destination is ABSENT, which is the "never
+# installed" case and equally deserves a copy. Content compare (cmp) would be
+# stricter, but mtime is enough here and costs one stat per tool on a hot path
+# that runs at every session start.
+_bin_stale() {
+  local _t
+  for _t in $_OPS_TOOLS; do
+    [ -f "$_ssdir/$_t" ] || continue
+    [ "$_ssdir/$_t" -nt "$cwd/.operator/bin/$_t" ] && return 0
+  done
+  return 1
+}
+
+# Refresh when the version differs (newer, older, or the stamp is absent) OR
+# when the shipped CLIs are simply newer than what is installed. The second
+# clause is what makes a hotfix — and any development tree, where the version
+# legitimately does not move between commits — actually reach the project.
+if [ -n "$_newver" ] && { [ "$_newver" != "$_oldver" ] || _bin_stale; }; then
   # Refresh the bin/ CLIs the way ops-init does (always-refresh: generated
   # artifacts tracking the installed plugin version). mkdir the bin/ dir first
   # (ops-init does; without it a project whose .operator/bin was never created
@@ -96,7 +163,7 @@ if [ -n "$_newver" ] && [ "$_newver" != "$_oldver" ]; then
   # review 2026-08-04). Best-effort for the banner; the stamp is the contract.
   _upgrade_ok=1
   if [ -d "$_ssdir" ] && mkdir -p "$cwd/.operator/bin" 2>/dev/null; then
-    for _tool in ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh; do
+    for _tool in $_OPS_TOOLS; do
       [ -f "$_ssdir/$_tool" ] || continue
       if cp "$_ssdir/$_tool" "$cwd/.operator/bin/$_tool" 2>/dev/null \
          && chmod +x "$cwd/.operator/bin/$_tool" 2>/dev/null; then
@@ -109,15 +176,9 @@ if [ -n "$_newver" ] && [ "$_newver" != "$_oldver" ]; then
   else
     _upgrade_ok=0
   fi
-  # Ensure the compressor-ephemera ignore lines (same upgrade-append ops-init
-  # does) so a refreshed version's compressor does not dirty the tree.
-  _gi="$cwd/.operator/.gitignore"
-  if [ -f "$_gi" ] && ! grep -q '^\.compress-spill/$' "$_gi" 2>/dev/null; then
-    {
-      printf '# Compressor ephemera (ensured by upgrade): session-scoped, wiped on SessionStart.\n'
-      printf '.compress-spill/\n.compress-state/\n'
-    } >> "$_gi" 2>/dev/null
-  fi
+  # (The compressor-ephemera append that used to sit here is gone with the v2
+  # allowlist; the migration below handles a v1 project, and it runs every
+  # session rather than only on the upgrade path.)
   # Re-stamp ONLY if every CLI copy succeeded. A failure leaves the old stamp →
   # next session retries. (gitignore-ensure is best-effort and does not gate.)
   if [ "$_upgrade_ok" = 1 ]; then
@@ -137,24 +198,86 @@ fi
 for _cdir in "$cwd/.operator/.compress-spill" "$cwd/.operator/.compress-state"; do
   [ -d "$_cdir" ] && rm -rf "$_cdir" 2>/dev/null
 done
+# The tempdir-root half of this wipe runs EARLY, before the .operator/ gate —
+# see the block above. It serves precisely the projects that fail this gate.
 
-# Ensure the compressor's ephemera are git-ignored BEFORE the compressor can
-# recreate them this session. ops-init writes these lines, but a target project
-# whose .operator/.gitignore predates the compressor (or was written by an older
-# ops-init) lacks them — so .compress-spill/ shows up as untracked dirty state
-# the moment the PostToolUse compressor fires, and stays dirty until the user
-# re-runs /cc-operator:start. The upgrade-append ops-init does only fires on
-# re-init; this runs every session. Idempotent append, best-effort (a write
-# failure must never cost the session its banner).
+# Migrate a v1 (blocklist) .operator/.gitignore to the v2 allowlist BEFORE the
+# compressor can recreate its ephemera this session. ops-init does this too, but
+# only on re-init; this runs every session, which is what carries a project that
+# never re-runs /cc-operator:start. The two schemes contradict — v1 tracks by
+# default, v2 ignores by default — so this REPLACES rather than appends, keeping
+# the user's file as .gitignore.v1.bak. Best-effort: a write failure must never
+# cost the session its banner. Keep the body identical to ops-init.sh's _gi_write
+# (validate_plugin.check_gitignore_parity pins the two equal).
+#
+# IT MUST SAY SO (issue #32). This overwrites a file the user may have edited,
+# and the .v1.bak it leaves is itself hidden by the new bare `*` — so a project
+# with a hand-added rule lost it with no message anywhere: stdout carried only
+# the SessionStart JSON, and `git status` showed no trace of the backup (it
+# appears only under --ignored). ops-init.sh echoes a migration notice for the
+# identical destructive write; this path — the one that exists precisely to
+# carry projects that never re-run /cc-operator:start — was silent by
+# construction. The hook's one channel to the model is additionalContext, so the
+# notice goes there rather than to stdout, which Claude Code does not surface.
 _gi="$cwd/.operator/.gitignore"
-if [ -f "$_gi" ] && ! grep -q '^\.compress-spill/$' "$_gi" 2>/dev/null; then
-  {
-    printf '# Compressor ephemera (ensured by SessionStart): session-scoped, wiped on every start.\n'
-    printf '.compress-spill/\n.compress-state/\n'
-  } >> "$_gi" 2>/dev/null
+_gi_migrated=0
+_gi_backup_failed=0
+if [ -f "$_gi" ] && ! grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi" 2>/dev/null; then
+  # BACKUP FIRST, AND ONLY OVERWRITE IF IT SUCCEEDED — and set the notice flag
+  # only after the replacement is done. The old order set _gi_migrated=1 up
+  # front, copied with errors swallowed, then wrote regardless: with `.operator/`
+  # unwritable but `.gitignore` still writable, the user's rules were destroyed,
+  # NO backup existed, and the context told the model both had succeeded
+  # (measured 2026-08-12). That is issue #32's own failure, one layer down.
+  # Never `set -e` here: a hook that dies costs the session its id injection,
+  # which is worse than an unmigrated gitignore. Hence explicit branching.
+  if [ -e "$_gi.v1.bak" ] && [ ! -f "$_gi.v1.bak" ]; then
+    _gi_backup_failed=1
+  elif ! cp "$_gi" "$_gi.v1.bak" 2>/dev/null; then
+    _gi_backup_failed=1
+  else
+  cat > "$_gi" <<'EOF' 2>/dev/null
+# cc-operator gitignore v2 (allowlist)
+# Ignore everything under .operator/ by default, then re-admit the evidence.
+# New machine state is ignored automatically — that is the point of the
+# inversion; do not add ignore lines here, add allow lines only when a NEW file
+# is genuinely evidence a teammate must read.
+*
+!.gitignore
+!.gitattributes
+!VERDICTS.md
+!DECISIONS.md
+!tiers.env
+!verdicts.d/
+!verdicts.d/*.md
+!handoff-*.md
+!armgate.on
+EOF
+    # The flag is the NOTICE's trigger, so it is set only here — after the
+    # replacement actually happened and the backup already exists.
+    [ -s "$_gi" ] && _gi_migrated=1
+  fi
 fi
 
 ctx="cc-operator: this session's id is ${session}. Pass --owner ${session} when opening or closing tracked tasks — .operator/bin/ops-task.sh <id> --owner ${session}, .operator/bin/ops-verdict.sh <id> ... --owner ${session}. Sentinels you open are then yours alone: the Stop hook blocks only on your own open tasks and reports other sessions' as informational. After a /clear your id changes — run .operator/bin/ops-adopt.sh --owner ${session} <id>... to re-claim tasks you are still working."
+
+# Append the migration notice (#32) — a destructive overwrite the operator must
+# be told about, naming the backup path because the new allowlist hides it from
+# a bare `git status`.
+if [ "$_gi_migrated" = 1 ]; then
+  ctx="$ctx
+
+cc-operator: .operator/.gitignore was MIGRATED from the v1 blocklist to the v2 allowlist this session. The two schemes contradict, so the file was REPLACED, not appended — any rule you added by hand is gone from it. Your previous file is kept at .operator/.gitignore.v1.bak, which the new allowlist itself ignores (\`git status\` will not show it; use \`git status --ignored\`). If it carried a rule you still need, re-add it as an allow line (\`!<path>\`) in the v2 file."
+fi
+
+# The refusal is as reportable as the migration: a project left on v1 tracks
+# machine state by default, and silence here is what let the destructive
+# variant of this path go unnoticed in the first place.
+if [ "$_gi_backup_failed" = 1 ]; then
+  ctx="$ctx
+
+cc-operator: .operator/.gitignore is still the v1 blocklist — migration to the v2 allowlist was REFUSED this session because the backup at .operator/.gitignore.v1.bak could not be written (the directory may be read-only, or something that is not a regular file already sits at that path). Nothing was overwritten. Until this is resolved the project keeps v1 semantics, which track machine state (bin/, pending/, .lock/) by default. Fix the path or the permissions and start a new session."
+fi
 
 if [ "$PARSER" = "jq" ]; then
   jq -n --arg c "$ctx" \

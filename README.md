@@ -64,8 +64,13 @@ models. `/cc-operator:tiers` wraps both.
 scrubs/dedups/elides re-billed tool output on a strict allowlist — never
 Read/Edit/Write/NotebookEdit, never `mcp__*`, never evidence-gate output
 (ledger paths and gate CLIs are carved out by path). Elided output is spilled
-verbatim (pre-scrub) to `.operator/.compress-spill/` and cited, so evidence
-stays recoverable byte-for-byte.
+verbatim (pre-scrub) and cited, so evidence stays recoverable byte-for-byte —
+to `.operator/.compress-spill/` in an initialized project, or to a cwd-keyed
+tempdir in one that never ran `/cc-operator:start`, so the hook never
+materializes a `.operator/` in a project that did not ask for it. Either root
+carries its own `*` ignore, and `.operator/.gitignore` is an allowlist: the two
+ledgers, the `verdicts.d/` fragments and `tiers.env` are tracked; everything
+else the plugin creates is ignored by default.
 
 ## Commands
 
@@ -117,6 +122,17 @@ available, so a missing dependency never bricks a session.
 tool environment — only hooks receive it. The SessionStart hook
 (`scripts/ops-sessionstart-hook.sh`) injects it into the session's context, and
 the charter instructs the operator to pass it as `--owner`.
+
+**What a row is bound to:** the evidence cell ends with a source-state stamp
+that `ops-verdict.sh` resolves itself — `@<sha>` for a clean tree, `@<sha>+dirty`
+when anything outside `.operator/` was uncommitted, `@no-commit` in a repo with
+no commits, `@no-vcs` outside git, `@<sha>+unknown` when git could not answer.
+Without it a PASS survived unstaged, staged, committed and untracked mutation of
+the source it had just verified, with nothing marking the row stale. Read it for
+what it is: the stamp is written by the same process that writes the row, so it
+says *this row came from that tree*, not *that tree passes*. It is deliberately
+inside the cell rather than a fifth column, so every existing ledger and every
+`grep` written against the 4-cell schema keeps working.
 
 **Across branches:** each session's rows also live in its own
 `verdicts.d/<owner>.md`, which git merges cleanly, and `.operator/.gitattributes`
@@ -198,6 +214,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for conventions and
 [CLAUDE.md](CLAUDE.md) for the maintainer handoff (the "if you touch X, update
 Y" couplings). The design spec lives under `docs/spec/`; build and pilot
 history lives in the git history (tree ≤ v0.2.0).
+[docs/INFOGRAPHICS.md](docs/INFOGRAPHICS.md) collects the visual explainers —
+one of the shipped model, two of a **target state**, each with a table saying
+which of its claims the tree actually backs today.
 
 ## License
 

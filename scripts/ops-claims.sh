@@ -81,7 +81,16 @@ trap 'rm -f "$_ACTUAL_TMP" "$_DEDUPED_TMP"' EXIT
 # bound by gate semantics (same -L/NUL/byte-bound obligations as the hook), so a
 # worker weakening its parser re-opens a laundering path invisibly. No existing
 # glob in this literal covered it.
-PROTECTED="scripts/validate_plugin.py tests/ .operator/bin/ hooks/ scripts/ops-*.sh scripts/statusline.sh"
+#
+# backlog/ (B7) — the WHOLE directory, no field-level carve-out (Q4 decided): an
+# implementer that can edit backlog/tasks/*.md can edit the ACCEPTANCE CRITERIA
+# it is being judged against, the F48 vacuous-guard class relocated to the plan
+# layer, and materially harder to spot than a weakened validator (the diff looks
+# like ordinary task bookkeeping). The tempting notes-writable escape needs a
+# parser for the neighbour's frontmatter grammar, which B5 forbids; the worker
+# reports notes and the operator writes them with `backlog task edit --notes`.
+# Token ends in '/' so it matches by PREFIX (backlog/ covers backlog/tasks/x.md).
+PROTECTED="scripts/validate_plugin.py tests/ .operator/bin/ hooks/ scripts/ops-*.sh scripts/statusline.sh backlog/"
 
 matches_protected() {  # matches_protected <path> → 0 if under the protected set
   local p="$1" pat

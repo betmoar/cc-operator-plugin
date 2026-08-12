@@ -39,6 +39,10 @@ when violated:
      not set in the Bash tool environment), and without that id every sentinel
      is opened unowned and blocks every concurrent session.
   8. The gate scripts exist and are syntactically valid bash (`bash -n`).
+  9. Issue references in tracked markdown are internally consistent: every
+     `[#N]` has a matching link definition and vice versa, and every issue URL
+     resolves under plugin.json's `repository` at the number its label claims.
+     Existence, state, and subject are NOT checked — that needs the network.
 
 Run from anywhere: python3 scripts/validate_plugin.py [repo-root]
 Exit 0 = all contracts hold; exit 1 = failures listed on stderr.
@@ -249,6 +253,141 @@ def check_ledger_schema(root, problems):
             f"{VERDICTS_HEADER!r} (schema must byte-match the proven ledger)")
 
 
+# The dispatch packet's spine, as the charter states it. HANDOUT.md re-teaches
+# the packet in plain English and drifted (F69): it dropped TEXT, the SHA and
+# the `CHANGED:` line — and CHANGED is the input ops-claims.sh verifies, so a
+# user taught from the handout runs the worker-boundary layer unchecked. The pin
+# is against teaching a WRONG packet, so it applies only when the file exists:
+# deleting the handout is a visible act; drifting it is not.
+HANDOUT_PACKET_SPINE = ("TASK / TEXT / SCENE", "CHANGED: <paths>|none")
+
+
+def check_handout_packet(root, problems):
+    h = root / "docs" / "HANDOUT.md"
+    if not h.is_file():
+        return
+    text = h.read_text(encoding="utf-8")
+    for token in HANDOUT_PACKET_SPINE:
+        if token not in text:
+            problems.append(
+                f"docs/HANDOUT.md: missing the packet literal {token!r} — the "
+                f"handout must teach the charter's dispatch packet verbatim "
+                f"(templates/OPERATOR.md), or ops-claims.sh gets reports it "
+                f"cannot check (F69)")
+
+
+# The source-state stamp (U10, issue #22): every verdict row's evidence cell ends
+# with the state that produced it, so a PASS names exactly one tree. Pinned here
+# because the failure it closes is invisible by construction — an UNSTAMPED row
+# looks exactly like a stamped one until someone tries to audit it, and there is
+# no runtime consumer whose breakage would announce a regression. The bash
+# suite's S1 cases are the only other thing standing on this.
+#
+# Four properties. The third and fourth are the F30 lesson (a literal declared
+# and never applied is the defect one level up) and the #21 lesson (a marker
+# that can never be off is not a marker):
+#   1. every marker the resolver can emit is present in CODE, not just prose;
+#   2. the row printf still builds FOUR cells, with the stamp inside cell 3 —
+#      a fifth cell would break every ledger and grep in the field;
+#   3. the resolved value is APPLIED at the row site;
+#   4. `.operator/` is excluded from the dirty test, or every row everywhere
+#      stamps +dirty and the marker stops distinguishing anything.
+# Plus the ordering the PLAYBOOK's "touching the lock" step 3 demands: git work
+# is resolved BEFORE lock_acquire, never inside the critical section.
+STAMP_MARKERS = ("no-vcs", "no-commit", "+dirty", "+unknown")
+STAMP_ROW_FORMAT = "'| %s | %s | %s @%s | %s |'"
+STAMP_DIRTY_EXCLUDE = "':(exclude).operator'"
+
+
+def check_source_stamp(root, problems):
+    p = root / "scripts" / "ops-verdict.sh"
+    if not p.is_file():
+        problems.append("scripts/ops-verdict.sh: missing")
+        return
+    text = p.read_text(encoding="utf-8")
+    # Comments stripped for every assertion below: the header prose names each
+    # marker, so a function gutted to `printf ''` would satisfy a naive scan of
+    # the whole file. That is the vacuous-guard shape this check exists to avoid
+    # becoming.
+    code = "\n".join(
+        ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+    if "source_stamp()" not in code:
+        problems.append(
+            "scripts/ops-verdict.sh: no source_stamp() — the verdict row must "
+            "name the source state that produced it (issue #22)")
+        return
+    for marker in STAMP_MARKERS:
+        if marker not in code:
+            problems.append(
+                f"scripts/ops-verdict.sh: source_stamp lost the {marker!r} "
+                f"marker — every failure path must degrade to an explicit "
+                f"state, never to silence")
+    if STAMP_DIRTY_EXCLUDE not in code:
+        problems.append(
+            f"scripts/ops-verdict.sh: the dirty test must exclude "
+            f"{STAMP_DIRTY_EXCLUDE} — .operator/ is untracked in most projects, "
+            f"so counting it stamps every row +dirty and the marker becomes "
+            f"vacuous (#21)")
+    if STAMP_ROW_FORMAT not in code:
+        problems.append(
+            f"scripts/ops-verdict.sh: the verdict row format must be "
+            f"{STAMP_ROW_FORMAT} — four cells with the stamp inside the "
+            f"evidence cell; a fifth cell breaks every existing ledger")
+    # "Applied" means the ROW carries it, not that the identifier appears
+    # somewhere: `SOURCE_STAMP="$(source_stamp)"` alone satisfied a substring
+    # test, so swapping the row's own `"$SOURCE_STAMP"` argument for a literal
+    # left every row unstamped with the build green (Copilot review of PR #12,
+    # measured 2026-08-12) — the F30 declared-but-not-applied shape inside the
+    # check written to prevent it. Inspect the printf's argument list.
+    row = re.search(r'ROW="\$\(printf\s+' + re.escape(STAMP_ROW_FORMAT)
+                    + r'(?P<args>[^\n]*?)\)"', code)
+    if not row:
+        problems.append(
+            "scripts/ops-verdict.sh: no `ROW=\"$(printf <4-cell format> …)\"` "
+            "site found — check_source_stamp cannot verify the stamp reaches "
+            "the row (not-found is a reported problem, never a silent skip)")
+    elif "$SOURCE_STAMP" not in row.group("args"):
+        problems.append(
+            "scripts/ops-verdict.sh: the verdict row's printf does not pass "
+            "\"$SOURCE_STAMP\" — the stamp is resolved and then dropped, so "
+            "every row ships unstamped while source_stamp() still exists "
+            "(F30: declared-but-not-applied)")
+    if "SOURCE_STAMP" not in code:
+        problems.append(
+            "scripts/ops-verdict.sh: source_stamp() is defined but its result "
+            "is never applied to the row (F30: declared-but-not-applied)")
+        return
+    # Ordering, on the verdict path's own section: a `git status` inside the
+    # lock lengthens the critical section, and a holder that outruns
+    # LOCK_LIVE_SPINS leaves its waiters proceeding UNLOCKED.
+    #
+    # The split runs on the RAW text and the comment strip happens after, in
+    # that order and not the other way round: the section marker is itself a
+    # comment, so splitting `code` finds nothing, takes the not-found branch,
+    # and skips the assertion entirely. That draft passed a mutation that moved
+    # the stamp inside the lock — the check was fail-open, which is the one
+    # direction the PLAYBOOK does not allow a guard to fail. Not-found is now a
+    # reported problem for the same reason.
+    section = text.split("# --- Verdict path ---", 1)
+    if len(section) != 2:
+        problems.append(
+            "scripts/ops-verdict.sh: no '# --- Verdict path ---' marker — the "
+            "stamp-before-lock ordering cannot be checked; restore the marker "
+            "or rewrite this check, never leave it silently unenforced")
+        return
+    lines = [ln for ln in section[1].splitlines()
+             if not ln.lstrip().startswith("#")]
+    stamp_at = next(
+        (i for i, ln in enumerate(lines) if "source_stamp" in ln), None)
+    lock_at = next(
+        (i for i, ln in enumerate(lines) if "lock_acquire" in ln), None)
+    if stamp_at is None or lock_at is None or stamp_at > lock_at:
+        problems.append(
+            "scripts/ops-verdict.sh: the source stamp must be resolved "
+            "BEFORE lock_acquire on the verdict path — git work inside the "
+            "critical section is the PLAYBOOK's step-3 hazard")
+
+
 # The DECISIONS-header kind set — split into GATED (block Stop until presented),
 # RECORD (logged, never block), and the HANDOFF-MARK marker (clears the gated
 # set). The hook/statusline deviation gate counts ONLY the GATED kinds; the
@@ -418,10 +557,178 @@ def check_hook(root, problems):
                 "${CLAUDE_PLUGIN_ROOT}")
 
 
+def check_permission_guards(root, problems):
+    r"""No NEW permission test may enter a gate script unreviewed (#21, F48 #5).
+
+    THE CLASS. A guard whose correctness depends on a condition that cannot
+    occur in the environment it runs in. It reads as protection, it is inert,
+    and nothing fails loudly to say so — the F30 declared-but-not-applied shape,
+    reached through the ENVIRONMENT rather than through a copy-paste.
+
+    `[ -r ]`, `[ -w ]`, `[ -x ]` answer "would the mode bits allow this", not
+    "can I actually do this", and uid 0 bypasses the bits entirely. Measured:
+    root's `[ -x ]` on a chmod-000 directory is TRUE, and `ls`/`cd`/`touch`
+    inside it all succeed — so there is no capability probe that distinguishes
+    the state either. A permission test is therefore never a complete guard on
+    its own; it is at best a best-effort half that must be paired with one that
+    holds on every uid (`-d` is a TYPE test and does).
+
+    WHY AN ALLOWLIST RATHER THAN A BAN. Both surviving sites are load-bearing:
+    `-x` and `-w` catch the real off-root wedges (#19, #27) and are documented
+    inert for uid 0 at the call site. Banning them outright would delete working
+    guards to satisfy a rule. What must not happen is a NEW one arriving without
+    that reasoning, which is exactly what happened when #27's fix added the `-w`
+    half — the class went from one instance to two while #21 still said one.
+
+    So: pin the count and the file. A new permission test anywhere in scripts/
+    fails the build with the question it has to answer.
+    """
+    # site -> why it is allowed to exist. Comments are stripped before counting,
+    # so the header prose in that same file does not inflate the number.
+    ALLOWED = {
+        "ops-armgate-hook.sh": 2,   # the -x and -w halves of the unusable-.armed
+                                    # guard (#19, #27), both paired with `! -d`,
+                                    # both documented inert for uid 0 in place.
+    }
+    pat = re.compile(r"\[\s+!?\s*-[rwx]\s")
+    for path in sorted((root / "scripts").glob("*.sh")):
+        code = [ln for ln in path.read_text(encoding="utf-8").splitlines()
+                if not ln.lstrip().startswith("#")]
+        # OCCURRENCES, not lines. A line-based count makes the pin depend on
+        # formatting: the two halves of the unusable-.armed guard read as 2 when
+        # the condition wraps across lines and 1 when it does not, so a reflow
+        # would fail the build and a fixture written on one line would silently
+        # under-report. Measured both ways while writing this.
+        n = sum(len(pat.findall(ln)) for ln in code)
+        allowed = ALLOWED.get(path.name, 0)
+        if n > allowed:
+            problems.append(
+                f"scripts/{path.name}: {n} permission test(s) `[ -r/-w/-x ]` in "
+                f"code, allowlist permits {allowed} (#21). A permission test is "
+                f"INERT for uid 0 — root bypasses mode bits, and no capability "
+                f"probe distinguishes the state (measured). If this new one is a "
+                f"complete guard it is wrong; if it is a best-effort half, pair "
+                f"it with a test that holds on every uid (`-d` is a type test), "
+                f"document the inertness at the call site, and raise the count "
+                f"here with that reasoning")
+        elif n < allowed:
+            problems.append(
+                f"scripts/{path.name}: {n} permission test(s), allowlist expects "
+                f"{allowed} — a guard was REMOVED. If deliberate, lower the count "
+                f"in check_permission_guards; if not, #19/#27 have regressed")
+
+
+def check_armgate(root, problems):
+    r"""The PreToolUse arm gate must never match `Bash` (G2/G2.7).
+
+    The arm gate BLOCKS (exit 2). Deciding whether an arbitrary shell command
+    writes is an unwinnable classification problem, and `ops-task.sh` — the only
+    way to clear a denial — is itself a Bash call, so a matcher that grew `Bash`
+    would deadlock the repair path: the session could neither write nor arm.
+    That is this repo's recurring worst outcome (a guard that makes an existing
+    task unclosable), and its loss would be silent — the gate would still look
+    like it worked, right up to the first wedged session.
+
+    Pinned here rather than left to review because the matcher is one string in
+    a JSON file, and every other property of the gate is enforced by a test that
+    would still pass with `Bash` in it.
+    """
+    hp = root / "hooks" / "hooks.json"
+    hook = load_json(hp, problems)
+    if hook is None:
+        return
+    try:
+        block = hook["hooks"]["PreToolUse"][0]
+    except (KeyError, IndexError, TypeError):
+        problems.append(
+            "hooks/hooks.json: no PreToolUse block — the arm gate (G2) is not wired")
+        return
+    matcher = block.get("matcher", "")
+    tools = [t for t in matcher.split("|") if t]
+    if "Bash" in tools:
+        problems.append(
+            "hooks/hooks.json: the PreToolUse arm-gate matcher includes `Bash` — "
+            "it must never (G2.7): classifying shell commands is unwinnable, and "
+            "gating Bash deadlocks the repair path (ops-task.sh IS a Bash call)")
+    expected = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
+    if set(tools) != expected:
+        problems.append(
+            f"hooks/hooks.json: PreToolUse arm-gate matcher is {matcher!r}; "
+            f"expected exactly {'|'.join(sorted(expected))} (structured "
+            f"file-mutation tools only — see scripts/ops-armgate-hook.sh SCOPE)")
+    try:
+        entry = block["hooks"][0]
+        cmd = entry["command"]
+    except (KeyError, IndexError, TypeError):
+        problems.append("hooks/hooks.json: PreToolUse block has no hook command")
+        return
+    # A BOUND on the blocking gate (issue #33). This hook runs synchronously
+    # before every file mutation and its whole polarity is fail-open-FAST; with
+    # no timeout, a hung parser stalls every edit indefinitely. Measured: a `jq`
+    # on PATH containing `sleep 300` left the hook still blocked at 6s, while the
+    # normal path costs ~44ms — so any small bound is ~100x headroom and the
+    # pathological case becomes bounded instead of unbounded. The PostToolUse
+    # compressor in the same file already carries one; this block did not.
+    t = entry.get("timeout")
+    if not isinstance(t, (int, float)) or isinstance(t, bool) or t <= 0:
+        problems.append(
+            "hooks/hooks.json: the PreToolUse arm-gate hook has no positive "
+            "`timeout` — it blocks every Write/Edit/MultiEdit/NotebookEdit "
+            "synchronously, so a hung JSON parser stalls the session with no "
+            "bound (measured: still blocked at 6s against a ~44ms normal path)")
+    elif t > 30:
+        problems.append(
+            f"hooks/hooks.json: the PreToolUse arm-gate timeout is {t}s — far "
+            f"above the ~44ms the hook costs; a gate that can stall an edit for "
+            f"that long is not the fail-open-fast contract its header states")
+    if "ops-armgate-hook.sh" not in cmd:
+        problems.append(
+            f"hooks/hooks.json: PreToolUse command does not point at "
+            f"ops-armgate-hook.sh (got {cmd!r})")
+    if "${CLAUDE_PLUGIN_ROOT}" not in cmd:
+        problems.append(
+            "hooks/hooks.json: PreToolUse command should use ${CLAUDE_PLUGIN_ROOT} "
+            "— hooks run from the plugin root, not the project (a scripts/ path "
+            "resolves only inside this repo)")
+    # The gate is opt-in in 0.7.x: the switch must be READ, and its absence must
+    # be the allow path. A hook that stopped consulting armgate.on would block
+    # every project that never asked for the gate.
+    p = root / "scripts" / "ops-armgate-hook.sh"
+    if p.is_file():
+        text = p.read_text(encoding="utf-8")
+        if "armgate.on" not in text:
+            problems.append(
+                "scripts/ops-armgate-hook.sh: does not consult armgate.on — the "
+                "gate is opt-in in 0.7.x; without the switch it blocks every project")
+        if ".armed/" not in text and ".armed/$session" not in text:
+            problems.append(
+                "scripts/ops-armgate-hook.sh: does not read the .armed/ marker — "
+                "the whole gate is that one stat (G2.1)")
+        if ".exempt" not in text:
+            problems.append(
+                "scripts/ops-armgate-hook.sh: does not honour .armed/<sid>.exempt "
+                "— the G3 exemption is the only escape from a blocking gate")
+        # An EXISTING-but-unusable .armed (a regular file, a chmod accident) must
+        # fail OPEN. Without this the gate denies a legitimately armed session
+        # AND every documented repair is dead: ops-task.sh/ops-adopt.sh swallow
+        # their marker write and report success, --exempt dies after its ledger
+        # row lands. Measured unwritable-and-unrepairable (PR review 2026-08-07).
+        # Pinned because every other assertion here passed with the bug present.
+        code = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
+        if not any("-d" in ln and ".armed" in ln for ln in code):
+            problems.append(
+                "scripts/ops-armgate-hook.sh: no `-d` test on .armed — an existing "
+                "but unusable marker directory must fail OPEN, or a legitimately "
+                "armed session is denied every edit with no in-band repair (the "
+                "hook's own header promises this; it was once documented and "
+                "unimplemented)")
+
+
 def check_scripts(root, problems):
     for name in ("ops-init.sh", "ops-verdict.sh", "ops-task.sh",
-                 "ops-adopt.sh", "ops-claims.sh", "ops-stop-hook.sh",
-                 "ops-sessionstart-hook.sh", "statusline.sh", "ops-tiers.sh",
+                 "ops-adopt.sh", "ops-claims.sh", "ops-backlog.sh",
+                 "ops-stop-hook.sh", "ops-sessionstart-hook.sh",
+                 "ops-armgate-hook.sh", "statusline.sh", "ops-tiers.sh",
                  "ops-render.sh"):
         p = root / "scripts" / name
         if not p.is_file():
@@ -650,6 +957,12 @@ def check_claims(root, problems):
     `statusline.sh` is in the set per the F66 amendment: it is a full sentinel
     reader bound by gate semantics, so a worker weakening its parser re-opens a
     laundering path invisibly — and no prior glob covered it.
+
+    `backlog/` is in the set per B7 (backlog-charter spec): an implementer that
+    can edit backlog/tasks/*.md can edit the acceptance criteria it is judged
+    against — the F48 vacuous-guard class relocated to the plan layer, harder to
+    spot than a weakened validator. The whole directory (no notes carve-out);
+    the escape needs a parser for the neighbour's grammar, which B5 forbids.
     """
     p = root / "scripts" / "ops-claims.sh"
     if not p.is_file():
@@ -659,7 +972,7 @@ def check_claims(root, problems):
     # ops-claims.sh. A divergence here is two different ideas of "the grader".
     literal = re.search(r'^PROTECTED="(.*)"$', text, re.MULTILINE)
     canonical = ("scripts/validate_plugin.py tests/ .operator/bin/ hooks/ "
-                 "scripts/ops-*.sh scripts/statusline.sh")
+                 "scripts/ops-*.sh scripts/statusline.sh backlog/")
     if not literal:
         problems.append(
             "scripts/ops-claims.sh: PROTECTED literal not found — the "
@@ -700,15 +1013,44 @@ def check_install_set_parity(root, problems):
     green — every upgraded project silently never receives it (CR4, code-review
     2026-08-04). This is the F30 shape the repo's check_claims docstring argues
     against. Pin the two literals equal.
+
+    Either writer may spell the set inline (`for _tool in ops-verdict.sh …`) or
+    via a variable it assigns (`_OPS_TOOLS="…"` / `for _tool in $_OPS_TOOLS`);
+    ops-sessionstart-hook.sh needs the variable because its staleness probe and
+    its copy loop must iterate the SAME set, and a second inline copy would be
+    one more place to drift. Both spellings resolve to the same list here.
+
+    A writer whose set cannot be located is REPORTED, not skipped. The earlier
+    version returned None for an unmatched file and then guarded with
+    `if a and b`, so refactoring one writer to a variable silently reduced the
+    comparison to nothing — the check passed while pinning zero (measured
+    2026-08-12 while fixing #34). A parity check that goes quiet when it stops
+    understanding its input is worse than no parity check.
     """
-    pat = re.compile(r'for _?tool in (ops-verdict\.sh ops-task\.sh ops-adopt\.sh[^;]*)')
+    inline = re.compile(r'for _?tool in (ops-verdict\.sh ops-task\.sh ops-adopt\.sh[^;]*)')
+    via_var = re.compile(r'^_OPS_TOOLS="([^"]*)"', re.MULTILINE)
     sets = {}
     for name in ("ops-init.sh", "ops-sessionstart-hook.sh"):
         p = root / "scripts" / name
         if not p.is_file():
             continue
-        m = pat.search(p.read_text(encoding="utf-8"))
-        sets[name] = m.group(1).strip() if m else None
+        text = p.read_text(encoding="utf-8")
+        m = inline.search(text) or via_var.search(text)
+        if not m:
+            problems.append(
+                f"scripts/{name}: cannot locate the .operator/bin install set "
+                f"(neither `for _tool in ops-verdict.sh …` nor `_OPS_TOOLS=\"…\"`) "
+                f"— check_install_set_parity is reporting rather than skipping, "
+                f"because a parity check that cannot read one side pins nothing "
+                f"(CR4)")
+            continue
+        sets[name] = " ".join(m.group(1).split())
+        # A variable spelling only helps if it is what the copy loop iterates.
+        if via_var.search(text) and not re.search(r'for _?tool in \$_OPS_TOOLS', text):
+            problems.append(
+                f"scripts/{name}: declares _OPS_TOOLS but its copy loop does not "
+                f"iterate it — the declared set and the installed set are then "
+                f"two different lists (F30: declared-but-not-applied)")
     a, b = sets.get("ops-init.sh"), sets.get("ops-sessionstart-hook.sh")
     if a and b and a != b:
         problems.append(
@@ -716,6 +1058,137 @@ def check_install_set_parity(root, problems):
             f"ops-sessionstart-hook.sh upgrades [{b}] — a CLI in one and not the "
             f"other means upgraded projects never receive it (CR4; the two lists "
             f"must stay equal)")
+
+
+def check_gitignore_parity(root, problems):
+    r"""The .operator/.gitignore v2 allowlist body is written in TWO places:
+    ops-init.sh (_gi_write, on /cc-operator:start) and ops-sessionstart-hook.sh
+    (the every-session v1 migration). Drift means a project migrated by one path
+    ignores a different set than one migrated by the other — and the direction
+    that bites is silent: an allow line present in ops-init but missing in the
+    hook un-tracks a ledger the moment a session starts. Same F30 shape as
+    check_install_set_parity: two copies, uniform drift is the realistic failure.
+
+    Pins the bare `*` AND the ALLOW lines, in both writers, plus the marker they
+    grep for to detect a v1 file.
+
+    The `*` is pinned because it is what makes this an allowlist at all, and its
+    loss is the silent direction: drop it and the file inverts back to a v1
+    blocklist — every ephemera directory (`bin/`, `pending/`, `.lock/`,
+    `.compress-spill/`) becomes TRACKED by default, which is precisely the
+    recurring failure v2 exists to end. An earlier version of this docstring
+    called `*` "the load-bearing half" and then checked only the allow lines;
+    dropping `*` from a writer left the build green (Copilot review, PR #12).
+    Naming an invariant in prose while pinning a different one is the F30 shape
+    this check was written to prevent, reproduced inside the check itself.
+    """
+    MARK = "# cc-operator gitignore v2 (allowlist)"
+    IGNORE_ALL = "*"
+    # `handoff-*.md` and `armgate.on` are evidence/policy, not machine state:
+    # the handoff is the artifact the charter's HANDOFF section exists to
+    # produce (commands/handoff.md writes `.operator/handoff-<date>.md`), and
+    # armgate.on is the project's opt-in DECISION, which a team must be able to
+    # commit once rather than re-make in every clone. Both were ignored by the
+    # v2 allowlist's bare `*` — the handoff a REGRESSION from v1, which tracked
+    # it (measured against main's ops-init.sh in a fresh repo). Issues #28/#31.
+    ALLOW = ("!.gitignore", "!.gitattributes", "!VERDICTS.md", "!DECISIONS.md",
+             "!tiers.env", "!verdicts.d/", "!verdicts.d/*.md",
+             "!handoff-*.md", "!armgate.on")
+    sets = {}
+    for name in ("ops-init.sh", "ops-sessionstart-hook.sh"):
+        p = root / "scripts" / name
+        if not p.is_file():
+            problems.append(f"scripts/{name}: missing — cannot check gitignore parity")
+            continue
+        text = p.read_text(encoding="utf-8")
+        if MARK not in text:
+            problems.append(
+                f"scripts/{name}: does not carry the v2 gitignore marker "
+                f"{MARK!r} — both writers must emit it AND grep for it, or a v1 "
+                f"blocklist is never migrated (it would be appended to instead, "
+                f"and the two schemes contradict)")
+        # EMIT and DETECT are two claims, and the message above makes both — but
+        # a substring test proves only the first: the heredoc body contains the
+        # marker, so deleting the migration `grep` left the build green while
+        # every existing v1 project silently stopped being detected (Copilot
+        # review of PR #12, measured 2026-08-12 in both writers). Assert the
+        # detection expression separately. Either spelling counts: ops-init.sh
+        # greps the `$_GI_MARK` variable, the hook greps the literal, because
+        # the hook must stay standalone.
+        elif not re.search(r"grep\s+-qF\s+(?:\"\$_GI_MARK\"|'" + re.escape(MARK) + r"')", text):
+            problems.append(
+                f"scripts/{name}: emits the v2 marker but never greps for it — "
+                f"without that read the writer cannot tell a v1 file from a v2 "
+                f"one, so an existing v1 blocklist is never migrated (it is "
+                f"appended to, and the two schemes contradict). Emitting the "
+                f"marker is not the same claim as detecting it")
+        # Allow lines are line-anchored: a '!VERDICTS.md' inside prose is not a
+        # heredoc body line, and would make this check vacuous.
+        lines = {ln.strip() for ln in text.splitlines()}
+        # The bare `*` line: without it the file is a blocklist wearing an
+        # allowlist's marker, and every ephemera dir ships tracked.
+        if IGNORE_ALL not in lines:
+            problems.append(
+                f"scripts/{name}: the v2 gitignore body has no bare `*` line — "
+                f"without it the allowlist inverts to a blocklist and machine "
+                f"state (bin/, pending/, .lock/, .compress-spill/) becomes "
+                f"TRACKED by default, the exact failure v2 ended")
+        sets[name] = tuple(a for a in ALLOW if a in lines)
+    a, b = sets.get("ops-init.sh"), sets.get("ops-sessionstart-hook.sh")
+    for name, got in sets.items():
+        missing = [x for x in ALLOW if x not in got]
+        if missing:
+            problems.append(
+                f"scripts/{name}: v2 gitignore body is missing allow line(s) "
+                f"{missing} — an ignored ledger is evidence that silently never "
+                f"reaches the teammate reading the repo")
+    if a is not None and b is not None and a != b:
+        problems.append(
+            f"gitignore allowlist drift: ops-init.sh admits {list(a)} but "
+            f"ops-sessionstart-hook.sh admits {list(b)} — the two writers must "
+            f"stay equal (F30; a project's tracked set must not depend on which "
+            f"path migrated it)")
+
+    # MIGRATION SAFETY, both writers. The v1→v2 migration REPLACES a file the
+    # user may have edited, and both writers advertise `.gitignore.v1.bak` as
+    # the recovery path. Before 2026-08-12 the backup was `cp … 2>/dev/null`
+    # followed by an UNCONDITIONAL write, so a failed backup destroyed the rules
+    # while the notice claimed they were recoverable (measured in both writers:
+    # an unwritable `.operator/`, and a `.v1.bak` that is already a directory).
+    # The invariant is ordering, which no allowlist comparison can see: the
+    # write must be REACHABLE ONLY through a successful backup. Pinned as "the
+    # copy is tested, and the body-writer is inside the success branch" — a
+    # `cp … 2>/dev/null` on its own line, with the write following it
+    # unconditionally, is exactly the shape that shipped.
+    for name, writer in (("ops-init.sh", "_gi_write"),
+                         ("ops-sessionstart-hook.sh", "cat > \"$_gi\"")):
+        p = root / "scripts" / name
+        if not p.is_file():
+            continue
+        text = p.read_text(encoding="utf-8")
+        if ".gitignore.v1.bak" not in text and ".v1.bak" not in text:
+            continue  # no migration path in this writer
+        # The copy's exit status must be TESTED (`if ! cp`/`elif ! cp`), not
+        # discarded. A bare `cp "$x" "$x.v1.bak" 2>/dev/null` line is the bug.
+        tested = re.search(r"(?:if|elif)\s+!\s+cp\s", text)
+        if not tested:
+            problems.append(
+                f"scripts/{name}: the v1→v2 gitignore migration copies the "
+                f"user's file to .v1.bak without testing whether the copy "
+                f"SUCCEEDED — a failed backup then falls through to an "
+                f"unconditional overwrite, destroying rules the notice promises "
+                f"are recoverable (measured 2026-08-12). Guard the write behind "
+                f"the copy: `elif ! cp … ; then <refuse>; else <write>; fi`")
+        # …and a non-regular entry at the backup path must be refused, not
+        # copied INTO (cp lands the file inside a directory of that name, so the
+        # advertised recovery path then points at a directory).
+        if not re.search(r"\[\s*!\s*-f\s+\"\$[_A-Za-z0-9{}/.]*\.v1\.bak\"|"
+                         r"\[\s*!\s*-f\s+\"\$OPDIR/\.gitignore\.v1\.bak\"", text):
+            problems.append(
+                f"scripts/{name}: the migration does not refuse a non-regular "
+                f"entry at .gitignore.v1.bak — `cp` copies INTO a directory of "
+                f"that name, so the recovery path the notice names is not the "
+                f"backup (measured 2026-08-12)")
 
 
 def check_lock_parity(root, problems):
@@ -1337,6 +1810,231 @@ def check_compressor(root, problems):
                 problems.append(f"ops-sessionstart-hook.sh: does not clear `{d}` — a stale dedup hash after a compact collapses output the model can no longer see")
 
 
+# Issue references. Three FORMS ship in this tree, and only two are checkable:
+#
+#   [#27]                       reference-style use, needs a matching link def
+#   [#27]: https://…/issues/27  the link def
+#   [#22](https://…/issues/22)  inline link (docs/INFOGRAPHICS.md)
+#   (#21) / `issue #9`          BARE — deliberately NOT checked, see below
+#
+# Each linked form captures (number, url) in that order, so the pair can be
+# cross-checked with one loop.
+#
+# The `(?![:(])` on the USE pattern excludes the def and inline forms, which are
+# matched by their own patterns. It deliberately does NOT allow whitespace
+# before `:`/`(`: CommonMark requires the `(` of an inline link to follow the
+# `]` immediately, so `[#9] (a note)` IS a reference-style use, and an `\s*`
+# here would silently drop it from `uses` — a dangling ref that never reports.
+ISSUE_USE_RE = re.compile(r"\[#(\d+)\](?![:(])")
+ISSUE_DEF_RE = re.compile(r"^\[#(\d+)\]:[ \t]*(\S+)", re.MULTILINE)
+ISSUE_INLINE_RE = re.compile(r"\[#(\d+)\]\((\S+?)\)")
+ISSUE_URL_RE = re.compile(r"https?://\S*?/issues/(\d+)")
+
+# A markdown span whose contents are quoted, not live: fenced/indented-fence
+# code blocks and inline code spans. A `[#28]` inside one is an ILLUSTRATION of
+# a reference, not a reference — this file's own CHANGELOG entry documents the
+# inverted-ref class by quoting `[#28]` in backticks, and without this the check
+# reads its own prose as a live ref and drags an unrelated def into the release
+# body. Stripped before parsing, so spans are invisible to every pattern above.
+MD_CODE_RE = re.compile(r"^[ \t]*(```|~~~).*?^[ \t]*\1[ \t]*$|`+[^`\n]*`+",
+                        re.DOTALL | re.MULTILINE)
+
+# GitHub issue URLs legitimately carry a fragment or query — `#issuecomment-N`
+# is what the "copy link" button on a comment produces. The number ends at the
+# first `/`, `#`, or `?`; everything after is addressing WITHIN the issue and
+# must not be compared against the label.
+ISSUE_TARGET_RE = re.compile(r"^(\d+)(?:[/#?].*)?$")
+
+
+def check_issue_refs(root, problems):
+    r"""Issue references in tracked markdown must resolve to THIS repo and to
+    the number they claim.
+
+    Three failure modes:
+
+      1. **Label/URL mismatch.** `[#28]: …/issues/29` renders as "#28", links to
+         29, and reads correct in every review — the eye checks the label, the
+         click follows the URL, and nothing compares them.
+      2. **Dangling / orphan.** A `[#N]` with no link def renders as literal
+         "[#N]" in the published output; a def nobody uses is a leftover from a
+         rewrite that silently stops being maintained.
+      3. **Foreign repo.** A URL pasted from another project's tracker resolves,
+         200s, and points at someone else's issue. Pinned to plugin.json's
+         `repository`, which is already the manifest's single source of truth.
+
+    **Honest provenance: mode 1 has never occurred in this repo.** An earlier
+    revision of this docstring claimed two 0.7.0 commits shipped inverted refs
+    and cited 6b9fb89 / ff57517. Measured against the history, that is wrong:
+    6b9fb89 wrote `[#28]: …/issues/28` — label and URL AGREED — and ff57517
+    never touched CHANGELOG.md. Their real defect was an *invented* issue
+    number, written before the issue existed and later assigned to a different
+    one (90094f8's message says exactly that). No commit in this repo's history
+    carries a label≠URL mismatch: all historical def lines agree.
+
+    That matters, because **this check would not have caught the bug that was
+    used to justify it.** A wrong-but-self-consistent number is invisible here
+    and always will be — catching it means asking GitHub what the issue is
+    about. What this check does buy is cheap and real: modes 2 and 3 are
+    mechanical, and mode 1 is the one that survives review by construction, so
+    pinning it before it happens costs a regex and prevents a class that is
+    genuinely hard to see by eye.
+
+    **What it deliberately does NOT check: that the issue exists, is open, or
+    is about what the sentence says.** That needs `gh issue view` — network, a
+    token, and a rate limit — in a validator whose other subprocess is a local
+    `bash -n`. A build that fails because GitHub is slow teaches maintainers to
+    skip the build.
+
+    **Bare `#N` is out of scope, by measurement.** Tracked markdown uses `#N`
+    for things that are not issues at all — `Backlog #2` (docs/LANDMINES.md),
+    `task #1` (docs/spec/backlog-charter.md), `F48 #5`. Requiring those to be
+    linked would force either wrong links or an exception list, and an
+    exception list for prose is a rot generator. The convention enforced is
+    narrower and honest: *if* you write a reference-style or inline issue link,
+    it must be internally consistent.
+
+    Scope is `git ls-files '*.md'` — tracked files only. Untracked local audit
+    trails (`docs/audits/`, `AUDIT_LOG.md`) are maintainer scratch that no
+    reader of the clone can follow anyway, and `docs/spec/` is gitignored
+    wholesale; a gate whose verdict depends on files absent from the repo gives
+    two clones two answers. When git is unavailable OR lists nothing, the scope
+    falls back to a glob that skips dot-directories. That fallback is a superset
+    of the tracked set **only while no tracked `.md` lives under a dot-directory**
+    (none does today; `.github/` and `.claude-plugin/` ship no markdown). It is
+    not an absolute guarantee — if one is ever added, the fallback goes blind to
+    it, and the primary git path is what must carry the load. An empty git
+    listing is never taken at face value: that is the F48 vacuous-guard shape,
+    a check that passes because it examined nothing.
+
+    A file git tracks but cannot be read is REPORTED, not skipped. The usual
+    cause is a sparse checkout: `git ls-files` reports index entries, so a
+    sparse-excluded file is listed but absent from the working tree, and
+    swallowing that `FileNotFoundError` means the check silently inspects fewer
+    files than it appears to — measured: a foreign-repo link in a sparse-
+    excluded file produced zero problems instead of two.
+    """
+    plugin = root / ".claude-plugin" / "plugin.json"
+    try:
+        repo_url = json.loads(
+            plugin.read_text(encoding="utf-8")).get("repository")
+    except (FileNotFoundError, json.JSONDecodeError):
+        return  # already reported by check_manifests
+    if not repo_url:
+        problems.append(
+            "plugin.json: no `repository` — check_issue_refs cannot tell a "
+            "reference to this project's tracker from a foreign one")
+        return
+    expected_base = repo_url.rstrip("/") + "/issues/"
+
+    files = []
+    try:
+        listing = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z", "*.md"],
+            capture_output=True, text=True, check=True)
+        files = [n for n in listing.stdout.split("\0") if n]
+    except (OSError, subprocess.CalledProcessError):
+        pass  # not a checkout (or no git) — the glob below is the fallback
+    if not files:
+        files = sorted(
+            str(p.relative_to(root))
+            for p in root.rglob("*.md")
+            if not any(part.startswith(".") for part in p.relative_to(root).parts))
+
+    for rel in sorted(files):
+        path = root / rel
+        try:
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            # git tracks it, the working tree does not have it — a sparse
+            # checkout, or an index desynced from disk. Categorically different
+            # from a permission error: the file EXISTS as far as the repo is
+            # concerned, so skipping it silently means the gate quietly covers
+            # less than it claims. Report and move on.
+            problems.append(
+                f"{rel}: tracked by git but absent from the working tree "
+                f"(sparse checkout?) — check_issue_refs cannot inspect it, so "
+                f"this file is NOT covered by the gate")
+            continue
+        except (OSError, UnicodeDecodeError):
+            continue  # unreadable or not text; not this check's business
+
+        # Code spans and fenced blocks quote references, they do not make them.
+        # Stripping them first is what keeps this file's own CHANGELOG entry —
+        # which documents the inverted-ref class by writing `[#28]` in
+        # backticks — from being read as a live reference.
+        text = MD_CODE_RE.sub("", text)
+
+        uses = set(ISSUE_USE_RE.findall(text))
+        # NOT dict(findall): a repeated `[#N]:` would collapse to the LAST one,
+        # while CommonMark resolves to the FIRST — so the check would validate
+        # a URL the renderer never uses. Keep every occurrence and check each.
+        defs = ISSUE_DEF_RE.findall(text)
+        def_nums = {num for num, _ in defs}
+        inline = ISSUE_INLINE_RE.findall(text)
+
+        dupes = sorted({n for n, _ in defs
+                        if sum(1 for m, _ in defs if m == n) > 1}, key=int)
+        for num in dupes:
+            problems.append(
+                f"{rel}: `[#{num}]:` is defined more than once — markdown "
+                f"resolves the FIRST and ignores the rest, so the later "
+                f"definitions are invisible at render time; delete them")
+
+        for num in sorted(uses - def_nums, key=int):
+            problems.append(
+                f"{rel}: `[#{num}]` is used reference-style but has no "
+                f"`[#{num}]: <url>` definition — it publishes as the literal "
+                f"text `[#{num}]`, not a link")
+        for num in sorted(def_nums - uses, key=int):
+            problems.append(
+                f"{rel}: `[#{num}]:` is defined but never used — a leftover "
+                f"from a rewrite; delete it or restore the reference")
+
+        # Label vs URL, for both linked forms. This is the inverted-ref catch.
+        # Every URL reached here is also matched by the bare-URL scan below, so
+        # each is recorded and excluded there — one fault, one problem line.
+        labelled_urls = set()
+        for num, url in sorted(defs, key=lambda p: int(p[0])) + inline:
+            labelled_urls.add(url)
+            if not url.startswith(expected_base):
+                problems.append(
+                    f"{rel}: `[#{num}]` points at {url!r}, which is not "
+                    f"{expected_base}<n> — an issue link must resolve in THIS "
+                    f"repo's tracker (plugin.json `repository`)")
+                continue
+            # Everything after the number addresses a location WITHIN the issue
+            # (`#issuecomment-N`, `?tab=`, a trailing `/`) and is not part of
+            # the identity. Comparing it against the label reports a legitimate
+            # deep link — the form GitHub's own "copy link" produces — as an
+            # inverted ref.
+            m = ISSUE_TARGET_RE.match(url[len(expected_base):])
+            if not m:
+                problems.append(
+                    f"{rel}: `[#{num}]` points at {url!r} — the path after "
+                    f"{expected_base} is not an issue number")
+                continue
+            if m.group(1) != num:
+                problems.append(
+                    f"{rel}: `[#{num}]` links to issue {m.group(1)} — the label "
+                    f"and the URL disagree, so it reads as #{num} everywhere "
+                    f"and navigates to #{m.group(1)} (the inverted-ref class)")
+
+        # A bare issue URL carrying no label cannot be cross-checked against a
+        # number, but it can still be foreign.
+        for m in ISSUE_URL_RE.finditer(text):
+            url = m.group(0)
+            # `labelled_urls` holds FULL urls (ISSUE_DEF_RE captures `\S+`, so a
+            # fragment is included) while this pattern stops at the number — so
+            # match by prefix, not equality, or a labelled deep link reports
+            # twice.
+            if any(u.startswith(url) for u in labelled_urls):
+                continue  # already judged, with a better message, above
+            if not url.startswith(expected_base):
+                problems.append(
+                    f"{rel}: issue URL {url!r} is not under {expected_base} — "
+                    f"a reference to another project's tracker")
+
+
 # The registry, in run order. Both main() and the test suite iterate THIS —
 # a hand-copied second list is how three guardrails (reader bounds, guard
 # parity, lock parity) ended up running in the build but not in the test that
@@ -1345,18 +2043,24 @@ CHECKS = (
     check_manifests,
     check_statusline,
     check_changelog,
+    check_issue_refs,
     check_charter,
     check_ledger_schema,
+    check_handout_packet,
+    check_source_stamp,
     check_decisions_schema,
     check_agents,
     check_render_templates,
     check_hook,
+    check_armgate,
+    check_permission_guards,
     check_scripts,
     check_reader_bounds,
     check_platform_idioms,
     check_guard_parity,
     check_claims,
     check_install_set_parity,
+    check_gitignore_parity,
     check_compressor,
     check_lock_parity,
     check_resolver_renderer_parity,

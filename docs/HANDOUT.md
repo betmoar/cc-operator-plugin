@@ -29,7 +29,7 @@ one.
 | Tier name     | Default model            | What it's for                          | Cost / power        |
 | ------------- | ------------------------ | -------------------------------------- | ------------------- |
 | **JUDGMENT**  | `claude-opus-5`          | Hard calls: design, review, verdicts   | Highest / smartest  |
-| **IMPLEMENT** | `glm-5.2`                | Writing real code, multi-step builds   | Mid / capable       |
+| **IMPLEMENT** | `claude-sonnet-5`        | Writing real code, multi-step builds   | Mid / capable       |
 | **MECHANICAL**| `glm-5-turbo`            | Bulk generation, reading shards        | Cheap / fast        |
 | **RECON**     | `claude-haiku-4-5-…`     | Lookups, searches, "where is X?"       | Cheap / fast        |
 
@@ -56,9 +56,12 @@ Each agent has a fixed job. The operator dispatches them like specialists.
 | **op-crawler**   | MECHANICAL     | Reads one chunk of a large codebase, returns a digest |
 | **op-brainstorm**| MECHANICAL     | Generates many candidate ideas (divergent thinking)   |
 
-**Read vs. write:** scouts, crawlers, reviewers, verifiers are **read-only**
-(they can't change files). Author and mechanic **write**. The operator never
-lets two writers touch the same thing at once.
+**Read vs. write:** scouts, crawlers, reviewers, verifiers are **read-only by
+tool policy** — their tool lists exclude Write/Edit, but any seat that carries
+Bash could still write through the shell, so the operator verifies the tree
+after read-only dispatches (`ops-claims.sh --expect-clean`) instead of trusting
+the label. Author and mechanic **write**. The operator never lets two writers
+touch the same thing at once.
 
 ---
 
@@ -116,11 +119,14 @@ mode. Now it behaves like a lead:
 - It routes each task to the right tier (cheap for volume, JUDGMENT for calls).
 - **One writer at a time**; read-only workers can run in parallel.
 
-You'll recognize a good dispatch packet — every task ships with:
+You'll recognize a good dispatch packet — every task ships with exactly the
+charter's fields:
 ```
-TASK / SCENE / INPUTS / FORBIDDEN / CONSTRAINTS /
-DONE MEANS (command + expected output) / REPORT (≤30 lines)
+TASK / TEXT / SCENE / INPUTS / FORBIDDEN (gate files off-limits unless the task
+IS the gate) / DONE / REPORT (status <=30 lines, SHA, CHANGED: <paths>|none)
 ```
+The `CHANGED:` line is not decoration — on a DONE report the operator feeds it
+to `ops-claims.sh`, which checks the claimed paths against the actual diff.
 
 ### 4. Workers report one of four statuses
 | Status              | What it means                         | What the operator does                    |

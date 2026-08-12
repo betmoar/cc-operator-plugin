@@ -154,6 +154,20 @@ being re-read every session.
   traversal guard. The *"name guards agree"* case asserts the glob premise
   itself, not just the guard, so the reason cannot rot. If you ever switch the
   hook to `dotglob` or `find`, this rule is what you are trading away.
+- **A guard that searches text it has already stripped fails OPEN, silently.**
+  `check_source_stamp` asserts the U10 stamp is resolved *before* `lock_acquire`.
+  It stripped comment lines first (right — the header prose names every marker,
+  so a gutted resolver would otherwise satisfy the scan), then located the
+  verdict path by splitting on `# --- Verdict path ---`, which is itself a
+  comment it had just removed. The split found nothing, the not-found branch
+  skipped the assertion, and a mutation moving the stamp inside the lock passed
+  a green build. Two rules came out of it, and the second is the one that
+  generalizes: **find the region in the raw text, strip inside it** — order the
+  two operations so the second never eats the first's landmark; and **not-found
+  is a reported problem, never a skip**, or the guard's own blind spot is
+  indistinguishable from a clean result. The bash twin (`S1.10`) had the same
+  hole from the other direction — it matched the prose that *mentions*
+  `source_stamp` rather than the assignment — and the same mutation caught both.
 - **Count cells; never glob them.** `'| '*' | '*' | '*' | PASS |'` looks like a
   4-cell schema check and is not one: `*` matches ` | ` too, so a 5-cell row
   satisfied it and `--reconcile` appended it to the ledger. Any future schema
@@ -226,3 +240,15 @@ being re-read every session.
   "100 well-formed rows" passes on the unlocked code too. The *"concurrent
   appends"* case therefore also takes the lock dir by hand and asserts a writer
   waits — that is the assertion that would fail if the lock were removed. Keep it.
+- **`git check-ignore -v` is not a test for "is this ignored".** It prints the
+  last *matching* rule and exits 0 for a `!` negation too — and a negation means
+  the path is explicitly **allowed**. So "non-empty `-v` output" reads as
+  *ignored* when the truth is the opposite. `-q`'s exit status is the only
+  honest answer. This has now cost the project twice in one release: once by
+  hand, where it produced a confident "the allowlist fix failed" reading against
+  a fix that had in fact worked; once by a simplifier collapsing `ops-init.sh`'s
+  deliberate two calls (`-q` to test, `-v` to name the rule in the message) into
+  a single `-v`, which inverted the #25 warning for every project the v2
+  scaffold creates and was caught only because a case asserts a healthy project
+  stays quiet. The two calls in `ops-init.sh` are load-bearing; the comment
+  there says so.

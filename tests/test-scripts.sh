@@ -17,6 +17,7 @@ VERDICT="$SCRIPTS/ops-verdict.sh"
 HOOK="$SCRIPTS/ops-stop-hook.sh"
 TASK="$SCRIPTS/ops-task.sh"
 ADOPT="$SCRIPTS/ops-adopt.sh"
+ARMHOOK="$SCRIPTS/ops-armgate-hook.sh"
 CLAIMS="$SCRIPTS/ops-claims.sh"
 SSHOOK="$SCRIPTS/ops-sessionstart-hook.sh"
 
@@ -99,9 +100,13 @@ P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
 mkdir -p "$P/.operator/pending"; : > "$P/.operator/pending/T-1"
 ( cd "$P" && bash "$VERDICT" T-1 "tests pass" "42 passed, 0 failed" PASS >/dev/null 2>&1 )
 VRC=$?
-ROW='| T-1 | tests pass | 42 passed, 0 failed | PASS |'
+# The evidence cell ends with the source-state stamp (S1). It is matched as a
+# token rather than pinned to `no-vcs`, because a suite run with TMPDIR inside
+# someone's git repo legitimately stamps a sha here — pinning the value would
+# make these cases fail on a correct build, for a reason nobody would guess.
+ROW='^\| T-1 \| tests pass \| 42 passed, 0 failed @[^ |]+ \| PASS \|$'
 if [ -f "$P/.operator/VERDICTS.md" ]; then
-  N="$(grep -Fxc "$ROW" "$P/.operator/VERDICTS.md" 2>/dev/null)"
+  N="$(grep -Ec "$ROW" "$P/.operator/VERDICTS.md" 2>/dev/null)"
 else N=0; fi
 check "verdict exits 0 on valid args" "$([ "$VRC" -eq 0 ] && echo 0 || echo 1)"
 check "exactly one conformant row appended" "$([ "$N" = "1" ] && echo 0 || echo 1)"
@@ -204,7 +209,7 @@ run_hook stop-basic.json "$P"
 check "hook blocks (exit 2) on ops-task-opened sentinel" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
 check "block message names .operator/bin/ops-verdict.sh" "$(printf '%s' "$HERR" | grep -q '\.operator/bin/ops-verdict\.sh' && echo 0 || echo 1)"
 ( cd "$P" && ./.operator/bin/ops-verdict.sh T-6 "crit" "output" PASS >/dev/null 2>&1 )
-check "installed verdict CLI appends row + clears sentinel" "$(grep -Fq '| T-6 | crit | output | PASS |' "$P/.operator/VERDICTS.md" && [ ! -e "$P/.operator/pending/T-6" ] && echo 0 || echo 1)"
+check "installed verdict CLI appends row + clears sentinel" "$(grep -Eq '^\| T-6 \| crit \| output @[^ |]+ \| PASS \|$' "$P/.operator/VERDICTS.md" && [ ! -e "$P/.operator/pending/T-6" ] && echo 0 || echo 1)"
 # ops-task refusals: no id; no .operator/
 ( cd "$P" && ./.operator/bin/ops-task.sh >/dev/null 2>&1 ); NRC=$?
 check "ops-task refuses a missing task-id" "$([ "$NRC" -ne 0 ] && echo 0 || echo 1)"
@@ -375,22 +380,36 @@ check "sessionstart hook emits additionalContext with the id" "$(printf '%s' "$S
 Q="$(newproj)"
 SSQ="$(sed "s|<tmp>|$Q|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"; SSQRC=$?
 check "sessionstart hook silent outside operator projects" "$([ "$SSQRC" -eq 0 ] && [ -z "$SSQ" ] && echo 0 || echo 1)"
-# SessionStart ensures the compressor ephemera are git-ignored: a target project
-# whose .operator/.gitignore predates the compressor would otherwise show
-# .compress-spill/ as dirty state the moment the PostToolUse compressor fires
-# (user-reported 2026-08-04). The hook appends the lines idempotently.
+# SessionStart migrates a v1 (blocklist) .operator/.gitignore to the v2
+# allowlist. The v1 scheme tracked by default, so every ephemera directory added
+# since had to be remembered and appended — twice (.lock/ for F05, then
+# .compress-spill/ once a user's tree went dirty, 2026-08-04). v2 inverts the
+# default: `*` covers everything new, and only evidence is re-admitted. The two
+# schemes CONTRADICT, so this replaces rather than appends.
 GIP="$(newproj)"; ( cd "$GIP" && bash "$INIT" >/dev/null 2>&1 )
-# Strip the compressor lines to simulate a pre-compressor gitignore.
 printf '# legacy\n.lock/\n' > "$GIP/.operator/.gitignore"
 sed "s|<tmp>|$GIP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
-check "sessionstart ensures .compress-spill/ is git-ignored" \
-  "$(grep -q '^\.compress-spill/$' "$GIP/.operator/.gitignore" && echo 0 || echo 1)"
-check "sessionstart ensures .compress-state/ is git-ignored" \
-  "$(grep -q '^\.compress-state/$' "$GIP/.operator/.gitignore" && echo 0 || echo 1)"
-# Idempotent: a second fire does not duplicate the block.
+check "sessionstart migrates a v1 gitignore to the v2 allowlist" \
+  "$(grep -qF '# cc-operator gitignore v2 (allowlist)' "$GIP/.operator/.gitignore" && echo 0 || echo 1)"
+check "the v2 migration keeps the user's v1 file as .v1.bak" \
+  "$(grep -q '^# legacy$' "$GIP/.operator/.gitignore.v1.bak" 2>/dev/null && echo 0 || echo 1)"
+# The load-bearing half: ledgers and fragments stay TRACKED, machine state does
+# not. A migration that ignores a ledger loses evidence silently.
+check "v2 re-admits both ledgers, tiers.env and the merge=union fragments" \
+  "$( for a in '!VERDICTS.md' '!DECISIONS.md' '!tiers.env' '!verdicts.d/*.md'; do
+        grep -qF "$a" "$GIP/.operator/.gitignore" || exit 1
+      done; echo 0 )"
+check "v2 ignores everything else by default (bare '*')" \
+  "$(grep -qxF '*' "$GIP/.operator/.gitignore" && echo 0 || echo 1)"
+# The compressor ephemera are now covered by '*' — no per-directory line, which
+# is the whole point of the inversion.
+check "v2 needs no explicit .compress-spill/ line (covered by '*')" \
+  "$(grep -q '^\.compress-spill/$' "$GIP/.operator/.gitignore" && echo 1 || echo 0)"
+# Idempotent: a second fire re-detects the marker and does not rewrite.
+cp "$GIP/.operator/.gitignore" "$GIP/gi.before"
 sed "s|<tmp>|$GIP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
-check "sessionstart gitignore-ensure is idempotent (no duplicate block)" \
-  "$( [ "$(grep -c '^\.compress-spill/$' "$GIP/.operator/.gitignore")" = 1 ] && echo 0 || echo 1)"
+check "the v2 migration is idempotent (a second fire is a no-op)" \
+  "$(cmp -s "$GIP/gi.before" "$GIP/.operator/.gitignore" && echo 0 || echo 1)"
 rm -rf "$Q" "$P" "$GIP"
 
 # --- automated upgrade path (version-gated bin/ refresh, 2026-08-04) ----------
@@ -425,14 +444,23 @@ sed "s|<tmp>|$UP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/n
 check "sessionstart is a no-op when the version matches (steady-state)" \
   "$( [ "$(wc -c < "$UP/.operator/bin/ops-verdict.sh")" = "$_pre" ] && echo 0 || echo 1)"
 # CR3: a FAILED copy must NOT advance the stamp (a truncated CLI + "current"
-# stamp would never retry). Make bin/ unwritable so cp fails; the old stamp
-# stays, so the next session retries.
+# stamp would never retry). The old stamp stays, so the next session retries.
+#
+# The failure is induced by REPLACING bin/ with a regular file, not by
+# `chmod 000` (#20). uid 0 ignores mode bits — `cp` into a chmod-000 directory
+# SUCCEEDS as root, the stamp advanced, and this case failed for a reason that
+# had nothing to do with the invariant: the suite was 441/1 as root and 442/0
+# otherwise. A copy into a path that is a regular file fails for EVERY uid,
+# root included, because it is a type error rather than a permission one.
+# tests/test-scripts.sh already uses this class of trick for B10.3 ("chmod is
+# not portable under every test runner"); CR3 had not been given it.
 printf '0.1.0-old\n' > "$UP/.operator/.version"   # force an upgrade attempt
-chmod 000 "$UP/.operator/bin" 2>/dev/null
+rm -rf "$UP/.operator/bin" && : > "$UP/.operator/bin"
 sed "s|<tmp>|$UP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
 check "a failed upgrade copy does NOT advance the stamp (retry next session)" \
   "$([ "$(cat "$UP/.operator/.version")" = "0.1.0-old" ] && echo 0 || echo 1)"
-chmod 755 "$UP/.operator/bin" 2>/dev/null
+rm -f "$UP/.operator/bin"          # the blocking regular file; restore a usable dir
+mkdir -p "$UP/.operator/bin"
 # CR3: bin/ is CREATED if absent (a project with .operator/ but no bin/ must not
 # stamp itself current while installing nothing).
 UP2="$(newproj)"; ( cd "$UP2" && bash "$INIT" >/dev/null 2>&1 )
@@ -529,14 +557,14 @@ N=50
 racer() { # racer <tag>
   local tag="$1" i
   for i in $(seq 1 "$N"); do
-    ( cd "$P" && bash "$VERDICT" "T-$tag-$i" "criterion $tag $i" "evidence $tag $i" PASS >/dev/null 2>&1 )
+    ( cd "$P" && bash "$VERDICT" "T-$tag-$i" "criterion $tag $i" "evidence $tag $i" PASS --owner "SESS-$tag" >/dev/null 2>&1 )
   done
 }
 racer A & RA=$!
 racer B & RB=$!
 wait "$RA" "$RB"
 TOTAL=$((N * 2))
-GOOD="$(grep -cE '^\| T-[AB]-[0-9]+ \| criterion [AB] [0-9]+ \| evidence [AB] [0-9]+ \| PASS \|$' "$P/.operator/VERDICTS.md" || true)"
+GOOD="$(grep -cE '^\| T-[AB]-[0-9]+ \| criterion [AB] [0-9]+ \| evidence [AB] [0-9]+ @[^ |]+ \| PASS \|$' "$P/.operator/VERDICTS.md" || true)"
 ANYROW="$(grep -cE '^\| T-' "$P/.operator/VERDICTS.md" || true)"
 check "concurrent: all $TOTAL rows present" "$([ "$ANYROW" = "$TOTAL" ] && echo 0 || echo 1)"
 check "concurrent: every row matches the 4-cell schema (zero interleaving)" "$([ "$GOOD" = "$TOTAL" ] && echo 0 || echo 1)"
@@ -934,7 +962,7 @@ while [ "$waited" -lt 20 ]; do
 done
 if kill -0 "$ABPID" 2>/dev/null; then kill -9 "$ABPID" 2>/dev/null; ABRC=99; fi
 check "abandoned reclaim claim recovers (does not wedge forever)" "$([ "$ABRC" -eq 0 ] && echo 0 || echo 1)"
-check "abandoned claim: verdict actually recorded" "$(grep -Fq '| T-AB | crit | ev | PASS |' "$P/.operator/VERDICTS.md" && [ ! -e "$P/.operator/pending/T-AB" ] && echo 0 || echo 1)"
+check "abandoned claim: verdict actually recorded" "$(grep -Eq '^\| T-AB \| crit \| ev @[^ |]+ \| PASS \|$' "$P/.operator/VERDICTS.md" && [ ! -e "$P/.operator/pending/T-AB" ] && echo 0 || echo 1)"
 check "abandoned claim: no lock or marker left behind" "$([ ! -d "$P/.operator/.lock" ] && [ ! -d "$P/.operator/.lock.reclaim" ] && echo 0 || echo 1)"
 
 # A LINE cap is not a BYTE cap: one newline-less line is a single "line" and
@@ -1062,7 +1090,13 @@ Q="$(newproj)"
 IOUT="$( cd "$Q" && bash "$INIT" 2>&1 )"
 check "ops-init warns when the target is not a git repository" "$(printf '%s' "$IOUT" | grep -qi 'not a git repo' && echo 0 || echo 1)"
 check "ops-init still scaffolds (warn, never hard-fail)" "$([ -d "$Q/.operator/pending" ] && echo 0 || echo 1)"
-check "ops-init ignores its own lock ephemera" "$(grep -q '.lock' "$Q/.operator/.gitignore" 2>/dev/null && echo 0 || echo 1)"
+# Under the v2 allowlist there is no per-directory `.lock/` line — `*` covers it
+# and every ephemera directory added later. Assert the BEHAVIOUR (git ignores a
+# lock) rather than the literal, so this case cannot pass a file that merely
+# mentions the word.
+check "ops-init ignores its own lock ephemera" \
+  "$( cd "$Q" && git init -q . >/dev/null 2>&1; mkdir -p .operator/.lock; : > .operator/.lock/held
+      git check-ignore -q .operator/.lock/held && echo 0 || echo 1 )"
 rm -rf "$Q"
 
 ########################################################################
@@ -1096,7 +1130,7 @@ DRC=$?
 SEC1=$(date +%s)
 check "dead holder: writer succeeds" "$([ "$DRC" -eq 0 ] && echo 0 || echo 1)"
 check "dead holder: reclaimed promptly, not after the full budget (<10s)" "$([ "$((SEC1 - SEC0))" -lt 10 ] && echo 0 || echo 1)"
-check "dead holder: verdict actually recorded" "$(grep -Fq '| T-DEAD | crit | ev | PASS |' "$P/.operator/VERDICTS.md" && [ ! -e "$P/.operator/pending/T-DEAD" ] && echo 0 || echo 1)"
+check "dead holder: verdict actually recorded" "$(grep -Eq '^\| T-DEAD \| crit \| ev @[^ |]+ \| PASS \|$' "$P/.operator/VERDICTS.md" && [ ! -e "$P/.operator/pending/T-DEAD" ] && echo 0 || echo 1)"
 check "dead holder: no lock or claim marker left behind" "$([ ! -d "$LK" ] && [ ! -d "$LK.reclaim" ] && echo 0 || echo 1)"
 
 # (b) A LIVE holder is never reclaimed, however far past the budget the waiter
@@ -1176,7 +1210,7 @@ for _i in $(seq 1 25); do
   case "$RCERR" in *"reclaimed while this process held it"*) DISPLACED=$((DISPLACED+1)) ;; esac
 done
 check "two simultaneous reclaimers: neither is displaced from the lock" "$([ "$DISPLACED" = "0" ] && echo 0 || echo 1)"
-check "two simultaneous reclaimers: both verdicts recorded" "$(grep -Fq '| T-X1 | c | e | PASS |' "$P/.operator/VERDICTS.md" && grep -Fq '| T-X2 | c | e | PASS |' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
+check "two simultaneous reclaimers: both verdicts recorded" "$(grep -Eq '^\| T-X1 \| c \| e @[^ |]+ \| PASS \|$' "$P/.operator/VERDICTS.md" && grep -Eq '^\| T-X2 \| c \| e @[^ |]+ \| PASS \|$' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
 check "two simultaneous reclaimers: nothing left behind" "$([ ! -d "$LK" ] && [ ! -d "$LK.reclaim" ] && echo 0 || echo 1)"
 
 # (d) An unjudgeable holder record must fall back to the time-based path, never
@@ -1939,6 +1973,94 @@ runclaims --since "$BASE_SHA" --claimed "tests/" --gate-task >/dev/null 2>&1; C3
 check "C3 pass: protected path allowed with --gate-task" "$([ "$C3P" = 0 ] && echo 0 || echo 1)"
 clean_tree
 
+# B7.1 — backlog/ is PROTECTED (B7): a worker that edits backlog/tasks/*.md can
+# edit the acceptance criteria it is judged against — the F48 vacuous-guard class
+# relocated to the plan layer. The WHOLE directory (Q4): a notes file under
+# backlog/ is equally off-limits. Touch a path under it, claim it honestly, and
+# C3 must still fire gate-trespass (the claim does not authorize the trespass).
+mkdir -p "$P/backlog/tasks"; printf 'x\n' > "$P/backlog/tasks/x.md"
+B7OUT="$(runclaims --since "$BASE_SHA" --claimed "backlog/tasks/x.md" 2>/dev/null)"; B7RC=$?
+clean_tree
+check "B7.1 backlog/tasks/*.md touched without --gate-task → non-zero" "$([ "$B7RC" != 0 ] && echo 0 || echo 1)"
+check "B7.1 names 'gate-trespass'" "$(printf '%s' "$B7OUT" | grep -q gate-trespass && echo 0 || echo 1)"
+# B7.1b: a notes file under backlog/ is equally off-limits (Q4 — whole dir).
+mkdir -p "$P/backlog"; printf 'n\n' > "$P/backlog/notes.md"
+runclaims --since "$BASE_SHA" --claimed "backlog/notes.md" >/dev/null 2>&1; B7BRC=$?
+clean_tree
+check "B7.1b backlog/notes.md (not a task) is equally protected (whole dir, Q4)" "$([ "$B7BRC" != 0 ] && echo 0 || echo 1)"
+# B7.1c: --gate-task authorizes the backlog edit (the task IS the gate).
+mkdir -p "$P/backlog/tasks"; printf 'y\n' > "$P/backlog/tasks/y.md"
+runclaims --since "$BASE_SHA" --claimed "backlog/tasks/y.md" --gate-task >/dev/null 2>&1; B7CRC=$?
+clean_tree
+check "B7.1c backlog/ edit allowed with --gate-task" "$([ "$B7CRC" = 0 ] && echo 0 || echo 1)"
+
+# B10.1 — ops-backlog.sh --census: prints file/code/code-loc counts, exit 0, and
+# counts code files/lines correctly. The <1s-on-10K-files bound (B10 AC1) is
+# verified out-of-suite on a synthetic large repo (too big for a unit case);
+# this case pins correctness on a small known corpus.
+B10P="$(newproj)"
+( cd "$B10P" && git init -q && git config user.email t@t && git config user.name t )
+# 2 code files (1 with a blank line), 1 doc file, 1 code-ext-less file.
+printf 'a = 1\n\nb = 2\n' > "$B10P/x.py"
+printf 'echo hi\n' > "$B10P/y.sh"
+printf '# readme\n' > "$B10P/README.md"
+printf 'data\n' > "$B10P/notes"
+( cd "$B10P" && git add -A && git commit -qm base >/dev/null 2>&1 )
+B10OUT="$(cd "$B10P" && bash "$SCRIPTS/ops-backlog.sh" --census 2>/dev/null)"; B10RC=$?
+check "B10.1 --census exits 0" "$([ "$B10RC" = 0 ] && echo 0 || echo 1)"
+# 4 tracked files; 2 code files; 3 non-blank code lines (x.py has 2, y.sh has 1).
+check "B10.1 --census counts files=4" "$(printf '%s' "$B10OUT" | grep -q '^files: 4$' && echo 0 || echo 1)"
+check "B10.1 --census counts code-files=2" "$(printf '%s' "$B10OUT" | grep -q '^code-files: 2$' && echo 0 || echo 1)"
+check "B10.1 --census counts code-loc=3 (non-blank lines only)" "$(printf '%s' "$B10OUT" | grep -q '^code-loc: 3$' && echo 0 || echo 1)"
+# --census needs a git repo: refuse cleanly, not a raw git error.
+B10NG="$(mktemp -d "${TMPDIR:-/tmp}/opstest.XXXXXX")"
+(cd "$B10NG" && bash "$SCRIPTS/ops-backlog.sh" --census 2>/dev/null); B10NGRC=$?
+check "B10.1 --census on a non-git dir → non-zero" "$([ "$B10NGRC" != 0 ] && echo 0 || echo 1)"
+
+# B10.2 — a filename containing a SPACE must not vanish from the count. Bare
+# `xargs` word-splits on any whitespace, so `my file.py` became two bogus args,
+# both cats failed, 2>/dev/null swallowed it, and the file dropped out silently:
+# measured code-loc 1 on a 2-file/3-line repo. Every stage is NUL-delimited now.
+# (PR-review finding, 2026-08-07.)
+B10SP="$(newproj)"
+( cd "$B10SP" && git init -q -b work && git config user.email t@t && git config user.name t )
+printf 'a = 1\nb = 2\n' > "$B10SP/my file.py"     # 2 non-blank lines, spaced name
+printf 'c = 3\n'        > "$B10SP/plain.py"       # 1 non-blank line
+( cd "$B10SP" && git add -A && git commit -qm base >/dev/null 2>&1 )
+B10SPOUT="$(cd "$B10SP" && bash "$SCRIPTS/ops-backlog.sh" --census 2>/dev/null)"
+check "B10.2 --census counts a file whose name contains a space (code-loc: 3)" \
+  "$(printf '%s' "$B10SPOUT" | grep -q '^code-loc: 3$' && echo 0 || echo 1)"
+
+# B10.4 — a tracked filename containing a NEWLINE must not be miscounted (#29).
+# This is the case that `grep -zE` got wrong on BSD/macOS: `-z` there does not
+# anchor `$` at the NUL, so the record is still split on newlines internally and
+# a name whose FIRST line ends in `.py` matched even though the name ends `.md`.
+# Measured before the fix on BSD grep 2.6.0: code-files 2 / code-loc 5 against a
+# ground truth of 1 / 2. GNU grep 3.11 answered correctly, which is exactly why
+# a Linux-only run could not have caught it — the case must run on macOS.
+# Filtering with `git ls-files -- <pathspec>` removes the question entirely:
+# git matches whole pathnames, so there is no record-splitting to get wrong.
+B10NL="$(newproj)"
+( cd "$B10NL" && git init -q -b work && git config user.email t@t && git config user.name t )
+printf 'a = 1\nb = 2\n' > "$B10NL/real.py"                     # 2 non-blank lines
+printf 'q\n'            > "$B10NL/plain.md"                    # doc, not counted
+printf 'x\ny\nz\n'      > "$B10NL/$(printf 'evil.py\nactually.md')"  # doc, newline in NAME
+( cd "$B10NL" && git add -A && git commit -qm base >/dev/null 2>&1 )
+B10NLOUT="$(cd "$B10NL" && bash "$SCRIPTS/ops-backlog.sh" --census 2>/dev/null)"
+check "B10.4 --census does not count a .md whose name contains a newline as code (code-files: 1)" \
+  "$(printf '%s' "$B10NLOUT" | grep -q '^code-files: 1$' && echo 0 || echo 1)"
+check "B10.4 --census code-loc ignores the newline-named .md (code-loc: 2)" \
+  "$(printf '%s' "$B10NLOUT" | grep -q '^code-loc: 2$' && echo 0 || echo 1)"
+
+# B10.3 — an unreadable code file must be REPORTED, never silently undercounted.
+# A census that prints a confident number over a partial read misinforms exactly
+# the B10 decision it exists to inform. Simulated by deleting a tracked file so
+# `cat` fails (chmod is not portable under every test runner).
+rm -f "$B10SP/plain.py"
+B10PART="$(cd "$B10SP" && bash "$SCRIPTS/ops-backlog.sh" --census 2>/dev/null)"
+check "B10.3 --census marks an incomplete read PARTIAL rather than printing a confident count" \
+  "$(printf '%s' "$B10PART" | grep -q '^code-loc: .*PARTIAL' && echo 0 || echo 1)"
+
 # CHANGED: none — clean working tree, no claims, no trespass.
 runclaims --since "$BASE_SHA" --claimed none >/dev/null 2>&1; CNG=$?
 check "CHANGED none: clean tree, no claims → exit 0" "$([ "$CNG" = 0 ] && echo 0 || echo 1)"
@@ -2321,6 +2443,879 @@ rm -f "$DEC" "$ATT"; rmdir "$ATT" 2>/dev/null || true
 printf '# Decisions\n' > "$DEC"
 
 rm -rf "$P"
+
+########################################################################
+echo "-- Case: G1 retro-gate — three-state arm check (never-armed → GATE-EXCEPTION)"
+# A verdict with no open sentinel is either never-armed (→ GATE-EXCEPTION) or
+# a duplicate/amending row (→ warning). A never-armed verdict with no --owner is
+# refused: the GATE-EXCEPTION must carry a [sid:] tag. The prior-row scan reads
+# the session fragment, bounded by FRAG_MAX_BYTES. See backlog-charter.md §8c.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+S="SESS-G1"
+
+# G1.1 — armed verdict: sentinel present, no GATE-EXCEPTION (regression).
+( cd "$P" && bash "$TASK" g1t1 --owner "$S" >/dev/null 2>&1 )
+DEC_BEFORE="$(wc -c < "$P/.operator/DECISIONS.md" | tr -d ' ')"
+( cd "$P" && bash "$VERDICT" g1t1 crit ev PASS --owner "$S" >/dev/null 2>&1 ); G11=$?
+check "G1.1 armed verdict exits 0" "$([ "$G11" -eq 0 ] && echo 0 || echo 1)"
+check "G1.1 armed verdict writes zero GATE-EXCEPTION lines" \
+  "$([ "$(wc -c < "$P/.operator/DECISIONS.md" | tr -d ' ')" = "$DEC_BEFORE" ] && echo 0 || echo 1)"
+
+# G1.2 — never-armed verdict with --owner: row appended, one GATE-EXCEPTION tagged [sid:$S].
+DEC_BEFORE="$(grep -c 'GATE-EXCEPTION' "$P/.operator/DECISIONS.md" 2>/dev/null || echo 0)"
+( cd "$P" && bash "$VERDICT" na-g12 crit ev PASS --owner "$S" >/dev/null 2>&1 ); G12=$?
+check "G1.2 never-armed with --owner exits 0" "$([ "$G12" -eq 0 ] && echo 0 || echo 1)"
+DEC_AFTER="$(grep -c 'GATE-EXCEPTION' "$P/.operator/DECISIONS.md" 2>/dev/null || echo 0)"
+check "G1.2 writes exactly one GATE-EXCEPTION" \
+  "$([ $((DEC_AFTER - DEC_BEFORE)) -eq 1 ] && echo 0 || echo 1)"
+check "G1.2 GATE-EXCEPTION what-cell carries [sid:$S]" \
+  "$(grep 'GATE-EXCEPTION' "$P/.operator/DECISIONS.md" | tail -1 | grep -q "\[sid:$S\]" && echo 0 || echo 1)"
+
+# G1.3 — repeat the never-armed verdict: duplicate/amending, no second GATE-EXCEPTION.
+DEC_BEFORE="$(grep -c 'GATE-EXCEPTION' "$P/.operator/DECISIONS.md" 2>/dev/null || echo 0)"
+G13OUT="$( cd "$P" && bash "$VERDICT" na-g12 crit2 ev2 PASS --owner "$S" 2>&1 )"; G13=$?
+check "G1.3 duplicate verdict exits 0" "$([ "$G13" -eq 0 ] && echo 0 || echo 1)"
+check "G1.3 stderr names duplicate/amending" \
+  "$(printf '%s' "$G13OUT" | grep -qi 'duplicate\|amending' && echo 0 || echo 1)"
+DEC_AFTER="$(grep -c 'GATE-EXCEPTION' "$P/.operator/DECISIONS.md" 2>/dev/null || echo 0)"
+check "G1.3 writes no second GATE-EXCEPTION" \
+  "$([ $((DEC_AFTER - DEC_BEFORE)) -eq 0 ] && echo 0 || echo 1)"
+
+# G1.4 — never-armed verdict with no --owner: refused, VERDICTS.md unchanged.
+V_BEFORE="$(wc -c < "$P/.operator/VERDICTS.md" | tr -d ' ')"
+( cd "$P" && bash "$VERDICT" na-g14 crit ev PASS 2>/dev/null ); G14=$?
+check "G1.4 never-armed without --owner exits non-zero" "$([ "$G14" -ne 0 ] && echo 0 || echo 1)"
+check "G1.4 VERDICTS.md unchanged (byte-compare)" \
+  "$([ "$(wc -c < "$P/.operator/VERDICTS.md" | tr -d ' ')" = "$V_BEFORE" ] && echo 0 || echo 1)"
+
+# G1.5 — armed verdict with no --owner: still exits 0 (sentinel supplies owner).
+( cd "$P" && bash "$TASK" g1t5 --owner "$S" >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" g1t5 crit ev PASS >/dev/null 2>&1 ); G15=$?
+check "G1.5 armed verdict without --owner exits 0" "$([ "$G15" -eq 0 ] && echo 0 || echo 1)"
+
+# G1.6 — a fragment padded past FRAG_MAX_BYTES: the scan is refused, not slurped.
+# Set up a session with a fragment, then pad it past the cap and verdict again.
+( cd "$P" && bash "$VERDICT" na-g16a crit ev PASS --owner "$S" >/dev/null 2>&1 )
+FRAG="$P/.operator/verdicts.d/$S.md"
+# Pad the fragment past FRAG_MAX_BYTES (8 MiB) with a single long non-row line.
+{ cat "$FRAG"; printf '%s' "$(printf 'x%.0s' $(seq 1 9000000))"; } > "$FRAG.pad" && mv "$FRAG.pad" "$FRAG"
+( cd "$P" && bash "$VERDICT" na-g16b crit ev PASS --owner "$S" 2>/dev/null ); G16=$?
+check "G1.6 oversized-fragment verdict exits 0 (not wedged)" "$([ "$G16" -eq 0 ] && echo 0 || echo 1)"
+
+# G1.7 — long-evidence duplicate must not be misfiled as never-armed (issue-#9
+# class: the prior-row scan skips a chunk that starts the row). A 700-byte
+# evidence cell splits the fragment row across read chunks; the chunk carrying
+# the `| <id> |` prefix must be matched, not skipped. Repro from the G3 review.
+# Fresh project + session: G1.6 above left SESS-G1's fragment padded to 9MB
+# (past FRAG_MAX_BYTES), which would make THIS scan refuse and false-positive —
+# so this case must not inherit that state.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+S7="SESS-G17"
+LONGEV="$(printf 'x%.0s' $(seq 1 700))"
+( cd "$P" && bash "$TASK" g1t7 --owner "$S7" >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" g1t7 crit "$LONGEV" PASS --owner "$S7" >/dev/null 2>&1 )
+DEC_BEFORE="$(grep -cE '^[0-9]{4}.*GATE-EXCEPTION' "$P/.operator/DECISIONS.md" || true)"
+( cd "$P" && bash "$VERDICT" g1t7 crit2 short PASS --owner "$S7" 2>&1 ) | grep -qi 'duplicate\|amending' && DUP17=0 || DUP17=1
+DEC_AFTER="$(grep -cE '^[0-9]{4}.*GATE-EXCEPTION' "$P/.operator/DECISIONS.md" || true)"
+check "G1.7 long-evidence duplicate is duplicate, not never-armed (no spurious GATE-EXCEPTION)" \
+  "$([ "${DEC_AFTER:-0}" = "${DEC_BEFORE:-0}" ] && [ "$DUP17" -eq 0 ] && echo 0 || echo 1)"
+
+# G1.8 — a never-armed verdict writes EXACTLY ONE GATE-EXCEPTION however many
+# times it is amended. The exception is the bypass record; a second one on every
+# amendment would make the deviation gate cry wolf, and the operator would learn
+# to wave it through — the failure mode issue #9 already taught this repo once.
+#
+# NOT asserted here, and deliberately so: recovering the exception when a crash
+# lands between the fragment-row append and the exception append. That guard was
+# built and reverted — an ARMED first verdict also leaves a row with no
+# exception, so "row without exception" cannot distinguish crash-interrupted
+# from ordinary-amended, and the guard fired spuriously on every armed amendment
+# (G1.7 catches exactly that). The residual is recorded in ops-verdict.sh's
+# retro_gate; closing it needs an atomic pair, which is its own slice.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+S8="SESS-G18"
+( cd "$P" && bash "$VERDICT" g1t8 crit ev PASS --owner "$S8" >/dev/null 2>&1 )
+G18_FIRST="$(grep -cE '^[0-9]{4}.*GATE-EXCEPTION' "$P/.operator/DECISIONS.md" || true)"
+( cd "$P" && bash "$VERDICT" g1t8 crit2 ev2 PASS --owner "$S8" >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" g1t8 crit3 ev3 PASS --owner "$S8" >/dev/null 2>&1 )
+G18_AFTER="$(grep -cE '^[0-9]{4}.*GATE-EXCEPTION' "$P/.operator/DECISIONS.md" || true)"
+check "G1.8 never-armed verdict writes exactly one GATE-EXCEPTION across amendments" \
+  "$([ "${G18_FIRST:-0}" = "1" ] && [ "${G18_AFTER:-0}" = "1" ] && echo 0 || echo 1)"
+
+# G1.9 — the retro-gate covers BOTH closing paths. --defer retires a task exactly
+# as a verdict does, so deferring an id that was never opened is an unarmed close
+# and earns the same GATE-EXCEPTION. Before this, a session could retire
+# arbitrary ids via --defer with no trace while the identical act through the
+# PASS/FAIL path was recorded — an asymmetry a bypass would find.
+# (PR-review finding, 2026-08-07.)
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+S9="SESS-G19"
+( cd "$P" && bash "$VERDICT" g1t9 --defer "blocked" --owner "$S9" >/dev/null 2>&1 )
+G19_NA="$(grep -cE '^[0-9]{4}.*GATE-EXCEPTION' "$P/.operator/DECISIONS.md" || true)"
+check "G1.9 --defer of a never-opened task writes a GATE-EXCEPTION" \
+  "$([ "${G19_NA:-0}" = "1" ] && echo 0 || echo 1)"
+# Regression: deferring a properly ARMED task is unchanged, and needs no --owner
+# (the sentinel supplies it) — the narrow scope of the refusal above is asserted.
+( cd "$P" && bash "$TASK" g1t9b --owner "$S9" >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" g1t9b --defer "reason" >/dev/null 2>&1 ); G19ARC=$?
+G19_ARMED="$(grep -cE '^[0-9]{4}.*GATE-EXCEPTION' "$P/.operator/DECISIONS.md" || true)"
+check "G1.9 --defer of an armed task exits 0 and writes no GATE-EXCEPTION" \
+  "$([ "$G19ARC" -eq 0 ] && [ "${G19_ARMED:-0}" = "1" ] && echo 0 || echo 1)"
+# A never-armed defer with no --owner is REFUSED: an untagged GATE-EXCEPTION is
+# unowned, and unowned blocks every session (the cross-session wedge 0.4.0 removed).
+( cd "$P" && bash "$VERDICT" g1t9c --defer "x" >/dev/null 2>&1 ); G19NRC=$?
+check "G1.9 --defer never-armed without --owner is refused" \
+  "$([ "$G19NRC" -ne 0 ] && echo 0 || echo 1)"
+
+rm -rf "$P"
+
+########################################################################
+echo "-- Case: G2 arm gate — PreToolUse blocks the first unarmed write (opt-in)"
+# The gate is one or two stats on .operator/.armed/<sid>, and its polarity is
+# the OPPOSITE of the Stop hook's: every infrastructure failure fails OPEN,
+# because an unwritable project cannot repair itself. See backlog-charter.md §8c.
+
+# Feed the arm hook a PreToolUse payload; captures exit code (ARC) and stderr (AERR).
+run_armhook() { # run_armhook <cwd> <session-id> [restricted-PATH]
+  local cwd="$1" sid="$2" rpath="${3:-}" json errf
+  json="$(sed -e "s|<tmp>|$cwd|g" -e "s|<sid>|$sid|g" "$FIXTURES/pretooluse-write.json")"
+  errf="$(mktemp)"
+  if [ -n "$rpath" ]; then
+    printf '%s' "$json" | PATH="$rpath" "$BASH_ABS" "$ARMHOOK" 2>"$errf"
+  else
+    printf '%s' "$json" | "$BASH_ABS" "$ARMHOOK" 2>"$errf"
+  fi
+  ARC=$?
+  AERR="$(cat "$errf")"; rm -f "$errf"
+}
+
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+S="SESS-G2"
+
+# G2.1 — armgate.on absent: the gate does not exist for this project.
+run_armhook "$P" "$S"
+check "G2.1 armgate.on absent → exit 0 (opt-in default)" "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
+check "G2.1 armgate.on absent → no stderr" "$([ -z "$AERR" ] && echo 0 || echo 1)"
+
+# G2.2 — gate on, no marker: deny, and the message names both recovery commands.
+: > "$P/.operator/armgate.on"
+run_armhook "$P" "$S"
+check "G2.2 gate on + unarmed → exit 2" "$([ "$ARC" -eq 2 ] && echo 0 || echo 1)"
+check "G2.2 stderr names ops-task.sh … --owner $S" \
+  "$(printf '%s' "$AERR" | grep -q "ops-task.sh <task-id> --owner $S" && echo 0 || echo 1)"
+check "G2.2 stderr names the --exempt path" \
+  "$(printf '%s' "$AERR" | grep -q -- '--exempt' && echo 0 || echo 1)"
+
+# G2.3 — the derived marker arms the session.
+mkdir -p "$P/.operator/.armed"; : > "$P/.operator/.armed/$S"
+run_armhook "$P" "$S"
+check "G2.3 .armed/\$S present → exit 0" "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
+rm -f "$P/.operator/.armed/$S"
+
+# G2.4 — the granted (exempt) marker arms independently of the derived one.
+: > "$P/.operator/.armed/$S.exempt"
+run_armhook "$P" "$S"
+check "G2.4 only .armed/\$S.exempt present → exit 0" "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
+rm -f "$P/.operator/.armed/$S.exempt"
+
+# G2.5 — no .operator/ above the payload cwd: fail OPEN on missing state.
+Q="$(newproj)"
+run_armhook "$Q" "$S"
+check "G2.5 no .operator/ above cwd → exit 0 (fails open)" "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
+rm -rf "$Q"
+
+# G2.6 — no JSON parser on PATH: fail OPEN, silently. The gate is still ON and
+# the session is still unarmed, so a fail-CLOSED hook would exit 2 here.
+run_armhook "$P" "$S" "/nonexistent"
+check "G2.6 no JSON parser → exit 0 (fails open)" "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
+check "G2.6 no JSON parser → silent (no stderr before every edit)" \
+  "$([ -z "$AERR" ] && echo 0 || echo 1)"
+
+# G2.11 — `.armed` EXISTS but is not a usable directory → fail OPEN. This is the
+# unwritable-and-UNREPAIRABLE case: with .armed unusable every marker write in
+# the repo fails, so all three repairs the deny message prints are dead
+# (ops-task.sh/ops-adopt.sh swallow their marker write and report success while
+# changing nothing; --exempt dies after its ledger row lands). A legitimately
+# armed session was denied every file mutation with no in-band way out.
+# Measured before the fix: rc=2. (PR-review finding, 2026-08-07.)
+#
+# Polarity matters in BOTH directions, so both are asserted: an unusable .armed
+# fails OPEN, an ABSENT .armed still DENIES (the honest never-armed case).
+( cd "$P/.operator" && rm -rf .armed && : > .armed )      # regular file, not a dir
+run_armhook "$P" "$S"
+check "G2.11 .armed exists but is not a usable directory → exit 0 (fails open)" \
+  "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
+( cd "$P/.operator" && rm -f .armed )                      # absent again
+run_armhook "$P" "$S"
+check "G2.11 .armed absent + unarmed session → still exit 2 (absence is not an infra fault)" \
+  "$([ "$ARC" -eq 2 ] && echo 0 || echo 1)"
+
+# G2.12 — the OTHER unusable modes, and the property the guard's inertness rests
+# on (issue #19). The `[ ! -x ]` half of the guard is INERT for uid 0 (root's
+# `[ -x ]` on a chmod 000 dir is TRUE), so these cases pin the half that does
+# work on every uid — `[ ! -d ]` — plus the reason the inert half is tolerable.
+#
+# A DANGLING SYMLINK is absence, not unusability: `[ -e ]` is false on a broken
+# link, so it must reach the ordinary never-armed DENY. Asserting it stops a
+# future reader from "fixing" the guard with `[ -L ]` and silently converting a
+# real never-armed session into a fail-open.
+( cd "$P/.operator" && rm -rf .armed && ln -s ./nowhere-at-all .armed )
+run_armhook "$P" "$S"
+check "G2.12 .armed is a DANGLING symlink → exit 2 (a broken link is absence, not an infra fault)" \
+  "$([ "$ARC" -eq 2 ] && echo 0 || echo 1)"
+
+# THE LOAD-BEARING ONE. The fail-open for a chmod-000 .armed cannot fire under
+# uid 0, and that is only acceptable because root's marker LOOKUP stays accurate
+# through the unreadable directory — present reads TRUE, absent reads FALSE — so
+# root never reaches a wrong verdict. If that ever stopped holding, the inert
+# guard would become a real defect. This case is the tripwire for that.
+# Skipped for a non-root runner, where the chmod genuinely denies and the
+# question does not arise (see #20: chmod-based cases are uid-dependent).
+( cd "$P/.operator" && rm -rf .armed && mkdir .armed && : > ".armed/$S" && chmod 000 .armed )
+if [ "$(id -u)" = 0 ]; then
+  ARMED_PRESENT=$([ -e "$P/.operator/.armed/$S" ] && echo yes || echo no)
+  ARMED_ABSENT=$([ -e "$P/.operator/.armed/NO-SUCH-SESSION" ] && echo yes || echo no)
+  check "G2.12 as uid 0, the marker lookup stays accurate through a chmod-000 .armed" \
+    "$([ "$ARMED_PRESENT" = yes ] && [ "$ARMED_ABSENT" = no ] && echo 0 || echo 1)"
+  run_armhook "$P" "$S"
+  check "G2.12 as uid 0, an armed session is ALLOWED even with .armed chmod 000" \
+    "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
+else
+  run_armhook "$P" "$S"
+  check "G2.12 as non-root, a chmod-000 .armed fails OPEN (the -x half fires)" \
+    "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
+fi
+( cd "$P/.operator" && chmod 755 .armed 2>/dev/null; rm -rf .armed )
+
+# G2.13 — a NON-WRITABLE .armed (mode 555) must fail OPEN (issue #27). Mode 555
+# passes both `-d` and `-x`, so before the `-w` half existed the guard stayed
+# silent while the project wedged: a new session denied, ops-task.sh reporting
+# success while writing no marker (it swallows the write by design), its sentinel
+# landing anyway so Stop blocked too, and all three advertised repairs writing
+# into that same unwritable directory. Measured end to end off-root — which is
+# what makes this the real unwritable-and-unrepairable case (#19 examined
+# chmod 000, concluded root is never blocked by mode bits, and stopped there).
+#
+# UID-CONDITIONAL, and the asymmetry is the point rather than an inconvenience.
+# `-w` is inert for uid 0 exactly as `-x` is: root's `[ -w ]` on a 555 directory
+# is TRUE, so the guard does not fire and an unarmed root session gets the
+# ordinary never-armed DENY. That is CORRECT, not a gap — root's writes into 555
+# genuinely succeed, so ops-task.sh really does arm it and the repair path is
+# alive. The wedge only exists for a uid whose writes actually fail.
+# (An earlier draft of this case asserted exit 0 unconditionally and failed under
+# root for exactly this reason; the hook was right and the assertion was wrong.)
+( cd "$P/.operator" && rm -rf .armed && mkdir .armed && chmod 555 .armed )
+run_armhook "$P" "$S"
+if [ "$(id -u)" = 0 ]; then
+  check "G2.13 as uid 0, a mode-555 .armed still DENIES (the -w half is inert, and root is not wedged)" \
+    "$([ "$ARC" -eq 2 ] && echo 0 || echo 1)"
+  # The property that makes the inertness safe, asserted rather than assumed:
+  # root can actually write the marker into a 555 directory, so the repair works.
+  ( : > "$P/.operator/.armed/root-write-probe" ) 2>/dev/null
+  check "G2.13 as uid 0, a marker write into a mode-555 .armed SUCCEEDS (repair path alive)" \
+    "$([ -e "$P/.operator/.armed/root-write-probe" ] && echo 0 || echo 1)"
+  rm -f "$P/.operator/.armed/root-write-probe" 2>/dev/null
+else
+  check "G2.13 .armed exists but is NOT WRITABLE (mode 555) → exit 0 (fails open)" \
+    "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
+fi
+( cd "$P/.operator" && chmod 755 .armed 2>/dev/null; rm -rf .armed )
+
+# G2.7 — `Bash` is never in the PreToolUse matcher. Asserted against hooks.json
+# itself (check_armgate pins the same property in the build gate).
+G27="$(python3 - "$REPO/hooks/hooks.json" <<'PY'
+import json, sys
+h = json.load(open(sys.argv[1]))["hooks"]["PreToolUse"][0]["matcher"]
+print(sum(1 for t in h.split("|") if t == "Bash"))
+PY
+)"
+check "G2.7 PreToolUse matcher contains zero Bash entries" \
+  "$([ "$G27" = "0" ] && echo 0 || echo 1)"
+
+# --- the recompute: remove → rescan → restore, under the ledger lock ----------
+
+# G2.8 — one task open, verdicted: the marker is removed.
+( cd "$P" && bash "$TASK" g2t8 --owner "$S" >/dev/null 2>&1 )
+check "G2.8 ops-task.sh creates .armed/\$S" \
+  "$([ -e "$P/.operator/.armed/$S" ] && echo 0 || echo 1)"
+( cd "$P" && bash "$VERDICT" g2t8 crit ev PASS --owner "$S" >/dev/null 2>&1 )
+check "G2.8 verdict on the only task removes .armed/\$S" \
+  "$([ ! -e "$P/.operator/.armed/$S" ] && echo 0 || echo 1)"
+run_armhook "$P" "$S"
+check "G2.8 the disarmed session is denied again" "$([ "$ARC" -eq 2 ] && echo 0 || echo 1)"
+
+# G2.9 — TWO tasks open, one verdicted: remove-then-rescan-then-RESTORE puts the
+# marker back. A clear→rescan→conditionally-remove implementation passes G2.8 and
+# fails here; this is the case that catches the wrong order.
+( cd "$P" && bash "$TASK" g2t9a --owner "$S" >/dev/null 2>&1 )
+( cd "$P" && bash "$TASK" g2t9b --owner "$S" >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" g2t9a crit ev PASS --owner "$S" >/dev/null 2>&1 )
+check "G2.9 verdict with a second task still open restores .armed/\$S" \
+  "$([ -e "$P/.operator/.armed/$S" ] && echo 0 || echo 1)"
+run_armhook "$P" "$S"
+check "G2.9 the still-armed session is allowed" "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
+
+# G2.10 — marker deleted by hand (the stale-FALSE desync), then a verdict on
+# another open task of the same session: the recompute is self-healing.
+( cd "$P" && bash "$TASK" g2t10 --owner "$S" >/dev/null 2>&1 )
+rm -f "$P/.operator/.armed/$S"
+( cd "$P" && bash "$VERDICT" g2t10 crit ev PASS --owner "$S" >/dev/null 2>&1 )
+check "G2.10 hand-deleted marker is restored by the recompute" \
+  "$([ -e "$P/.operator/.armed/$S" ] && echo 0 || echo 1)"
+
+# The --defer path recomputes too — same lock, same order. g2t9b is still open,
+# so deferring it must leave no marker; and the exempt grant must survive a
+# recompute (G3.5: two marker kinds, two lifetimes).
+: > "$P/.operator/.armed/$S.exempt"
+( cd "$P" && bash "$VERDICT" g2t9b --defer "blocked upstream" >/dev/null 2>&1 )
+check "G2 --defer recomputes: no owned sentinel left → marker removed" \
+  "$([ ! -e "$P/.operator/.armed/$S" ] && echo 0 || echo 1)"
+check "G2 the recompute never touches .armed/\$S.exempt (G3 grant)" \
+  "$([ -e "$P/.operator/.armed/$S.exempt" ] && echo 0 || echo 1)"
+rm -f "$P/.operator/.armed/$S.exempt"
+
+# ops-adopt.sh re-creates the marker for the NEW owner — the recovery the deny
+# message names verbatim (stale-false mitigation 1).
+S2="SESS-G2-ROT"
+( cd "$P" && bash "$TASK" g2adopt --owner "$S" >/dev/null 2>&1 )
+rm -f "$P/.operator/.armed/$S2"
+( cd "$P" && bash "$ADOPT" --owner "$S2" g2adopt >/dev/null 2>&1 )
+check "G2 ops-adopt.sh creates .armed/ for the adopting session" \
+  "$([ -e "$P/.operator/.armed/$S2" ] && echo 0 || echo 1)"
+run_armhook "$P" "$S2"
+check "G2 the adopting session is allowed" "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
+# Ownership-scoping: a BYSTANDER session is not armed by $S2's open task. The
+# marker is keyed by session id precisely so an unscoped "is pending/ non-empty?"
+# cannot let session B write because session A holds work open — the cross-
+# session fail-open 0.4.0 exists to close. Uses a session that has never opened
+# anything: $S still carries an ACCEPTED stale-true marker here (adopt re-keys
+# the sentinel to $S2 but does not recompute the previous owner), which is the
+# documented harmless direction, not a property to assert against.
+S3="SESS-G2-BYSTANDER"
+run_armhook "$P" "$S3"
+check "G2 another session's open task does not arm a bystander" \
+  "$([ "$ARC" -eq 2 ] && echo 0 || echo 1)"
+( cd "$P" && bash "$VERDICT" g2adopt crit ev PASS --owner "$S2" >/dev/null 2>&1 )
+
+# An UNOWNED task arms nobody: there is no session to key a marker to. Counted
+# as a DELTA, not as an empty directory — $S's accepted stale-true marker lives
+# there (see above), so "no markers at all" is the wrong assertion.
+count_markers() { local n=0 m; shopt -s nullglob; for m in "$P/.operator/.armed"/*; do [ -e "$m" ] && n=$((n+1)); done; shopt -u nullglob; echo "$n"; }
+ARM_BEFORE="$(count_markers)"
+( cd "$P" && bash "$TASK" g2unowned >/dev/null 2>&1 )
+ARM_AFTER="$(count_markers)"
+check "G2 an unowned open task writes no new marker" \
+  "$([ "$ARM_BEFORE" = "$ARM_AFTER" ] && echo 0 || echo 1)"
+run_armhook "$P" "$S3"
+check "G2 an unowned open task arms no session" "$([ "$ARC" -eq 2 ] && echo 0 || echo 1)"
+
+rm -rf "$P"
+
+########################################################################
+echo "-- Case: G3 exemption — the audited escape hatch the arm gate advertises"
+# A blocking gate with no override is how a session wedges. The hatch is one
+# command and it is NOT free: it writes a GATE-EXCEPTION, a kind the stage-2
+# deviation gate already blocks Stop on until a HANDOFF-MARK presents it. So
+# bypassing the arm gate owes a handoff presentation. See backlog-charter.md §G3.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+S="SESS-G3"
+DEC3="$P/.operator/DECISIONS.md"
+payload3() { printf '{"session_id":"%s","stop_hook_active":false,"cwd":"%s"}' "$S" "$P"; }
+
+# G3.2 FIRST (it must leave DECISIONS.md untouched, which is only checkable
+# against a ledger the grant has not yet written to).
+DEC3_BEFORE="$(cat "$DEC3")"
+( cd "$P" && bash "$TASK" --exempt >/dev/null 2>&1 ); X2=$?
+check "G3.2 --exempt with no reason → exit non-zero" "$([ "$X2" -ne 0 ] && echo 0 || echo 1)"
+# A FORGOTTEN reason: `--exempt --owner $S` must not swallow the next flag as
+# the reason text — that grants an exemption whose audit line reads "--owner",
+# and drops the ownership tag that scopes the debt.
+( cd "$P" && bash "$TASK" --exempt --owner "$S" >/dev/null 2>&1 ); X2F=$?
+check "G3.2 --exempt --owner \$S (reason forgotten) → exit non-zero" \
+  "$([ "$X2F" -ne 0 ] && echo 0 || echo 1)"
+( cd "$P" && bash "$TASK" --exempt "" --owner "$S" >/dev/null 2>&1 ); X2E=$?
+check "G3.2 --exempt with an EMPTY reason → exit non-zero" "$([ "$X2E" -ne 0 ] && echo 0 || echo 1)"
+( cd "$P" && bash "$TASK" --exempt "no owner given" >/dev/null 2>&1 ); X2O=$?
+check "G3.2 --exempt without --owner → exit non-zero (no untagged GATE-EXCEPTION)" \
+  "$([ "$X2O" -ne 0 ] && echo 0 || echo 1)"
+check "G3.2 a refused --exempt leaves DECISIONS.md unchanged" \
+  "$([ "$(cat "$DEC3")" = "$DEC3_BEFORE" ] && echo 0 || echo 1)"
+check "G3.2 a refused --exempt writes no marker" \
+  "$([ ! -e "$P/.operator/.armed/$S.exempt" ] && echo 0 || echo 1)"
+# An exemption is the NO-open-task path: taking a task id too is contradictory.
+( cd "$P" && bash "$TASK" t-x --exempt "both" --owner "$S" >/dev/null 2>&1 ); X2B=$?
+check "G3.2 --exempt with a task-id → exit non-zero (mutually exclusive)" \
+  "$([ "$X2B" -ne 0 ] && echo 0 || echo 1)"
+
+# G3.1 — the grant itself.
+( cd "$P" && bash "$TASK" --exempt "upstream API is down, documenting the workaround" --owner "$S" >/dev/null 2>&1 ); X1=$?
+check "G3.1 --exempt \"reason\" --owner \$S → exit 0" "$([ "$X1" -eq 0 ] && echo 0 || echo 1)"
+# Count ROWS, not mentions: the scaffolded header carries the kind enum as a
+# comment (`# gated ...: DEVIATION | ESCALATION | GATE-EXCEPTION`), which a bare
+# grep counts — the same false positive the Stop hook's `#`-skip exists for.
+GX="$(grep -c '^[^#].* | GATE-EXCEPTION | ' "$DEC3" || true)"
+check "G3.1 exactly one GATE-EXCEPTION row written" "$([ "$GX" = "1" ] && echo 0 || echo 1)"
+check "G3.1 the GATE-EXCEPTION is tagged [sid:\$S] and carries the reason" \
+  "$(grep '^[^#].* | GATE-EXCEPTION | ' "$DEC3" | grep -q "\[sid:$S\].*upstream API is down" && echo 0 || echo 1)"
+check "G3.1 .armed/\$S.exempt exists" \
+  "$([ -e "$P/.operator/.armed/$S.exempt" ] && echo 0 || echo 1)"
+# The grant does NOT fabricate the derived marker: two kinds, two lifetimes.
+check "G3.1 the grant writes no DERIVED .armed/\$S" \
+  "$([ ! -e "$P/.operator/.armed/$S" ] && echo 0 || echo 1)"
+# ...and the gate now lets this session write (the hatch actually opens).
+run_armhook "$P" "$S"
+check "G3.1 armgate.on absent → allowed anyway (control for the next assert)" \
+  "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
+: > "$P/.operator/armgate.on"
+run_armhook "$P" "$S"
+check "G3.1 gate ON + exemption granted → the write is allowed" \
+  "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
+rm -f "$P/.operator/armgate.on"
+
+# G3.3 — the debt: the exemption owes a presentation, so Stop is blocked.
+payload3 | bash "$HOOK" >/dev/null 2>&1; X3=$?
+check "G3.3 after the grant, Stop is BLOCKED (the exemption owes a presentation)" \
+  "$([ "$X3" = 2 ] && echo 0 || echo 1)"
+
+# G3.5 BEFORE G3.4: the mark would clear the deviation gate and make the
+# ordering of the remaining asserts less discriminating. Verdicting an
+# UNRELATED open task runs recompute_arm_marker, which must never touch a
+# GRANTED marker — an exempt session has nothing in pending/, so a recompute
+# that owned both kinds would revoke the grant on the next verdict.
+( cd "$P" && bash "$TASK" g3unrelated --owner "$S" >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" g3unrelated crit ev PASS --owner "$S" >/dev/null 2>&1 )
+check "G3.5 the recompute leaves .armed/\$S.exempt present" \
+  "$([ -e "$P/.operator/.armed/$S.exempt" ] && echo 0 || echo 1)"
+check "G3.5 the same recompute DID remove the derived .armed/\$S (recompute ran)" \
+  "$([ ! -e "$P/.operator/.armed/$S" ] && echo 0 || echo 1)"
+
+# G3.4 — presenting the debt clears it.
+( cd "$P" && bash "$VERDICT" --mark-handoff --owner "$S" >/dev/null 2>&1 )
+payload3 | bash "$HOOK" >/dev/null 2>&1; X4=$?
+check "G3.4 after --mark-handoff, Stop is allowed" "$([ "$X4" = 0 ] && echo 0 || echo 1)"
+
+# The debt is SESSION-SCOPED: a foreign session never inherits it. (A grant that
+# blocked everyone would be the wedge this feature exists to prevent.)
+printf '{"session_id":"SESS-G3-OTHER","stop_hook_active":false,"cwd":"%s"}' "$P" \
+  | bash "$HOOK" >/dev/null 2>&1; X4F=$?
+check "G3 a foreign session is not blocked by \$S's exemption" \
+  "$([ "$X4F" = 0 ] && echo 0 || echo 1)"
+
+# G3.6 — the opener stays LOCK-FREE. The ledger write is delegated to
+# ops-verdict.sh, which already holds the lock; a lock here would copy the LOCK
+# BLOCK to a third file (and check_lock_parity to a third site) for one rare flag.
+X6="$(grep -c 'lock_acquire' "$TASK" || true)"
+check "G3.6 grep -c 'lock_acquire' ops-task.sh = 0 (the write is delegated)" \
+  "$([ "$X6" = "0" ] && echo 0 || echo 1)"
+
+# G3.7 — an owner ending in `.exempt` is REFUSED by all three writers (#30).
+# `.armed/` carries two marker kinds in one flat namespace, so that suffix is
+# forgeable in both directions. Measured before the fix, on a real project:
+#   grant   — `ops-task.sh <ordinary-task> --owner foo.exempt` wrote
+#             `.armed/foo.exempt`; session `foo` went from arm-gate exit 2 to
+#             exit 0 with ZERO GATE-EXCEPTION rows. G3's whole premise is that
+#             bypassing the gate costs a handoff presentation; this cost nothing
+#             and left no trace.
+#   destroy — a session named `foo.exempt` closing an ordinary task ran
+#             `recompute_arm_marker foo.exempt`, deleting foo's REAL exemption
+#             while the GATE-EXCEPTION row still asserted it held.
+# Refused at the WRITERS, deliberately not in the hook's reject set: that set
+# fails OPEN, so rejecting there would ALLOW such a session rather than deny it.
+X7P="$(newproj)"; ( cd "$X7P" && bash "$INIT" >/dev/null 2>&1 )
+( cd "$X7P" && bash "$TASK" ordinary --owner "victim.exempt" >/dev/null 2>&1 ); X7T=$?
+check "G3.7 ops-task.sh refuses an owner ending in .exempt (would forge a G3 grant)" \
+  "$([ "$X7T" != 0 ] && echo 0 || echo 1)"
+check "G3.7 the refused open wrote no .armed marker" \
+  "$([ ! -e "$X7P/.operator/.armed/victim.exempt" ] && echo 0 || echo 1)"
+# The adopt case needs a REAL open sentinel first. Without one, ops-adopt.sh
+# fails with "no open task" whatever the owner is, and the assertion passes for
+# the wrong reason — mutation-verified: removing the guard from ops-adopt.sh
+# still gave a green suite until this line existed. That is the repo's own
+# vacuous-guard class (F48) reproduced inside its own test.
+( cd "$X7P" && bash "$TASK" adoptable --owner legit-sid >/dev/null 2>&1 )
+( cd "$X7P" && bash "$ADOPT" --owner "victim.exempt" adoptable >/dev/null 2>&1 ); X7A=$?
+check "G3.7 ops-adopt.sh refuses the same owner (second, independent grant path)" \
+  "$([ "$X7A" != 0 ] && echo 0 || echo 1)"
+check "G3.7 the refused adopt wrote no .armed marker either" \
+  "$([ ! -e "$X7P/.operator/.armed/victim.exempt" ] && echo 0 || echo 1)"
+( cd "$X7P" && bash "$VERDICT" ordinary crit ev PASS --owner "victim.exempt" >/dev/null 2>&1 ); X7V=$?
+check "G3.7 ops-verdict.sh refuses it too (the recompute would delete a real grant)" \
+  "$([ "$X7V" != 0 ] && echo 0 || echo 1)"
+# A REAL exemption still works — the guard must reject the owner, not the feature.
+( cd "$X7P" && bash "$TASK" --exempt "genuine reason" --owner victim >/dev/null 2>&1 )
+check "G3.7 a genuine --exempt for the same base session still lands" \
+  "$([ -e "$X7P/.operator/.armed/victim.exempt" ] && echo 0 || echo 1)"
+rm -rf "$X7P"
+
+rm -rf "$P"
+
+########################################################################
+echo "-- Case: S1 source-state stamp — a verdict row names the tree it came from"
+# U10 (issue #22). A PASS survived unstaged, staged, committed and untracked
+# mutation of the source it verified, because the row named no source state at
+# all: four cells, no sha, and ops-verdict.sh never called git. These cases pin
+# the stamp that closes the attribution half — the row is now attributable to
+# one tree, which is NOT the same as that tree still passing (see S1.9).
+#
+# Every project here is a REAL git repo, because the ordinary path is the one
+# that must be exercised end-to-end: the suite's other cases run in bare
+# mktemp dirs, which take the no-vcs branch. That asymmetry is the whole reason
+# the PLAYBOOK says to verify the normal path through the real parser.
+gitproj() { # gitproj -> path of a fresh git project with .operator scaffolded
+  local p; p="$(newproj)"
+  (
+    cd "$p" || exit 1
+    git init -q .
+    git config user.email t@example.com
+    git config user.name t
+    printf 'def add(a,b):\n    return a+b\n' > src.py
+    git add -A
+    git commit -qm init
+    bash "$INIT" >/dev/null 2>&1
+  ) >/dev/null 2>&1
+  printf '%s' "$p"
+}
+# The stamp cell, extracted from the ledger's last row: cell 3, trailing token.
+stamp_of() { # stamp_of <project> -> the @-token of the last VERDICTS row
+  awk -F' *\\| *' 'END{n=split($4,a," "); print a[n]}' "$1/.operator/VERDICTS.md"
+}
+
+if ! command -v git >/dev/null 2>&1; then
+  echo "  SKIP S1 (no git on PATH — the stamp's own no-vcs branch is all that is testable here)"
+else
+P="$(gitproj)"
+SHA="$(cd "$P" && git rev-parse --verify --short=12 HEAD)"
+( cd "$P" && bash "$TASK" S1-a --owner SESS-S1 >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" S1-a "src.py imports" "python3 -c 'import src' -> ok" PASS --owner SESS-S1 >/dev/null 2>&1 )
+check "S1.1 clean tree → evidence cell carries @<sha>" \
+  "$([ "$(stamp_of "$P")" = "@$SHA" ] && echo 0 || echo 1)"
+# The 4-cell schema is what every grep consumer depends on; a stamp that split a
+# row would be the 5-cell injection this suite already guards against elsewhere.
+NC="$(awk -F'|' 'END{print NF}' "$P/.operator/VERDICTS.md")"
+check "S1.2 stamped row is still exactly 4 cells" \
+  "$([ "$NC" = "6" ] && echo 0 || echo 1)"
+# The fragment and the ledger must carry the SAME bytes, or --reconcile's
+# verbatim dedup re-appends every stamped row on the next repair.
+LROW="$(tail -1 "$P/.operator/VERDICTS.md")"
+FROW="$(tail -1 "$P/.operator/verdicts.d/SESS-S1.md")"
+check "S1.3 fragment row and ledger row are byte-identical" \
+  "$([ "$LROW" = "$FROW" ] && echo 0 || echo 1)"
+
+# Dirty source → the stamp says so. This is the U10 experiment's first class.
+printf 'def add(a,b):\n    return a*b\n' > "$P/src.py"
+( cd "$P" && bash "$TASK" S1-b --owner SESS-S1 >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" S1-b "crit" "ev" PASS --owner SESS-S1 >/dev/null 2>&1 )
+check "S1.4 modified tracked file → @<sha>+dirty" \
+  "$([ "$(stamp_of "$P")" = "@$SHA+dirty" ] && echo 0 || echo 1)"
+# Untracked source counts too — the fourth class in the U10 table, and the one
+# a naive `git diff` check would miss.
+( cd "$P" && git checkout -q -- src.py )
+printf 'x\n' > "$P/new_source.py"
+( cd "$P" && bash "$TASK" S1-c --owner SESS-S1 >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" S1-c "crit" "ev" PASS --owner SESS-S1 >/dev/null 2>&1 )
+check "S1.5 untracked source file → @<sha>+dirty" \
+  "$([ "$(stamp_of "$P")" = "@$SHA+dirty" ] && echo 0 || echo 1)"
+rm -f "$P/new_source.py"
+
+# THE DISCRIMINATING CASE for the exclusion rule. .operator/ is the gate's own
+# bookkeeping and is untracked in a project that has not committed its ledger —
+# i.e. almost every project, including this fixture. Count it as dirt and every
+# row everywhere reads +dirty, which is a marker that cannot be off: the
+# vacuous-guard class (#21) shipped as a feature. Same boundary ops-claims.sh
+# --expect-clean already draws.
+( cd "$P" && bash "$TASK" S1-d --owner SESS-S1 >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" S1-d "crit" "ev" PASS --owner SESS-S1 >/dev/null 2>&1 )
+check "S1.6 .operator/ churn alone does NOT read as dirty" \
+  "$([ "$(stamp_of "$P")" = "@$SHA" ] && echo 0 || echo 1)"
+rm -rf "$P"
+
+# A repo with no commits: there is a tree, but no name to bind to. Recorded,
+# never refused — the charter's rule is that the gate never refuses real
+# evidence, and an unnameable tree is not the operator's fault.
+P="$(newproj)"
+( cd "$P" && git init -q . && git config user.email t@example.com && git config user.name t && bash "$INIT" ) >/dev/null 2>&1
+( cd "$P" && bash "$TASK" S1-e --owner SESS-S1 >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" S1-e "crit" "ev" PASS --owner SESS-S1 >/dev/null 2>&1 ); S1E=$?
+check "S1.7 unborn HEAD → @no-commit, row still recorded" \
+  "$([ "$S1E" = 0 ] && [ "$(stamp_of "$P")" = "@no-commit" ] && echo 0 || echo 1)"
+rm -rf "$P"
+fi
+
+# No git repository at all (the bare mktemp project every other case uses).
+# Explicit marker, not silence: an UNSTAMPED row means "written before this
+# existed", and an audit that cannot tell the two apart cannot start.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+( cd "$P" && bash "$TASK" S1-f --owner SESS-S1 >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" S1-f "crit" "ev" PASS --owner SESS-S1 >/dev/null 2>&1 ); S1F=$?
+check "S1.8 no git repo → @no-vcs, row still recorded (never refuses evidence)" \
+  "$([ "$S1F" = 0 ] && [ "$(stamp_of "$P")" = "@no-vcs" ] && echo 0 || echo 1)"
+# --defer is deliberately NOT stamped: it records that no verdict was reached,
+# so there is no evidence to bind to a tree. Pinned so the asymmetry is a
+# decision a later reader can find, not an omission they re-add by accident.
+( cd "$P" && bash "$TASK" S1-g --owner SESS-S1 >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" S1-g --defer "blocked upstream" --owner SESS-S1 >/dev/null 2>&1 )
+check "S1.9 --defer line carries no stamp (nothing was verified)" \
+  "$(grep -q 'DEFERRED-VERDICT' "$P/.operator/DECISIONS.md" && ! grep -q '@no-vcs' "$P/.operator/DECISIONS.md" && echo 0 || echo 1)"
+rm -rf "$P"
+
+# STRUCTURAL: the stamp is computed BEFORE lock_acquire. `git status` is
+# unbounded work on a large repo, and the PLAYBOOK's "never lengthen the
+# critical section" rule is what keeps a waiter from giving up and proceeding
+# UNLOCKED. Asserted on the verdict path's own section of the file.
+# Comment lines are dropped AFTER the section is found: the marker is a comment
+# (so the section must be located in the raw file), but the prose inside the
+# section also names source_stamp — matching it made the first draft of this
+# case pass against a build with the stamp moved inside the lock. The validator's
+# twin check had the same hole, found by the same mutation.
+VSEC="$(awk '/^# --- Verdict path ---/{f=1} f' "$VERDICT" | grep -v '^[[:space:]]*#')"
+SL="$(printf '%s\n' "$VSEC" | grep -n 'source_stamp' | head -1 | cut -d: -f1)"
+LL="$(printf '%s\n' "$VSEC" | grep -n 'lock_acquire' | head -1 | cut -d: -f1)"
+check "S1.10 stamp is resolved before lock_acquire (critical section unchanged)" \
+  "$([ -n "$SL" ] && [ -n "$LL" ] && [ "$SL" -lt "$LL" ] && echo 0 || echo 1)"
+
+# HONESTY NOTE. What S1 proves is ATTRIBUTION: a row names one tree. It does
+# NOT prove that tree still passes, and nothing here re-runs anything. The
+# stamp is written by the same process that writes the row, so it is provenance,
+# not attestation — a lying operator can still record a PASS it never ran, and
+# the tree it names will be stamped correctly. The staleness reader (#22 step 2)
+# and independent execution (#23) are separate, still open, and this case exists
+# so the next reader does not mistake a green S1 for either of them.
+
+########################################################################
+echo "-- Case: init warns when a parent gitignore defeats the v2 allowlist (#25)"
+# F67. The v2 allowlist lives INSIDE .operator/ and cannot beat a rule that
+# excludes the directory itself — git never descends into an excluded dir, so
+# the negations have nothing to re-admit. Before this warning, ops-init reported
+# success while every ledger stayed silently untracked. The warning must NAME
+# the defeating rule (file:line via check-ignore -v), never fail the init, and
+# never fire on a healthy project or outside git.
+if command -v git >/dev/null 2>&1; then
+P="$(newproj)"
+( cd "$P" && git init -q . && git config user.email t@example.com && git config user.name t ) >/dev/null 2>&1
+printf '/.operator/\n' > "$P/.gitignore"
+W1ERR="$(cd "$P" && bash "$INIT" 2>&1 >/dev/null)"; W1RC=$?
+check "defeated project: init still exits 0 (warn, never fail)" \
+  "$([ "$W1RC" = 0 ] && echo 0 || echo 1)"
+check "defeated project: warning fires" \
+  "$(printf '%s' "$W1ERR" | grep -q 'gitignored by a rule outside' && echo 0 || echo 1)"
+check "defeated project: warning names the defeating rule" \
+  "$(printf '%s' "$W1ERR" | grep -q '/.operator/' && echo 0 || echo 1)"
+rm -rf "$P"
+P="$(newproj)"
+( cd "$P" && git init -q . && git config user.email t@example.com && git config user.name t ) >/dev/null 2>&1
+W2ERR="$(cd "$P" && bash "$INIT" 2>&1 >/dev/null)"
+check "healthy git project: no warning" \
+  "$(printf '%s' "$W2ERR" | grep -q 'gitignored by a rule outside' && echo 1 || echo 0)"
+rm -rf "$P"
+else
+  echo "  SKIP init-warning cases (no git on PATH)"
+fi
+# Outside git the check must not run at all (and must not break the scaffold).
+P="$(newproj)"
+W3ERR="$(cd "$P" && bash "$INIT" 2>&1 >/dev/null)"; W3RC=$?
+check "non-git project: init exits 0, no warning" \
+  "$([ "$W3RC" = 0 ] && ! printf '%s' "$W3ERR" | grep -q 'gitignored by a rule outside' && echo 0 || echo 1)"
+rm -rf "$P"
+
+echo "-- Case: the v2 allowlist admits the handoff and the gate switch (#28, #31)"
+# BEHAVIOURAL, not textual: the validator pins the allow LINES, this pins what
+# git actually does with them. Two findings, both measured on the real scaffold:
+#   #28 — `.operator/handoff-<date>.md` (commands/handoff.md:9 writes exactly
+#         this) was ignored by the bare `*`, so the operator→human handoff — the
+#         artifact the charter's HANDOFF section exists to produce — shipped
+#         untracked. A REGRESSION: v1's blocklist tracked it (verified by running
+#         main's ops-init.sh in a fresh repo).
+#   #31 — `.operator/armgate.on` is the project's opt-in DECISION, not machine
+#         state. Ignored, a team could not commit it and every fresh clone got
+#         the gate silently OFF. tiers.env is allow-listed for the same reason.
+# The negative control matters as much: a NEW ephemera file must still be
+# ignored, or the allowlist has quietly become a blocklist again.
+if command -v git >/dev/null 2>&1; then
+P="$(newproj)"
+( cd "$P" && git init -q . && git config user.email t@example.com && git config user.name t ) >/dev/null 2>&1
+( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+: > "$P/.operator/handoff-2026-08-11.md"
+: > "$P/.operator/armgate.on"
+: > "$P/.operator/some-new-ephemera.tmp"
+# `git check-ignore -q` EXIT STATUS is the truth — `-v` prints the last matching
+# rule even when that rule is a `!` negation, which reads as "ignored" and is not.
+( cd "$P" && git check-ignore -q .operator/handoff-2026-08-11.md ) && GIH=1 || GIH=0
+check "#28 the handoff file is TRACKED (not ignored by the v2 allowlist)" \
+  "$([ "$GIH" = 0 ] && echo 0 || echo 1)"
+( cd "$P" && git check-ignore -q .operator/armgate.on ) && GIA=1 || GIA=0
+check "#31 armgate.on is TRACKED (a team can commit its own opt-in)" \
+  "$([ "$GIA" = 0 ] && echo 0 || echo 1)"
+( cd "$P" && git check-ignore -q .operator/some-new-ephemera.tmp ) && GIE=1 || GIE=0
+check "the allowlist still IGNORES a new ephemera file (it is not a blocklist)" \
+  "$([ "$GIE" = 1 ] && echo 0 || echo 1)"
+# End to end: does `git add -A` actually stage them?
+( cd "$P" && git add -A >/dev/null 2>&1 )
+GIST="$(cd "$P" && git status --porcelain)"
+check "#28/#31 git add -A stages both the handoff and armgate.on" \
+  "$(printf '%s' "$GIST" | grep -q 'handoff-2026-08-11.md' \
+     && printf '%s' "$GIST" | grep -q 'armgate.on' && echo 0 || echo 1)"
+check "git add -A does NOT stage the new ephemera file" \
+  "$(printf '%s' "$GIST" | grep -q 'some-new-ephemera.tmp' && echo 1 || echo 0)"
+rm -rf "$P"
+else
+  echo "  SKIP allowlist-content cases (no git on PATH)"
+fi
+
+echo "-- Case: SessionStart refreshes a STALE bin/ even when the version has not moved (#34)"
+# The upgrade used to fire only on a version-string change. Every intra-version
+# fix to a gate CLI therefore never reached .operator/bin/ — and the charter
+# points the model at THAT copy, so the project keeps running the broken
+# predecessor of a fix while the plugin tree's own tests pass. Found by the
+# replay charter on 2026-08-12: bin/ops-verdict.sh was byte-identical to a
+# commit two behind HEAD, with .version already reading the current version.
+STALEP="$(newproj)"
+( cd "$STALEP" && git init -q . 2>/dev/null && "$BASH_ABS" "$SCRIPTS/ops-init.sh" >/dev/null 2>&1 )
+STALEV="$(cat "$STALEP/.operator/.version" 2>/dev/null)"
+# Plant a stale CLI: wrong content, mtime OLDER than the plugin's copy, while
+# the version stamp already reads current (the exact #34 condition).
+printf '#!/usr/bin/env bash\n# STALE COPY\n' > "$STALEP/.operator/bin/ops-verdict.sh"
+touch -t 200001010000 "$STALEP/.operator/bin/ops-verdict.sh"
+sed "s|<tmp>|$STALEP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
+check "#34 a stale bin/ CLI is refreshed with the version unchanged" \
+  "$(grep -q 'STALE COPY' "$STALEP/.operator/bin/ops-verdict.sh" && echo 1 || echo 0)"
+check "#34 the refreshed CLI is byte-identical to the plugin's copy" \
+  "$(cmp -s "$STALEP/.operator/bin/ops-verdict.sh" "$SCRIPTS/ops-verdict.sh" && echo 0 || echo 1)"
+check "#34 the version stamp is unchanged (this was never a version event)" \
+  "$([ "$(cat "$STALEP/.operator/.version" 2>/dev/null)" = "$STALEV" ] && echo 0 || echo 1)"
+# Negative control: nothing stale ⇒ no rewrite. Without this the case would pass
+# against a hook that copies unconditionally on every session start.
+STALE_MTIME_BEFORE="$(ls -l "$STALEP/.operator/bin/ops-task.sh" 2>/dev/null)"
+sed "s|<tmp>|$STALEP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
+check "#34 a current bin/ is NOT rewritten (the probe is staleness, not a timer)" \
+  "$([ "$STALE_MTIME_BEFORE" = "$(ls -l "$STALEP/.operator/bin/ops-task.sh" 2>/dev/null)" ] && echo 0 || echo 1)"
+rm -rf "$STALEP"
+
+echo "-- Case: the SessionStart v1→v2 migration announces itself (#32)"
+# The migration REPLACES a file the user may have edited, and the .v1.bak it
+# leaves is itself hidden by the new bare `*` — so before this, a project with a
+# hand-added rule lost it with no message anywhere: stdout carried only the
+# SessionStart JSON and `git status` showed no trace of the backup. ops-init.sh
+# echoes a notice for the identical destructive write; this path — the one that
+# exists precisely to carry projects that never re-run /cc-operator:start — was
+# silent by construction. The notice rides additionalContext, the hook's only
+# channel to the model. It must NOT fire when there is nothing to migrate.
+MIGP="$(newproj)"
+mkdir -p "$MIGP/.operator"
+printf '# cc-operator gitignore (v1)\nbin/\npending/\n!my-own-rule.md\n' > "$MIGP/.operator/.gitignore"
+MIGOUT="$(sed "s|<tmp>|$MIGP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+check "#32 the migration notice reaches the model via additionalContext" \
+  "$(printf '%s' "$MIGOUT" | grep -q 'MIGRATED' && echo 0 || echo 1)"
+check "#32 the notice names the .v1.bak recovery path" \
+  "$(printf '%s' "$MIGOUT" | grep -q 'gitignore.v1.bak' && echo 0 || echo 1)"
+check "#32 the notice says the backup is itself ignored (git status --ignored)" \
+  "$(printf '%s' "$MIGOUT" | grep -q '\-\-ignored' && echo 0 || echo 1)"
+check "#32 the migration really did replace the user's rule (so the notice is earned)" \
+  "$(grep -q 'my-own-rule' "$MIGP/.operator/.gitignore" && echo 1 || echo 0)"
+# Second fire: already v2, nothing to migrate — the banner must stay clean.
+MIGOUT2="$(sed "s|<tmp>|$MIGP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+check "#32 a second session (already v2) does NOT repeat the notice" \
+  "$(printf '%s' "$MIGOUT2" | grep -q 'MIGRATED' && echo 1 || echo 0)"
+rm -rf "$MIGP"
+
+echo "-- Case: the migration REFUSES rather than destroying rules it cannot back up"
+# The #32 notice promised a recoverable .v1.bak, but the backup was `cp … 2>/dev/null`
+# followed by an UNCONDITIONAL write, and the flag was set before either. With
+# `.operator/` unwritable and `.gitignore` still writable, the user's rules were
+# destroyed, no backup existed, and the context claimed both had succeeded —
+# #32's own failure one layer down (Copilot review of PR #12, 2026-08-12).
+# Two ways the backup fails; both must leave the v1 file untouched.
+MIGF="$(newproj)"
+mkdir -p "$MIGF/.operator"
+printf '# cc-operator gitignore (v1)\nbin/\n!my-own-rule.md\n' > "$MIGF/.operator/.gitignore"
+mkdir -p "$MIGF/.operator/.gitignore.v1.bak"          # a DIRECTORY at the backup path
+MIGFOUT="$(sed "s|<tmp>|$MIGF|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+check "backup blocked: the user's v1 rule survives" \
+  "$(grep -q 'my-own-rule' "$MIGF/.operator/.gitignore" && echo 0 || echo 1)"
+check "backup blocked: the hook does NOT claim a migration happened" \
+  "$(printf '%s' "$MIGFOUT" | grep -q 'MIGRATED' && echo 1 || echo 0)"
+check "backup blocked: the refusal is reported, not silent" \
+  "$(printf '%s' "$MIGFOUT" | grep -q 'REFUSED' && echo 0 || echo 1)"
+check "backup blocked: the session id is still injected (a hook must never die)" \
+  "$(printf '%s' "$MIGFOUT" | grep -q "this session's id is" && echo 0 || echo 1)"
+rm -rf "$MIGF"
+
+# The OTHER trigger, and the one Copilot described: the copy itself fails. The
+# directory is unwritable so `.v1.bak` cannot be created, while `.gitignore`
+# stays writable — which is exactly why the old unconditional `cat >` still
+# succeeded and ate the rules. Distinct from the case above (a non-regular
+# `.v1.bak`), and each must fail on its own guard, or one branch rides on the
+# other's test.
+MIGW="$(newproj)"
+mkdir -p "$MIGW/.operator"
+printf '# cc-operator gitignore (v1)\nbin/\n!my-own-rule.md\n' > "$MIGW/.operator/.gitignore"
+chmod 500 "$MIGW/.operator"
+MIGWOUT="$(sed "s|<tmp>|$MIGW|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+chmod 700 "$MIGW/.operator"
+check "unwritable dir: the v1 rule survives (cp failed, so no overwrite)" \
+  "$(grep -q 'my-own-rule' "$MIGW/.operator/.gitignore" && echo 0 || echo 1)"
+check "unwritable dir: no MIGRATED claim over a backup that does not exist" \
+  "$(printf '%s' "$MIGWOUT" | grep -q 'MIGRATED' && echo 1 || echo 0)"
+check "unwritable dir: no .v1.bak was left behind" \
+  "$([ -e "$MIGW/.operator/.gitignore.v1.bak" ] && echo 1 || echo 0)"
+rm -rf "$MIGW"
+
+echo "-- Case: ops-init refuses the same migration it cannot back up"
+# Same defect, same fix, in the other writer — Copilot flagged only the hook.
+INITF="$(newproj)"
+mkdir -p "$INITF/.operator"
+printf '# cc-operator gitignore (v1)\nbin/\n!my-own-rule.md\n' > "$INITF/.operator/.gitignore"
+mkdir -p "$INITF/.operator/.gitignore.v1.bak"
+INITFOUT="$( ( cd "$INITF" || exit 1; "$BASH_ABS" "$SCRIPTS/ops-init.sh" ) 2>&1 || true )"
+check "init backup blocked: the user's v1 rule survives" \
+  "$(grep -q 'my-own-rule' "$INITF/.operator/.gitignore" && echo 0 || echo 1)"
+check "init backup blocked: it does NOT claim it migrated" \
+  "$(printf '%s' "$INITFOUT" | grep -q 'migrated ' && echo 1 || echo 0)"
+check "init backup blocked: the refusal names the path to fix" \
+  "$(printf '%s' "$INITFOUT" | grep -q 'gitignore.v1.bak' && echo 0 || echo 1)"
+rm -rf "$INITF"
+
+echo "-- Case: ops-verdict refuses a non-regular entry BEFORE writing a row"
+# `retro_gate` tested `-e`, so a directory at pending/<id> read as an armed
+# sentinel: the GATE-EXCEPTION was suppressed, the row was appended anyway, and
+# the later `rm -f` failed on the directory — a non-zero exit with the ledger
+# already mutated and no audit line (Copilot review of PR #12, 2026-08-12).
+# Every other sentinel reader (ops-task.sh, the Stop hook, the statusline)
+# already required a non-symlink REGULAR file.
+NRP="$(newproj)"
+(cd "$NRP" && "$BASH_ABS" "$SCRIPTS/ops-init.sh" >/dev/null 2>&1)
+mkdir -p "$NRP/.operator/pending/dircase"
+NROUT="$( ( cd "$NRP" || exit 1; "$BASH_ABS" "$SCRIPTS/ops-verdict.sh" dircase crit ev PASS --owner sid-x ) 2>&1 || true )"
+check "non-regular sentinel: ops-verdict refuses" \
+  "$(printf '%s' "$NROUT" | grep -q 'not a regular file' && echo 0 || echo 1)"
+check "non-regular sentinel: NO row was written" \
+  "$(grep -q '| dircase |' "$NRP/.operator/VERDICTS.md" && echo 1 || echo 0)"
+check "non-regular sentinel: no GATE-EXCEPTION was written either" \
+  "$(grep -v '^#' "$NRP/.operator/DECISIONS.md" | grep -q 'GATE-EXCEPTION' && echo 1 || echo 0)"
+# The control: a real never-armed verdict still records BOTH row and exception.
+( cd "$NRP" || exit 1; "$BASH_ABS" "$SCRIPTS/ops-verdict.sh" realcase crit ev PASS --owner sid-x >/dev/null 2>&1 ) || true
+check "control: a never-armed verdict still records its row" \
+  "$(grep -q '| realcase |' "$NRP/.operator/VERDICTS.md" && echo 0 || echo 1)"
+check "control: …and its GATE-EXCEPTION" \
+  "$(grep -v '^#' "$NRP/.operator/DECISIONS.md" | grep -q 'GATE-EXCEPTION' && echo 0 || echo 1)"
+rm -rf "$NRP"
+
+echo "-- Case: census counts a tracked file whose name begins with a dash"
+# A leading-dash filename is legal in git; `xargs -0 cat` read it as options and
+# aborted the ENTIRE batch, so code-loc reported 0 against a truth of 3 (the
+# PARTIAL flag fired, so the number was honest — and useless).
+DASHP="$(newproj)"
+(cd "$DASHP" && git init -q . 2>/dev/null)
+printf 'print(1)\nprint(2)\n' > "$DASHP/normal.py"
+printf 'x=1\n' > "$DASHP/--version.py"
+# `--` terminates git's own option parsing; the dash-named path follows it as a
+# pathspec. This is the very hazard under test, one layer up.
+(cd "$DASHP" && git add -- normal.py './--version.py' >/dev/null 2>&1)
+DASHOUT="$( ( cd "$DASHP" || exit 1; "$BASH_ABS" "$SCRIPTS/ops-backlog.sh" --census ) 2>&1 || true )"
+check "dash-named file: code-loc counts it (3, not 0)" \
+  "$(printf '%s' "$DASHOUT" | grep -q 'code-loc: 3' && echo 0 || echo 1)"
+check "dash-named file: the count is not PARTIAL" \
+  "$(printf '%s' "$DASHOUT" | grep -q 'PARTIAL' && echo 1 || echo 0)"
+rm -rf "$DASHP"
 
 ########################################################################
 echo "== summary: $PASS passed, $FAIL failed =="

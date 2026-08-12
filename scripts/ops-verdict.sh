@@ -18,6 +18,10 @@
 #   Writes a DEFERRED-VERDICT line to DECISIONS.md and clears the sentinel.
 #   The honest end-state for a legitimately blocked task.
 #
+# Exempt:   ops-verdict.sh --exempt-mark "<reason>" --owner <sid>
+#   The ledger half of the G3 arm-gate exemption; called by ops-task.sh
+#   --exempt, which does not write ledgers. Appends one GATE-EXCEPTION line.
+#
 # Reconcile: ops-verdict.sh --reconcile
 #   Appends to VERDICTS.md every row present in .operator/verdicts.d/*.md but
 #   missing from it. Idempotent. This REPAIRS a merge, it does not regenerate
@@ -51,6 +55,72 @@ check_cell() { # check_cell <label> <value>
   esac
 }
 
+# --- The source-state stamp (U10, issue #22) --------------------------------
+# Every verdict row carries the source state it was produced from, appended
+# inside the evidence cell as `@<sha>` / `@<sha>+dirty` / `@<sha>+unknown` /
+# `@no-commit` / `@no-vcs`.
+#
+# Why it exists: a PASS used to survive unstaged, staged, committed and
+# untracked mutation of the very source it verified, with the Stop hook silent
+# through all four — because the row named no tree at all. Measured, issue #22.
+#
+# Why INSIDE the cell and not a fifth column: the 4-cell header is a published
+# schema. Every existing ledger, every grep consumer, and validate_plugin's
+# VERDICTS_HEADER pin are written against it, and CLAUDE.md's coupling table
+# says plainly that changing it breaks grep-compatibility with every ledger
+# already in the field. A token inside the cell binds the row at none of that
+# cost.
+#
+# What it proves, stated so nobody claims more: the stamp is written by the same
+# process that writes the row. It is PROVENANCE — "this row was written from
+# that tree" — and never attestation — "that tree passes". The staleness reader
+# (#22 step 2), independent execution (#23) and external reproduction (#25) are
+# each still open.
+#
+# It never refuses. A verdict is real evidence and the charter's rule is that
+# the gate never refuses real evidence, so every failure degrades to an explicit
+# marker. Explicit, not silent: an UNSTAMPED row means "written by a version
+# older than this stamp", and an audit that cannot separate that from "git was
+# missing" cannot begin.
+source_stamp() {
+  local sha porc rc
+  # Two separate questions — git absent, and git present but this is not a repo.
+  # Both answer no-vcs; splitting them would only add a marker nobody can act on.
+  command -v git >/dev/null 2>&1 || { printf 'no-vcs'; return 0; }
+  git rev-parse --git-dir >/dev/null 2>&1 || { printf 'no-vcs'; return 0; }
+  sha="$(git rev-parse --verify --short=12 HEAD 2>/dev/null || true)"
+  # Unborn HEAD — a repo with no commits. There is a tree; there is no name for
+  # it. Recorded as such rather than refused.
+  [ -n "$sha" ] || { printf 'no-commit'; return 0; }
+  # The sha becomes ledger content, and this file treats every external string
+  # as untrusted (the 2026-07-10 traversal came back through exactly that door).
+  # Non-hex means git answered something we do not understand: degrade, never
+  # embed it.
+  case "$sha" in
+    *[!0-9a-f]*) printf 'no-vcs'; return 0 ;;
+  esac
+  # Dirty = any change to the SOURCE. `.operator/` is excluded because the
+  # gate's own bookkeeping is not the tree under test: it is untracked in any
+  # project that has not committed its ledger — nearly all of them — so counting
+  # it would pin every row everywhere to +dirty, and a marker that can never be
+  # off is the vacuous-guard class (#21) shipped as a feature. This is the same
+  # boundary `ops-claims.sh --expect-clean` already draws.
+  #
+  # Scope is the whole repository, not the project subdirectory: a change
+  # anywhere in it can change what a command prints, and a stamp that
+  # under-reports dirt is worse than no stamp.
+  #
+  # `local porc; porc=…` on two lines, deliberately: `local porc="$(…)"` returns
+  # the exit status of `local`, which is always 0, so the rc branch below would
+  # be dead code.
+  porc="$(git status --porcelain -- ':(exclude).operator' 2>/dev/null)" && rc=0 || rc=$?
+  # An infra failure must not read as CLEAN — that is the strong claim here, and
+  # fail-toward-the-strong-claim is the polarity the PLAYBOOK forbids.
+  [ "$rc" -eq 0 ] || { printf '%s+unknown' "$sha"; return 0; }
+  [ -z "$porc" ] || { printf '%s+dirty' "$sha"; return 0; }
+  printf '%s' "$sha"
+}
+
 # A bare name: it is also a filename (sentinel + fragment file), so a '/' would
 # let clear_sentinel's rm -f reach outside .operator/ (the 2026-07-10 traversal
 # bug). A leading dot is refused because the Stop hook enumerates pending/ with
@@ -72,6 +142,23 @@ check_owner_name() { # check_owner_name <value>
   check_bare_name "owner" "$1"
   case "$1" in
     *[[:space:]]*) die "owner must not contain whitespace — it could never match a real session id, leaving the task permanently unblockable" ;;
+    # `.armed/` holds TWO marker kinds in ONE flat namespace: `<sid>` (derived
+    # cache, the recompute may delete it) and `<sid>.exempt` (a G3 grant, the
+    # recompute must never touch it). An owner ending in `.exempt` collides with
+    # the second, in BOTH directions (issue #30, measured):
+    #   grant   — `ops-task.sh <any-task> --owner foo.exempt` writes
+    #             `.armed/foo.exempt`, which the hook reads as session `foo`'s
+    #             G3 grant. Session foo goes from denied to allowed with ZERO
+    #             GATE-EXCEPTION rows: the audited escape hatch, unaudited.
+    #   destroy — a session literally named `foo.exempt` closing an ordinary
+    #             task runs `recompute_arm_marker foo.exempt`, whose `rm -f`
+    #             deletes foo's REAL exemption while the ledger row still
+    #             asserts it holds. The gate silently re-arms against foo.
+    # Rejecting the suffix at every writer is the cheap fix; separating the two
+    # namespaces (`.armed/derived/` vs `.armed/granted/`) is the structural one
+    # and would be a migration. Real session ids are UUIDs, so nothing legitimate
+    # is refused here.
+    *.exempt) die "owner must not end in '.exempt' — that suffix is reserved for G3 exemption markers in .armed/, and an owner carrying it would forge or destroy one" ;;
   esac
 }
 
@@ -507,6 +594,54 @@ if [ "${1:-}" = "--mark-handoff" ]; then
   exit 0
 fi
 
+# --- exempt-mark path (no task-id) ------------------------------------------
+# The ledger half of the G3 arm-gate exemption. The operator-facing surface is
+# `ops-task.sh --exempt "<reason>" --owner <sid>`, which validates and then
+# delegates HERE, because this script is the single writer to DECISIONS.md and
+# already owns the lock. ops-task.sh takes no lock by design; giving it one to
+# append one rare line would copy the LOCK BLOCK to a third file.
+#
+# The row is a GATE-EXCEPTION — a kind the stage-2 deviation gate ALREADY blocks
+# Stop on until a HANDOFF-MARK presents it. That is the whole enforcement: the
+# hatch is real and one command, and it costs a presentation. No new machinery.
+#
+# --owner is REQUIRED and non-empty for the same reason --mark-handoff requires
+# it: the [sid:] tag is what scopes the debt. An untagged GATE-EXCEPTION reads
+# as unowned, which under the hook's partition blocks EVERY session — a wedge,
+# and this feature exists to prevent wedges.
+if [ "${1:-}" = "--exempt-mark" ]; then
+  shift
+  XREASON=""
+  XOWNER=""
+  XSEEN=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --owner)
+        [ $# -ge 2 ] || die "--owner requires a session id"
+        [ -z "$XOWNER" ] || die "--owner given more than once"
+        XOWNER="$2"; shift 2 ;;
+      --owner=*)
+        [ -z "$XOWNER" ] || die "--owner given more than once"
+        XOWNER="${1#--owner=}"; shift ;;
+      -*) die "unknown option '$1' (usage: ops-verdict.sh --exempt-mark \"<reason>\" --owner <sid>)" ;;
+      *)
+        [ "$XSEEN" -eq 0 ] || die "unexpected extra argument '$1' (the reason is a single quoted string)"
+        XSEEN=1; XREASON="$1"; shift ;;
+    esac
+  done
+  [ -n "$XREASON" ] || die "--exempt-mark requires a non-empty reason (the grant is audited: the reason is what the handoff presents)"
+  [ -n "$XOWNER" ] || die "--exempt-mark requires --owner <sid> (an untagged GATE-EXCEPTION reads as unowned and would block every session)"
+  check_owner_name "$XOWNER"
+  check_cell "exemption reason" "$XREASON"
+  [ -f "$DECISIONS" ] || die "missing $DECISIONS — run ops-init.sh first"
+  lock_acquire
+  printf '%s | %s | GATE-EXCEPTION | [sid:%s] arm-gate exemption granted: %s | exempt via ops-task.sh --exempt\n' \
+    "$(date +%F)" "arm-gate" "$XOWNER" "$XREASON" >> "$DECISIONS"
+  lock_release
+  echo "GATE-EXCEPTION recorded for session $XOWNER (owes a handoff presentation: ops-verdict.sh --mark-handoff --owner $XOWNER)"
+  exit 0
+fi
+
 # --- Argument parse ----------------------------------------------------------
 # --owner may appear anywhere; everything else keeps its positional meaning.
 OWNER=""
@@ -550,6 +685,13 @@ ownership_gate() {
   # unowned sentinel is closable by design. Runs under the lock in BOTH the
   # defer and verdict paths, so this is the single choke point.
   [ ! -L "$OPDIR/pending/$ID" ] || die "sentinel at $OPDIR/pending/$ID is a symlink — not a sentinel our CLIs wrote; refusing (remove it and open the task with ops-task.sh)"
+  # …and neither is a directory or a device. Refuse BEFORE the row is written,
+  # not at `rm` time: the old order appended the row, then failed to clear, so
+  # the CLI exited non-zero with the ledger already mutated. Same regular-file
+  # contract as ops-task.sh's opener and every sentinel reader.
+  if [ -e "$OPDIR/pending/$ID" ] && [ ! -f "$OPDIR/pending/$ID" ]; then
+    die "sentinel at $OPDIR/pending/$ID is not a regular file — not a sentinel our CLIs wrote; refusing before writing any row (remove it and open the task with ops-task.sh)"
+  fi
   SOWNER="$(sentinel_owner "$ID")"
   if [ -n "$SOWNER" ]; then
     if [ -n "$OWNER" ] && [ "$OWNER" != "$SOWNER" ]; then
@@ -564,6 +706,154 @@ ownership_gate() {
 
 clear_sentinel() { rm -f "$OPDIR/pending/$ID"; }
 
+# --- arm-marker recompute (G2.1) --------------------------------------------
+# The PreToolUse arm gate reads .operator/.armed/<sid> — a DERIVED cache of
+# "this session owns at least one pending sentinel". This is the single place
+# that recomputes it, and it runs UNDER THE LOCK both paths already hold, AFTER
+# clear_sentinel.
+#
+# THE ORDER IS LOAD-BEARING AND THE INTUITIVE ONE IS WRONG. Clear → rescan →
+# conditionally-remove loses this interleaving:
+#
+#   verdict:  clear sentinel
+#   verdict:  rescan pending/ → empty
+#   task:                        creates sentinel (O_EXCL, no lock — by design)
+#   task:                        creates marker
+#   verdict:  rm .armed/S                       ← marker gone, sentinel present
+#
+# That is stale-FALSE — a legitimately-armed session blocked from every edit,
+# the one desync direction the design forbids. And it is not covered by the
+# stale-false mitigations: those are written for a desync that PERSISTS, not one
+# the recompute itself creates ("the next verdict corrects it" is circular — the
+# next verdict can lose the same race).
+#
+# Remove-then-rescan-then-restore is safe under every interleaving: a sentinel
+# created BEFORE the rescan is seen by it and the marker is restored; one
+# created AFTER brings its own marker (ops-task.sh writes it). The worst case is
+# stale-TRUE for one moment, which merely degrades to today's ungated behaviour.
+#
+# ops-task.sh takes no lock by design, so this cannot be fixed by locking the
+# opener — the recompute has to be correct against an unlocked concurrent write.
+#
+# The `.exempt` marker is NEVER touched here: an exempt session by definition has
+# nothing in pending/, so a recompute that owned both kinds would delete a grant
+# the moment any verdict ran. Two marker kinds, two lifetimes (G3).
+#
+# Failures are swallowed (`|| true`, `2>/dev/null`): this runs after the ledger
+# row is already written, and dying here under `set -e` would abort a verdict
+# that succeeded. A marker we could not write degrades to stale-false, which the
+# gate's deny message (ops-adopt.sh) and the next verdict both repair.
+recompute_arm_marker() { # recompute_arm_marker <session-id>
+  local sid="$1" f still=1
+  [ -n "$sid" ] || return 0
+  rm -f "$OPDIR/.armed/$sid" 2>/dev/null || true
+  shopt -s nullglob
+  for f in "$OPDIR/pending"/*; do
+    # -f, not -e: a directory or a symlink in pending/ is not a sentinel our
+    # CLIs wrote; sentinel_owner rejects both and returns "" (unowned), which
+    # is not this session either way.
+    [ -f "$f" ] || continue
+    if [ "$(sentinel_owner "${f##*/}")" = "$sid" ]; then still=0; break; fi
+  done
+  shopt -u nullglob
+  if [ "$still" -eq 0 ]; then
+    # Explicit `if`, not `A && B || C` (SC2015): the chained form runs the
+    # `|| true` even when the truncate itself failed, conflating the two.
+    if mkdir -p "$OPDIR/.armed" 2>/dev/null; then
+      : > "$OPDIR/.armed/$sid" 2>/dev/null || true
+    fi
+  fi
+  return 0
+}
+
+# --- Retro-gate: three-state arm check (G1) ---------------------------------
+# Runs inside the lock, after ownership_gate. Determines whether this verdict
+# is armed (sentinel present), never-armed (no sentinel, no prior row), or a
+# duplicate/amending row (no sentinel, prior row exists).
+#
+# Sets RETRO_STATE to one of: armed, never-armed, duplicate.
+# A never-armed verdict with no session to tag (no --owner, no sentinel) dies
+# (G1.4). The prior-row scan is a reverse-tail read of the session fragment,
+# bounded by FRAG_MAX_BYTES (G1.6).
+retro_gate() {
+  RETRO_STATE="armed"
+  # Sentinel FILE present → armed, even if its body is empty/unparseable
+  # (an unowned-but-present sentinel is a real open task — fails closed).
+  #
+  # A REGULAR file, non-symlink: the same contract ops-task.sh:234, the Stop
+  # hook and the statusline all apply. `-e` accepted a directory or a device as
+  # an armed sentinel, and the consequence was not a cosmetic mismatch: the
+  # retro-gate returned "armed", SUPPRESSING the GATE-EXCEPTION, the row was
+  # appended anyway, and the later `rm -f` then failed on the directory — so the
+  # CLI exited non-zero having already written an unaudited row (measured
+  # 2026-08-12; Copilot review of PR #12). Anything non-regular at this path was
+  # never written by our CLIs, so it must not silence the audit line.
+  if [ -f "$OPDIR/pending/$ID" ] && [ ! -L "$OPDIR/pending/$ID" ]; then
+    return 0
+  fi
+
+  # Sentinel absent. We need a session to tag the GATE-EXCEPTION.
+  local tag_owner="${OWNER:-$SOWNER}"
+  if [ -z "$tag_owner" ]; then
+    die "never-armed verdict requires --owner <session-id> — the GATE-EXCEPTION must carry a [sid:] tag, and there is no sentinel to supply one"
+  fi
+
+  # Check for prior rows in the session fragment. The fragment is append-only
+  # so the newest row is at the tail, but for a binary "does any row exist?"
+  # check, forward scan is equivalent and cross-platform. Bounded by
+  # FRAG_MAX_BYTES — the PLAYBOOK "touching the lock" step-3 hazard.
+  #
+  # The id-prefix `| <id> |` is always at a LINE START. So we test EVERY line
+  # start, never skipping a chunk: a long evidence cell (>512B) splits a row
+  # across read chunks, and the chunk that STARTS the row is the one carrying
+  # the prefix — skipping it (the issue-#9 long-row blindness class) misfiles a
+  # genuine duplicate as never-armed and writes a spurious GATE-EXCEPTION.
+  # A continuation chunk (mid-cell) never begins with `| <id> |`, so matching
+  # every line start is both necessary and safe. The per-line bound is generous:
+  # rows are ~80B honest, but an evidence cell can run to several KB, and the
+  # file is already size-capped above, so a corrupted newline-less line yields a
+  # few bounded non-matching chunks, not an unbounded slurp.
+  local frag="$FRAGDIR/${tag_owner}.md" fragsz=0 found=1 line n=0
+  if [ -f "$frag" ]; then
+    fragsz="$(wc -c < "$frag" 2>/dev/null || echo 0)"
+    if [ "$fragsz" -gt "$FRAG_MAX_BYTES" ]; then
+      echo "ops-verdict: fragment ${frag##*/} exceeds FRAG_MAX_BYTES (${fragsz}); prior-row scan refused — treating as never-armed" >&2
+    else
+      while IFS= read -r -n 1048576 line || [ -n "$line" ]; do
+        n=$((n+1)); [ "$n" -le 200000 ] || break  # backstop: ~100k rows at ~80 bytes
+        case "$line" in
+          "| $ID |"*) found=0; break ;;
+        esac
+      done < "$frag"
+    fi
+  fi
+
+  if [ "$found" -eq 0 ]; then
+    RETRO_STATE="duplicate"
+    echo "ops-verdict: warning — no sentinel for '$ID' but a prior row exists in the fragment; treating as duplicate/amending row" >&2
+    # RESIDUAL, recorded rather than papered over (PR-review finding 2026-08-07).
+    # The fragment row and the GATE-EXCEPTION are two appends, not one atomic
+    # act. A crash between them leaves a row whose audit line never landed, and
+    # THIS branch then reads it as an amendment — the bypass record is lost.
+    #
+    # The obvious guard (downgrade only when a GATE-EXCEPTION for <id> exists)
+    # was implemented and REVERTED: a legitimately ARMED first verdict also
+    # leaves a row with no exception, so the guard reclassified every ordinary
+    # armed-then-amended verdict as never-armed and wrote a spurious exception
+    # (caught by the G1.7 case). "Prior row without exception" is genuinely
+    # ambiguous between the two, and nothing in the fragment distinguishes them.
+    #
+    # Closing it properly means making the pair atomic — writing the exception
+    # BEFORE the row, or journaling both under one fsync — which is a change to
+    # the single writer's ordering contract and belongs in its own slice with
+    # its own bar. The crash window is ~1 line wide and the failure is
+    # audit-trail loss, not ledger corruption; recording it beats a guard that
+    # trades a rare loss for a common false positive.
+  else
+    RETRO_STATE="never-armed"
+  fi
+}
+
 # --- Defer path -------------------------------------------------------------
 if [ "${2:-}" = "--defer" ]; then
   REASON="${3:-}"
@@ -572,9 +862,20 @@ if [ "${2:-}" = "--defer" ]; then
   [ -f "$DECISIONS" ] || die "missing $DECISIONS — run ops-init.sh first"
   lock_acquire
   ownership_gate          # inside the lock: adoption cannot slip in behind it
+  # G1 applies to BOTH closing paths. --defer retires a task exactly as a verdict
+  # does, so deferring an id that was never opened is an unarmed close and earns
+  # the same GATE-EXCEPTION. Without this a session could retire arbitrary ids it
+  # never armed and leave no trace, while the identical act through the PASS/FAIL
+  # path is recorded — an asymmetry a bypass would find (PR review 2026-08-07).
+  retro_gate
   printf '%s | %s | DEFERRED-VERDICT | %s | deferred via ops-verdict.sh --defer\n' \
     "$(date +%F)" "$ID" "$REASON" >> "$DECISIONS"
+  if [ "$RETRO_STATE" = "never-armed" ]; then
+    printf '%s | %s | GATE-EXCEPTION | [sid:%s] defer of %s recorded without an open sentinel — the arm gate was not used | never-armed via ops-verdict.sh --defer\n' \
+      "$(date +%F)" "$ID" "${OWNER:-$SOWNER}" "$ID" >> "$DECISIONS"
+  fi
   clear_sentinel
+  recompute_arm_marker "$FRAG_OWNER"   # G2.1 — under the lock, after the clear
   lock_release
   echo "deferred $ID (DECISIONS.md line written, sentinel cleared)"
   exit 0
@@ -596,9 +897,17 @@ case "$VERDICT" in
 esac
 [ -f "$VERDICTS" ]  || die "missing $VERDICTS — run ops-init.sh first"
 
+# Resolved BEFORE the lock. `git status` is unbounded work on a large repo, and
+# a holder that outruns LOCK_LIVE_SPINS does not lose its lock — its waiters
+# give up and proceed UNLOCKED. Nothing waits on the stamp, so nothing is gained
+# by paying for it inside the critical section (PLAYBOOK, "touching the lock",
+# step 3).
+SOURCE_STAMP="$(source_stamp)"
+
 lock_acquire
 ownership_gate            # inside the lock: adoption cannot slip in behind it
-ROW="$(printf '| %s | %s | %s | %s |' "$ID" "$CRITERION" "$EVIDENCE" "$VERDICT")"
+retro_gate                # three-state arm check (G1) — also inside the lock
+ROW="$(printf '| %s | %s | %s @%s | %s |' "$ID" "$CRITERION" "$EVIDENCE" "$SOURCE_STAMP" "$VERDICT")"
 # Fragment FIRST. Under `set -e` a failed write aborts the script, so the order
 # decides what a partial failure leaves behind: a fragment without a ledger row
 # is repaired by --reconcile and a duplicate fragment row is deduped there, but
@@ -607,7 +916,19 @@ ROW="$(printf '| %s | %s | %s | %s |' "$ID" "$CRITERION" "$EVIDENCE" "$VERDICT")
 # anywhere above leaves the task OPEN — the gate holds.
 append_fragment "$FRAG_OWNER" "$ROW"
 printf '%s\n' "$ROW" >> "$VERDICTS"
+# G1: never-armed verdict → write GATE-EXCEPTION to DECISIONS.md under the same lock.
+if [ "$RETRO_STATE" = "never-armed" ]; then
+  printf '%s | %s | GATE-EXCEPTION | [sid:%s] verdict %s recorded without an open sentinel — the arm gate was not used | never-armed via ops-verdict.sh\n' \
+    "$(date +%F)" "$ID" "${OWNER:-$SOWNER}" "$ID" >> "$DECISIONS"
+fi
 clear_sentinel
+recompute_arm_marker "$FRAG_OWNER"     # G2.1 — under the lock, after the clear
 lock_release
-echo "recorded $ID = $VERDICT (row appended, sentinel cleared)"
+if [ "$RETRO_STATE" = "never-armed" ]; then
+  echo "recorded $ID = $VERDICT (never-armed — GATE-EXCEPTION written to DECISIONS.md)"
+elif [ "$RETRO_STATE" = "duplicate" ]; then
+  echo "recorded $ID = $VERDICT (duplicate/amending row — no sentinel, prior row exists)"
+else
+  echo "recorded $ID = $VERDICT (row appended, sentinel cleared)"
+fi
 exit 0

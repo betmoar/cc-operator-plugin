@@ -27,17 +27,70 @@ from validate_plugin import CHANGELOG_HEADING_RE  # single source of truth
 
 TAG_RE = re.compile(r"^v(\d+\.\d+\.\d+)$")
 
+# Inline code spans and fenced blocks quote references rather than making them.
+# Mirrors validate_plugin.MD_CODE_RE; kept local so this script stays runnable
+# on its own, which is how the release workflow invokes it.
+CODE_SPAN_RE = re.compile(r"^[ \t]*(```|~~~).*?^[ \t]*\1[ \t]*$|`+[^`\n]*`+",
+                          re.DOTALL | re.MULTILINE)
+
 
 def extract_section(changelog_text, version):
     """Return the CHANGELOG body between '## [version]' and the next
-    '## [' heading or the trailing link-reference block."""
+    '## [' heading or the trailing link-reference block.
+
+    The section's own `[#N]` references are re-appended as link definitions.
+    Without that, a section using reference-style issue links publishes with
+    literal `[#27]` text and no link: the body is cut at `^\\[`, which IS the
+    def block, so the defs never travel with the section that needs them.
+    Measured on v0.7.0 before this fix — 9 dead references in the release body.
+    Only the defs this section actually uses are carried, so the other
+    versions' references do not leak into the notes.
+
+    Callers that must not publish a broken body use `extract_section_checked`,
+    which also reports the references no definition anywhere could satisfy.
+    """
+    return extract_section_checked(changelog_text, version)[0]
+
+
+def extract_section_checked(changelog_text, version):
+    """`extract_section`, plus the sorted list of `[#N]` the body uses that have
+    no definition anywhere in the changelog.
+
+    Returning them is the point: appending only the defs that exist means a
+    reference with no def at all silently keeps its literal `[#N]` text, which
+    is exactly the dead-link bug this function was written to fix, reproduced
+    on a different input. `gate()` refuses to publish such a body.
+
+    `check_issue_refs` catches the same thing on every PR, so in the normal flow
+    this never fires. That is not a reason to skip it: release_gate.py is the
+    independent second gate — runnable locally, run again on the tag — and a
+    CHANGELOG edited on a release branch after the last green PR reaches `gh
+    release create` without the validator ever having seen it.
+
+    Code spans are stripped before the scan, so prose QUOTING a reference —
+    `[#28]` in backticks, as this repo's own changelog does when documenting the
+    inverted-ref class — is not mistaken for one. Same rule as
+    `validate_plugin.MD_CODE_RE`; the two are independent by design (this file
+    must run standalone), so a change to the convention needs both.
+    """
     start = re.search(rf"^## \[{re.escape(version)}\][^\n]*\n",
                       changelog_text, re.MULTILINE)
     if not start:
-        return ""
+        return "", []
     rest = changelog_text[start.end():]
     stop = re.search(r"^## \[|^\[", rest, re.MULTILINE)
-    return (rest[:stop.start()] if stop else rest).strip()
+    body = (rest[:stop.start()] if stop else rest).strip()
+
+    scannable = CODE_SPAN_RE.sub("", body)
+    used = set(re.findall(r"\[#(\d+)\](?![:(])", scannable))
+    if not used:
+        return body, []
+    known = dict(re.findall(r"^\[#(\d+)\]:[ \t]*(\S+)",
+                            changelog_text, re.MULTILINE))
+    unresolved = sorted(used - set(known), key=int)
+    defs = [f"[#{n}]: {known[n]}" for n in sorted(used & set(known), key=int)]
+    notes = body + "\n\n" + "\n".join(defs) if defs else body
+    return notes, unresolved
 
 
 def gate(root, tag):
@@ -74,11 +127,18 @@ def gate(root, tag):
             f"the '## [{ver}]' entry must be the first heading below "
             f"[Unreleased]")
     else:
-        notes = extract_section(text, ver)
+        notes, unresolved = extract_section_checked(text, ver)
         if not notes:
             problems.append(
                 f"CHANGELOG section for [{ver}] is empty — write the release "
                 f"notes there; they become the GitHub release body")
+        if unresolved:
+            refs = ", ".join(f"[#{n}]" for n in unresolved)
+            problems.append(
+                f"CHANGELOG section for [{ver}] uses {refs} with no "
+                f"`[#N]: <url>` definition anywhere in the file — the published "
+                f"release body would carry that literal text instead of a link. "
+                f"Add the definition(s) to the link-reference block")
     return problems, notes
 
 

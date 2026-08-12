@@ -9,6 +9,414 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+### Added — issue references are validated, not trusted
+
+- **`validate_plugin.check_issue_refs`** — every `[#N]` in tracked markdown must
+  have a matching link definition (and every definition a use, and no number
+  defined twice), and every issue URL must resolve under `plugin.json`'s
+  `repository` at the number its label claims. The class it pins is the
+  **inverted ref**: `[#28]` pointing at `/issues/29` renders as "#28", navigates
+  to 29, and survives review by construction, because the eye reads the label
+  and the click follows the URL.
+  - **Provenance, stated honestly: that class has never occurred here.** An
+    earlier draft of this entry claimed two 0.7.0 commits shipped inverted refs.
+    Measured against the history, that is wrong — `6b9fb89` wrote
+    `[#28]: …/issues/28`, label and URL agreeing, and `ff57517` never touched
+    this file. Their real defect was an *invented* issue number later assigned
+    to a different issue, which this check cannot detect and never will. The
+    check is preventive, not corrective; the justification is that modes 2 and 3
+    are mechanical and mode 1 is invisible to review, not that it would have
+    caught a past bug.
+  - **Not checked, deliberately: that the issue exists, is open, or is about
+    what the sentence says.** That needs `gh issue view` — network, token, rate
+    limit — in a validator whose other subprocess is a local `bash -n`. A build
+    that fails because GitHub is slow teaches maintainers to skip the build.
+  - **Bare `#N` is out of scope, by measurement.** Tracked docs write
+    `Backlog #2`, `task #1`, `F48 #5`; requiring those to be linked would force
+    wrong links or an exception list. A test pins the scope decision so a later
+    "tighten it up" edit fails instead of quietly breaking prose.
+  - Code spans and fenced blocks are stripped before parsing: prose that
+    *quotes* a reference to document it is not a reference. This entry is the
+    proof — without stripping, its own backticked example counted as a use.
+  - A file git tracks but cannot be read is **reported**, not skipped. Sparse
+    checkouts list index entries whose files are absent from the working tree;
+    swallowing that made the gate cover less than it claimed (measured: a
+    foreign-repo link in a sparse-excluded file produced zero problems).
+  - Scope is `git ls-files '*.md'`, falling back to a dot-skipping glob so a
+    non-checkout cannot make the check vacuous. That fallback is a superset only
+    while no tracked `.md` lives under a dot-directory — true today, not
+    guaranteed.
+
+### Fixed — four write-path defects found by the PR #12 review
+
+Each reproduced before it was fixed, and each pinned by a test that fails when
+the fix is reverted.
+
+- **The gitignore migration destroyed rules it could not back up.** Both writers
+  advertise `.operator/.gitignore.v1.bak` as the recovery path, and both did
+  `cp … 2>/dev/null` followed by an **unconditional** overwrite. With
+  `.operator/` unwritable but `.gitignore` still writable, the user's rules were
+  gone, no backup existed, and the SessionStart context reported that both had
+  succeeded — issue #32's own failure, one layer down. `ops-init.sh` had it too,
+  reachable by a different trigger (a `.v1.bak` that is already a directory:
+  `cp` lands the file *inside* it, so the advertised path is not the backup).
+  The write is now reachable only through a successful backup, the notice flag
+  is set only after the replacement, and the refusal is reported — silence is
+  what let this ship. `check_gitignore_parity` pins both halves in both writers.
+- **`ops-verdict.sh` accepted a non-regular entry as an armed sentinel.**
+  `retro_gate` tested `-e`, so a directory at `pending/<id>` read as "armed":
+  the `GATE-EXCEPTION` was **suppressed**, the row was appended anyway, and the
+  later `rm -f` failed on the directory — a non-zero exit with the ledger
+  already mutated and no audit line. Every other sentinel reader already
+  required a non-symlink regular file; this was the one outlier. Now refused in
+  `resolve_owner`, before any write.
+- **The compressor's out-of-tree spill was world-readable.** `os.tmpdir()` is
+  `/tmp` on Linux — where CI runs — and the key is `sha256(cwd)[0:16]`, no
+  secret in it. Under default modes any local user could read **pre-scrub** tool
+  output, and because `mkdirSync` follows symlinks, one who pre-created the
+  shared root as a symlink captured every later spill (demonstrated). The shared
+  segment now carries the uid, every level is created 0700 and `lstat`-verified
+  to be a directory this uid owns, and spill files are 0600. An untrustworthy
+  root yields **no spill and no cite** rather than a write. `ops-sessionstart-hook.sh`
+  derives the same path and still sweeps the legacy uid-less root.
+- **`ops-backlog.sh --census` miscounted a tracked file whose name begins with
+  `-`.** `xargs -0 cat` read it as options and aborted the entire batch:
+  `code-loc: 0` against a ground truth of 3. The `PARTIAL` flag fired, so the
+  number was honest — and useless. `cat --` terminates option parsing.
+
+### Fixed — the gate CLIs a project runs could be arbitrarily far behind ([#34])
+
+Found by executing `docs/REPLAY-CHARTER.md` live rather than reading it — the
+first finding the replay protocol has produced.
+
+- **`.operator/bin/` refreshed only on a version-string change.** Every
+  intra-version fix to a gate CLI therefore never reached an existing project.
+  Measured in this repo mid-session: `.operator/bin/ops-verdict.sh` was
+  byte-identical to a commit **two behind HEAD** (`sha256 e20ee4ab…`), missing
+  the non-regular-sentinel guard, with all five `bin/` mtimes 24h old across
+  three commits and `.version` already reading `0.7.0`. Since the charter points
+  the model at `.operator/bin/…`, that stale copy **is** the gate the session
+  runs — the plugin's own tests pass against code the project does not execute.
+  The refresh now also fires when a shipped CLI is newer than its installed
+  copy, keeping the all-or-nothing re-stamp (CR3/H2) and adding a negative
+  control that a current `bin/` is not rewritten.
+- **Recorded asymmetry**: hooks resolve through `${CLAUDE_PLUGIN_ROOT}/scripts/…`
+  and are current immediately, so hooks and `bin/` can sit at different commits
+  in one session. Proven live: `.operator/.compress-state/.gitignore` was
+  written mode `0600` — a property only the current `writeSelfIgnore` produces —
+  while `bin/` was two commits back. This is what made the earlier "stale bin"
+  confusion during the #22 verification so hard to see.
+- **`check_install_set_parity` went vacuous while fixing this.** Refactoring one
+  writer's loop to a variable made the check unable to parse that side; it
+  returned `None`, the `if a and b` guard swallowed it, and the check passed
+  while pinning nothing. It now accepts either spelling, requires the loop to
+  iterate the declared variable, and **reports** an unlocatable set instead of
+  skipping.
+
+### Fixed — two validator guards that named one invariant and pinned another
+
+Both surfaced by the same review, both the F30 shape *inside* the checks written
+to prevent it, and both measured green before the fix.
+
+- **`check_source_stamp` did not verify the stamp reaches the row.** It tested
+  `"SOURCE_STAMP" in code`, which the assignment line satisfies on its own — so
+  replacing the row's `printf` argument with a literal left every verdict row
+  unstamped with the build green. It now reads the row's own argument list, and
+  a missing row site is reported rather than skipped.
+- **`check_gitignore_parity` claimed both writers must "emit it AND grep for
+  it", and only checked emit.** The heredoc body contains the marker, so
+  deleting the migration `grep` in either writer passed — and every existing v1
+  project silently stopped being detected. Detection is now asserted separately,
+  per writer.
+
+### Fixed — release notes dropped every issue link they used
+
+- `release_gate.extract_section` cut the section body at `^\[`, which *is* the
+  link-definition block — so a CHANGELOG section using reference-style `[#N]`
+  published as literal `[#N]` text with no link. Measured on the v0.7.0 body
+  before the fix: **9 dead references**. The section now carries the definitions
+  it actually uses, and only those (a test pins that other versions' refs do not
+  leak in).
+- The same fix had a hole in its own shape: a `[#N]` with no definition
+  *anywhere* left the body untouched and `gate()` reported no problem, so the
+  dead-link bug shipped again on a different input. `extract_section_checked`
+  now returns those references and the gate refuses to publish. `check_issue_refs`
+  catches this on every PR, but `release_gate.py` is the independent second gate
+  — a CHANGELOG edited on a release branch after the last green PR reaches
+  `gh release create` without the validator ever having seen it.
+
+## [0.7.0] - 2026-08-07
+
+### Added — the arm-gate layer (opt-in): every write accountable to an open task
+
+Three parts, each gating a different moment. The gate is **opt-in**
+(`.operator/armgate.on`, absent by default) and fails OPEN on every
+infrastructure failure — a PreToolUse hook that fails closed makes a project
+unwritable. `Bash` is deliberately ungated (classifying shell writes is
+unwinnable, and gating Bash deadlocks the repair path). The threat model is
+forgetting, not evasion.
+
+- **G1 — the retro-gate (default-on).** `ops-verdict.sh` distinguishes three
+  states: armed (sentinel present), never-armed (no sentinel, no prior row),
+  duplicate/amending. A never-armed verdict is recorded AND writes a
+  `GATE-EXCEPTION` to DECISIONS.md — a gated kind that blocks Stop until
+  presented. Never refuses real evidence. A never-armed verdict with no
+  `--owner` is refused (the exception must carry a `[sid:]` tag). The prior-row
+  scan is bounded by `FRAG_MAX_BYTES`.
+- **G2 — the arm gate (opt-in).** New `ops-armgate-hook.sh` on PreToolUse
+  (`Write|Edit|MultiEdit|NotebookEdit`): blocks a session holding no open task
+  from mutating a file, stderr naming the arm command and the exemption path.
+  The `.armed/<sid>` marker is a derived cache, created by `ops-task.sh` /
+  `ops-adopt.sh` and recomputed by `ops-verdict.sh` (remove → rescan → restore,
+  under the lock — the order that survives a task opening mid-recompute).
+- **G3 — the audited exemption.** `ops-task.sh --exempt "<reason>" --owner <sid>`
+  delegates the GATE-EXCEPTION write to `ops-verdict.sh --exempt-mark` (the
+  opener takes no lock), and creates `.armed/<sid>.exempt` — a granted marker
+  the recompute never touches.
+
+### Added — backlog integration (CLI-independent cherry-picks)
+
+- **B7** — `backlog/` joins the PROTECTED set (whole directory). An implementer
+  that can edit `backlog/tasks/*.md` can edit the acceptance criteria it is
+  judged against — the F48 vacuous-guard class relocated to the plan layer.
+  Two-site F30 pin (ops-claims.sh + validator).
+- **B10.1** — `ops-backlog.sh --census`: tracked-file / code-file / code-LOC
+  counts (one-pass LOC, sub-1s on a 12K-file repo). A reporting CLI, not a gate
+  CLI — joins the install set, not CHARTER_REQUIRED_CLIS/GATE_CLIS. Code files
+  are selected by `git ls-files -- <pathspec>`, **not** by `grep -zE` ([#29]):
+  BSD/macOS `grep -z` does not anchor `$` at the NUL, so a tracked filename
+  containing a newline — legal in git — matched on an inner line. Measured
+  before the fix on BSD grep 2.6.0: `code-files: 2 / code-loc: 5` against a
+  ground truth of `1 / 2`, because a `.md` whose first line ended in `.py` was
+  counted as code. GNU grep answers correctly, so a Linux run could not have
+  caught it; case B10.4 pins it and must run on macOS to mean anything.
+
+### Added — assurance-model audit pass (F67–F69)
+
+The first audit whose handoff ships in-tree: `docs/audit-2026-08-09-handoff.md`
+(every prior audit writeup was maintainer-local and never committed — which is
+itself finding F68).
+
+- **F67 (P2)** — `ops-init.sh` now warns, naming the exact rule, when a parent
+  `.gitignore` excludes `.operator/` and thereby silently defeats the v2
+  allowlist (git never descends into an excluded directory, so the nested
+  negations re-admit nothing; measured on issue #25). Warn-never-fail: the
+  exclusion can be deliberate, as in this repo's own dogfooding. Five bash
+  cases, proven discriminating against the reverted script.
+- **F68 (P3)** — CLAUDE.md's audit-trail pointers referenced `AUDIT_LOG.md` and
+  `docs/audit-2026-07-31-handoff.md`, which exist in no commit; reworded to the
+  maintainer-local rule, resolvable trail now points at the shipped handoff.
+- **F69 (P3)** — `docs/HANDOUT.md` had drifted from the authorities on three
+  load-bearing points: the IMPLEMENT default model, the read-only-seats claim
+  (it is a tool-policy, not a sandbox — PLAYBOOK's own words), and a dispatch
+  packet missing TEXT, SHA and the `CHANGED:` line that `ops-claims.sh`
+  verifies. Corrected; `validate_plugin.check_handout_packet` now pins the
+  packet spine whenever the handout exists, with a pytest mutation test.
+- PLAYBOOK "adding a reader" gains item 5: a stamp reader takes the **last**
+  `@`-token of the evidence cell and treats an unstamped row as pre-stamp
+  history — provenance, never attestation (#22).
+
+### Added — verdict rows name the source state that produced them (U10, #22)
+
+Audit finding, reproduced before fixing: a PASS survived **unstaged, staged,
+committed and untracked** mutation of the source it had just verified — the
+criterion exiting 1 while the row still read PASS, the Stop hook silent through
+all four (positive control: it exits 2 with an owned sentinel open). The row
+named no tree at all, and `ops-verdict.sh` contained no `git` call.
+
+- `ops-verdict.sh` now resolves a **source-state stamp** and appends it inside
+  the evidence cell: `@<sha>`, `@<sha>+dirty` when anything outside `.operator/`
+  is uncommitted, `@<sha>+unknown` when `git status` itself fails (an infra
+  failure must not read as *clean* — that is the strong claim here),
+  `@no-commit` on an unborn HEAD, `@no-vcs` outside git. Explicit in every
+  branch: an **unstamped** row means "written before this existed", and an audit
+  that cannot separate that from "git was missing" cannot start.
+- **Inside the cell, not a fifth column.** `VERDICTS_HEADER`, every ledger in
+  the field, and every grep written against the 4-cell schema keep working.
+- **`.operator/` is excluded from the dirty test.** It is untracked in any
+  project that has not committed its ledger — nearly all of them — so counting
+  it would pin every row everywhere to `+dirty`, which is the vacuous-guard
+  class (#21) shipped as a feature. Same boundary `ops-claims.sh
+  --expect-clean` already draws.
+- **Resolved before `lock_acquire`.** `git status` is unbounded work on a large
+  repo and nothing waits on the stamp; a holder that outruns `LOCK_LIVE_SPINS`
+  leaves its waiters proceeding unlocked.
+- It **never refuses**: every failure path degrades to a marker, because a
+  verdict is real evidence and the gate does not refuse real evidence.
+- Scope, stated so nobody claims more: this is **provenance** ("this row was
+  written from that tree"), not attestation ("that tree passes") — the stamp is
+  written by the same process that writes the row. The staleness reader (#22
+  step 2), execution isolation (#23) and external reproduction (#25) stay open.
+  `--defer` is deliberately unstamped: nothing was verified.
+- Pinned by `validate_plugin.check_source_stamp` (markers, exclusion, row
+  format, application, ordering) and 10 `S1` cases. Both guards shipped
+  **fail-open in their first draft** — each searched for the verdict-path marker
+  in text it had already stripped of comments, so a mutation moving the stamp
+  inside the lock passed a green build. Found by mutation, fixed in both, and
+  recorded in `docs/LANDMINES.md`.
+
+### Fixed — review-pass findings, each reproduced before fixing
+
+Six defects found by the PR-review agents and `/code-review max` on PR #12. Each
+was measured first, and three of them corrected something this changelog or a
+code comment had asserted.
+
+- **A non-writable `.armed` wedged the project on every uid** ([#27]). The
+  unusable-marker guard tested `-d` and `-x`, never `-w` — the permission the
+  marker writes actually need. Mode 555 passed both halves, so the guard stayed
+  silent while a new session was denied, `ops-task.sh` reported success writing
+  no marker, its sentinel landed anyway (blocking Stop too), and all three
+  advertised repairs wrote into that same unwritable directory. Measured end to
+  end off-root: the unrepairable project this hook's polarity exists to prevent.
+- **The census miscounted a filename containing a newline** ([#29]). See B10.1
+  above; the claim that `grep -z` was safe here is retracted with it.
+- **An owner ending in `.exempt` forged or destroyed a G3 grant** ([#30]).
+  `.armed/` holds two marker kinds in one flat namespace and the suffix was
+  unguarded, so `--owner foo.exempt` on any ordinary task granted session `foo` a
+  full exemption with **zero** GATE-EXCEPTION rows, and a session named
+  `foo.exempt` closing a task **deleted** foo's real exemption while the ledger
+  row still asserted it held. Rejected at all three writers; deliberately not in
+  the hook's reject set, which fails open.
+- **The handoff file was untracked** ([#28]) — a regression from v1, which
+  tracked it. `!handoff-*.md` re-admitted.
+- **`armgate.on` was untracked** ([#31]), so a team could not commit its own
+  opt-in and every clone got the gate silently off.
+- **The SessionStart gitignore migration was silent** ([#32]). It replaces a
+  file the user may have edited and leaves a `.v1.bak` that the new allowlist
+  itself hides; the notice now rides `additionalContext` and names both.
+- **The PreToolUse arm gate had no timeout** ([#33]). Measured: a hung `jq` left
+  it blocked past 6s against a ~44ms normal path, on the one hook that gates
+  every edit. Bounded at 5s, pinned in both directions.
+
+### Fixed
+
+- **Retro-gate long-row blindness (G1.7)** — the prior-row scan skipped any
+  read-chunk that filled its 512-byte bound, so a long evidence cell split a row
+  and the chunk carrying `| <id> |` was skipped — a genuine duplicate was
+  misfiled never-armed, writing a spurious GATE-EXCEPTION. Now matches every line
+  start (the prefix is always there; a mid-cell continuation never begins with
+  `| <id> |`). Found by the G3 review.
+- **SessionStart tempdir wipe unreachable (U5)** — the tempdir-root cleanup sat
+  behind the `.operator/` gate, so it was unreachable for exactly the projects
+  that use the tempdir path (no `.operator/`), and that root grew forever. Hoisted
+  above the gate. Found by the G3 review.
+- **The compressor materialized `.operator/` in projects that never opted in** —
+  each ephemera root now writes its own `.gitignore` holding `*`; when
+  `.operator/` is absent the roots move to `$TMPDIR/cc-operator/<sha256(cwd)
+  [:16]>/` instead of creating one.
+- **`templates/OPERATOR.md` reflowed to 95 columns** — 149→136 lines, 8188 bytes,
+  word stream and citation tags verified identical. Binding cap is now bytes.
+
+### Changed
+
+- **`.operator/.gitignore` is an allowlist** — v2 ignores `*` and re-admits only
+  evidence; future ephemera are covered by construction. Existing projects
+  migrated (not appended) by both `ops-init.sh` and SessionStart;
+  `check_gitignore_parity` pins the two writers equal.
+- **CLAUDE.md coupling table** gains two G2 rows (the `.armed/` marker convention
+  across three writers + the hook; the matcher keeping `Bash` out).
+
+### Verified — first release measured on Linux, and the arm gate proved live
+
+- **G2 blocks a real `Edit` in a live session**, not merely at the hook's exit
+  code. Four controls on the same tool and file: gate off → allowed; gate on and
+  unarmed → **denied**, with the hook's stderr reaching the model verbatim
+  (all four lines, including the three repair commands); armed via `ops-task.sh`
+  → allowed; marker removed → denied again. Each deny confirmed by reading the
+  file back, so the write genuinely never lands. `ops-adopt.sh` then restored the
+  marker exactly as the deny message advertises.
+- **Linux parity.** Full suite **447/0 on ubuntu:24.04** (bash 5.2.21, GNU grep
+  3.11, `sh` = dash) as a normal uid, identical to macOS 24.6 (bash 3.2.57 and
+  5.3.15, BSD grep 2.6.0). Prior releases were measured on macOS only. (Parity
+  was first established at 442; review findings then added G2.12, G2.13 and
+  B10.4, and both platforms were re-measured at each step. This number has now
+  gone stale twice inside one PR, which is its own small argument for citing a
+  count only where a command can be re-run against it.)
+  - ~~`grep -z` is genuine null-data on both~~ — **retracted, and it was a real
+    bug.** The "discriminating case" behind that claim did not discriminate:
+    both semantics gave the same answer for the input I used, so it proved
+    nothing. A genuinely discriminating input shows BSD/macOS `grep -z` does
+    **not** anchor `$` at the NUL — see the census fix below.
+  - `statusline.sh`'s `stat` dual-path took the GNU branch (`-c` OK, `-f` fails)
+    — the fallback's first run on the platform it was written for.
+  - The gate holds under `env -i` (no PATH, HOME, TMPDIR) and still fails **open**
+    when no JSON parser is reachable.
+- **The hooks are self-contained.** Zero `CLAUDE_PLUGIN_ROOT` references in the
+  code of `ops-armgate-hook.sh`, `ops-stop-hook.sh`, `ops-sessionstart-hook.sh`
+  and `statusline.sh` (every match is comment prose), and nothing is sourced.
+  Driven by absolute path from `cd /` against a project that never installed the
+  plugin, all four answered correctly and the ledger row landed in that foreign
+  project; the walk-up stops at a `.git` boundary rather than adopting an
+  unrelated ancestor.
+
+### Decided — quiet-introduction policy (§10 of backlog-charter.md)
+
+The CLI-dependent B-items (B2/B3/B4/B5/B8/B9) and B11's register-audit are
+**deliberately unbuilt** — do not build loud detection for a problem the field
+has not demonstrated. U1 (B11 reads the p1–p5 field, not an invented tag), U2
+(no backlog.md dependency — covered in-house, dissolving B5's premise), U3 (the
+unknowns scan is end-user-triggered by release posture, size is informational).
+
+### Known limitations (stated, not hidden)
+
+- **G2 is opt-in**, so the hole is closable, not closed (G4). `Bash` is ungated
+  by design — classifying shell writes is unwinnable, and gating Bash deadlocks
+  the repair path.
+- **The arm gate's unusable-`.armed` guard has one inert half under uid 0**
+  ([#19], resolved as documented-and-tested rather than patched). `[ ! -d ]` is
+  the half that works on every uid; `[ ! -x ]` is best-effort and cannot fire for
+  root, whose `[ -x ]` on a `chmod 000` directory returns TRUE. That is tolerable
+  for a reason that had to be measured rather than assumed: root is not blocked
+  by mode bits either. `ls`, `cd` and `touch` all succeed, and — decisively — the
+  marker lookup stays **accurate** through the unreadable directory (present
+  reads TRUE, absent reads FALSE), so root never reaches a wrong verdict and the
+  three repairs the deny message prints stay alive. No capability probe fixes the
+  inert half, because under root nothing fails. Now pinned by cases (G2.12): the
+  dangling-symlink mode must DENY (a broken link is absence, not an infra fault),
+  and under uid 0 an armed session is allowed through a `chmod 000` `.armed` with
+  the lookup asserted accurate — the tripwire for the property the tolerance
+  rests on. Both mutation-verified.
+- **B10's threshold is unmeasured** (one repo); U3 makes the trigger a user
+  declaration rather than that number.
+- **The adversarial verifier shares the builder's working tree** ([#23]), so a
+  `CONFIRMED` can be produced by builder state rather than by the code.
+  Measured: a `__pycache__` the builder left makes a broken commit verify
+  CONFIRMED in-tree and REFUTED in a clean checkout of that same commit, with
+  `git status --porcelain` reporting clean throughout — the residue is
+  *gitignored*, which is exactly why the usual cleanliness check cannot see it.
+  `op-verifier` promises fresh **context**, never a fresh **tree**, and nothing
+  in this release claims isolation. **Until it is closed, do not describe a
+  verdict as independently verified** — it is verified by a different reader of
+  the same tree.
+- **The review panel has no security lens** ([#24]). `workflows/review.js`
+  dispatches five lenses unconditionally — spec, testability, feasibility,
+  quality, correctness. A security seat is deliberately not added yet: without a
+  fixture carrying a known vulnerability it would be a lens that has never found
+  anything, which is the vacuous-guard class this project keeps catching.
+  **Until then, a panel PASS says nothing about security.**
+- **A crash between a verdict row and its `GATE-EXCEPTION` loses the audit
+  line** ([#14]). The two are separate appends; the retry classifies the orphan
+  as `duplicate`, so a genuine gate bypass keeps its PASS row and loses its
+  exception. Recorded as residual rather than patched because the obvious guard
+  was built and reverted: an *armed* first verdict also leaves a row with no
+  exception, so downgrading on that basis wrote spurious exceptions for every
+  ordinary amended verdict (case G1.7 caught it). Nothing in the fragment
+  distinguishes crash-interrupted from ordinary-amended; closing it needs a
+  format change, which earns its own bar.
+
+[#14]: https://github.com/betmoar/cc-operator-plugin/issues/14
+[#19]: https://github.com/betmoar/cc-operator-plugin/issues/19
+[#23]: https://github.com/betmoar/cc-operator-plugin/issues/23
+[#24]: https://github.com/betmoar/cc-operator-plugin/issues/24
+[#27]: https://github.com/betmoar/cc-operator-plugin/issues/27
+[#28]: https://github.com/betmoar/cc-operator-plugin/issues/28
+[#29]: https://github.com/betmoar/cc-operator-plugin/issues/29
+[#30]: https://github.com/betmoar/cc-operator-plugin/issues/30
+[#31]: https://github.com/betmoar/cc-operator-plugin/issues/31
+[#32]: https://github.com/betmoar/cc-operator-plugin/issues/32
+[#33]: https://github.com/betmoar/cc-operator-plugin/issues/33
+[#34]: https://github.com/betmoar/cc-operator-plugin/issues/34
+
 ## [0.6.1] - 2026-08-05
 
 ### Fixed — deviation gate was blind on ledgers with long rows (#9)
