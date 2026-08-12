@@ -252,11 +252,35 @@ if [ "$EXPECT_CLEAN" = "1" ]; then
   # Failure degrades to the count `unknown`, never to silence and never to 0:
   # "git could not tell me" and "there is nothing" are different answers, and
   # only one of them is safe to read as clean.
-  _ign_n="$(git status --porcelain --ignored=matching -z --untracked-files=all \
-              2>/dev/null | tr '\0' '\n' | grep -c '^!!' || true)"
-  case "$_ign_n" in
-    ''|*[!0-9]*) _ign_n="unknown" ;;
-  esac
+  #
+  # GIT'S EXIT STATUS IS CAPTURED SEPARATELY, and it has to be. The first draft
+  # ran the whole pipeline in one substitution and post-hoc tested the captured
+  # string for non-digits — unreachable, because `grep -c` on empty input PRINTS
+  # "0" and exits 1, so a git that died at 128 was indistinguishable from a
+  # clean tree. Both failure modes were measured (GIT_INDEX_FILE pointing at a
+  # non-directory; a truncated .git/index) and both reported "0" with rc 0,
+  # which is the fail-toward-the-strong-claim polarity the PLAYBOOK forbids and
+  # this very comment claimed to avoid. Found by the adversarial seat, PR #36.
+  #
+  # Order matters: `git` must be the LAST command whose status we read, so its
+  # output goes to a variable and the counting happens after. A pipeline would
+  # hand us grep's status instead — the original bug.
+  # `&& rc=0 || rc=$?`, not a bare assignment: this file runs under `set -e`, so
+  # an assignment carrying git's non-zero status kills the script outright
+  # (measured: RC=128, the ignored-state line never printed and --expect-clean
+  # died mid-report). Same shape as ops-verdict.sh:source_stamp, for the same
+  # reason. The two-line form is required — `local rc=$(…)` returns the status
+  # of the assignment, which is always 0.
+  _ign_raw="$(git status --porcelain --ignored=matching -z --untracked-files=all 2>/dev/null)" \
+    && _ign_rc=0 || _ign_rc=$?
+  if [ "$_ign_rc" -ne 0 ]; then
+    _ign_n="unknown"
+  else
+    _ign_n="$(printf '%s' "$_ign_raw" | tr '\0' '\n' | grep -c '^!!' || true)"
+    case "$_ign_n" in
+      ''|*[!0-9]*) _ign_n="unknown" ;;
+    esac
+  fi
   echo "{item ignored-state} report: $_ign_n gitignored entr(y|ies) NOT covered by the check above — \`git status --porcelain --ignored=matching\` lists them; ignored build state can make a broken commit verify green (#23)"
   # --expect-clean may run alone (no --claimed): a clean read-only dispatch.
   [ -n "$CLAIMED" ] || exit 0

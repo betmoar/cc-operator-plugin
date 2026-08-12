@@ -1526,6 +1526,26 @@ check "a lens with an empty model is refused (qwen:)" \
 TIERSENV --set MECHANICAL=qwen:a:b >/dev/null 2>&1; LENSMULTI=$?
 check "the lens splits at the FIRST colon, as cc-proxy does (qwen:a:b)" \
   "$([ "$LENSMULTI" -eq 0 ] && echo 0 || echo 1)"
+# THE SLASH BYPASS. The lens test must run BEFORE the bare-shape cases: with
+# `*/*` first, `bogus:vendor/model` returned on the slash arm and the allowlist
+# was never consulted — while cc-proxy answers providerId=null for it and sends
+# the literal string upstream, the exact silent mis-route the allowlist exists
+# to prevent. Found by the review panel's feasibility lens on PR #36; the
+# guard's own comment claimed the opposite was true.
+TIERSENV --set MECHANICAL=bogus:vendor/model >/dev/null 2>&1; LENSSLASH=$?
+check "an unknown lens is refused even when the model half holds a slash" \
+  "$([ "$LENSSLASH" -ne 0 ] && echo 0 || echo 1)"
+# The negative control that keeps the fix honest: a KNOWN lens whose model half
+# is a vendor/model id must still pass. Refusing it would trade one bug for
+# another — openrouter:qwen/x is a legal cc-proxy id (providerId=openrouter,
+# upstream `qwen/x`).
+TIERSENV --set MECHANICAL=openrouter:qwen/x >/dev/null 2>&1; LENSOKSLASH=$?
+check "a KNOWN lens with a slashed model half is still routable" \
+  "$([ "$LENSOKSLASH" -eq 0 ] && echo 0 || echo 1)"
+# And a bare vendor/model, which carries no lens at all, is untouched.
+TIERSENV --set MECHANICAL=openai/gpt-5 >/dev/null 2>&1; LENSBARE=$?
+check "a bare vendor/model id is unaffected by the lens ordering" \
+  "$([ "$LENSBARE" -eq 0 ] && echo 0 || echo 1)"
 # tiers.env carries TWO line kinds (the renderer's seat bindings share the
 # file). The resolver must SKIP a seat line, not die on it — the scaffold's own
 # documented example ('#op-scout=MECHANICAL', ops-init.sh) used to kill every
@@ -2153,6 +2173,18 @@ check "--expect-clean counts a gitignored __pycache__ the tracked check cannot s
 runclaims --expect-clean >/dev/null 2>&1; ECI2=$?
 check "--expect-clean stays green on ignored state (report, never fail)" \
   "$([ "$ECI2" = 0 ] && echo 0 || echo 1)"
+# A FAILED GIT READ MUST READ `unknown`, NOT `0`. The first draft ran the whole
+# pipeline in one substitution and tested the captured string for non-digits —
+# unreachable, because `grep -c` on empty input prints "0" and exits 1, so a git
+# that died at 128 was indistinguishable from a clean tree. The exit status is
+# now captured before any counting. GIT_INDEX_FILE pointing at a non-directory
+# is the cheapest reproducible failure; the script must still exit 0 (this is a
+# report line, not a gate) and must still print the tracked-tree verdict.
+ECIU="$( cd "$P" && GIT_INDEX_FILE=/dev/null/nope bash "$CLAIMS" --expect-clean 2>/dev/null )"; ECIURC=$?
+check "a failed git read reports 'unknown', never '0'" \
+  "$(printf '%s' "$ECIU" | grep -q '{item ignored-state} report: unknown ' && echo 0 || echo 1)"
+check "the unknown path still exits 0 (a report line is not a gate)" \
+  "$([ "$ECIURC" = 0 ] && echo 0 || echo 1)"
 clean_tree
 
 # --expect-clean exempts .operator/ ledger paths: scaffold + a verdict row, then
