@@ -9,6 +9,206 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-08-12
+
+### Added — `--expect-clean` reports the ignored state it cannot check
+
+- **`ops-claims.sh --expect-clean` now emits a second evidence line** naming how
+  many gitignored entries the tracked-tree check did not cover, and the command
+  to list them. Porcelain describes the **tracked** tree by design, so the whole
+  gitignored family — bytecode and build caches, `node_modules`, `.venv`, an
+  editable install, a gitignored `.env`, a warmed fixture DB — is invisible to
+  it. That invisibility is the mechanism of [#23], not a bug in the check.
+  - **Report, never fail.** 34 of this repo's ignored entries are legitimate
+    (`.archive/`, `.serena/`, `docs/audits/`, the pilot seeds); failing on them
+    would make the check unusable and it would be turned off, which is the
+    vacuous-guard class ([#21]) arriving by a different door. What the line buys
+    is **scope**: a verdict citing `--expect-clean` now carries what "clean" did
+    not cover.
+  - **`--ignored=matching`, not the `traditional` default**, measured before
+    choosing: traditional expands every file below an ignored directory — 204
+    lines here versus 34. One summary line rather than one per entry, for the
+    same reason. A line nobody reads is the same failure as no line.
+  - A failed git read degrades to the count `unknown`, never to silence and
+    never to 0: "git could not tell me" and "there is nothing" are different
+    answers and only one is safe to read as clean.
+  - **That degradation shipped unreachable and was caught by this release's own
+    review panel.** The first draft ran the whole pipeline in one substitution
+    and post-hoc tested the captured string for non-digits — but `grep -c` on
+    empty input PRINTS `0` and exits 1, so a git that died at 128 was
+    indistinguishable from a clean tree. Measured on two independent failures
+    (`GIT_INDEX_FILE` pointing at a non-directory; a truncated `.git/index`),
+    both reporting `report: 0` with rc 0 — fail-toward-the-strong-claim, the
+    polarity `docs/PLAYBOOK.md` forbids and the comment above claimed to avoid.
+    Git's exit status is now captured before any counting; git must be the last
+    command whose status is read, because a pipeline hands back grep's.
+    - Fixing it exposed a second one: this file runs under `set -e`, so a bare
+      assignment carrying git's 128 killed the script outright (RC=128, the
+      report line never printed). Now the `&& rc=0 || rc=$?` form
+      `ops-verdict.sh:source_stamp` already uses.
+
+### Added — the [#23] contamination class gets an in-tree fixture
+
+- **Five cases prove the class the issue only described.** [#23] had read
+  "Status: MEASURED" since it was filed, but the measurement lived in the issue
+  text; `grep -rln` over `tests/` found nothing. The same commit now
+  demonstrably verifies PASS in the builder's tree and FAIL in a clean checkout
+  of that commit, with `git status --porcelain` empty throughout — because the
+  contaminant is gitignored, which is exactly why the tracked-tree check cannot
+  see it. The fifth case asserts the new scope line is what an operator would
+  have to notice: green tree, ignored count 1.
+- **The issue's own recipe does not reproduce, and the correction is measured.**
+  It says equal source byte-length suffices because CPython validates a `.pyc`
+  by source mtime + size. Size is the *second* field: writing the defect moves
+  the mtime, CPython invalidates, recompiles, and **both sides FAIL**. The
+  fixture reads the source mtime back out of the `.pyc` header (PEP 552:
+  little-endian uint32 at offset 8) and applies it with `os.utime`, so the two
+  agree by construction rather than by timing.
+  - Not a detail: with the stamp removed the in-tree run passes **4 of 12**
+    iterations — the builder run and the edit land on the same clock second
+    often enough to look fixed and rarely enough to be worthless. A
+    `stat`-and-restore fixture is green on a fast host and red on a slow one for
+    reasons having nothing to do with the property under test.
+  - Consequence for re-running discrimination on this case, recorded in the case
+    itself: deleting the mtime stamp does **not** reliably flip it. The
+    mutations that do are removing the builder warm-up (506/1) and un-ignoring
+    `__pycache__` (505/2).
+- **This does not close [#23].** The fixture proves the class and gives the
+  eventual worktree isolation something to prove itself against; it isolates
+  nothing. The three scoping decisions the issue names remain open.
+
+### Fixed — `tiers.env` could not name a cc-proxy provider model ([#35])
+
+- **`check_routable` learned the `<provider>:<model>` lens.** It knew three
+  shapes — `glm-*`, `vendor/model`, `claude-*` — and cc-proxy's canonical
+  spelling since 0.6.0 is a fourth. The colon was already legal by charset; the
+  shape case had never learned about it, so `JUDGMENT=qwen:deepseek-v4-pro` died
+  at resolve time with a message naming three spellings and omitting the one
+  cc-proxy publishes. Only a workflow's `opts.model` reached those models,
+  because that path does not pass this guard.
+- **An allowlist, not `*:*`, and the difference is the guard.** Measured against
+  cc-proxy's own `parseModelSelector`:
+
+  ```
+  qwen:deepseek-v4-pro   providerId=qwen   -> upstream: deepseek-v4-pro
+  bogus:some-model       providerId=null   -> upstream: bogus:some-model
+  ```
+
+  An unknown lens is **not** stripped — it reaches the default backend as a
+  literal model id, the silent mis-route this function exists to prevent. A
+  generic colon rule would have admitted exactly that. `LENS_NAMESPACES` mirrors
+  `PROVIDER_IDS` in cc-proxy's `src/providers.js`. The split is at the **first**
+  colon, matching cc-proxy's `indexOf`, so `qwen:a:b` sends tail `a:b` and this
+  agrees rather than second-guessing it.
+- **And the allowlist shipped bypassable with a slash, caught by this release's
+  own review panel.** The first draft tested the bare shapes before the lens, so
+  `*/*` returned 0 and the allowlist was never consulted: `bogus:vendor/model`
+  passed while `bogus:model` was correctly refused. cc-proxy answers
+  `providerId=null` for it and sends the literal string upstream — the hole this
+  entry had just described closing. The lens is now tested **first**, matching
+  cc-proxy, whose `parseModelSelector` runs at step 0 of `resolve()`: an id
+  carrying a colon is a lens no matter what follows it. Two negative controls
+  keep the fix honest — `openrouter:qwen/x` (a known lens with a slashed model
+  half) stays routable, and bare `openai/gpt-5` is unaffected.
+- **Second defect, found while fixing the first: the parity check could not see
+  the allowlist.** `LENS_NAMESPACES` is a file-scope assignment *outside*
+  `check_routable`'s braces, so `check_resolver_renderer_parity`'s body
+  comparison would rate two copies carrying **different** allowlists as equal —
+  the F30 shape this repo keeps re-hitting. Now pinned by value with its own
+  equality check, plus the in-body `$LENS_NAMESPACES` lookup in the fragment
+  list, plus two pytest cases. Mutation-verified.
+- **Discrimination is two-sided, because an allowlist can fail in both
+  directions.** Removing the lens branch (the pre-fix behaviour) gives 510/4
+  with the ACCEPT cases red; widening the allowlist to any namespace gives
+  511/3 with the REFUSE cases red. No single mutation leaves all nine cases
+  green — which is what makes the allowlist load-bearing rather than
+  decorative. A `*:*` implementation would have survived the second.
+
+### Fixed — the suites contaminated the tree they test
+
+- **No more `__pycache__` from a test run.** A run left one in `scripts/` and
+  one in `tests/`, both gitignored, so `git status` reported a clean tree that
+  was not one. A suite that generates the [#23] class while shipping its fixture
+  is arguing against itself. Measured per command, before → after:
+
+  ```
+  unittest discover                   2 -> 2
+  pytest (bare or tests/)             2 -> 1
+  bash tests/test-scripts.sh          2 -> 0
+  python3 scripts/validate_plugin.py  0 -> 0
+  ```
+
+  Three sites, because no single one covers every shape: both workflows set
+  `PYTHONDONTWRITEBYTECODE` at **job** level (not per step, so a later step that
+  adds a python call inherits it), `tests/conftest.py` sets
+  `sys.dont_write_bytecode`, and the bash suite exports it for its ~43 python3
+  calls.
+  - **Two residues, stated rather than papered over.** `conftest.py`'s own
+    `.pyc` is written before the line that disables bytecode runs — nothing
+    inside the process can prevent its own compilation. And
+    `unittest discover` reads no config file at all; CI covers the build, a
+    hand-run needs the prefix. The validator writes none and always did: it is
+    run as a script, never imported.
+  - **One self-inflicted defect fixed in the same change:** exporting the
+    variable from the suite header broke the [#23] fixture, whose entire
+    mechanism is a written `.pyc` (505/2, both write-path halves red). Three
+    sites now unset it, kept symmetrical so the next edit cannot re-introduce
+    the asymmetry.
+- **`pytest tests/` stopped halting on 4 collection errors.** `pyproject.toml`
+  pinned `testpaths` at exactly the two real modules, but **`testpaths` applies
+  only when no path argument is given** — the documented invocation overrode the
+  guard and walked `tests/pilot-seeds*/`. `norecursedirs` is the half that
+  survives an explicit path. Both are kept: `testpaths` states what the suite
+  **is**, `norecursedirs` states what is never a test even when someone points
+  pytest at it.
+
+### Changed
+
+- **`CHANGELOG.md`: the `[Unreleased]` section was folded into `[0.7.0]`.** Five
+  subsections described work that shipped in `be74205` — the commit v0.7.0 tags
+  — and were never retitled before tagging, so `release_gate` (whose heading
+  regex correctly does not match `[Unreleased]`) extracted only the `[0.7.0]`
+  section. The published release body was 268 lines where the folded section
+  generates 405. No published artifact was wrong — the squash commit message
+  already described the work — only the changelog's attribution.
+- **`CLAUDE.md` gains a `LENS_NAMESPACES` coupling row**: both copies, why it is
+  an allowlist, and that both validator fixtures must track the guard's shape.
+
+### Caught by the gates rather than by the author
+
+Recorded because it is what the guardrails are for, and a green build says
+nothing about how it got there:
+
+- `check_portability` rejected a `date -r … || date -d …` fallback in the [#23]
+  fixture — precisely the GNU-only shape it guards. Replaced with `os.utime` in
+  the `python3` call the case already required.
+- Adding `LENS_NAMESPACES` to the parity check's **in-body** fragment list made
+  it fire on every tree (12 pytest failures, good-tree fixtures included): that
+  loop searches the function body, which by construction cannot contain a
+  file-scope assignment.
+- A reference-style `[#35]` in `CLAUDE.md` tripped `check_issue_refs` — the
+  guard shipped in 0.7.0 — because that file writes bare `#N` by convention.
+- **The review panel REFUTED this release before it shipped**, and both grounds
+  were real. The adversarial seat reproduced the unreachable `unknown`
+  degradation on its first attempt; the feasibility lens found the slash bypass
+  in a guard added by this same release. Its second ground was procedural and
+  also correct: the F-A1 tree check failed because the version bump and this
+  changelog sat uncommitted while the panel ran.
+  - The slash bypass scored **57**, below two findings about pre-existing path
+    guards, and it was the one that reopened a hole this PR had just closed —
+    an argument for reading a panel's findings rather than sorting them.
+  - What the panel does **not** establish, unchanged from [#23]: every seat ran
+    in the builder's own tree. A CONFIRMED from it would have been verification
+    by a different reader of the same tree, not by a clean checkout.
+
+### Gates
+
+bash 519/0 from a neutral cwd (507/0 on ubuntu:24.04 as uid 1000, measured at
+the [#23] commit — five cases predate the two post-review fixes) · validator 0 ·
+pytest 177/0 · node 73/0 + 75/0 · shellcheck 0.11 rc 0 and pinned 0.10 rc 0.
+
+[#21]: https://github.com/betmoar/cc-operator-plugin/issues/21
+[#35]: https://github.com/betmoar/cc-operator-plugin/issues/35
 
 ## [0.7.0] - 2026-08-07
 
