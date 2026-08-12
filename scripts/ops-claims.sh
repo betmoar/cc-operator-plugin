@@ -229,6 +229,35 @@ if [ "$EXPECT_CLEAN" = "1" ]; then
     exit 1
   fi
   echo "{item working-tree} ok: clean apart from .operator/ ledger paths"
+  # IGNORED STATE IS NOT TRACKED STATE, and the check above cannot see it.
+  # Porcelain's job is to describe the TRACKED tree, so the whole gitignored
+  # family — bytecode and build caches, node_modules, .venv, an editable
+  # install, a warmed fixture DB — is invisible to it. That is the exact
+  # mechanism of #23: a `__pycache__` the builder left makes a broken commit
+  # verify green in-tree and fail in a clean checkout of that same commit,
+  # with `git status --porcelain` reporting clean throughout.
+  #
+  # REPORT, NEVER FAIL. Ignored entries are overwhelmingly legitimate (34 in
+  # this repo: .archive/, .serena/, docs/audits/, the pilot seeds), so failing
+  # on them would make the check unusable and it would be disabled — a guard
+  # nobody can run is the vacuous-guard class (#21). What this line buys is
+  # SCOPE: a verdict citing --expect-clean now carries what "clean" did not
+  # cover. Closing #23 needs execution isolation, not a louder reader.
+  #
+  # `--ignored=matching`, not the `traditional` default: traditional expands
+  # every file below an ignored directory (204 lines here vs 34), and a line
+  # nobody reads is the same failure as no line. One summary line, not one per
+  # entry, for the same reason — the operator gets the count and the command.
+  #
+  # Failure degrades to the count `unknown`, never to silence and never to 0:
+  # "git could not tell me" and "there is nothing" are different answers, and
+  # only one of them is safe to read as clean.
+  _ign_n="$(git status --porcelain --ignored=matching -z --untracked-files=all \
+              2>/dev/null | tr '\0' '\n' | grep -c '^!!' || true)"
+  case "$_ign_n" in
+    ''|*[!0-9]*) _ign_n="unknown" ;;
+  esac
+  echo "{item ignored-state} report: $_ign_n gitignored entr(y|ies) NOT covered by the check above — \`git status --porcelain --ignored=matching\` lists them; ignored build state can make a broken commit verify green (#23)"
   # --expect-clean may run alone (no --claimed): a clean read-only dispatch.
   [ -n "$CLAIMED" ] || exit 0
 fi

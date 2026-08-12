@@ -2084,6 +2084,26 @@ runclaims --expect-clean >/dev/null 2>&1; ECF=$?
 check "--expect-clean fail on a stray non-ledger file" "$([ "$ECF" != 0 ] && echo 0 || echo 1)"
 clean_tree
 
+# --expect-clean REPORTS ignored state (#23 scope line). The tracked-tree check
+# above cannot see a gitignored artifact, which is the exact mechanism by which
+# a stale __pycache__ makes a broken commit verify green in-tree and fail in a
+# clean checkout of the same commit. The line is report-only: the count moves,
+# the exit code does not. Both halves are asserted because a report that cannot
+# say 0 is not a count — it is a constant, and a constant guard pins nothing.
+# Discriminating: deleting the --ignored=matching read flips both counts to
+# empty and the first check fails; making it FAIL instead of report flips ECI2.
+runclaims --expect-clean 2>/dev/null | grep -q '{item ignored-state} report: 0 ' && ECI0=0 || ECI0=1
+check "--expect-clean reports 0 ignored entries on a tree with none" "$ECI0"
+printf '__pycache__/\n' > "$P/.gitignore"
+( cd "$P" && git add .gitignore && git commit -qm ignore )
+mkdir -p "$P/__pycache__"; printf 'stale\n' > "$P/__pycache__/a.cpython-311.pyc"
+runclaims --expect-clean 2>/dev/null | grep -q '{item ignored-state} report: 1 ' && ECI1=0 || ECI1=1
+check "--expect-clean counts a gitignored __pycache__ the tracked check cannot see" "$ECI1"
+runclaims --expect-clean >/dev/null 2>&1; ECI2=$?
+check "--expect-clean stays green on ignored state (report, never fail)" \
+  "$([ "$ECI2" = 0 ] && echo 0 || echo 1)"
+clean_tree
+
 # --expect-clean exempts .operator/ ledger paths: scaffold + a verdict row, then
 # expect-clean must still pass (a verdict is a normal side-effect of a dispatch).
 ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
