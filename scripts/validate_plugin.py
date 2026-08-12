@@ -2092,6 +2092,61 @@ def check_issue_refs(root, problems):
                     f"a reference to another project's tracker")
 
 
+def check_release_gates_cover_validate(root, problems):
+    """release.yml must run every test suite validate.yml runs.
+
+    A tag build publishes; a PR build does not. So the release job has to be a
+    SUPERSET of the validate job, and it was a strict subset (#38): both node
+    suites — 148 cases over the workflow layer and the compressor — ran on
+    every PR and on no release. 0.7.1 changed the ROUTABLE regex in all four
+    workflows, code test_workflows.mjs covers, and the tag build that shipped it
+    would not have run one case over it.
+
+    The failure was invisible because release.yml's own header says it "re-runs
+    the full validation". A gate that names one scope and enforces another is
+    the class docs/PLAYBOOK.md exists to catch, and nothing compared the two
+    files.
+
+    Compares the SUITE COMMANDS, not whole `run:` blocks: the two jobs
+    legitimately differ elsewhere (release_gate.py, `gh release create`), and
+    shellcheck is invoked through docker in both with slightly different
+    argument spelling. What must not diverge is which test runners execute.
+    """
+    wf = root / ".github" / "workflows"
+    val, rel = wf / "validate.yml", wf / "release.yml"
+    if not val.is_file() and not rel.is_file():
+        return  # a tree with no CI at all — nothing to compare
+    if not val.is_file() or not rel.is_file():
+        # ONE present and the other absent is reported, not skipped: that is a
+        # half-configured CI, and the whole point of this check is that the
+        # publishing job must not be the weaker one. Only the both-absent case
+        # above is a legitimate skip (the validator's own fixtures build a
+        # plugin tree without workflows).
+        missing = val.name if not val.is_file() else rel.name
+        problems.append(
+            f".github/workflows: {missing} is missing while its counterpart "
+            f"exists — cannot verify that a tag build gates at least as much "
+            f"as a PR build")
+        return
+    # The runners this project uses. Matched as substrings of the file text so
+    # a step's formatting (block scalar, inline, extra flags) does not matter.
+    SUITES = (
+        "tests/test-scripts.sh",
+        "tests/test_workflows.mjs",
+        "tests/test_compress.mjs",
+        "validate_plugin.py",
+        "unittest discover",
+    )
+    vtext = val.read_text(encoding="utf-8")
+    rtext = rel.read_text(encoding="utf-8")
+    for suite in SUITES:
+        if suite in vtext and suite not in rtext:
+            problems.append(
+                f".github/workflows/release.yml: runs no `{suite}` step while "
+                f"validate.yml does — the tag build that PUBLISHES gates less "
+                f"than the PR build that does not (#38)")
+
+
 # The registry, in run order. Both main() and the test suite iterate THIS —
 # a hand-copied second list is how three guardrails (reader bounds, guard
 # parity, lock parity) ended up running in the build but not in the test that
@@ -2126,6 +2181,7 @@ CHECKS = (
     check_workflow_tier_namespace,
     check_workflow_agent_types,
     check_commands,
+    check_release_gates_cover_validate,
 )
 
 

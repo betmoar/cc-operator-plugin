@@ -347,10 +347,34 @@ fi
 # `none` is the "CHANGED: none" report: no paths claimed. Normalize to empty.
 [ "$CLAIMED" = "none" ] && CLAIMED=""
 
-# Claimed paths inherit the charset discipline of task ids: no '|' or newline
-# (would break the space-separated list contract), no leading dot (an invisible
-# ledger claim), and — critically for a PATH — no traversal ('..'). A claimed
-# '/../etc/passwd' is not a claim about this repo. Reject, never sanitize.
+# Claimed paths inherit part of the charset discipline of task ids: no '|' or
+# newline (would break the space-separated list contract), and — critically for
+# a PATH — no traversal ('..'). A claimed '/../etc/passwd' is not a claim about
+# this repo. Reject, never sanitize.
+#
+# THE BLANKET DOT REJECT IS GONE (#37), and the reason it was wrong is worth
+# stating: it was a TASK-ID rule applied to PATHS. A task id becomes a filename
+# in `pending/`, where a leading dot hides the sentinel from a plain glob —
+# that is a real hazard and the three CLIs still refuse it. A claimed path is
+# never a filename we create; it is a string compared against git's output. The
+# two share a contract (space-separated, no pipe, no newline) and not this rule.
+#
+# What it cost: six tracked files in this repo start with a dot
+# (.github/workflows/*.yml, .claude-plugin/*.json, .gitignore), and a worker
+# that touched one had NO green path — claiming it died at exit 2, omitting it
+# fired C1 on the same path. Measured both halves before changing anything.
+#
+# `.operator/` is still refused, which is what the old comment's "invisible
+# ledger claim" was actually about: the ledger is an expected side-effect of
+# every dispatch, exempted from C1 by is_ledger_path, so claiming it as your
+# own work is a category error rather than a path problem.
+#
+# The trailing-dot half of the old message was never implemented — `foo.`
+# passed while the text promised otherwise. Rather than add a check nobody
+# asked for, the message now says only what the code does. (The old text
+# carried a parenthetical about a 2026-08-04 review catching exactly this
+# comment-vs-code mismatch, which is why the surviving half was worth fixing
+# instead of re-documenting.)
 check_claimed_path() {  # check_claimed_path <path>
   local nl
   nl="$(printf '\nx')"; nl="${nl%x}"
@@ -358,7 +382,7 @@ check_claimed_path() {  # check_claimed_path <path>
     *"|"*) die "claimed path contains '|' — rephrase without it" ;;
     *"$nl"*) die "claimed path contains a newline" ;;
     ../*|*/../*) die "claimed path contains '..' traversal — not a claim about this repo" ;;
-    .*|*/.*) die "claimed path has a leading/trailing dot — not a path the gate tracks (review REFUTED, 2026-08-04: the comment promised this, the code did not)" ;;
+    .operator|.operator/*) die "claimed path is under .operator/ — the ledger is an expected side-effect of every dispatch (exempt from the unclaimed-change check), not a worker's claimed work" ;;
   esac
 }
 # CLAIMED is space-separated on the CLI (the CHANGED: line contract). Iterate

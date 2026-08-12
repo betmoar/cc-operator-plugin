@@ -2240,6 +2240,34 @@ check "claimed '..' traversal is rejected" "$([ "$TRV" != 0 ] && echo 0 || echo 
 # '|' in a claimed path is rejected (would break the list contract).
 runclaims --since "$BASE_SHA" --claimed "a.txt|injected" >/dev/null 2>&1; PIP=$?
 check "claimed '|' is rejected" "$([ "$PIP" != 0 ] && echo 0 || echo 1)"
+# A DOT-DIRECTORY PATH IS CLAIMABLE (#37). The old blanket `.*` reject was a
+# TASK-ID rule applied to paths: a task id becomes a filename in pending/ where
+# a leading dot hides it from a glob, but a claimed path is only ever compared
+# against git's output. Six tracked files here start with a dot, and a worker
+# that touched one had no green path — claiming it died at exit 2, omitting it
+# fired C1 on the same path. Both halves are pinned: the claim must PASS, and
+# the ledger claim it was conflated with must still be refused.
+clean_tree
+mkdir -p "$P/.github/workflows"; printf 'name: v\n' > "$P/.github/workflows/w.yml"
+( cd "$P" && git add -A && git commit -qm dotdir )
+DOTSHA="$(cd "$P" && git rev-parse HEAD)"
+printf 'name: v2\n' > "$P/.github/workflows/w.yml"
+runclaims --since "$DOTSHA" --claimed ".github/workflows/w.yml" >/dev/null 2>&1; DOTC=$?
+check "#37 a claimed dot-directory path is accepted (.github/…)" \
+  "$([ "$DOTC" = 0 ] && echo 0 || echo 1)"
+# The negative control: not claiming it must still fire C1, or the case above
+# would pass against a gate that simply stopped checking.
+runclaims --since "$DOTSHA" --claimed "none" >/dev/null 2>&1; DOTN=$?
+check "#37 the same path unclaimed still fires C1" \
+  "$([ "$DOTN" != 0 ] && echo 0 || echo 1)"
+# And the rule that survives: the ledger is an expected side-effect of every
+# dispatch, so claiming it as your own work stays a refusal.
+DOTLED="$(runclaims --since "$DOTSHA" --claimed ".operator/VERDICTS.md" 2>&1)"; DOTL=$?
+check "#37 a claimed .operator/ path is still refused" \
+  "$([ "$DOTL" != 0 ] && echo 0 || echo 1)"
+check "#37 the refusal names the ledger, not a dot" \
+  "$(printf '%s' "$DOTLED" | grep -q 'under .operator/' && echo 0 || echo 1)"
+clean_tree
 
 # CR2: --since is MANDATORY (a HEAD default made a committed gate-trespass
 # invisible). Without --since, the gate must die loud, not default to HEAD.

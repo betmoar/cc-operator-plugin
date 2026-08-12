@@ -240,18 +240,62 @@ nothing about how it got there:
   204-vs-34 line counts, the 4-of-12 mtime flakiness, the 505/2 and 506/1
   mutation counts, and the PEP 552 header layout.
 
+### Fixed — two gaps the review surfaced that predate this release
+
+- **A worker that touched `.github/` or `.claude-plugin/` had no green path
+  through `ops-claims.sh` ([#37]).** The claimed-path guard rejected any path
+  whose first segment began with a dot, while the ACTUAL side still reported
+  those paths: claiming one died at exit 2, omitting it fired C1 on the same
+  path. Six tracked files are affected. Both halves were measured before the
+  rule changed.
+  - It was a **task-id** rule applied to **paths**. A task id becomes a filename
+    in `pending/`, where a leading dot hides the sentinel from a plain glob —
+    a real hazard the three CLIs still refuse. A claimed path is never a
+    filename this gate creates; it is a string compared against git's output.
+  - What survives is the rule the old comment was actually describing:
+    `.operator/` stays refused, because the ledger is an expected side-effect
+    of every dispatch (already exempt from C1 via `is_ledger_path`), so claiming
+    it as your own work is a category error rather than a path problem.
+  - The old message promised "leading/**trailing** dot" and only ever
+    implemented the leading half — `foo.` passed. The text now says what the
+    code does. Its parenthetical recorded a 2026-08-04 review catching exactly
+    this comment-vs-code mismatch, which is why the surviving half was worth
+    fixing rather than re-documenting.
+- **A tag build gated less than a PR build ([#38]).** `release.yml`'s header
+  claims it "re-runs the full validation"; it omitted both node suites — 148
+  cases over the workflow layer and the compressor. 0.7.1 changed the
+  `ROUTABLE` regex in all four workflows, code `test_workflows.mjs` covers, and
+  the tag build that would have shipped it never ran a case over it.
+  - Both steps added, and `check_release_gates_cover_validate` now pins the
+    property: every test runner `validate.yml` invokes must appear in
+    `release.yml`. One direction only — the release job legitimately runs more
+    (`release_gate.py`, `gh release create`).
+  - A tree with no CI at all is skipped; **one** workflow present without its
+    counterpart is reported. Half-configured CI is exactly the case where a
+    publishing job has nothing to be compared against.
+
 ### Gates
 
-bash 526/0 from a neutral cwd (507/0 on ubuntu:24.04 as uid 1000, measured at
-the [#23] commit — eleven cases postdate it) · validator 0 · pytest 178/0 ·
-node 73/0 + 75/0 · shellcheck 0.11 rc 0 and pinned 0.10 rc 0.
+bash 530/0 from a neutral cwd (507/0 on ubuntu:24.04 as uid 1000, measured at
+the [#23] commit — fifteen cases postdate it) · validator 0 · pytest 184/0 ·
+node 73/0 + 75/0 · shellcheck 0.11 rc 0 and pinned 0.10 rc 0 ·
+`release_gate v0.7.1` OK.
 
 Round-2 revert-discrimination, each mutation restoring one defect the review
 found: NUL-losing capture → 525/1; variant carve-out removed → 524/2;
 `conftest.py` neutered → 525/1; `norecursedirs` dropped → 525/1. Control 526/0.
+For the two above: restoring the blanket dot reject → 528/2 (the accept case and
+its C1 control both move, the `.operator/` refusal does not); removing the node
+steps from `release.yml` → 2 validator findings.
+
+The code-simplifier pass made **no changes** and said so — the patterns that
+look like duplication here are load-bearing distinctions (GATE vs REPORT
+polarity, pipe vs direct-redirect status capture, per-site failure wording).
 
 [#21]: https://github.com/betmoar/cc-operator-plugin/issues/21
 [#35]: https://github.com/betmoar/cc-operator-plugin/issues/35
+[#37]: https://github.com/betmoar/cc-operator-plugin/issues/37
+[#38]: https://github.com/betmoar/cc-operator-plugin/issues/38
 
 ## [0.7.0] - 2026-08-07
 

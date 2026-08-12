@@ -2077,5 +2077,90 @@ class GitignoreParityTest(unittest.TestCase):
                         self._probs())
 
 
+class ReleaseGateCoverageTest(unittest.TestCase):
+    """check_release_gates_cover_validate: the job that PUBLISHES must gate at
+    least as much as the job that does not.
+
+    #38: release.yml ran a strict subset of validate.yml — both node suites
+    (148 cases over the workflow layer and the compressor) were absent from
+    every tag build, while release.yml's header claimed "full validation".
+    """
+
+    VALIDATE = (
+        "jobs:\n  validate:\n    steps:\n"
+        "      - run: python3 scripts/validate_plugin.py\n"
+        "      - run: python3 -m unittest discover -s tests\n"
+        "      - run: bash tests/test-scripts.sh\n"
+        "      - run: node tests/test_workflows.mjs\n"
+        "      - run: node tests/test_compress.mjs\n"
+    )
+    RELEASE_FULL = (
+        "jobs:\n  release:\n    steps:\n"
+        "      - run: python3 scripts/validate_plugin.py\n"
+        "      - run: python3 -m unittest discover -s tests\n"
+        "      - run: bash tests/test-scripts.sh\n"
+        "      - run: node tests/test_workflows.mjs\n"
+        "      - run: node tests/test_compress.mjs\n"
+    )
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        (self.dir / ".github" / "workflows").mkdir(parents=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _write(self, validate=None, release=None):
+        wf = self.dir / ".github" / "workflows"
+        if validate is not None:
+            write(wf / "validate.yml", validate)
+        if release is not None:
+            write(wf / "release.yml", release)
+
+    def _probs(self):
+        probs = []
+        vp.check_release_gates_cover_validate(self.dir, probs)
+        return probs
+
+    def test_superset_passes(self):
+        self._write(self.VALIDATE, self.RELEASE_FULL)
+        self.assertEqual(self._probs(), [])
+
+    def test_missing_node_suites_fire(self):
+        # The exact #38 shape: release.yml drops both node steps.
+        subset = self.RELEASE_FULL.replace(
+            "      - run: node tests/test_workflows.mjs\n", "").replace(
+            "      - run: node tests/test_compress.mjs\n", "")
+        self._write(self.VALIDATE, subset)
+        probs = self._probs()
+        self.assertEqual(len(probs), 2, probs)
+        self.assertTrue(all("gates less" in p for p in probs), probs)
+
+    def test_extra_release_step_is_fine(self):
+        # release.yml legitimately runs MORE (release_gate.py, gh release
+        # create). Only the missing direction is a finding.
+        self._write(self.VALIDATE,
+                    self.RELEASE_FULL + "      - run: python3 scripts/release_gate.py v1\n")
+        self.assertEqual(self._probs(), [])
+
+    def test_no_workflows_at_all_is_skipped(self):
+        # A plugin tree without CI is not a half-configured one. This is the
+        # only legitimate skip, and it is what the validator's own fixtures
+        # build — a check that fired here would fail every good-tree test.
+        self.assertEqual(self._probs(), [])
+
+    def test_one_workflow_missing_is_reported(self):
+        # Half-configured CI: reported, not skipped. Silence here is how a
+        # publishing job with no counterpart to compare against goes unnoticed.
+        self._write(validate=self.VALIDATE)
+        probs = self._probs()
+        self.assertTrue(any("release.yml is missing" in p for p in probs), probs)
+
+    def test_real_workflows_are_covered(self):
+        probs = []
+        vp.check_release_gates_cover_validate(ROOT, probs)
+        self.assertEqual(probs, [])
+
+
 if __name__ == "__main__":
     unittest.main()
