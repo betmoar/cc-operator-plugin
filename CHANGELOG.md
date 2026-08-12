@@ -9,141 +9,6 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
-### Added — issue references are validated, not trusted
-
-- **`validate_plugin.check_issue_refs`** — every `[#N]` in tracked markdown must
-  have a matching link definition (and every definition a use, and no number
-  defined twice), and every issue URL must resolve under `plugin.json`'s
-  `repository` at the number its label claims. The class it pins is the
-  **inverted ref**: `[#28]` pointing at `/issues/29` renders as "#28", navigates
-  to 29, and survives review by construction, because the eye reads the label
-  and the click follows the URL.
-  - **Provenance, stated honestly: that class has never occurred here.** An
-    earlier draft of this entry claimed two 0.7.0 commits shipped inverted refs.
-    Measured against the history, that is wrong — `6b9fb89` wrote
-    `[#28]: …/issues/28`, label and URL agreeing, and `ff57517` never touched
-    this file. Their real defect was an *invented* issue number later assigned
-    to a different issue, which this check cannot detect and never will. The
-    check is preventive, not corrective; the justification is that modes 2 and 3
-    are mechanical and mode 1 is invisible to review, not that it would have
-    caught a past bug.
-  - **Not checked, deliberately: that the issue exists, is open, or is about
-    what the sentence says.** That needs `gh issue view` — network, token, rate
-    limit — in a validator whose other subprocess is a local `bash -n`. A build
-    that fails because GitHub is slow teaches maintainers to skip the build.
-  - **Bare `#N` is out of scope, by measurement.** Tracked docs write
-    `Backlog #2`, `task #1`, `F48 #5`; requiring those to be linked would force
-    wrong links or an exception list. A test pins the scope decision so a later
-    "tighten it up" edit fails instead of quietly breaking prose.
-  - Code spans and fenced blocks are stripped before parsing: prose that
-    *quotes* a reference to document it is not a reference. This entry is the
-    proof — without stripping, its own backticked example counted as a use.
-  - A file git tracks but cannot be read is **reported**, not skipped. Sparse
-    checkouts list index entries whose files are absent from the working tree;
-    swallowing that made the gate cover less than it claimed (measured: a
-    foreign-repo link in a sparse-excluded file produced zero problems).
-  - Scope is `git ls-files '*.md'`, falling back to a dot-skipping glob so a
-    non-checkout cannot make the check vacuous. That fallback is a superset only
-    while no tracked `.md` lives under a dot-directory — true today, not
-    guaranteed.
-
-### Fixed — four write-path defects found by the PR #12 review
-
-Each reproduced before it was fixed, and each pinned by a test that fails when
-the fix is reverted.
-
-- **The gitignore migration destroyed rules it could not back up.** Both writers
-  advertise `.operator/.gitignore.v1.bak` as the recovery path, and both did
-  `cp … 2>/dev/null` followed by an **unconditional** overwrite. With
-  `.operator/` unwritable but `.gitignore` still writable, the user's rules were
-  gone, no backup existed, and the SessionStart context reported that both had
-  succeeded — issue #32's own failure, one layer down. `ops-init.sh` had it too,
-  reachable by a different trigger (a `.v1.bak` that is already a directory:
-  `cp` lands the file *inside* it, so the advertised path is not the backup).
-  The write is now reachable only through a successful backup, the notice flag
-  is set only after the replacement, and the refusal is reported — silence is
-  what let this ship. `check_gitignore_parity` pins both halves in both writers.
-- **`ops-verdict.sh` accepted a non-regular entry as an armed sentinel.**
-  `retro_gate` tested `-e`, so a directory at `pending/<id>` read as "armed":
-  the `GATE-EXCEPTION` was **suppressed**, the row was appended anyway, and the
-  later `rm -f` failed on the directory — a non-zero exit with the ledger
-  already mutated and no audit line. Every other sentinel reader already
-  required a non-symlink regular file; this was the one outlier. Now refused in
-  `resolve_owner`, before any write.
-- **The compressor's out-of-tree spill was world-readable.** `os.tmpdir()` is
-  `/tmp` on Linux — where CI runs — and the key is `sha256(cwd)[0:16]`, no
-  secret in it. Under default modes any local user could read **pre-scrub** tool
-  output, and because `mkdirSync` follows symlinks, one who pre-created the
-  shared root as a symlink captured every later spill (demonstrated). The shared
-  segment now carries the uid, every level is created 0700 and `lstat`-verified
-  to be a directory this uid owns, and spill files are 0600. An untrustworthy
-  root yields **no spill and no cite** rather than a write. `ops-sessionstart-hook.sh`
-  derives the same path and still sweeps the legacy uid-less root.
-- **`ops-backlog.sh --census` miscounted a tracked file whose name begins with
-  `-`.** `xargs -0 cat` read it as options and aborted the entire batch:
-  `code-loc: 0` against a ground truth of 3. The `PARTIAL` flag fired, so the
-  number was honest — and useless. `cat --` terminates option parsing.
-
-### Fixed — the gate CLIs a project runs could be arbitrarily far behind ([#34])
-
-Found by executing `docs/REPLAY-CHARTER.md` live rather than reading it — the
-first finding the replay protocol has produced.
-
-- **`.operator/bin/` refreshed only on a version-string change.** Every
-  intra-version fix to a gate CLI therefore never reached an existing project.
-  Measured in this repo mid-session: `.operator/bin/ops-verdict.sh` was
-  byte-identical to a commit **two behind HEAD** (`sha256 e20ee4ab…`), missing
-  the non-regular-sentinel guard, with all five `bin/` mtimes 24h old across
-  three commits and `.version` already reading `0.7.0`. Since the charter points
-  the model at `.operator/bin/…`, that stale copy **is** the gate the session
-  runs — the plugin's own tests pass against code the project does not execute.
-  The refresh now also fires when a shipped CLI is newer than its installed
-  copy, keeping the all-or-nothing re-stamp (CR3/H2) and adding a negative
-  control that a current `bin/` is not rewritten.
-- **Recorded asymmetry**: hooks resolve through `${CLAUDE_PLUGIN_ROOT}/scripts/…`
-  and are current immediately, so hooks and `bin/` can sit at different commits
-  in one session. Proven live: `.operator/.compress-state/.gitignore` was
-  written mode `0600` — a property only the current `writeSelfIgnore` produces —
-  while `bin/` was two commits back. This is what made the earlier "stale bin"
-  confusion during the #22 verification so hard to see.
-- **`check_install_set_parity` went vacuous while fixing this.** Refactoring one
-  writer's loop to a variable made the check unable to parse that side; it
-  returned `None`, the `if a and b` guard swallowed it, and the check passed
-  while pinning nothing. It now accepts either spelling, requires the loop to
-  iterate the declared variable, and **reports** an unlocatable set instead of
-  skipping.
-
-### Fixed — two validator guards that named one invariant and pinned another
-
-Both surfaced by the same review, both the F30 shape *inside* the checks written
-to prevent it, and both measured green before the fix.
-
-- **`check_source_stamp` did not verify the stamp reaches the row.** It tested
-  `"SOURCE_STAMP" in code`, which the assignment line satisfies on its own — so
-  replacing the row's `printf` argument with a literal left every verdict row
-  unstamped with the build green. It now reads the row's own argument list, and
-  a missing row site is reported rather than skipped.
-- **`check_gitignore_parity` claimed both writers must "emit it AND grep for
-  it", and only checked emit.** The heredoc body contains the marker, so
-  deleting the migration `grep` in either writer passed — and every existing v1
-  project silently stopped being detected. Detection is now asserted separately,
-  per writer.
-
-### Fixed — release notes dropped every issue link they used
-
-- `release_gate.extract_section` cut the section body at `^\[`, which *is* the
-  link-definition block — so a CHANGELOG section using reference-style `[#N]`
-  published as literal `[#N]` text with no link. Measured on the v0.7.0 body
-  before the fix: **9 dead references**. The section now carries the definitions
-  it actually uses, and only those (a test pins that other versions' refs do not
-  leak in).
-- The same fix had a hole in its own shape: a `[#N]` with no definition
-  *anywhere* left the body untouched and `gate()` reported no problem, so the
-  dead-link bug shipped again on a different input. `extract_section_checked`
-  now returns those references and the gate refuses to publish. `check_issue_refs`
-  catches this on every PR, but `release_gate.py` is the independent second gate
-  — a CHANGELOG edited on a release branch after the last green PR reaches
-  `gh release create` without the validator ever having seen it.
 
 ## [0.7.0] - 2026-08-07
 
@@ -255,6 +120,44 @@ named no tree at all, and `ops-verdict.sh` contained no `git` call.
   inside the lock passed a green build. Found by mutation, fixed in both, and
   recorded in `docs/LANDMINES.md`.
 
+### Added — issue references are validated, not trusted
+
+- **`validate_plugin.check_issue_refs`** — every `[#N]` in tracked markdown must
+  have a matching link definition (and every definition a use, and no number
+  defined twice), and every issue URL must resolve under `plugin.json`'s
+  `repository` at the number its label claims. The class it pins is the
+  **inverted ref**: `[#28]` pointing at `/issues/29` renders as "#28", navigates
+  to 29, and survives review by construction, because the eye reads the label
+  and the click follows the URL.
+  - **Provenance, stated honestly: that class has never occurred here.** An
+    earlier draft of this entry claimed two 0.7.0 commits shipped inverted refs.
+    Measured against the history, that is wrong — `6b9fb89` wrote
+    `[#28]: …/issues/28`, label and URL agreeing, and `ff57517` never touched
+    this file. Their real defect was an *invented* issue number later assigned
+    to a different issue, which this check cannot detect and never will. The
+    check is preventive, not corrective; the justification is that modes 2 and 3
+    are mechanical and mode 1 is invisible to review, not that it would have
+    caught a past bug.
+  - **Not checked, deliberately: that the issue exists, is open, or is about
+    what the sentence says.** That needs `gh issue view` — network, token, rate
+    limit — in a validator whose other subprocess is a local `bash -n`. A build
+    that fails because GitHub is slow teaches maintainers to skip the build.
+  - **Bare `#N` is out of scope, by measurement.** Tracked docs write
+    `Backlog #2`, `task #1`, `F48 #5`; requiring those to be linked would force
+    wrong links or an exception list. A test pins the scope decision so a later
+    "tighten it up" edit fails instead of quietly breaking prose.
+  - Code spans and fenced blocks are stripped before parsing: prose that
+    *quotes* a reference to document it is not a reference. This entry is the
+    proof — without stripping, its own backticked example counted as a use.
+  - A file git tracks but cannot be read is **reported**, not skipped. Sparse
+    checkouts list index entries whose files are absent from the working tree;
+    swallowing that made the gate cover less than it claimed (measured: a
+    foreign-repo link in a sparse-excluded file produced zero problems).
+  - Scope is `git ls-files '*.md'`, falling back to a dot-skipping glob so a
+    non-checkout cannot make the check vacuous. That fallback is a superset only
+    while no tracked `.md` lives under a dot-directory — true today, not
+    guaranteed.
+
 ### Fixed — review-pass findings, each reproduced before fixing
 
 Six defects found by the PR-review agents and `/code-review max` on PR #12. Each
@@ -306,6 +209,104 @@ code comment had asserted.
   [:16]>/` instead of creating one.
 - **`templates/OPERATOR.md` reflowed to 95 columns** — 149→136 lines, 8188 bytes,
   word stream and citation tags verified identical. Binding cap is now bytes.
+
+### Fixed — four write-path defects found by the PR #12 review
+
+Each reproduced before it was fixed, and each pinned by a test that fails when
+the fix is reverted.
+
+- **The gitignore migration destroyed rules it could not back up.** Both writers
+  advertise `.operator/.gitignore.v1.bak` as the recovery path, and both did
+  `cp … 2>/dev/null` followed by an **unconditional** overwrite. With
+  `.operator/` unwritable but `.gitignore` still writable, the user's rules were
+  gone, no backup existed, and the SessionStart context reported that both had
+  succeeded — issue #32's own failure, one layer down. `ops-init.sh` had it too,
+  reachable by a different trigger (a `.v1.bak` that is already a directory:
+  `cp` lands the file *inside* it, so the advertised path is not the backup).
+  The write is now reachable only through a successful backup, the notice flag
+  is set only after the replacement, and the refusal is reported — silence is
+  what let this ship. `check_gitignore_parity` pins both halves in both writers.
+- **`ops-verdict.sh` accepted a non-regular entry as an armed sentinel.**
+  `retro_gate` tested `-e`, so a directory at `pending/<id>` read as "armed":
+  the `GATE-EXCEPTION` was **suppressed**, the row was appended anyway, and the
+  later `rm -f` failed on the directory — a non-zero exit with the ledger
+  already mutated and no audit line. Every other sentinel reader already
+  required a non-symlink regular file; this was the one outlier. Now refused in
+  `resolve_owner`, before any write.
+- **The compressor's out-of-tree spill was world-readable.** `os.tmpdir()` is
+  `/tmp` on Linux — where CI runs — and the key is `sha256(cwd)[0:16]`, no
+  secret in it. Under default modes any local user could read **pre-scrub** tool
+  output, and because `mkdirSync` follows symlinks, one who pre-created the
+  shared root as a symlink captured every later spill (demonstrated). The shared
+  segment now carries the uid, every level is created 0700 and `lstat`-verified
+  to be a directory this uid owns, and spill files are 0600. An untrustworthy
+  root yields **no spill and no cite** rather than a write. `ops-sessionstart-hook.sh`
+  derives the same path and still sweeps the legacy uid-less root.
+- **`ops-backlog.sh --census` miscounted a tracked file whose name begins with
+  `-`.** `xargs -0 cat` read it as options and aborted the entire batch:
+  `code-loc: 0` against a ground truth of 3. The `PARTIAL` flag fired, so the
+  number was honest — and useless. `cat --` terminates option parsing.
+
+### Fixed — the gate CLIs a project runs could be arbitrarily far behind ([#34])
+
+Found by executing `docs/REPLAY-CHARTER.md` live rather than reading it — the
+first finding the replay protocol has produced.
+
+- **`.operator/bin/` refreshed only on a version-string change.** Every
+  intra-version fix to a gate CLI therefore never reached an existing project.
+  Measured in this repo mid-session: `.operator/bin/ops-verdict.sh` was
+  byte-identical to a commit **two behind HEAD** (`sha256 e20ee4ab…`), missing
+  the non-regular-sentinel guard, with all five `bin/` mtimes 24h old across
+  three commits and `.version` already reading `0.7.0`. Since the charter points
+  the model at `.operator/bin/…`, that stale copy **is** the gate the session
+  runs — the plugin's own tests pass against code the project does not execute.
+  The refresh now also fires when a shipped CLI is newer than its installed
+  copy, keeping the all-or-nothing re-stamp (CR3/H2) and adding a negative
+  control that a current `bin/` is not rewritten.
+- **Recorded asymmetry**: hooks resolve through `${CLAUDE_PLUGIN_ROOT}/scripts/…`
+  and are current immediately, so hooks and `bin/` can sit at different commits
+  in one session. Proven live: `.operator/.compress-state/.gitignore` was
+  written mode `0600` — a property only the current `writeSelfIgnore` produces —
+  while `bin/` was two commits back. This is what made the earlier "stale bin"
+  confusion during the #22 verification so hard to see.
+- **`check_install_set_parity` went vacuous while fixing this.** Refactoring one
+  writer's loop to a variable made the check unable to parse that side; it
+  returned `None`, the `if a and b` guard swallowed it, and the check passed
+  while pinning nothing. It now accepts either spelling, requires the loop to
+  iterate the declared variable, and **reports** an unlocatable set instead of
+  skipping.
+
+### Fixed — two validator guards that named one invariant and pinned another
+
+Both surfaced by the same review, both the F30 shape *inside* the checks written
+to prevent it, and both measured green before the fix.
+
+- **`check_source_stamp` did not verify the stamp reaches the row.** It tested
+  `"SOURCE_STAMP" in code`, which the assignment line satisfies on its own — so
+  replacing the row's `printf` argument with a literal left every verdict row
+  unstamped with the build green. It now reads the row's own argument list, and
+  a missing row site is reported rather than skipped.
+- **`check_gitignore_parity` claimed both writers must "emit it AND grep for
+  it", and only checked emit.** The heredoc body contains the marker, so
+  deleting the migration `grep` in either writer passed — and every existing v1
+  project silently stopped being detected. Detection is now asserted separately,
+  per writer.
+
+### Fixed — release notes dropped every issue link they used
+
+- `release_gate.extract_section` cut the section body at `^\[`, which *is* the
+  link-definition block — so a CHANGELOG section using reference-style `[#N]`
+  published as literal `[#N]` text with no link. Measured on the v0.7.0 body
+  before the fix: **9 dead references**. The section now carries the definitions
+  it actually uses, and only those (a test pins that other versions' refs do not
+  leak in).
+- The same fix had a hole in its own shape: a `[#N]` with no definition
+  *anywhere* left the body untouched and `gate()` reported no problem, so the
+  dead-link bug shipped again on a different input. `extract_section_checked`
+  now returns those references and the gate refuses to publish. `check_issue_refs`
+  catches this on every PR, but `release_gate.py` is the independent second gate
+  — a CHANGELOG edited on a release branch after the last green PR reaches
+  `gh release create` without the validator ever having seen it.
 
 ### Changed
 
