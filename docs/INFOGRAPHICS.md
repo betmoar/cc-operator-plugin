@@ -53,7 +53,7 @@ today and what would close the gap.
 
 | The sheet claims | Today | Closes it |
 |---|---|---|
-| Arm-gate layer G1/G2/G3 | Built, **unmerged** (PR #12). G2 is **opt-in** (`.operator/armgate.on`) and `Bash` is ungated by design — the threat model is forgetting, not evasion | merge #12; the remaining hole is G4 |
+| Arm-gate layer G1/G2/G3 | **Shipped in 0.7.0.** G2 is **opt-in** (`.operator/armgate.on`, absent by default) and `Bash` is ungated by design — the threat model is forgetting, not evasion | the remaining hole is G4 |
 | "Evidence tied to exact source-state: commit SHA, **tree SHA**, command, **exit code**, **timestamp**, **output hash**" | Partly. A verdict row is stamped `@<sha>` / `+dirty` / `+unknown` / `@no-commit` / `@no-vcs`. **No** tree sha, exit code, timestamp or output hash — and the stamp is provenance ("this row was written from that tree"), never attestation ("that tree passes") | [#22](https://github.com/betmoar/cc-operator-plugin/issues/22) |
 | "Independent verification environment — clean checkout / container, isolated from builder state" | **Not implemented.** Builder and adversarial verifier share one working tree. Measured: a `__pycache__` left by the builder makes a broken commit verify CONFIRMED in-tree and REFUTED in a clean checkout of that same commit, with `git status --porcelain` clean throughout | [#23](https://github.com/betmoar/cc-operator-plugin/issues/23) |
 | "Security Reviewer" and "Dependency Reviewer" seats | **Not implemented.** `workflows/review.js` dispatches a fixed five lenses — spec, testability, feasibility, quality, correctness — unconditionally. No security or supply-chain lens exists | [#24](https://github.com/betmoar/cc-operator-plugin/issues/24) |

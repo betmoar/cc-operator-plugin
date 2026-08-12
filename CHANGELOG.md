@@ -47,6 +47,43 @@ single source of truth; bump it in the same commit as the changelog entry.
     while no tracked `.md` lives under a dot-directory — true today, not
     guaranteed.
 
+### Fixed — four write-path defects found by the PR #12 review
+
+Each reproduced before it was fixed, and each pinned by a test that fails when
+the fix is reverted.
+
+- **The gitignore migration destroyed rules it could not back up.** Both writers
+  advertise `.operator/.gitignore.v1.bak` as the recovery path, and both did
+  `cp … 2>/dev/null` followed by an **unconditional** overwrite. With
+  `.operator/` unwritable but `.gitignore` still writable, the user's rules were
+  gone, no backup existed, and the SessionStart context reported that both had
+  succeeded — issue #32's own failure, one layer down. `ops-init.sh` had it too,
+  reachable by a different trigger (a `.v1.bak` that is already a directory:
+  `cp` lands the file *inside* it, so the advertised path is not the backup).
+  The write is now reachable only through a successful backup, the notice flag
+  is set only after the replacement, and the refusal is reported — silence is
+  what let this ship. `check_gitignore_parity` pins both halves in both writers.
+- **`ops-verdict.sh` accepted a non-regular entry as an armed sentinel.**
+  `retro_gate` tested `-e`, so a directory at `pending/<id>` read as "armed":
+  the `GATE-EXCEPTION` was **suppressed**, the row was appended anyway, and the
+  later `rm -f` failed on the directory — a non-zero exit with the ledger
+  already mutated and no audit line. Every other sentinel reader already
+  required a non-symlink regular file; this was the one outlier. Now refused in
+  `resolve_owner`, before any write.
+- **The compressor's out-of-tree spill was world-readable.** `os.tmpdir()` is
+  `/tmp` on Linux — where CI runs — and the key is `sha256(cwd)[0:16]`, no
+  secret in it. Under default modes any local user could read **pre-scrub** tool
+  output, and because `mkdirSync` follows symlinks, one who pre-created the
+  shared root as a symlink captured every later spill (demonstrated). The shared
+  segment now carries the uid, every level is created 0700 and `lstat`-verified
+  to be a directory this uid owns, and spill files are 0600. An untrustworthy
+  root yields **no spill and no cite** rather than a write. `ops-sessionstart-hook.sh`
+  derives the same path and still sweeps the legacy uid-less root.
+- **`ops-backlog.sh --census` miscounted a tracked file whose name begins with
+  `-`.** `xargs -0 cat` read it as options and aborted the entire batch:
+  `code-loc: 0` against a ground truth of 3. The `PARTIAL` flag fired, so the
+  number was honest — and useless. `cat --` terminates option parsing.
+
 ### Fixed — release notes dropped every issue link they used
 
 - `release_gate.extract_section` cut the section body at `^\[`, which *is* the

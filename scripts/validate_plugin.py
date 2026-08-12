@@ -1086,6 +1086,47 @@ def check_gitignore_parity(root, problems):
             f"stay equal (F30; a project's tracked set must not depend on which "
             f"path migrated it)")
 
+    # MIGRATION SAFETY, both writers. The v1→v2 migration REPLACES a file the
+    # user may have edited, and both writers advertise `.gitignore.v1.bak` as
+    # the recovery path. Before 2026-08-12 the backup was `cp … 2>/dev/null`
+    # followed by an UNCONDITIONAL write, so a failed backup destroyed the rules
+    # while the notice claimed they were recoverable (measured in both writers:
+    # an unwritable `.operator/`, and a `.v1.bak` that is already a directory).
+    # The invariant is ordering, which no allowlist comparison can see: the
+    # write must be REACHABLE ONLY through a successful backup. Pinned as "the
+    # copy is tested, and the body-writer is inside the success branch" — a
+    # `cp … 2>/dev/null` on its own line, with the write following it
+    # unconditionally, is exactly the shape that shipped.
+    for name, writer in (("ops-init.sh", "_gi_write"),
+                         ("ops-sessionstart-hook.sh", "cat > \"$_gi\"")):
+        p = root / "scripts" / name
+        if not p.is_file():
+            continue
+        text = p.read_text(encoding="utf-8")
+        if ".gitignore.v1.bak" not in text and ".v1.bak" not in text:
+            continue  # no migration path in this writer
+        # The copy's exit status must be TESTED (`if ! cp`/`elif ! cp`), not
+        # discarded. A bare `cp "$x" "$x.v1.bak" 2>/dev/null` line is the bug.
+        tested = re.search(r"(?:if|elif)\s+!\s+cp\s", text)
+        if not tested:
+            problems.append(
+                f"scripts/{name}: the v1→v2 gitignore migration copies the "
+                f"user's file to .v1.bak without testing whether the copy "
+                f"SUCCEEDED — a failed backup then falls through to an "
+                f"unconditional overwrite, destroying rules the notice promises "
+                f"are recoverable (measured 2026-08-12). Guard the write behind "
+                f"the copy: `elif ! cp … ; then <refuse>; else <write>; fi`")
+        # …and a non-regular entry at the backup path must be refused, not
+        # copied INTO (cp lands the file inside a directory of that name, so the
+        # advertised recovery path then points at a directory).
+        if not re.search(r"\[\s*!\s*-f\s+\"\$[_A-Za-z0-9{}/.]*\.v1\.bak\"|"
+                         r"\[\s*!\s*-f\s+\"\$OPDIR/\.gitignore\.v1\.bak\"", text):
+            problems.append(
+                f"scripts/{name}: the migration does not refuse a non-regular "
+                f"entry at .gitignore.v1.bak — `cp` copies INTO a directory of "
+                f"that name, so the recovery path the notice names is not the "
+                f"backup (measured 2026-08-12)")
+
 
 def check_lock_parity(root, problems):
     """ops-verdict.sh and ops-adopt.sh must carry the SAME lock implementation.

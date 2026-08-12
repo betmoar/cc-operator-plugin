@@ -96,8 +96,13 @@ if [ "${1:-}" = "--census" ]; then
     # Same pathspec filter as n_code above — see the #29 note there for why this
     # must not be a `grep -z`. The two counts MUST come from the same predicate,
     # or code-loc reports on a different file set than code-files names.
+    # `cat --` terminates option parsing: a tracked filename beginning with `-`
+    # is legal in git, and without this `cat` reads it as flags and aborts the
+    # ENTIRE batch — measured with `--version.py` tracked: `cat: illegal option`
+    # and code-loc 0 against a ground truth of 3. xargs re-invokes `cat` per
+    # batch, so the `--` must be part of the command it repeats, not a one-off.
     loc="$(git ls-files -z -- "$@" 2>/dev/null \
-      | xargs -0 cat 2>"$_caterr" | grep -cE '[^[:space:]]' || true)"
+      | xargs -0 cat -- 2>"$_caterr" | grep -cE '[^[:space:]]' || true)"
     [ ! -s "$_caterr" ] || partial=1
     if [ "$partial" -eq 1 ]; then
       sed 's/^/ops-backlog:   /' < "$_caterr" >&2

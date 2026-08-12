@@ -268,12 +268,45 @@ console.log("-- Case: ephemera are self-ignoring and never materialize .operator
     ok(path.isAbsolute(vm[1]), "an out-of-tree spill is cited by ABSOLUTE path, never a ../.. walk");
     ok(fs.readFileSync(vm[1], "utf8") === big, "the out-of-tree spill holds the verbatim original");
   }
-  // The wipe key the SessionStart hook recomputes in shell must match.
+  // The wipe path the SessionStart hook recomputes in shell must match. The
+  // shared segment carries the uid: /tmp is world-writable on Linux and the key
+  // is a plain sha256 of cwd, so a uid-less shared root was readable — and
+  // pre-plantable — by any other local user.
   const key = crypto.createHash("sha256").update(virgin).digest("hex").slice(0, 16);
-  ok(fs.existsSync(path.join(os.tmpdir(), "cc-operator", key, ".compress-spill")),
-    "the tempdir root is keyed by sha256(cwd)[:16] — the key SessionStart wipes");
+  const uid = typeof process.getuid === "function" ? process.getuid() : "nouid";
+  const tmpBase = path.join(os.tmpdir(), `cc-operator-${uid}`);
+  ok(fs.existsSync(path.join(tmpBase, key, ".compress-spill")),
+    "the tempdir root is <tmp>/cc-operator-<uid>/sha256(cwd)[:16] — the path SessionStart wipes");
+  ok(!fs.existsSync(path.join(os.tmpdir(), "cc-operator", key)),
+    "nothing is written to the legacy uid-less shared root");
+
+  // Modes: the spill holds UNREDACTED tool output, so no group/other bits on
+  // any segment or on the file itself.
+  for (const p of [tmpBase, path.join(tmpBase, key),
+                   path.join(tmpBase, key, ".compress-spill")]) {
+    ok((fs.lstatSync(p).mode & 0o077) === 0, `tempdir segment is 0700-tight: ${path.basename(p)}`);
+  }
+  if (vm) ok((fs.lstatSync(vm[1]).mode & 0o077) === 0, "the spill FILE is 0600 — pre-scrub output is not world-readable");
+
+  // A hijacked root must not be written through. Point the keyed segment at a
+  // symlink and assert the compressor declines rather than following it.
+  const hijackCwd = fs.mkdtempSync(path.join(os.tmpdir(), "opshijack-"));
+  const hkey = crypto.createHash("sha256").update(hijackCwd).digest("hex").slice(0, 16);
+  const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "opselsewhere-"));
+  fs.mkdirSync(tmpBase, { recursive: true, mode: 0o700 });
+  fs.symlinkSync(elsewhere, path.join(tmpBase, hkey));
+  const hres = compress({ ...bash(big), tool_input: { command: "npm test" } },
+    { env: {}, cwd: hijackCwd });
+  const hout = hres?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
+  ok(!/full output spilled to/.test(hout),
+    "a symlinked tempdir root is refused — no spill, no cite, rather than writing pre-scrub output where another user chose");
+  ok(fs.readdirSync(elsewhere).length === 0,
+    "nothing was written through the planted symlink");
+  fs.unlinkSync(path.join(tmpBase, hkey));
+  fs.rmSync(elsewhere, { recursive: true, force: true });
+  fs.rmSync(hijackCwd, { recursive: true, force: true });
   fs.rmSync(virgin, { recursive: true, force: true });
-  fs.rmSync(path.join(os.tmpdir(), "cc-operator", key), { recursive: true, force: true });
+  fs.rmSync(path.join(tmpBase, key), { recursive: true, force: true });
 }
 
 fs.rmSync(TMP, { recursive: true, force: true });

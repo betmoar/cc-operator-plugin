@@ -685,6 +685,13 @@ ownership_gate() {
   # unowned sentinel is closable by design. Runs under the lock in BOTH the
   # defer and verdict paths, so this is the single choke point.
   [ ! -L "$OPDIR/pending/$ID" ] || die "sentinel at $OPDIR/pending/$ID is a symlink — not a sentinel our CLIs wrote; refusing (remove it and open the task with ops-task.sh)"
+  # …and neither is a directory or a device. Refuse BEFORE the row is written,
+  # not at `rm` time: the old order appended the row, then failed to clear, so
+  # the CLI exited non-zero with the ledger already mutated. Same regular-file
+  # contract as ops-task.sh's opener and every sentinel reader.
+  if [ -e "$OPDIR/pending/$ID" ] && [ ! -f "$OPDIR/pending/$ID" ]; then
+    die "sentinel at $OPDIR/pending/$ID is not a regular file — not a sentinel our CLIs wrote; refusing before writing any row (remove it and open the task with ops-task.sh)"
+  fi
   SOWNER="$(sentinel_owner "$ID")"
   if [ -n "$SOWNER" ]; then
     if [ -n "$OWNER" ] && [ "$OWNER" != "$SOWNER" ]; then
@@ -772,7 +779,18 @@ retro_gate() {
   RETRO_STATE="armed"
   # Sentinel FILE present → armed, even if its body is empty/unparseable
   # (an unowned-but-present sentinel is a real open task — fails closed).
-  [ -e "$OPDIR/pending/$ID" ] && return 0
+  #
+  # A REGULAR file, non-symlink: the same contract ops-task.sh:234, the Stop
+  # hook and the statusline all apply. `-e` accepted a directory or a device as
+  # an armed sentinel, and the consequence was not a cosmetic mismatch: the
+  # retro-gate returned "armed", SUPPRESSING the GATE-EXCEPTION, the row was
+  # appended anyway, and the later `rm -f` then failed on the directory — so the
+  # CLI exited non-zero having already written an unaudited row (measured
+  # 2026-08-12; Copilot review of PR #12). Anything non-regular at this path was
+  # never written by our CLIs, so it must not silence the audit line.
+  if [ -f "$OPDIR/pending/$ID" ] && [ ! -L "$OPDIR/pending/$ID" ]; then
+    return 0
+  fi
 
   # Sentinel absent. We need a session to tag the GATE-EXCEPTION.
   local tag_owner="${OWNER:-$SOWNER}"

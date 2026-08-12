@@ -73,9 +73,21 @@ elif ! grep -qF "$_GI_MARK" "$OPDIR/.gitignore" 2>/dev/null; then
   # would ignore the ledgers while the earlier lines say nothing about them.
   # Replace it, keeping a copy: this file is the user's, and a rewrite they did
   # not ask for must be recoverable.
-  cp "$OPDIR/.gitignore" "$OPDIR/.gitignore.v1.bak" 2>/dev/null
-  _gi_write
-  echo "migrated $OPDIR/.gitignore to the v2 allowlist (previous kept as .gitignore.v1.bak)"
+  # BACKUP FIRST, AND ONLY OVERWRITE IF IT SUCCEEDED. The old order copied with
+  # errors swallowed and then wrote unconditionally, so a failed backup still
+  # destroyed the user's file while this message claimed it was recoverable
+  # (measured 2026-08-12: a pre-existing `.gitignore.v1.bak` DIRECTORY makes
+  # `cp` land the file inside it, leaving the advertised path pointing at a
+  # directory; an unwritable one loses the rules outright). The backup must be a
+  # regular file we can replace — anything else at that path is not ours.
+  if [ -e "$OPDIR/.gitignore.v1.bak" ] && [ ! -f "$OPDIR/.gitignore.v1.bak" ]; then
+    echo "cc-operator: $OPDIR/.gitignore.v1.bak exists and is not a regular file — refusing to migrate .gitignore (move it aside, then re-run)" >&2
+  elif ! cp "$OPDIR/.gitignore" "$OPDIR/.gitignore.v1.bak" 2>/dev/null; then
+    echo "cc-operator: could not write $OPDIR/.gitignore.v1.bak — refusing to migrate .gitignore without a backup (the v1 and v2 schemes contradict, so migration REPLACES the file)" >&2
+  else
+    _gi_write
+    echo "migrated $OPDIR/.gitignore to the v2 allowlist (previous kept as .gitignore.v1.bak)"
+  fi
 fi
 
 # The allowlist above lives INSIDE .operator/ and cannot beat a rule that

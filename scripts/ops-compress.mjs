@@ -168,30 +168,86 @@ function elide(text, K) {
 //       projects never share one. Spill/dedup keep working (the charter's
 //       spilled-to cite names whatever path is returned) without leaving a
 //       footprint in a project that never opted in.
+//   (C) not readable by other local users. The tempdir branch is the one that
+//       leaves the project, and `os.tmpdir()` is `/tmp` on Linux — world-
+//       writable and shared, where the CI runners live. The key is
+//       sha256(cwd)[0:16]: derivable by anyone who can guess the checkout path,
+//       with no secret in it. Under default modes (dirs 0755, files 0644) any
+//       local user could READ pre-scrub tool output — the unredacted text, which
+//       is exactly what the spill exists to preserve. Worse, `mkdirSync` follows
+//       symlinks, so a user who pre-creates the shared `cc-operator` root as a
+//       symlink redirects every later spill into a directory they control
+//       (demonstrated 2026-08-12, Copilot review of PR #12). So: the shared
+//       segment carries the uid, each level is created 0700 and verified to be a
+//       real directory we own, and spill files are written 0600.
+const TMP_ROOT_NAME = `cc-operator-${typeof process.getuid === "function"
+  ? process.getuid() : "nouid"}`;
+
+// Create `dir` with mode 0700 and refuse anything that is not a directory we
+// just made or already own. Returns false when the path cannot be trusted, and
+// the caller degrades rather than writing into an attacker-chosen location.
+function secureMkdir(dir) {
+  try {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  } catch (e) {
+    if (e.code !== "EEXIST") return false;
+  }
+  let st;
+  try {
+    st = fs.lstatSync(dir);           // lstat: a symlink must NOT be followed
+  } catch { return false; }
+  if (!st.isDirectory()) return false;
+  if (typeof process.getuid === "function" && st.uid !== process.getuid()) return false;
+  // Tighten an existing directory that predates this change (it was 0755).
+  if ((st.mode & 0o077) !== 0) {
+    try { fs.chmodSync(dir, 0o700); } catch { return false; }
+  }
+  return true;
+}
+
 function ephemeralRoot(cwd, kind) {
   const opdir = path.join(cwd, ".operator");
   const inProject = fs.existsSync(opdir);
-  const root = inProject
-    ? path.join(opdir, kind)
-    : path.join(os.tmpdir(), "cc-operator",
-        crypto.createHash("sha256").update(cwd).digest("hex").slice(0, 16), kind);
-  fs.mkdirSync(root, { recursive: true });
-  // `*` ignores the directory's whole contents including itself; idempotent, and
-  // best-effort because a failed ignore must never cost the session its spill.
+  if (inProject) {
+    const root = path.join(opdir, kind);
+    fs.mkdirSync(root, { recursive: true });
+    writeSelfIgnore(root);
+    return root;
+  }
+  // Outside a project: every segment below the tempdir is ours, 0700, checked.
+  const hash = crypto.createHash("sha256").update(cwd).digest("hex").slice(0, 16);
+  const base = path.join(os.tmpdir(), TMP_ROOT_NAME);
+  const keyed = path.join(base, hash);
+  const root = path.join(keyed, kind);
+  if (!secureMkdir(base) || !secureMkdir(keyed) || !secureMkdir(root)) return null;
+  writeSelfIgnore(root);
+  return root;
+}
+
+// `*` ignores the directory's whole contents including itself; idempotent, and
+// best-effort because a failed ignore must never cost the session its spill.
+function writeSelfIgnore(root) {
   try {
     const gi = path.join(root, ".gitignore");
-    if (!fs.existsSync(gi)) fs.writeFileSync(gi, "*\n");
+    if (!fs.existsSync(gi)) fs.writeFileSync(gi, "*\n", { mode: 0o600 });
   } catch { /* best effort — containment is a nicety, the spill is the contract */ }
-  return root;
 }
 
 function spill(original, { cwd, session, toolUseId, keep }) {
   try {
-    const dir = path.join(ephemeralRoot(cwd, ".compress-spill"), session || "nosession");
-    fs.mkdirSync(dir, { recursive: true });
+    // null = the root could not be established as ours (a hijacked tempdir
+    // path). No spill is better than pre-scrub output written somewhere another
+    // user chose; the caller drops the cite and compression continues.
+    const base = ephemeralRoot(cwd, ".compress-spill");
+    if (!base) return null;
+    const dir = path.join(base, session || "nosession");
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const name = String(toolUseId || `t${Date.now()}`).replace(/[^A-Za-z0-9_.-]/g, "_");
     const file = path.join(dir, name);
-    fs.writeFileSync(file, original);
+    // 0600: the spill holds the UNREDACTED tool output. `writeFileSync`'s mode
+    // applies only at creation, so an existing file is re-tightened explicitly.
+    fs.writeFileSync(file, original, { mode: 0o600 });
+    try { fs.chmodSync(file, 0o600); } catch { /* best effort */ }
     // Bounded: delete oldest past `keep`. A spill directory that grows without
     // limit is a disk leak in a long session.
     const entries = fs.readdirSync(dir)
@@ -218,12 +274,14 @@ function spill(original, { cwd, session, toolUseId, keep }) {
 function dedupCheck(text, { cwd, session, tool }) {
   if (!session) return false;
   try {
-    const dir = path.join(ephemeralRoot(cwd, ".compress-state"), session);
-    fs.mkdirSync(dir, { recursive: true });
+    const base = ephemeralRoot(cwd, ".compress-state");
+    if (!base) return false;   // no trusted root → no dedup; never a false HIT
+    const dir = path.join(base, session);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const f = path.join(dir, String(tool).replace(/[^A-Za-z0-9_.-]/g, "_"));
     const h = crypto.createHash("sha256").update(text).digest("hex");
     const prev = fs.existsSync(f) ? fs.readFileSync(f, "utf8").trim() : "";
-    fs.writeFileSync(f, h);
+    fs.writeFileSync(f, h, { mode: 0o600 });
     return prev === h;
   } catch {
     return false;

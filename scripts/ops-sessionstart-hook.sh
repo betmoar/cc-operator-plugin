@@ -70,10 +70,21 @@ elif command -v sha256sum >/dev/null 2>&1; then
   _ccdir="$(printf '%s' "$cwd" | sha256sum 2>/dev/null | cut -c1-16)"
 fi
 if [ -n "$_ccdir" ]; then
-  for _cdir in \
-    "${TMPDIR:-/tmp}/cc-operator/$_ccdir/.compress-spill" \
-    "${TMPDIR:-/tmp}/cc-operator/$_ccdir/.compress-state"; do
-    [ -d "$_cdir" ] && rm -rf "$_cdir" 2>/dev/null
+  # The shared segment carries the uid and is created 0700 by the compressor:
+  # `/tmp` is world-writable on Linux and the key is a plain sha256 of cwd, so a
+  # uid-less shared root let another local user read pre-scrub tool output or
+  # pre-plant a symlink and capture every later spill. This name MUST match
+  # ops-compress.mjs:TMP_ROOT_NAME — the two derive the same path independently.
+  # The legacy uid-less root is swept too, so an upgrade does not strand the
+  # world-readable spills the old version already wrote.
+  _ccuid="$(id -u 2>/dev/null || echo nouid)"
+  for _croot in "cc-operator-$_ccuid" "cc-operator"; do
+    for _cdir in \
+      "${TMPDIR:-/tmp}/$_croot/$_ccdir/.compress-spill" \
+      "${TMPDIR:-/tmp}/$_croot/$_ccdir/.compress-state"; do
+      # Never follow a symlink planted at these paths.
+      [ -d "$_cdir" ] && [ ! -L "$_cdir" ] && rm -rf "$_cdir" 2>/dev/null
+    done
   done
 fi
 
@@ -182,9 +193,21 @@ done
 # notice goes there rather than to stdout, which Claude Code does not surface.
 _gi="$cwd/.operator/.gitignore"
 _gi_migrated=0
+_gi_backup_failed=0
 if [ -f "$_gi" ] && ! grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi" 2>/dev/null; then
-  _gi_migrated=1
-  cp "$_gi" "$_gi.v1.bak" 2>/dev/null
+  # BACKUP FIRST, AND ONLY OVERWRITE IF IT SUCCEEDED — and set the notice flag
+  # only after the replacement is done. The old order set _gi_migrated=1 up
+  # front, copied with errors swallowed, then wrote regardless: with `.operator/`
+  # unwritable but `.gitignore` still writable, the user's rules were destroyed,
+  # NO backup existed, and the context told the model both had succeeded
+  # (measured 2026-08-12). That is issue #32's own failure, one layer down.
+  # Never `set -e` here: a hook that dies costs the session its id injection,
+  # which is worse than an unmigrated gitignore. Hence explicit branching.
+  if [ -e "$_gi.v1.bak" ] && [ ! -f "$_gi.v1.bak" ]; then
+    _gi_backup_failed=1
+  elif ! cp "$_gi" "$_gi.v1.bak" 2>/dev/null; then
+    _gi_backup_failed=1
+  else
   cat > "$_gi" <<'EOF' 2>/dev/null
 # cc-operator gitignore v2 (allowlist)
 # Ignore everything under .operator/ by default, then re-admit the evidence.
@@ -202,6 +225,10 @@ if [ -f "$_gi" ] && ! grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi" 2
 !handoff-*.md
 !armgate.on
 EOF
+    # The flag is the NOTICE's trigger, so it is set only here — after the
+    # replacement actually happened and the backup already exists.
+    [ -s "$_gi" ] && _gi_migrated=1
+  fi
 fi
 
 ctx="cc-operator: this session's id is ${session}. Pass --owner ${session} when opening or closing tracked tasks — .operator/bin/ops-task.sh <id> --owner ${session}, .operator/bin/ops-verdict.sh <id> ... --owner ${session}. Sentinels you open are then yours alone: the Stop hook blocks only on your own open tasks and reports other sessions' as informational. After a /clear your id changes — run .operator/bin/ops-adopt.sh --owner ${session} <id>... to re-claim tasks you are still working."
@@ -213,6 +240,15 @@ if [ "$_gi_migrated" = 1 ]; then
   ctx="$ctx
 
 cc-operator: .operator/.gitignore was MIGRATED from the v1 blocklist to the v2 allowlist this session. The two schemes contradict, so the file was REPLACED, not appended — any rule you added by hand is gone from it. Your previous file is kept at .operator/.gitignore.v1.bak, which the new allowlist itself ignores (\`git status\` will not show it; use \`git status --ignored\`). If it carried a rule you still need, re-add it as an allow line (\`!<path>\`) in the v2 file."
+fi
+
+# The refusal is as reportable as the migration: a project left on v1 tracks
+# machine state by default, and silence here is what let the destructive
+# variant of this path go unnoticed in the first place.
+if [ "$_gi_backup_failed" = 1 ]; then
+  ctx="$ctx
+
+cc-operator: .operator/.gitignore is still the v1 blocklist — migration to the v2 allowlist was REFUSED this session because the backup at .operator/.gitignore.v1.bak could not be written (the directory may be read-only, or something that is not a regular file already sits at that path). Nothing was overwritten. Until this is resolved the project keeps v1 semantics, which track machine state (bin/, pending/, .lock/) by default. Fix the path or the permissions and start a new session."
 fi
 
 if [ "$PARSER" = "jq" ]; then

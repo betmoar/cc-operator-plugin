@@ -3188,6 +3188,106 @@ check "#32 a second session (already v2) does NOT repeat the notice" \
   "$(printf '%s' "$MIGOUT2" | grep -q 'MIGRATED' && echo 1 || echo 0)"
 rm -rf "$MIGP"
 
+echo "-- Case: the migration REFUSES rather than destroying rules it cannot back up"
+# The #32 notice promised a recoverable .v1.bak, but the backup was `cp … 2>/dev/null`
+# followed by an UNCONDITIONAL write, and the flag was set before either. With
+# `.operator/` unwritable and `.gitignore` still writable, the user's rules were
+# destroyed, no backup existed, and the context claimed both had succeeded —
+# #32's own failure one layer down (Copilot review of PR #12, 2026-08-12).
+# Two ways the backup fails; both must leave the v1 file untouched.
+MIGF="$(newproj)"
+mkdir -p "$MIGF/.operator"
+printf '# cc-operator gitignore (v1)\nbin/\n!my-own-rule.md\n' > "$MIGF/.operator/.gitignore"
+mkdir -p "$MIGF/.operator/.gitignore.v1.bak"          # a DIRECTORY at the backup path
+MIGFOUT="$(sed "s|<tmp>|$MIGF|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+check "backup blocked: the user's v1 rule survives" \
+  "$(grep -q 'my-own-rule' "$MIGF/.operator/.gitignore" && echo 0 || echo 1)"
+check "backup blocked: the hook does NOT claim a migration happened" \
+  "$(printf '%s' "$MIGFOUT" | grep -q 'MIGRATED' && echo 1 || echo 0)"
+check "backup blocked: the refusal is reported, not silent" \
+  "$(printf '%s' "$MIGFOUT" | grep -q 'REFUSED' && echo 0 || echo 1)"
+check "backup blocked: the session id is still injected (a hook must never die)" \
+  "$(printf '%s' "$MIGFOUT" | grep -q "this session's id is" && echo 0 || echo 1)"
+rm -rf "$MIGF"
+
+# The OTHER trigger, and the one Copilot described: the copy itself fails. The
+# directory is unwritable so `.v1.bak` cannot be created, while `.gitignore`
+# stays writable — which is exactly why the old unconditional `cat >` still
+# succeeded and ate the rules. Distinct from the case above (a non-regular
+# `.v1.bak`), and each must fail on its own guard, or one branch rides on the
+# other's test.
+MIGW="$(newproj)"
+mkdir -p "$MIGW/.operator"
+printf '# cc-operator gitignore (v1)\nbin/\n!my-own-rule.md\n' > "$MIGW/.operator/.gitignore"
+chmod 500 "$MIGW/.operator"
+MIGWOUT="$(sed "s|<tmp>|$MIGW|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+chmod 700 "$MIGW/.operator"
+check "unwritable dir: the v1 rule survives (cp failed, so no overwrite)" \
+  "$(grep -q 'my-own-rule' "$MIGW/.operator/.gitignore" && echo 0 || echo 1)"
+check "unwritable dir: no MIGRATED claim over a backup that does not exist" \
+  "$(printf '%s' "$MIGWOUT" | grep -q 'MIGRATED' && echo 1 || echo 0)"
+check "unwritable dir: no .v1.bak was left behind" \
+  "$([ -e "$MIGW/.operator/.gitignore.v1.bak" ] && echo 1 || echo 0)"
+rm -rf "$MIGW"
+
+echo "-- Case: ops-init refuses the same migration it cannot back up"
+# Same defect, same fix, in the other writer — Copilot flagged only the hook.
+INITF="$(newproj)"
+mkdir -p "$INITF/.operator"
+printf '# cc-operator gitignore (v1)\nbin/\n!my-own-rule.md\n' > "$INITF/.operator/.gitignore"
+mkdir -p "$INITF/.operator/.gitignore.v1.bak"
+INITFOUT="$(cd "$INITF" && "$BASH_ABS" "$SCRIPTS/ops-init.sh" 2>&1 || true)"
+check "init backup blocked: the user's v1 rule survives" \
+  "$(grep -q 'my-own-rule' "$INITF/.operator/.gitignore" && echo 0 || echo 1)"
+check "init backup blocked: it does NOT claim it migrated" \
+  "$(printf '%s' "$INITFOUT" | grep -q 'migrated ' && echo 1 || echo 0)"
+check "init backup blocked: the refusal names the path to fix" \
+  "$(printf '%s' "$INITFOUT" | grep -q 'gitignore.v1.bak' && echo 0 || echo 1)"
+rm -rf "$INITF"
+
+echo "-- Case: ops-verdict refuses a non-regular entry BEFORE writing a row"
+# `retro_gate` tested `-e`, so a directory at pending/<id> read as an armed
+# sentinel: the GATE-EXCEPTION was suppressed, the row was appended anyway, and
+# the later `rm -f` failed on the directory — a non-zero exit with the ledger
+# already mutated and no audit line (Copilot review of PR #12, 2026-08-12).
+# Every other sentinel reader (ops-task.sh, the Stop hook, the statusline)
+# already required a non-symlink REGULAR file.
+NRP="$(newproj)"
+(cd "$NRP" && "$BASH_ABS" "$SCRIPTS/ops-init.sh" >/dev/null 2>&1)
+mkdir -p "$NRP/.operator/pending/dircase"
+NROUT="$(cd "$NRP" && "$BASH_ABS" "$SCRIPTS/ops-verdict.sh" dircase crit ev PASS --owner sid-x 2>&1 || true)"
+check "non-regular sentinel: ops-verdict refuses" \
+  "$(printf '%s' "$NROUT" | grep -q 'not a regular file' && echo 0 || echo 1)"
+check "non-regular sentinel: NO row was written" \
+  "$(grep -q '| dircase |' "$NRP/.operator/VERDICTS.md" && echo 1 || echo 0)"
+check "non-regular sentinel: no GATE-EXCEPTION was written either" \
+  "$(grep -v '^#' "$NRP/.operator/DECISIONS.md" | grep -q 'GATE-EXCEPTION' && echo 1 || echo 0)"
+# The control: a real never-armed verdict still records BOTH row and exception.
+(cd "$NRP" && "$BASH_ABS" "$SCRIPTS/ops-verdict.sh" realcase crit ev PASS --owner sid-x >/dev/null 2>&1 || true)
+check "control: a never-armed verdict still records its row" \
+  "$(grep -q '| realcase |' "$NRP/.operator/VERDICTS.md" && echo 0 || echo 1)"
+check "control: …and its GATE-EXCEPTION" \
+  "$(grep -v '^#' "$NRP/.operator/DECISIONS.md" | grep -q 'GATE-EXCEPTION' && echo 0 || echo 1)"
+rm -rf "$NRP"
+
+echo "-- Case: census counts a tracked file whose name begins with a dash"
+# A leading-dash filename is legal in git; `xargs -0 cat` read it as options and
+# aborted the ENTIRE batch, so code-loc reported 0 against a truth of 3 (the
+# PARTIAL flag fired, so the number was honest — and useless).
+DASHP="$(newproj)"
+(cd "$DASHP" && git init -q . 2>/dev/null)
+printf 'print(1)\nprint(2)\n' > "$DASHP/normal.py"
+printf 'x=1\n' > "$DASHP/--version.py"
+# `--` terminates git's own option parsing; the dash-named path follows it as a
+# pathspec. This is the very hazard under test, one layer up.
+(cd "$DASHP" && git add -- normal.py './--version.py' >/dev/null 2>&1)
+DASHOUT="$(cd "$DASHP" && "$BASH_ABS" "$SCRIPTS/ops-backlog.sh" --census 2>&1 || true)"
+check "dash-named file: code-loc counts it (3, not 0)" \
+  "$(printf '%s' "$DASHOUT" | grep -q 'code-loc: 3' && echo 0 || echo 1)"
+check "dash-named file: the count is not PARTIAL" \
+  "$(printf '%s' "$DASHOUT" | grep -q 'PARTIAL' && echo 1 || echo 0)"
+rm -rf "$DASHP"
+
 ########################################################################
 echo "== summary: $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]
