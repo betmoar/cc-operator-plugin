@@ -84,6 +84,22 @@ the fix is reverted.
   `code-loc: 0` against a ground truth of 3. The `PARTIAL` flag fired, so the
   number was honest — and useless. `cat --` terminates option parsing.
 
+### Fixed — two validator guards that named one invariant and pinned another
+
+Both surfaced by the same review, both the F30 shape *inside* the checks written
+to prevent it, and both measured green before the fix.
+
+- **`check_source_stamp` did not verify the stamp reaches the row.** It tested
+  `"SOURCE_STAMP" in code`, which the assignment line satisfies on its own — so
+  replacing the row's `printf` argument with a literal left every verdict row
+  unstamped with the build green. It now reads the row's own argument list, and
+  a missing row site is reported rather than skipped.
+- **`check_gitignore_parity` claimed both writers must "emit it AND grep for
+  it", and only checked emit.** The heredoc body contains the marker, so
+  deleting the migration `grep` in either writer passed — and every existing v1
+  project silently stopped being detected. Detection is now asserted separately,
+  per writer.
+
 ### Fixed — release notes dropped every issue link they used
 
 - `release_gate.extract_section` cut the section body at `^\[`, which *is* the

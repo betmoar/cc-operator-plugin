@@ -157,17 +157,36 @@ def make_good_tree(root):
                     # handoff is what the charter's HANDOFF section produces,
                     # and armgate.on is the project's committable opt-in.
                     "!handoff-*.md\n!armgate.on\n")
+    # Both writers must DETECT a v1 file as well as emit the v2 body, and must
+    # refuse to overwrite it without a backup they verified. Emitting alone used
+    # to satisfy the check; a stub that only emits would now (correctly) fail.
     write(root / "scripts" / "ops-init.sh",
           "#!/usr/bin/env bash\nset -eu\n"
+          "_GI_MARK='# cc-operator gitignore v2 (allowlist)'\n"
+          "if ! grep -qF \"$_GI_MARK\" \"$OPDIR/.gitignore\" 2>/dev/null; then\n"
+          "  if [ -e \"$OPDIR/.gitignore.v1.bak\" ] && [ ! -f \"$OPDIR/.gitignore.v1.bak\" ]; then\n"
+          "    echo refusing >&2\n"
+          "  elif ! cp \"$OPDIR/.gitignore\" \"$OPDIR/.gitignore.v1.bak\" 2>/dev/null; then\n"
+          "    echo refusing >&2\n"
+          "  else\n"
           "cat > \"$OPDIR/.gitignore\" <<'EOF'\n" + gitignore_v2 + "EOF\n"
+          "  fi\nfi\n"
           "echo ok\n")
     # SessionStart clears the compressor's session-scoped artifacts; the guard
     # checks for both directory names, so the stub must carry them. It also
-    # migrates a v1 gitignore, so it carries the same allowlist body.
+    # migrates a v1 gitignore, so it carries the same allowlist body — behind
+    # the same verified backup.
     write(root / "scripts" / "ops-sessionstart-hook.sh",
           "#!/usr/bin/env bash\nset -eu\n"
           "rm -rf \"$cwd/.operator/.compress-spill\" \"$cwd/.operator/.compress-state\"\n"
+          "if ! grep -qF '# cc-operator gitignore v2 (allowlist)' \"$_gi\" 2>/dev/null; then\n"
+          "  if [ -e \"$_gi.v1.bak\" ] && [ ! -f \"$_gi.v1.bak\" ]; then\n"
+          "    _gi_backup_failed=1\n"
+          "  elif ! cp \"$_gi\" \"$_gi.v1.bak\" 2>/dev/null; then\n"
+          "    _gi_backup_failed=1\n"
+          "  else\n"
           "cat > \"$_gi\" <<'EOF'\n" + gitignore_v2 + "EOF\n"
+          "  fi\nfi\n"
           "echo ok\n")
     # The readers/CLIs need bodies that satisfy the byte-bound, guard-parity and
     # lock-parity checks — a bare `echo ok` stub fails all three.
@@ -378,6 +397,21 @@ class ValidatorTest(unittest.TestCase):
         # returns the right token, and the row still carries none of it.
         self._mutate_verdict("SOURCE_STAMP", "UNUSED_STAMP")
         self.assertFires("never applied to the row")
+
+    def test_source_stamp_dropped_from_the_row_argument_only(self):
+        # The narrower mutation the substring test could not see: the assignment
+        # `SOURCE_STAMP="$(source_stamp)"` stays, so `"SOURCE_STAMP" in code` is
+        # still true, but the ROW's own argument becomes a literal and every row
+        # ships unstamped (Copilot review of PR #12). "Applied" has to mean the
+        # printf carries it, not that the identifier occurs somewhere.
+        self._mutate_verdict('"$E" "$SOURCE_STAMP" "$V"', '"$E" "BOGUS" "$V"')
+        self.assertFires('does not pass "$SOURCE_STAMP"')
+
+    def test_source_stamp_row_site_missing_is_reported(self):
+        # Not-found must be a reported problem, never a silent skip — the
+        # PLAYBOOK's rule for every guard that locates its target by regex.
+        self._mutate_verdict('ROW="$(printf ', 'ROW2="$(printf ')
+        self.assertFires("check_source_stamp cannot verify")
 
     def test_source_stamp_resolved_inside_the_lock(self):
         # The PLAYBOOK's step-3 hazard: git work inside the critical section.
@@ -1907,6 +1941,45 @@ class GitignoreParityTest(unittest.TestCase):
               self._real_init.replace("# cc-operator gitignore v2 (allowlist)", "# v2", 1))
         self.assertTrue(any("v2 gitignore marker" in p for p in self._probs()),
                         self._probs())
+
+    def test_losing_only_the_DETECTION_grep_fires(self):
+        # EMIT and DETECT are two claims. The heredoc body contains the marker,
+        # so a substring test passes even with the migration `grep` deleted —
+        # and then every existing v1 project silently stops being detected
+        # (Copilot review of PR #12; measured green in both writers before this).
+        # One mutation per writer: covering only one leaves the other on the
+        # same half-applied guard this check exists to catch.
+        for name, real, detect, replacement in (
+                ("ops-init.sh", self._real_init,
+                 'elif ! grep -qF "$_GI_MARK" "$OPDIR/.gitignore" 2>/dev/null; then',
+                 'elif false; then'),
+                ("ops-sessionstart-hook.sh", self._real_ssh,
+                 "! grep -qF '# cc-operator gitignore v2 (allowlist)' \"$_gi\" 2>/dev/null",
+                 "false")):
+            with self.subTest(writer=name):
+                self.assertIn(detect, real, f"{name}: detection anchor moved")
+                write(self.dir / "scripts" / name, real.replace(detect, replacement, 1))
+                probs = self._probs()
+                self.assertTrue(any("never greps for it" in p for p in probs), probs)
+                write(self.dir / "scripts" / name, real)
+        self.assertEqual(self._probs(), [])
+
+    def test_migration_without_a_tested_backup_fires(self):
+        # The write must be reachable ONLY through a successful backup. The
+        # shipped shape was `cp … 2>/dev/null` then an unconditional overwrite,
+        # so a failed backup destroyed the user's rules while the notice claimed
+        # they were recoverable (measured in BOTH writers, 2026-08-12).
+        shipped_init = (
+            '  cp "$OPDIR/.gitignore" "$OPDIR/.gitignore.v1.bak" 2>/dev/null\n'
+            '  _gi_write\n')
+        start = self._real_init.index("  # BACKUP FIRST")
+        end = self._real_init.index("  fi\nfi\n", start) + len("  fi\nfi\n")
+        write(self.dir / "scripts" / "ops-init.sh",
+              self._real_init[:start] + shipped_init + "fi\n" + self._real_init[end:])
+        probs = self._probs()
+        self.assertTrue(any("without testing whether the copy" in p for p in probs), probs)
+        self.assertTrue(any("non-regular entry at .gitignore.v1.bak" in p
+                            for p in probs), probs)
 
     def test_fragment_allow_line_is_pinned(self):
         # verdicts.d/*.md is what merge=union operates on: un-tracking it breaks

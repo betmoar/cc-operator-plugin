@@ -333,6 +333,25 @@ def check_source_stamp(root, problems):
             f"scripts/ops-verdict.sh: the verdict row format must be "
             f"{STAMP_ROW_FORMAT} — four cells with the stamp inside the "
             f"evidence cell; a fifth cell breaks every existing ledger")
+    # "Applied" means the ROW carries it, not that the identifier appears
+    # somewhere: `SOURCE_STAMP="$(source_stamp)"` alone satisfied a substring
+    # test, so swapping the row's own `"$SOURCE_STAMP"` argument for a literal
+    # left every row unstamped with the build green (Copilot review of PR #12,
+    # measured 2026-08-12) — the F30 declared-but-not-applied shape inside the
+    # check written to prevent it. Inspect the printf's argument list.
+    row = re.search(r'ROW="\$\(printf\s+' + re.escape(STAMP_ROW_FORMAT)
+                    + r'(?P<args>[^\n]*?)\)"', code)
+    if not row:
+        problems.append(
+            "scripts/ops-verdict.sh: no `ROW=\"$(printf <4-cell format> …)\"` "
+            "site found — check_source_stamp cannot verify the stamp reaches "
+            "the row (not-found is a reported problem, never a silent skip)")
+    elif "$SOURCE_STAMP" not in row.group("args"):
+        problems.append(
+            "scripts/ops-verdict.sh: the verdict row's printf does not pass "
+            "\"$SOURCE_STAMP\" — the stamp is resolved and then dropped, so "
+            "every row ships unstamped while source_stamp() still exists "
+            "(F30: declared-but-not-applied)")
     if "SOURCE_STAMP" not in code:
         problems.append(
             "scripts/ops-verdict.sh: source_stamp() is defined but its result "
@@ -1059,6 +1078,21 @@ def check_gitignore_parity(root, problems):
                 f"{MARK!r} — both writers must emit it AND grep for it, or a v1 "
                 f"blocklist is never migrated (it would be appended to instead, "
                 f"and the two schemes contradict)")
+        # EMIT and DETECT are two claims, and the message above makes both — but
+        # a substring test proves only the first: the heredoc body contains the
+        # marker, so deleting the migration `grep` left the build green while
+        # every existing v1 project silently stopped being detected (Copilot
+        # review of PR #12, measured 2026-08-12 in both writers). Assert the
+        # detection expression separately. Either spelling counts: ops-init.sh
+        # greps the `$_GI_MARK` variable, the hook greps the literal, because
+        # the hook must stay standalone.
+        elif not re.search(r"grep\s+-qF\s+(?:\"\$_GI_MARK\"|'" + re.escape(MARK) + r"')", text):
+            problems.append(
+                f"scripts/{name}: emits the v2 marker but never greps for it — "
+                f"without that read the writer cannot tell a v1 file from a v2 "
+                f"one, so an existing v1 blocklist is never migrated (it is "
+                f"appended to, and the two schemes contradict). Emitting the "
+                f"marker is not the same claim as detecting it")
         # Allow lines are line-anchored: a '!VERDICTS.md' inside prose is not a
         # heredoc body line, and would make this check vacuous.
         lines = {ln.strip() for ln in text.splitlines()}
