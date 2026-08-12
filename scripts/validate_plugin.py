@@ -1713,24 +1713,44 @@ def check_compressor(root, problems):
 #   [#22](https://…/issues/22)  inline link (docs/INFOGRAPHICS.md)
 #   (#21) / `issue #9`          BARE — deliberately NOT checked, see below
 #
-# `ISSUE_LINK_RE` matches the two linked forms; the number and the URL are
-# separately captured so the pair can be cross-checked.
-ISSUE_USE_RE = re.compile(r"\[#(\d+)\](?!\s*[:(])")
+# Each linked form captures (number, url) in that order, so the pair can be
+# cross-checked with one loop.
+#
+# The `(?![:(])` on the USE pattern excludes the def and inline forms, which are
+# matched by their own patterns. It deliberately does NOT allow whitespace
+# before `:`/`(`: CommonMark requires the `(` of an inline link to follow the
+# `]` immediately, so `[#9] (a note)` IS a reference-style use, and an `\s*`
+# here would silently drop it from `uses` — a dangling ref that never reports.
+ISSUE_USE_RE = re.compile(r"\[#(\d+)\](?![:(])")
 ISSUE_DEF_RE = re.compile(r"^\[#(\d+)\]:[ \t]*(\S+)", re.MULTILINE)
 ISSUE_INLINE_RE = re.compile(r"\[#(\d+)\]\((\S+?)\)")
 ISSUE_URL_RE = re.compile(r"https?://\S*?/issues/(\d+)")
+
+# A markdown span whose contents are quoted, not live: fenced/indented-fence
+# code blocks and inline code spans. A `[#28]` inside one is an ILLUSTRATION of
+# a reference, not a reference — this file's own CHANGELOG entry documents the
+# inverted-ref class by quoting `[#28]` in backticks, and without this the check
+# reads its own prose as a live ref and drags an unrelated def into the release
+# body. Stripped before parsing, so spans are invisible to every pattern above.
+MD_CODE_RE = re.compile(r"^[ \t]*(```|~~~).*?^[ \t]*\1[ \t]*$|`+[^`\n]*`+",
+                        re.DOTALL | re.MULTILINE)
+
+# GitHub issue URLs legitimately carry a fragment or query — `#issuecomment-N`
+# is what the "copy link" button on a comment produces. The number ends at the
+# first `/`, `#`, or `?`; everything after is addressing WITHIN the issue and
+# must not be compared against the label.
+ISSUE_TARGET_RE = re.compile(r"^(\d+)(?:[/#?].*)?$")
 
 
 def check_issue_refs(root, problems):
     r"""Issue references in tracked markdown must resolve to THIS repo and to
     the number they claim.
 
-    Three failure modes, all of which have shipped here:
+    Three failure modes:
 
       1. **Label/URL mismatch.** `[#28]: …/issues/29` renders as "#28", links to
-         29, and reads correct in every review. Two commits in the 0.7.0 cycle
-         carried inverted refs (#28,#29 written for #29,#30); they were found by
-         hand, at the cost of a corrective commit.
+         29, and reads correct in every review — the eye checks the label, the
+         click follows the URL, and nothing compares them.
       2. **Dangling / orphan.** A `[#N]` with no link def renders as literal
          "[#N]" in the published output; a def nobody uses is a leftover from a
          rewrite that silently stops being maintained.
@@ -1738,33 +1758,56 @@ def check_issue_refs(root, problems):
          200s, and points at someone else's issue. Pinned to plugin.json's
          `repository`, which is already the manifest's single source of truth.
 
-    **What this deliberately does NOT check: that the issue exists, is open, or
-    is about what the sentence says.** That needs `gh issue view` — network,
-    a token, and a rate limit — inside a validator that is otherwise pure local
-    file reading (its only subprocess is `bash -n`). A build that fails because
-    GitHub is slow teaches maintainers to skip the build. The inverted-ref bug
-    that motivated this check is therefore only PARTLY caught: a `[#28]` whose
-    URL says 29 is caught; a `[#29]` whose URL agrees but whose *sentence*
-    describes issue 30 is not, and never will be from here.
+    **Honest provenance: mode 1 has never occurred in this repo.** An earlier
+    revision of this docstring claimed two 0.7.0 commits shipped inverted refs
+    and cited 6b9fb89 / ff57517. Measured against the history, that is wrong:
+    6b9fb89 wrote `[#28]: …/issues/28` — label and URL AGREED — and ff57517
+    never touched CHANGELOG.md. Their real defect was an *invented* issue
+    number, written before the issue existed and later assigned to a different
+    one (90094f8's message says exactly that). No commit in this repo's history
+    carries a label≠URL mismatch: all historical def lines agree.
+
+    That matters, because **this check would not have caught the bug that was
+    used to justify it.** A wrong-but-self-consistent number is invisible here
+    and always will be — catching it means asking GitHub what the issue is
+    about. What this check does buy is cheap and real: modes 2 and 3 are
+    mechanical, and mode 1 is the one that survives review by construction, so
+    pinning it before it happens costs a regex and prevents a class that is
+    genuinely hard to see by eye.
+
+    **What it deliberately does NOT check: that the issue exists, is open, or
+    is about what the sentence says.** That needs `gh issue view` — network, a
+    token, and a rate limit — in a validator whose other subprocess is a local
+    `bash -n`. A build that fails because GitHub is slow teaches maintainers to
+    skip the build.
 
     **Bare `#N` is out of scope, by measurement.** Tracked markdown uses `#N`
     for things that are not issues at all — `Backlog #2` (docs/LANDMINES.md),
-    `task #1` and `#1..#13` finding ids (docs/spec/backlog-charter.md),
-    `F48 #5`. Requiring those to be linked would force either wrong links or an
-    exception list, and an exception list for prose is a rot generator. The
-    convention this check enforces is narrower and honest: *if* you write a
-    reference-style or inline issue link, it must be internally consistent.
+    `task #1` (docs/spec/backlog-charter.md), `F48 #5`. Requiring those to be
+    linked would force either wrong links or an exception list, and an
+    exception list for prose is a rot generator. The convention enforced is
+    narrower and honest: *if* you write a reference-style or inline issue link,
+    it must be internally consistent.
 
     Scope is `git ls-files '*.md'` — tracked files only. Untracked local audit
     trails (`docs/audits/`, `AUDIT_LOG.md`) are maintainer scratch that no
     reader of the clone can follow anyway, and `docs/spec/` is gitignored
     wholesale; a gate whose verdict depends on files absent from the repo gives
-    two clones two answers. When git is unavailable OR lists nothing (a
-    checkout with nothing added), the scope falls back to a dot-directory-
-    skipping glob — a SUPERSET, so the fallback can only add findings, never
-    hide one. An empty git listing must never be taken at face value: that is
-    the F48 vacuous-guard shape, a check that passes because it examined
-    nothing.
+    two clones two answers. When git is unavailable OR lists nothing, the scope
+    falls back to a glob that skips dot-directories. That fallback is a superset
+    of the tracked set **only while no tracked `.md` lives under a dot-directory**
+    (none does today; `.github/` and `.claude-plugin/` ship no markdown). It is
+    not an absolute guarantee — if one is ever added, the fallback goes blind to
+    it, and the primary git path is what must carry the load. An empty git
+    listing is never taken at face value: that is the F48 vacuous-guard shape,
+    a check that passes because it examined nothing.
+
+    A file git tracks but cannot be read is REPORTED, not skipped. The usual
+    cause is a sparse checkout: `git ls-files` reports index entries, so a
+    sparse-excluded file is listed but absent from the working tree, and
+    swallowing that `FileNotFoundError` means the check silently inspects fewer
+    files than it appears to — measured: a foreign-repo link in a sparse-
+    excluded file produced zero problems instead of two.
     """
     plugin = root / ".claude-plugin" / "plugin.json"
     try:
@@ -1797,42 +1840,91 @@ def check_issue_refs(root, problems):
         path = root / rel
         try:
             text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            # git tracks it, the working tree does not have it — a sparse
+            # checkout, or an index desynced from disk. Categorically different
+            # from a permission error: the file EXISTS as far as the repo is
+            # concerned, so skipping it silently means the gate quietly covers
+            # less than it claims. Report and move on.
+            problems.append(
+                f"{rel}: tracked by git but absent from the working tree "
+                f"(sparse checkout?) — check_issue_refs cannot inspect it, so "
+                f"this file is NOT covered by the gate")
+            continue
         except (OSError, UnicodeDecodeError):
-            continue  # a listed-but-unreadable .md is not this check's business
+            continue  # unreadable or not text; not this check's business
+
+        # Code spans and fenced blocks quote references, they do not make them.
+        # Stripping them first is what keeps this file's own CHANGELOG entry —
+        # which documents the inverted-ref class by writing `[#28]` in
+        # backticks — from being read as a live reference.
+        text = MD_CODE_RE.sub("", text)
 
         uses = set(ISSUE_USE_RE.findall(text))
-        defs = dict(ISSUE_DEF_RE.findall(text))
+        # NOT dict(findall): a repeated `[#N]:` would collapse to the LAST one,
+        # while CommonMark resolves to the FIRST — so the check would validate
+        # a URL the renderer never uses. Keep every occurrence and check each.
+        defs = ISSUE_DEF_RE.findall(text)
+        def_nums = {num for num, _ in defs}
         inline = ISSUE_INLINE_RE.findall(text)
 
-        for num in sorted(uses - set(defs), key=int):
+        dupes = sorted({n for n, _ in defs
+                        if sum(1 for m, _ in defs if m == n) > 1}, key=int)
+        for num in dupes:
+            problems.append(
+                f"{rel}: `[#{num}]:` is defined more than once — markdown "
+                f"resolves the FIRST and ignores the rest, so the later "
+                f"definitions are invisible at render time; delete them")
+
+        for num in sorted(uses - def_nums, key=int):
             problems.append(
                 f"{rel}: `[#{num}]` is used reference-style but has no "
                 f"`[#{num}]: <url>` definition — it publishes as the literal "
                 f"text `[#{num}]`, not a link")
-        for num in sorted(set(defs) - uses, key=int):
+        for num in sorted(def_nums - uses, key=int):
             problems.append(
                 f"{rel}: `[#{num}]:` is defined but never used — a leftover "
                 f"from a rewrite; delete it or restore the reference")
 
         # Label vs URL, for both linked forms. This is the inverted-ref catch.
-        for num, url in sorted(defs.items(), key=lambda kv: int(kv[0])) + inline:
+        # Every URL reached here is also matched by the bare-URL scan below, so
+        # each is recorded and excluded there — one fault, one problem line.
+        labelled_urls = set()
+        for num, url in sorted(defs, key=lambda p: int(p[0])) + inline:
+            labelled_urls.add(url)
             if not url.startswith(expected_base):
                 problems.append(
                     f"{rel}: `[#{num}]` points at {url!r}, which is not "
                     f"{expected_base}<n> — an issue link must resolve in THIS "
                     f"repo's tracker (plugin.json `repository`)")
                 continue
-            target = url[len(expected_base):].rstrip("/")
-            if target != num:
+            # Everything after the number addresses a location WITHIN the issue
+            # (`#issuecomment-N`, `?tab=`, a trailing `/`) and is not part of
+            # the identity. Comparing it against the label reports a legitimate
+            # deep link — the form GitHub's own "copy link" produces — as an
+            # inverted ref.
+            m = ISSUE_TARGET_RE.match(url[len(expected_base):])
+            if not m:
                 problems.append(
-                    f"{rel}: `[#{num}]` links to issue {target} — the label and "
-                    f"the URL disagree, so it reads as #{num} everywhere and "
-                    f"navigates to #{target} (the inverted-ref class)")
+                    f"{rel}: `[#{num}]` points at {url!r} — the path after "
+                    f"{expected_base} is not an issue number")
+                continue
+            if m.group(1) != num:
+                problems.append(
+                    f"{rel}: `[#{num}]` links to issue {m.group(1)} — the label "
+                    f"and the URL disagree, so it reads as #{num} everywhere "
+                    f"and navigates to #{m.group(1)} (the inverted-ref class)")
 
-        # A bare issue URL carrying no label cannot be cross-checked, but it can
-        # still be foreign. Check the base of every issue URL in the file.
+        # A bare issue URL carrying no label cannot be cross-checked against a
+        # number, but it can still be foreign.
         for m in ISSUE_URL_RE.finditer(text):
             url = m.group(0)
+            # `labelled_urls` holds FULL urls (ISSUE_DEF_RE captures `\S+`, so a
+            # fragment is included) while this pattern stops at the number — so
+            # match by prefix, not equality, or a labelled deep link reports
+            # twice.
+            if any(u.startswith(url) for u in labelled_urls):
+                continue  # already judged, with a better message, above
             if not url.startswith(expected_base):
                 problems.append(
                     f"{rel}: issue URL {url!r} is not under {expected_base} — "

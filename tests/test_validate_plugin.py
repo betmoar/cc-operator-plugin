@@ -6,6 +6,7 @@ import json
 import pathlib
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -456,9 +457,31 @@ class ValidatorTest(unittest.TestCase):
         self.assertEqual(self.problems(), [])
 
     def test_issue_ref_label_url_mismatch_fires(self):
-        # The inverted-ref class: renders as #27, navigates to #28. Two commits
-        # in the 0.7.0 cycle shipped this and were caught only by hand.
+        # The inverted-ref class: renders as #27, navigates to #28. Preventive —
+        # no commit in this repo's history carries this shape (an earlier
+        # docstring claimed two did; measured false, see check_issue_refs).
         self._changelog_with(f"- fixed [#27]\n\n[#27]: {self._ISSUE_BASE}28\n")
+        self.assertFires("links to issue 28")
+
+    def test_issue_ref_url_fragment_is_not_a_mismatch(self):
+        # `#issuecomment-N` is what GitHub's "copy link" produces on a comment.
+        # It addresses a location WITHIN the right issue; comparing it against
+        # the label reported a legitimate deep link as inverted.
+        self._changelog_with(
+            f"- fixed [#27]\n\n[#27]: {self._ISSUE_BASE}27#issuecomment-999\n")
+        self.assertEqual(self.problems(), [])
+
+    def test_issue_ref_url_query_and_slash_are_not_mismatches(self):
+        self._changelog_with(f"- a [#27]\n\n[#27]: {self._ISSUE_BASE}27?tab=x\n")
+        self.assertEqual(self.problems(), [])
+        self._changelog_with(f"- a [#27]\n\n[#27]: {self._ISSUE_BASE}27/\n")
+        self.assertEqual(self.problems(), [])
+
+    def test_issue_ref_wrong_number_with_fragment_still_fires(self):
+        # The suffix is ignored, not the number — otherwise the fragment fix
+        # would have opened a hole exactly where the check earns its keep.
+        self._changelog_with(
+            f"- fixed [#27]\n\n[#27]: {self._ISSUE_BASE}28#issuecomment-1\n")
         self.assertFires("links to issue 28")
 
     def test_issue_ref_dangling_use_fires(self):
@@ -499,6 +522,63 @@ class ValidatorTest(unittest.TestCase):
               "Discussed at https://github.com/someone/other/issues/5 today.\n")
         self.assertFires("another project's tracker")
 
+    def test_issue_ref_code_span_is_not_a_reference(self):
+        # Prose QUOTING a reference to document it is not a reference. This
+        # repo's own changelog writes `[#28]` in backticks while explaining the
+        # inverted-ref class; without stripping, the check read its own prose as
+        # a live ref and dragged an unrelated definition into the release body.
+        self._changelog_with(
+            "- the class is `[#28]` pointing at `/issues/29`\n")
+        self.assertEqual(self.problems(), [])
+
+    def test_issue_ref_fenced_block_is_not_a_reference(self):
+        write(self.dir / "docs" / "X.md",
+              "Example:\n\n```\n[#5]: https://github.com/other/x/issues/5\n```\n")
+        self.assertEqual(self.problems(), [])
+
+    def test_issue_ref_duplicate_def_fires(self):
+        # dict(findall) kept the LAST definition; CommonMark resolves the FIRST.
+        # So a duplicated def let the check validate a URL the renderer never
+        # uses — here the first is foreign and must still be reported.
+        self._changelog_with(
+            "- fixed [#5]\n\n"
+            "[#5]: https://github.com/other/repo/issues/5\n"
+            f"[#5]: {self._ISSUE_BASE}5\n")
+        self.assertFires("defined more than once")
+        self.assertFires("not https://github.com/betmoar/cc-operator-plugin")
+
+    def test_issue_ref_foreign_url_reports_once(self):
+        # One fault, one problem line. The labelled-URL loop and the bare-URL
+        # scan both see this string; the second must defer to the first, which
+        # carries the better message.
+        self._changelog_with(
+            "- fixed [#5]\n\n[#5]: https://github.com/other/repo/issues/5\n")
+        hits = [p for p in self.problems() if "other/repo/issues/5" in p]
+        self.assertEqual(len(hits), 1, hits)
+
+    def test_issue_ref_foreign_url_with_fragment_reports_once(self):
+        # The dedup matches by prefix: ISSUE_DEF_RE captures the fragment,
+        # ISSUE_URL_RE stops at the number, so equality would miss here.
+        self._changelog_with(
+            "- fixed [#5]\n\n[#5]: https://github.com/other/repo/issues/5#c1\n")
+        hits = [p for p in self.problems() if "other/repo/issues/5" in p]
+        self.assertEqual(len(hits), 1, hits)
+
+    def test_issue_ref_use_before_parenthetical_is_a_use(self):
+        # CommonMark requires an inline link's `(` to follow `]` immediately, so
+        # `[#9] (a note)` IS reference-style. An `\s*` in the exclusion lookahead
+        # silently dropped it from `uses` — a dangling ref that never reported.
+        self._changelog_with("- see [#9] (a note)\n")
+        self.assertFires("has no `[#9]: <url>` definition")
+
+    def test_issue_ref_multiple_faults_in_one_file(self):
+        # Faults must not mask each other: one file, three kinds, three reports.
+        self._changelog_with(
+            f"- a [#1] and [#2]\n\n[#2]: {self._ISSUE_BASE}2\n"
+            f"[#3]: {self._ISSUE_BASE}3\n")
+        self.assertFires("has no `[#1]: <url>` definition")
+        self.assertFires("`[#3]:` is defined but never used")
+
     def test_issue_refs_untracked_file_is_out_of_scope(self):
         # Scope is tracked markdown. The fixture has no git repo, so the check
         # falls back to a glob — a SUPERSET. This asserts the fallback really is
@@ -515,6 +595,48 @@ class ValidatorTest(unittest.TestCase):
             "description": "d", "license": "MIT",
         }))
         self.assertFires("no `repository`")
+
+    # The tests above all run against a tmpdir with no `.git`, so they exercise
+    # the GLOB fallback — `git ls-files` exits 128 there. The two below are the
+    # only coverage of the primary path, and of the sparse-checkout read. Without
+    # them the branch the docstring spends the most words justifying is unproven,
+    # which is the F48 shape aimed at this check itself.
+    def _git(self, *args):
+        return subprocess.run(("git", "-C", str(self.dir)) + args,
+                              capture_output=True, text=True)
+
+    def _init_repo(self, *tracked):
+        self._git("init", "-q")
+        self._git("config", "user.email", "t@example.invalid")
+        self._git("config", "user.name", "t")
+        self._git("add", "--", *tracked)
+        self._git("commit", "-qm", "t")
+        # The listing must be non-empty, or the check falls back to the glob and
+        # this test silently proves nothing about the git path.
+        listed = self._git("ls-files", "*.md").stdout.split()
+        self.assertTrue(listed, "fixture did not track any markdown")
+        return listed
+
+    def test_issue_refs_scope_is_tracked_files_only(self):
+        write(self.dir / "docs" / "tracked.md",
+              f"a [#1]({self._ISSUE_BASE}2)\n")
+        write(self.dir / "docs" / "untracked.md",
+              f"b [#3]({self._ISSUE_BASE}4)\n")
+        listed = self._init_repo("docs/tracked.md")
+        self.assertNotIn("docs/untracked.md", listed)
+        probs = [p for p in self.problems() if "issue" in p or "#" in p]
+        self.assertTrue(any("links to issue 2" in p for p in probs), probs)
+        self.assertFalse(any("untracked.md" in p for p in probs), probs)
+
+    def test_issue_refs_tracked_but_absent_file_is_reported(self):
+        # `git ls-files` reports INDEX entries, so a sparse checkout lists files
+        # the working tree does not have. Swallowing that FileNotFoundError made
+        # the gate quietly cover less than it claimed.
+        write(self.dir / "docs" / "gone.md",
+              "b https://github.com/someone/other/issues/9\n")
+        self._init_repo("docs/gone.md")
+        (self.dir / "docs" / "gone.md").unlink()
+        self.assertFires("tracked by git but absent from the working tree")
 
     # --- 4. charter gates ---
     def test_charter_too_long(self):

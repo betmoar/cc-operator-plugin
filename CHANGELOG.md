@@ -12,21 +12,40 @@ single source of truth; bump it in the same commit as the changelog entry.
 ### Added — issue references are validated, not trusted
 
 - **`validate_plugin.check_issue_refs`** — every `[#N]` in tracked markdown must
-  have a matching link definition (and every definition a use), and every issue
-  URL must resolve under `plugin.json`'s `repository` at the number its label
-  claims. The motivating failure is the **inverted ref**: `[#28]` pointing at
-  `/issues/29` renders as "#28", navigates to 29, and reads correct in review —
-  two commits in the 0.7.0 cycle shipped exactly that and were caught by hand.
-  Scope is `git ls-files '*.md'`, with a dot-skipping glob (a superset) as the
-  fallback so a non-checkout can never make the check vacuous.
+  have a matching link definition (and every definition a use, and no number
+  defined twice), and every issue URL must resolve under `plugin.json`'s
+  `repository` at the number its label claims. The class it pins is the
+  **inverted ref**: `[#28]` pointing at `/issues/29` renders as "#28", navigates
+  to 29, and survives review by construction, because the eye reads the label
+  and the click follows the URL.
+  - **Provenance, stated honestly: that class has never occurred here.** An
+    earlier draft of this entry claimed two 0.7.0 commits shipped inverted refs.
+    Measured against the history, that is wrong — `6b9fb89` wrote
+    `[#28]: …/issues/28`, label and URL agreeing, and `ff57517` never touched
+    this file. Their real defect was an *invented* issue number later assigned
+    to a different issue, which this check cannot detect and never will. The
+    check is preventive, not corrective; the justification is that modes 2 and 3
+    are mechanical and mode 1 is invisible to review, not that it would have
+    caught a past bug.
   - **Not checked, deliberately: that the issue exists, is open, or is about
     what the sentence says.** That needs `gh issue view` — network, token, rate
-    limit — inside a validator whose only subprocess is `bash -n`. A build that
-    fails because GitHub is slow teaches maintainers to skip the build.
+    limit — in a validator whose other subprocess is a local `bash -n`. A build
+    that fails because GitHub is slow teaches maintainers to skip the build.
   - **Bare `#N` is out of scope, by measurement.** Tracked docs write
     `Backlog #2`, `task #1`, `F48 #5`; requiring those to be linked would force
     wrong links or an exception list. A test pins the scope decision so a later
     "tighten it up" edit fails instead of quietly breaking prose.
+  - Code spans and fenced blocks are stripped before parsing: prose that
+    *quotes* a reference to document it is not a reference. This entry is the
+    proof — without stripping, its own backticked example counted as a use.
+  - A file git tracks but cannot be read is **reported**, not skipped. Sparse
+    checkouts list index entries whose files are absent from the working tree;
+    swallowing that made the gate cover less than it claimed (measured: a
+    foreign-repo link in a sparse-excluded file produced zero problems).
+  - Scope is `git ls-files '*.md'`, falling back to a dot-skipping glob so a
+    non-checkout cannot make the check vacuous. That fallback is a superset only
+    while no tracked `.md` lives under a dot-directory — true today, not
+    guaranteed.
 
 ### Fixed — release notes dropped every issue link they used
 
@@ -36,6 +55,13 @@ single source of truth; bump it in the same commit as the changelog entry.
   before the fix: **9 dead references**. The section now carries the definitions
   it actually uses, and only those (a test pins that other versions' refs do not
   leak in).
+- The same fix had a hole in its own shape: a `[#N]` with no definition
+  *anywhere* left the body untouched and `gate()` reported no problem, so the
+  dead-link bug shipped again on a different input. `extract_section_checked`
+  now returns those references and the gate refuses to publish. `check_issue_refs`
+  catches this on every PR, but `release_gate.py` is the independent second gate
+  — a CHANGELOG edited on a release branch after the last green PR reaches
+  `gh release create` without the validator ever having seen it.
 
 ## [0.7.0] - 2026-08-07
 

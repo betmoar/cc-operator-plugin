@@ -105,6 +105,40 @@ class ReleaseGateTest(unittest.TestCase):
         _, notes = rg.gate(self.dir, "v0.1.0")
         self.assertEqual(notes, "### Added\n- thing")
 
+    def test_ref_with_no_definition_anywhere_fails_the_gate(self):
+        # Appending only the defs that EXIST leaves a body whose `[#99]`
+        # publishes as literal text — the same dead-link bug this fix exists to
+        # prevent, on a different input. check_issue_refs catches it on PRs;
+        # this gate is the independent second one, and a CHANGELOG edited on a
+        # release branch reaches `gh release create` unvalidated.
+        write(self.dir / ".claude-plugin" / "plugin.json",
+              json.dumps({"name": "cc-operator", "version": "0.1.0"}))
+        write(self.dir / "CHANGELOG.md",
+              "# C\n\n## [0.1.0] - x\n\n- fixed [#99], defined nowhere\n")
+        problems, _ = rg.gate(self.dir, "v0.1.0")
+        self.assertTrue(any("[#99]" in p and "no `[#N]: <url>` definition" in p
+                            for p in problems), problems)
+
+    def test_partially_defined_refs_ship_the_defined_ones_and_fail(self):
+        # A mixed section must not lose the good defs on the way to failing.
+        write(self.dir / ".claude-plugin" / "plugin.json",
+              json.dumps({"name": "cc-operator", "version": "0.1.0"}))
+        write(self.dir / "CHANGELOG.md",
+              "# C\n\n## [0.1.0] - x\n\n- [#7] and [#99]\n\n"
+              "[#7]: https://x/issues/7\n")
+        problems, notes = rg.gate(self.dir, "v0.1.0")
+        self.assertIn("[#7]: https://x/issues/7", notes)
+        self.assertTrue(any("[#99]" in p for p in problems), problems)
+
+    def test_code_span_ref_is_not_treated_as_a_reference(self):
+        # Prose documenting the inverted-ref class writes `[#28]` in backticks.
+        # Without stripping code spans, the gate would demand a definition for
+        # an example — and refuse to publish a correct changelog.
+        notes, unresolved = rg.extract_section_checked(
+            "# C\n\n## [0.1.0] - x\n\n- the class is `[#28]` quoted\n", "0.1.0")
+        self.assertEqual(unresolved, [])
+        self.assertEqual(notes, "- the class is `[#28]` quoted")
+
 
 if __name__ == "__main__":
     unittest.main()
