@@ -23,7 +23,12 @@ jobs:
         run: python3 scripts/release_gate.py "$GITHUB_REF_NAME" --notes-out release-notes.md
 
       - name: Shellcheck gate scripts
-        run: shellcheck scripts/*.sh tests/test-scripts.sh
+        # Pinned, same as validate.yml — the runner's own shellcheck version
+        # drifts and disagrees with a maintainer's local one (SC2015 in 0.10 vs
+        # 0.11). A release must not fail, or pass, on a linter nobody chose.
+        run: |
+          docker run --rm -v "$PWD":/w -w /w koalaman/shellcheck-alpine:v0.10.0 \
+            sh -c 'shellcheck --version | grep version:; shellcheck scripts/*.sh tests/test-scripts.sh'
 
       - name: Validate plugin contracts
         run: python3 scripts/validate_plugin.py

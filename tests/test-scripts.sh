@@ -3265,7 +3265,7 @@ INITF="$(newproj)"
 mkdir -p "$INITF/.operator"
 printf '# cc-operator gitignore (v1)\nbin/\n!my-own-rule.md\n' > "$INITF/.operator/.gitignore"
 mkdir -p "$INITF/.operator/.gitignore.v1.bak"
-INITFOUT="$(cd "$INITF" && "$BASH_ABS" "$SCRIPTS/ops-init.sh" 2>&1 || true)"
+INITFOUT="$( ( cd "$INITF" || exit 1; "$BASH_ABS" "$SCRIPTS/ops-init.sh" ) 2>&1 || true )"
 check "init backup blocked: the user's v1 rule survives" \
   "$(grep -q 'my-own-rule' "$INITF/.operator/.gitignore" && echo 0 || echo 1)"
 check "init backup blocked: it does NOT claim it migrated" \
@@ -3284,7 +3284,7 @@ echo "-- Case: ops-verdict refuses a non-regular entry BEFORE writing a row"
 NRP="$(newproj)"
 (cd "$NRP" && "$BASH_ABS" "$SCRIPTS/ops-init.sh" >/dev/null 2>&1)
 mkdir -p "$NRP/.operator/pending/dircase"
-NROUT="$(cd "$NRP" && "$BASH_ABS" "$SCRIPTS/ops-verdict.sh" dircase crit ev PASS --owner sid-x 2>&1 || true)"
+NROUT="$( ( cd "$NRP" || exit 1; "$BASH_ABS" "$SCRIPTS/ops-verdict.sh" dircase crit ev PASS --owner sid-x ) 2>&1 || true )"
 check "non-regular sentinel: ops-verdict refuses" \
   "$(printf '%s' "$NROUT" | grep -q 'not a regular file' && echo 0 || echo 1)"
 check "non-regular sentinel: NO row was written" \
@@ -3292,7 +3292,7 @@ check "non-regular sentinel: NO row was written" \
 check "non-regular sentinel: no GATE-EXCEPTION was written either" \
   "$(grep -v '^#' "$NRP/.operator/DECISIONS.md" | grep -q 'GATE-EXCEPTION' && echo 1 || echo 0)"
 # The control: a real never-armed verdict still records BOTH row and exception.
-(cd "$NRP" && "$BASH_ABS" "$SCRIPTS/ops-verdict.sh" realcase crit ev PASS --owner sid-x >/dev/null 2>&1 || true)
+( cd "$NRP" || exit 1; "$BASH_ABS" "$SCRIPTS/ops-verdict.sh" realcase crit ev PASS --owner sid-x >/dev/null 2>&1 ) || true
 check "control: a never-armed verdict still records its row" \
   "$(grep -q '| realcase |' "$NRP/.operator/VERDICTS.md" && echo 0 || echo 1)"
 check "control: …and its GATE-EXCEPTION" \
@@ -3310,7 +3310,7 @@ printf 'x=1\n' > "$DASHP/--version.py"
 # `--` terminates git's own option parsing; the dash-named path follows it as a
 # pathspec. This is the very hazard under test, one layer up.
 (cd "$DASHP" && git add -- normal.py './--version.py' >/dev/null 2>&1)
-DASHOUT="$(cd "$DASHP" && "$BASH_ABS" "$SCRIPTS/ops-backlog.sh" --census 2>&1 || true)"
+DASHOUT="$( ( cd "$DASHP" || exit 1; "$BASH_ABS" "$SCRIPTS/ops-backlog.sh" --census ) 2>&1 || true )"
 check "dash-named file: code-loc counts it (3, not 0)" \
   "$(printf '%s' "$DASHOUT" | grep -q 'code-loc: 3' && echo 0 || echo 1)"
 check "dash-named file: the count is not PARTIAL" \
