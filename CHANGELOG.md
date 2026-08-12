@@ -378,8 +378,36 @@ unknowns scan is end-user-triggered by release posture, size is informational).
   rests on. Both mutation-verified.
 - **B10's threshold is unmeasured** (one repo); U3 makes the trigger a user
   declaration rather than that number.
+- **The adversarial verifier shares the builder's working tree** ([#23]), so a
+  `CONFIRMED` can be produced by builder state rather than by the code.
+  Measured: a `__pycache__` the builder left makes a broken commit verify
+  CONFIRMED in-tree and REFUTED in a clean checkout of that same commit, with
+  `git status --porcelain` reporting clean throughout — the residue is
+  *gitignored*, which is exactly why the usual cleanliness check cannot see it.
+  `op-verifier` promises fresh **context**, never a fresh **tree**, and nothing
+  in this release claims isolation. **Until it is closed, do not describe a
+  verdict as independently verified** — it is verified by a different reader of
+  the same tree.
+- **The review panel has no security lens** ([#24]). `workflows/review.js`
+  dispatches five lenses unconditionally — spec, testability, feasibility,
+  quality, correctness. A security seat is deliberately not added yet: without a
+  fixture carrying a known vulnerability it would be a lens that has never found
+  anything, which is the vacuous-guard class this project keeps catching.
+  **Until then, a panel PASS says nothing about security.**
+- **A crash between a verdict row and its `GATE-EXCEPTION` loses the audit
+  line** ([#14]). The two are separate appends; the retry classifies the orphan
+  as `duplicate`, so a genuine gate bypass keeps its PASS row and loses its
+  exception. Recorded as residual rather than patched because the obvious guard
+  was built and reverted: an *armed* first verdict also leaves a row with no
+  exception, so downgrading on that basis wrote spurious exceptions for every
+  ordinary amended verdict (case G1.7 caught it). Nothing in the fragment
+  distinguishes crash-interrupted from ordinary-amended; closing it needs a
+  format change, which earns its own bar.
 
+[#14]: https://github.com/betmoar/cc-operator-plugin/issues/14
 [#19]: https://github.com/betmoar/cc-operator-plugin/issues/19
+[#23]: https://github.com/betmoar/cc-operator-plugin/issues/23
+[#24]: https://github.com/betmoar/cc-operator-plugin/issues/24
 [#27]: https://github.com/betmoar/cc-operator-plugin/issues/27
 [#28]: https://github.com/betmoar/cc-operator-plugin/issues/28
 [#29]: https://github.com/betmoar/cc-operator-plugin/issues/29
