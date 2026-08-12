@@ -50,10 +50,23 @@ is_tier_name() {
   case " $TIER_NAMES " in *" $1 "*) return 0 ;; *) return 1 ;; esac
 }
 
+# cc-proxy's provider-lens namespaces, mirroring PROVIDER_IDS in its
+# src/providers.js. An ALLOWLIST, not `*:*`, and the difference is the whole
+# point of this guard: cc-proxy strips a lens it KNOWS and leaves one it does
+# not. Measured against its own parseModelSelector —
+#   qwen:deepseek-v4-pro  -> providerId=qwen  upstream `deepseek-v4-pro`
+#   bogus:some-model      -> providerId=null  upstream `bogus:some-model`
+# — so an unknown namespace reaches the default backend as a literal model id,
+# which is the silent mis-route this function exists to prevent. `*:*` would
+# admit exactly that. Adding a provider to cc-proxy means adding it here.
+LENS_NAMESPACES="glm openrouter deepseek qwen claude"
+
 # The routability guard. cc-proxy dispatches purely on id SHAPE: `glm-*` → Z.ai,
-# `vendor/model` → OpenRouter, `claude-*` → Anthropic OAuth. Anything else falls
-# through to the default backend, which is a silent mis-route rather than an
-# error — so the shape is checked here, before the id can reach a dispatch.
+# `vendor/model` → OpenRouter, `claude-*` → Anthropic OAuth, `<provider>:<model>`
+# → that provider explicitly (its local lens, stripped before forwarding).
+# Anything else falls through to the default backend, which is a silent
+# mis-route rather than an error — so the shape is checked here, before the id
+# can reach a dispatch.
 check_routable() {
   case "$2" in
     "") die "$1 is empty" ;;
@@ -63,8 +76,20 @@ check_routable() {
   case "$2" in
     glm-*|claude-*) return 0 ;;
     */*) return 0 ;;
-    *) die "$1='$2' is not cc-proxy-routable (need glm-*, vendor/model, or claude-*)" ;;
   esac
+  # A lens: split at the FIRST colon and require both halves. cc-proxy splits
+  # the same way (indexOf, not lastIndexOf), so `qwen:a:b` sends tail `a:b`
+  # upstream and this must agree rather than second-guess it.
+  case "$2" in
+    *:*)
+      _lens_head="${2%%:*}"; _lens_tail="${2#*:}"
+      [ -n "$_lens_tail" ] || die "$1='$2' has an empty model after the '$_lens_head:' lens"
+      case " $LENS_NAMESPACES " in
+        *" $_lens_head "*) return 0 ;;
+        *) die "$1='$2' names the unknown provider lens '$_lens_head:' (known: $LENS_NAMESPACES) — cc-proxy strips only a lens it knows, so this would reach the default backend as a literal model id" ;;
+      esac ;;
+  esac
+  die "$1='$2' is not cc-proxy-routable (need glm-*, vendor/model, <provider>:<model>, or claude-*)"
 }
 
 set_tier() { # set_tier NAME id source

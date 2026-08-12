@@ -1499,6 +1499,33 @@ check "set NAME=id applies a one-off override (source shows --set)" \
 TIERSENV --set MECHANICAL=bogus-id >/dev/null 2>&1; BADRC=$?
 check "an unroutable --set id is refused (non-zero exit)" \
   "$([ "$BADRC" -ne 0 ] && echo 0 || echo 1)"
+# THE PROVIDER LENS (#35). cc-proxy's canonical spelling since 0.6.0 is
+# `<provider>:<model>`, and check_routable knew three shapes, none of them this
+# one — so tiers.env could not name a provider model at all. The accepted set
+# is an ALLOWLIST mirroring cc-proxy's PROVIDER_IDS, not `*:*`, because that
+# distinction IS the guard: measured against cc-proxy's own parseModelSelector,
+# `qwen:deepseek-v4-pro` is stripped to `deepseek-v4-pro` while
+# `bogus:some-model` is NOT stripped and reaches the default backend as a
+# literal model id — the silent mis-route check_routable exists to prevent.
+TIERSENV --set MECHANICAL=qwen:deepseek-v4-pro >/dev/null 2>&1; LENSRC=$?
+check "a known provider lens is routable (qwen:deepseek-v4-pro)" \
+  "$([ "$LENSRC" -eq 0 ] && echo 0 || echo 1)"
+TIERSENV --set MECHANICAL=bogus:some-model >/dev/null 2>&1; LENSBAD=$?
+check "an UNKNOWN provider lens is refused (it would not be stripped)" \
+  "$([ "$LENSBAD" -ne 0 ] && echo 0 || echo 1)"
+LENSMSG="$(TIERSENV --set MECHANICAL=typo:glm-5.2 2>&1)"
+check "the unknown-lens refusal names the offending namespace and the known set" \
+  "$(printf '%s' "$LENSMSG" | grep -q "unknown provider lens 'typo:'" \
+     && printf '%s' "$LENSMSG" | grep -q 'known: glm openrouter deepseek qwen claude' \
+     && echo 0 || echo 1)"
+TIERSENV --set MECHANICAL=qwen: >/dev/null 2>&1; LENSEMPTY=$?
+check "a lens with an empty model is refused (qwen:)" \
+  "$([ "$LENSEMPTY" -ne 0 ] && echo 0 || echo 1)"
+# FIRST colon, matching cc-proxy's indexOf: `qwen:a:b` sends tail `a:b`
+# upstream, so the guard must accept rather than second-guess the split.
+TIERSENV --set MECHANICAL=qwen:a:b >/dev/null 2>&1; LENSMULTI=$?
+check "the lens splits at the FIRST colon, as cc-proxy does (qwen:a:b)" \
+  "$([ "$LENSMULTI" -eq 0 ] && echo 0 || echo 1)"
 # tiers.env carries TWO line kinds (the renderer's seat bindings share the
 # file). The resolver must SKIP a seat line, not die on it — the scaffold's own
 # documented example ('#op-scout=MECHANICAL', ops-init.sh) used to kill every
@@ -1720,6 +1747,16 @@ check "guard: unroutable model id is refused (non-zero exit)" "$([ "$G1" -ne 0 ]
 printf 'op-scout=BOGUS\n' > "$RP/.operator/tiers.env"
 ( cd "$RP" && RENDERENV --show >/dev/null 2>&1 ); G2=$?
 check "guard: seat bound to unknown tier is refused (non-zero exit)" "$([ "$G2" -ne 0 ] && echo 0 || echo 1)"
+# The renderer carries its own copy of check_routable (validate_plugin's
+# check_resolver_renderer_parity pins the two equal, and LENS_NAMESPACES
+# separately since it lives outside the function braces). Both halves are
+# asserted HERE too: parity proves they are the same, not that either works.
+printf 'MECHANICAL=qwen:deepseek-v4-pro\n' > "$RP/.operator/tiers.env"
+( cd "$RP" && RENDERENV --show >/dev/null 2>&1 ); G3=$?
+check "guard: the renderer accepts a known provider lens too" "$([ "$G3" -eq 0 ] && echo 0 || echo 1)"
+printf 'MECHANICAL=bogus:some-model\n' > "$RP/.operator/tiers.env"
+( cd "$RP" && RENDERENV --show >/dev/null 2>&1 ); G4=$?
+check "guard: the renderer refuses an unknown provider lens too" "$([ "$G4" -ne 0 ] && echo 0 || echo 1)"
 printf 'MECHANICAL=glm 5\n' > "$RP/.operator/tiers.env"
 ( cd "$RP" && RENDERENV --show >/dev/null 2>&1 ); G3=$?
 check "guard: whitespace in model id is refused (non-zero exit)" "$([ "$G3" -ne 0 ] && echo 0 || echo 1)"

@@ -1297,15 +1297,45 @@ def check_resolver_renderer_parity(root, problems):
         # same hole CANONICAL_BAD_CHARSET closed for the workflow regexes,
         # reachable here by commenting the body out in both files (comments are
         # stripped above). Pin the two load-bearing rejects to their content.
+        # NOT "LENS_NAMESPACES" here: this loop searches the FUNCTION BODY, and
+        # the assignment is a file-scope variable outside the braces, so the
+        # fragment could never be found and the check would fire on every tree
+        # (measured: 12 pytest failures, including the good-tree fixtures). Its
+        # USE inside the body is what belongs here; the assignment's VALUE is
+        # pinned separately below, where the two files are compared.
         for frag, why in (
                 (r"[!A-Za-z0-9._:/@[\]-]", "the charset reject"),
-                ("not cc-proxy-routable", "the id-shape reject")):
+                ("not cc-proxy-routable", "the id-shape reject"),
+                ("$LENS_NAMESPACES", "the provider-lens allowlist lookup")):
             if frag not in bodies["ops-tiers.sh"]:
                 problems.append(
                     f"scripts/ops-tiers.sh + ops-render.sh: check_routable no "
                     f"longer contains {why} ({frag!r}) — the two copies agree, "
                     f"but agreeing on a guard that checks nothing is how a "
                     f"parity check passes while the guard is gone")
+
+    # LENS_NAMESPACES lives OUTSIDE check_routable's braces, so routable_body()
+    # above never sees it and two copies carrying DIFFERENT allowlists would
+    # compare equal. Pinned separately, and by VALUE: the set mirrors cc-proxy's
+    # PROVIDER_IDS, and a lens naming a provider cc-proxy does not know is not
+    # stripped — it reaches the default backend as a literal model id, which is
+    # the silent mis-route this whole function exists to prevent. Two files
+    # drifting apart here means one writes a binding the other refuses.
+    lens = {}
+    for name, text in src.items():
+        m = re.search(r"^LENS_NAMESPACES=([\"'])(.*?)\1", text, re.MULTILINE)
+        if not m:
+            problems.append(
+                f"scripts/{name}: no `LENS_NAMESPACES=\"…\"` assignment found — "
+                f"check_routable gates the `<provider>:<model>` lens on it; a "
+                f"rename or retype must update this regex, not silence it")
+            return
+        lens[name] = tuple(m.group(2).split())
+    if lens["ops-tiers.sh"] != lens["ops-render.sh"]:
+        problems.append(
+            f"scripts/ops-render.sh: LENS_NAMESPACES={list(lens['ops-render.sh'])} "
+            f"does not match the resolver's {list(lens['ops-tiers.sh'])} in "
+            f"ops-tiers.sh — one of them would accept a lens the other refuses")
 
     names = {}
     for name, text in src.items():

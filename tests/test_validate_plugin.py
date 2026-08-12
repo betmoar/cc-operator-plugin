@@ -269,15 +269,23 @@ def make_good_tree(root):
     # renderer parse the same tiers.env, so check_resolver_renderer_parity
     # requires both to declare each (a plugin shipping one guarded and one
     # unguarded is exactly what that check exists to reject).
+    # The stub tracks the guard's STRUCTURE, not just its name: since #35 the
+    # `<provider>:<model>` lens is gated on LENS_NAMESPACES, which the parity
+    # check pins both inside the body (the lookup) and outside it (the value).
     ROUTABLE_STUB = (
         'check_routable() {\n'
         '  case "$2" in\n'
         '    "") die "$1 is empty" ;;\n'
         '    *[!A-Za-z0-9._:/@[\\]-]*) die "$1 outside charset" ;;\n'
         '  esac\n'
-        '  case "$2" in glm-*|claude-*) return 0 ;; */*) return 0 ;;\n'
-        '    *) die "$1 is not cc-proxy-routable" ;; esac\n'
+        '  case "$2" in glm-*|claude-*) return 0 ;; */*) return 0 ;; esac\n'
+        '  case "$2" in\n'
+        '    *:*) case " $LENS_NAMESPACES " in *" ${2%%:*} "*) return 0 ;;\n'
+        '           *) die "unknown lens" ;; esac ;;\n'
+        '  esac\n'
+        '  die "$1 is not cc-proxy-routable"\n'
         '}\n'
+        'LENS_NAMESPACES="glm openrouter deepseek qwen claude"\n'
         'TIER_NAMES="JUDGMENT IMPLEMENT MECHANICAL RECON"\n'
     )
     write(root / "scripts" / "ops-tiers.sh",
@@ -1523,6 +1531,11 @@ class ResolverRendererParityTest(unittest.TestCase):
     got a parity check after the same lesson.
     """
 
+    # A minimal but STRUCTURALLY CURRENT guard: the shipped one gates the
+    # `<provider>:<model>` lens on $LENS_NAMESPACES (#35), and the parity check
+    # pins both that lookup (inside the body) and the assignment's value
+    # (outside it). A fixture stuck at the pre-#35 shape fails every case here
+    # including the good-tree ones, which says nothing about the tree.
     ROUTABLE = (
         "check_routable() {\n"
         '  case "$2" in\n'
@@ -1530,10 +1543,16 @@ class ResolverRendererParityTest(unittest.TestCase):
         '    *[!A-Za-z0-9._:/@[\\]-]*)\n'
         '      die "$1=\'$2\' outside charset" ;;\n'
         "  esac\n"
-        '  case "$2" in glm-*|claude-*) return 0 ;; */*) return 0 ;;\n'
-        '    *) die "$1=\'$2\' is not cc-proxy-routable" ;; esac\n'
+        '  case "$2" in glm-*|claude-*) return 0 ;; */*) return 0 ;; esac\n'
+        '  case "$2" in\n'
+        '    *:*) case " $LENS_NAMESPACES " in\n'
+        '           *" ${2%%:*} "*) return 0 ;;\n'
+        '           *) die "unknown lens" ;; esac ;;\n'
+        "  esac\n"
+        '  die "$1=\'$2\' is not cc-proxy-routable"\n'
         "}\n"
     )
+    LENS = 'LENS_NAMESPACES="glm openrouter deepseek qwen claude"\n'
     TIERS = 'TIER_NAMES="JUDGMENT IMPLEMENT MECHANICAL RECON"\n'
 
     def setUp(self):
@@ -1547,7 +1566,7 @@ class ResolverRendererParityTest(unittest.TestCase):
         for name, body in (("ops-tiers.sh", tiers), ("ops-render.sh", render)):
             write(self.dir / "scripts" / name,
                   "#!/usr/bin/env bash\n" +
-                  (self.ROUTABLE + self.TIERS if body is None else body))
+                  (self.ROUTABLE + self.LENS + self.TIERS if body is None else body))
 
     def problems(self):
         probs = []
@@ -1567,10 +1586,13 @@ class ResolverRendererParityTest(unittest.TestCase):
                     '    *[!A-Za-z0-9._:/@[\\]-]*)\n'
                     '      die "$1=\'$2\' outside charset" ;; esac\n'
                     '  case "$2" in glm-*|claude-*) return 0 ;;\n'
-                    '    */*) return 0 ;;\n'
-                    '    *) die "$1=\'$2\' is not cc-proxy-routable" ;;\n'
-                    "  esac\n}\n")
-        self._write(render=reflowed + self.TIERS)
+                    '    */*) return 0 ;; esac\n'
+                    '  case "$2" in *:*)\n'
+                    '      case " $LENS_NAMESPACES " in *" ${2%%:*} "*) return 0 ;;\n'
+                    '        *) die "unknown lens" ;; esac ;;\n'
+                    "  esac\n"
+                    '  die "$1=\'$2\' is not cc-proxy-routable"\n}\n')
+        self._write(render=reflowed + self.LENS + self.TIERS)
         self.assertEqual(self.problems(), [])
 
     def test_drifted_charset_fires(self):
@@ -1602,15 +1624,33 @@ class ResolverRendererParityTest(unittest.TestCase):
     def test_renderer_tier_names_drift_fires(self):
         # A fifth tier added to the resolver per the coupling table leaves the
         # renderer's is_tier_name gating a stale namespace.
-        self._write(tiers=self.ROUTABLE +
+        self._write(tiers=self.ROUTABLE + self.LENS +
                     'TIER_NAMES="JUDGMENT IMPLEMENT MECHANICAL RECON EXTRA"\n')
         probs = self.problems()
         self.assertTrue(any("does not match the resolver's" in p
                             for p in probs), probs)
 
     def test_missing_tier_names_fires(self):
-        self._write(render=self.ROUTABLE)
+        self._write(render=self.ROUTABLE + self.LENS)
         self.assertTrue(any("no `TIER_NAMES" in p
+                            for p in self.problems()), self.problems())
+
+    def test_renderer_lens_drift_fires(self):
+        # #35: LENS_NAMESPACES lives OUTSIDE check_routable's braces, so the
+        # body comparison above cannot see it — two copies carrying different
+        # allowlists would compare equal. One accepting a lens the other
+        # refuses is the same class as a charset drift.
+        self._write(render=self.ROUTABLE +
+                    'LENS_NAMESPACES="glm qwen claude"\n' + self.TIERS)
+        probs = self.problems()
+        self.assertTrue(any("does not match the resolver's" in p
+                            for p in probs), probs)
+
+    def test_missing_lens_namespaces_fires(self):
+        # A rename or retype must update the validator's regex, not silence it
+        # — the same reporting rule TIER_NAMES follows.
+        self._write(render=self.ROUTABLE + self.TIERS)
+        self.assertTrue(any("no `LENS_NAMESPACES" in p
                             for p in self.problems()), self.problems())
 
     def test_real_scripts_are_in_parity(self):
