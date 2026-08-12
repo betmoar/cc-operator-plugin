@@ -73,13 +73,18 @@ check_routable() {
     *[!A-Za-z0-9._:/@[\]-]*)
       die "$1='$2' contains characters outside [A-Za-z0-9._:/@[]-] (whitespace and quotes are never valid in a model id)" ;;
   esac
-  case "$2" in
-    glm-*|claude-*) return 0 ;;
-    */*) return 0 ;;
-  esac
-  # A lens: split at the FIRST colon and require both halves. cc-proxy splits
-  # the same way (indexOf, not lastIndexOf), so `qwen:a:b` sends tail `a:b`
-  # upstream and this must agree rather than second-guess it.
+  # THE LENS IS TESTED FIRST, BEFORE the bare shapes. cc-proxy reads the colon
+  # before anything else (parseModelSelector runs at step 0 of resolve), so an
+  # id carrying one is a lens no matter what follows it. Ordering `*/*` first
+  # let `bogus:vendor/model` through on the slash arm without the allowlist ever
+  # being consulted — and cc-proxy answers providerId=null for it, sending the
+  # literal string upstream: exactly the silent mis-route the allowlist is for.
+  # Measured, and the guard's own comment claimed the opposite. Found by the
+  # review panel's feasibility lens, PR #36.
+  #
+  # Split at the FIRST colon and require both halves — cc-proxy splits the same
+  # way (indexOf, not lastIndexOf), so `qwen:a:b` sends tail `a:b` upstream and
+  # this agrees rather than second-guessing it.
   case "$2" in
     *:*)
       _lens_head="${2%%:*}"; _lens_tail="${2#*:}"
@@ -88,6 +93,10 @@ check_routable() {
         *" $_lens_head "*) return 0 ;;
         *) die "$1='$2' names the unknown provider lens '$_lens_head:' (known: $LENS_NAMESPACES) — cc-proxy strips only a lens it knows, so this would reach the default backend as a literal model id" ;;
       esac ;;
+  esac
+  case "$2" in
+    glm-*|claude-*) return 0 ;;
+    */*) return 0 ;;
   esac
   die "$1='$2' is not cc-proxy-routable (need glm-*, vendor/model, <provider>:<model>, or claude-*)"
 }

@@ -74,10 +74,8 @@ check_routable() { # check_routable <label> <id>
     *[!A-Za-z0-9._:/@[\]-]*)
       die "$1='$2' contains characters outside [A-Za-z0-9._:/@[]-] (whitespace and quotes are never valid in a model id)" ;;
   esac
-  case "$2" in
-    glm-*|claude-*) return 0 ;;
-    */*) return 0 ;;
-  esac
+  # Lens FIRST, before the bare shapes — see the resolver's copy: ordering `*/*`
+  # ahead of it let `bogus:vendor/model` bypass the allowlist entirely.
   case "$2" in
     *:*)
       _lens_head="${2%%:*}"; _lens_tail="${2#*:}"
@@ -86,6 +84,10 @@ check_routable() { # check_routable <label> <id>
         *" $_lens_head "*) return 0 ;;
         *) die "$1='$2' names the unknown provider lens '$_lens_head:' (known: $LENS_NAMESPACES) — cc-proxy strips only a lens it knows, so this would reach the default backend as a literal model id" ;;
       esac ;;
+  esac
+  case "$2" in
+    glm-*|claude-*) return 0 ;;
+    */*) return 0 ;;
   esac
   die "$1='$2' is not cc-proxy-routable (need glm-*, vendor/model, <provider>:<model>, or claude-*)"
 }
