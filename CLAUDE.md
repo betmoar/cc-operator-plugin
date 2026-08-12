@@ -150,6 +150,12 @@ way. None of it is loaded by the plugin at runtime; the validator reads only
   strings in it quote the real scripts — a message change in `ops-stop-hook.sh`,
   `ops-armgate-hook.sh`, `ops-task.sh --exempt`, or `ops-init.sh`'s F67 warning
   must update the charter's quoted expectations too (no validator pin; prose).
+  **First executed 2026-08-12** (`1e5308a`→`13ea694`): it produced issue #34 and
+  four defects in its own text, all corrected, with a "What the first real run
+  changed" section recording them. Its R0 now opens with a build-identity check
+  — `cmp` every `.operator/bin/` CLI against the plugin's — because a stale
+  `bin/` silently makes the later phases audit a different build than the tree,
+  which is exactly what happened on the first run.
 - `docs/INFOGRAPHICS.md` + `docs/img/` — visual explainers. **Non-normative and
   partly forward-looking**: two of the three sheets depict a "2.0" target state
   whose isolation, security-lens, attestation and hash-chain claims are open
