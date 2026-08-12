@@ -16,6 +16,11 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # Same reasoning as validate.yml: `unittest discover` leaves 2 __pycache__
+    # dirs, gitignored, so the tree is dirty in a way `git status` cannot show.
+    # It matters more here — this job runs the gate that decides what ships.
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - uses: actions/checkout@v4
 

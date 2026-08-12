@@ -3,8 +3,21 @@
 # documented `pytest tests/` command. Audit F10/F06: without this, an untracked
 # seed dir with an unimportable test_* halts the whole run with 4 collection
 # errors before the real suite collects.
+#
+# testpaths ONLY APPLIES WHEN NO PATH IS GIVEN. `pytest` alone honours it;
+# `pytest tests/` overrides it and walks the whole directory, which is how the
+# 4 collection errors kept reappearing despite the pin above — the guard was
+# real and the invocation stepped around it. norecursedirs is the half that
+# survives an explicit path: it prunes the seed dirs during the walk.
+#
+# Both are kept. testpaths states what the suite IS; norecursedirs states what
+# is never a test even when someone points pytest at it. CI runs neither shape
+# (`python3 -m unittest discover -s tests`), so nothing in the build would have
+# caught this: it is a local-ergonomics fix, and the errors it removes were
+# never a signal about the code.
 [tool.pytest.ini_options]
 testpaths = [
     "tests/test_validate_plugin.py",
     "tests/test_release_gate.py",
 ]
+norecursedirs = ["pilot-seeds", "pilot-seeds-v2"]

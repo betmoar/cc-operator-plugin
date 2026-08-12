@@ -7,6 +7,20 @@
 
 set -u
 
+# This suite shells out to python3 ~43 times. Every one of those would leave a
+# __pycache__ next to whatever it imported — gitignored, so `git status` stays
+# clean while the tree is not. Stale bytecode is the canonical example of build
+# state a tracked-tree check cannot see (the class the #23 case at the bottom of
+# this file demonstrates), and a test suite has no business generating it.
+# Exported, so it reaches the subshells and the scripts under test too.
+#
+# ONE CASE MUST OPT OUT, and it is the #23 fixture at the bottom: its whole
+# mechanism IS a written .pyc, so inheriting this turns it into a case that
+# cannot demonstrate what it asserts. It unsets the variable in its own
+# subshell. Found the direct way — setting this here took the suite to 505/2
+# with both #23 write-path cases red.
+export PYTHONDONTWRITEBYTECODE=1
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(dirname "$SCRIPT_DIR")"
 SCRIPTS="$REPO/scripts"
@@ -3379,6 +3393,13 @@ if ! command -v python3 >/dev/null 2>&1; then
 else
   I23="$(newproj)"
   (
+    # THE ONE OPT-OUT from this file's PYTHONDONTWRITEBYTECODE export: the
+    # mechanism under test IS a written .pyc. Inheriting the suite-wide setting
+    # leaves __pycache__ empty, the in-tree run recompiles from source and
+    # FAILs, and the case asserts nothing (measured: 505/2, both write-path
+    # halves red). Unset in this subshell only — every other python3 call in
+    # the file keeps the suppression.
+    unset PYTHONDONTWRITEBYTECODE
     cd "$I23" || exit 1
     git init -q -b work . && git config user.email t@t && git config user.name t
     printf '__pycache__/\n' > .gitignore
@@ -3408,7 +3429,11 @@ os.utime('calc.py', (mt, mt))
   I23PORC="$( cd "$I23" && git status --porcelain 2>/dev/null )"
   check "#23 the builder's tree reports clean (the contaminant is gitignored)" \
     "$([ -z "$I23PORC" ] && echo 0 || echo 1)"
-  ( cd "$I23" && python3 test_calc.py >/dev/null 2>&1 ); I23IN=$?
+  # Same opt-out as the builder subshell: this run must be allowed to CONSULT
+  # the cache. PYTHONDONTWRITEBYTECODE suppresses writing, and reading a
+  # already-written .pyc is unaffected — but keeping the two symmetrical is
+  # what stops the next edit from re-introducing the asymmetry that broke this.
+  ( unset PYTHONDONTWRITEBYTECODE; cd "$I23" && python3 test_calc.py >/dev/null 2>&1 ); I23IN=$?
   check "#23 the defect verifies GREEN in the builder's tree (stale .pyc served)" \
     "$([ "$I23IN" = 0 ] && echo 0 || echo 1)"
   I23C="$(newproj)"; rm -rf "$I23C"
@@ -3418,7 +3443,7 @@ os.utime('calc.py', (mt, mt))
   # — the same property `agent(..., {isolation:'worktree'})` would buy the seat.
   check "#23 a clean checkout of that commit has no __pycache__" \
     "$([ ! -d "$I23C/__pycache__" ] && echo 0 || echo 1)"
-  ( cd "$I23C" && python3 test_calc.py >/dev/null 2>&1 ); I23CL=$?
+  ( unset PYTHONDONTWRITEBYTECODE; cd "$I23C" && python3 test_calc.py >/dev/null 2>&1 ); I23CL=$?
   check "#23 the SAME commit FAILS in a clean checkout (verdict is tree-dependent)" \
     "$([ "$I23CL" != 0 ] && echo 0 || echo 1)"
   # And the scope line from --expect-clean is what an operator would have to
