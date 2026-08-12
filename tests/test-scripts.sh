@@ -3338,5 +3338,99 @@ check "dash-named file: the count is not PARTIAL" \
 rm -rf "$DASHP"
 
 ########################################################################
+echo "-- Case: gitignored build state diverges in-tree from a clean checkout (#23)"
+# THE FIXTURE FOR #23, in-tree at last. The issue states the mechanism; nothing
+# in this repo reproduced it, so the class had no tripwire and the eventual
+# worktree fix would have had nothing to prove itself against.
+#
+# What it demonstrates: the SAME commit verifies PASS in the builder's tree and
+# FAIL in a clean checkout of that commit, with `git status --porcelain` empty
+# throughout — because the contaminant is gitignored, which is exactly why the
+# tracked-tree check cannot see it.
+#
+# MEASURED CORRECTION to the issue's recipe. It says the two source lines being
+# "the same byte length" suffices, because CPython validates a .pyc by source
+# mtime + size. Size is the SECOND field: an edit moves the mtime, CPython
+# invalidates, recompiles, and BOTH sides FAIL — measured, no divergence at all.
+# The fixture must put the mtime back after the edit; only then does the header
+# still match and the stale bytecode get served.
+#
+# The mtime is stamped from the .pyc's own header, not from a `stat` taken
+# before the edit, and not left to timing. Measured: with the stamp removed,
+# the in-tree run passes 4 of 12 iterations — the builder run and the edit fall
+# on the same clock second often enough to look fixed and rarely enough to be
+# useless, so a timing-derived fixture is green or red by machine speed rather
+# than by the property under test. Reading the header makes them agree BY
+# CONSTRUCTION: 12/12. Format: 4-byte magic, 4-byte flags, then the source
+# mtime as a little-endian uint32 at offset 8 (PEP 552; flags bit 0 clear =
+# timestamp invalidation, the default py_compile writes).
+#
+# Consequence for anyone re-running discrimination on this case: deleting the
+# stamp does NOT reliably flip it — one run in three still passes by luck.
+# That is a property of the mechanism, not a weak assertion. The mutations that
+# DO discriminate every time are removing the builder warm-up (no .pyc exists:
+# 506/1) and un-ignoring __pycache__ (porcelain sees it: 505/2).
+#
+# Skipped without python3 — the mechanism IS CPython's cache. A skip is honest;
+# a case that silently does not run is the vacuous-guard class this repo keeps
+# catching, so the skip prints.
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "  skip #23 fixture: python3 not available (the mechanism is CPython's .pyc cache)"
+else
+  I23="$(newproj)"
+  (
+    cd "$I23" || exit 1
+    git init -q -b work . && git config user.email t@t && git config user.name t
+    printf '__pycache__/\n' > .gitignore
+    printf 'def add(a, b):\n    return a + b\n' > calc.py
+    printf 'from calc import add\nassert add(2, 3) == 5, add(2, 3)\n' > test_calc.py
+    git add -A && git commit -qm correct
+    python3 test_calc.py >/dev/null 2>&1        # builder run: writes the .pyc
+    printf 'def add(a, b):\n    return a * b\n' > calc.py   # the defect
+    # Stamp calc.py with the mtime the .pyc header ITSELF records, so the two
+    # agree no matter how long the steps above took. Read AND applied in the
+    # same python3 call: `date`'s epoch flag is a flavor split (BSD `-r`, GNU
+    # `-d @`) and the `||` fallback shape between them is exactly what
+    # check_portability rejects — os.utime takes the epoch directly and is the
+    # same on every platform. python3 is already required by this case.
+    python3 -c "
+import glob, os, struct, sys
+f = glob.glob('__pycache__/calc.*.pyc')
+if not f: sys.exit(0)
+mt = struct.unpack('<I', open(f[0], 'rb').read(12)[8:12])[0]
+os.utime('calc.py', (mt, mt))
+" 2>/dev/null
+    git add -A && git commit -qm defect
+  ) >/dev/null 2>&1
+  # The tracked tree is clean — the control that makes this a trap rather than
+  # an oversight. If this ever fails the fixture leaked a tracked change and
+  # the two verdicts below prove nothing.
+  I23PORC="$( cd "$I23" && git status --porcelain 2>/dev/null )"
+  check "#23 the builder's tree reports clean (the contaminant is gitignored)" \
+    "$([ -z "$I23PORC" ] && echo 0 || echo 1)"
+  ( cd "$I23" && python3 test_calc.py >/dev/null 2>&1 ); I23IN=$?
+  check "#23 the defect verifies GREEN in the builder's tree (stale .pyc served)" \
+    "$([ "$I23IN" = 0 ] && echo 0 || echo 1)"
+  I23C="$(newproj)"; rm -rf "$I23C"
+  git clone -q "$I23" "$I23C" >/dev/null 2>&1
+  ( cd "$I23C" && git checkout -q work >/dev/null 2>&1 )
+  # A clone carries tracked files only, so the whole gitignored family evaporates
+  # — the same property `agent(..., {isolation:'worktree'})` would buy the seat.
+  check "#23 a clean checkout of that commit has no __pycache__" \
+    "$([ ! -d "$I23C/__pycache__" ] && echo 0 || echo 1)"
+  ( cd "$I23C" && python3 test_calc.py >/dev/null 2>&1 ); I23CL=$?
+  check "#23 the SAME commit FAILS in a clean checkout (verdict is tree-dependent)" \
+    "$([ "$I23CL" != 0 ] && echo 0 || echo 1)"
+  # And the scope line from --expect-clean is what an operator would have to
+  # notice: green tree, non-zero ignored count.
+  I23OUT="$( cd "$I23" && bash "$CLAIMS" --expect-clean 2>/dev/null )"
+  check "#23 --expect-clean is green here yet reports the ignored entry" \
+    "$(printf '%s' "$I23OUT" | grep -q '{item working-tree} ok' \
+       && printf '%s' "$I23OUT" | grep -q '{item ignored-state} report: 1 ' \
+       && echo 0 || echo 1)"
+  rm -rf "$I23" "$I23C"
+fi
+
+########################################################################
 echo "== summary: $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]
