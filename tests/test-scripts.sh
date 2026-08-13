@@ -736,6 +736,25 @@ check "--reconcile restores the long row to VERDICTS.md" "$(grep -q 'T-LONG' "$P
 rm -rf "$P"
 
 ########################################################################
+echo "-- Case 12c: --reconcile aborts on an unreadable VERDICTS.md (F13)"
+# INVARIANT: reconcile is a WRITE to the ledger of record; a ledger that became
+# unreadable mid-reconcile (concurrent access, dropped perms) must ABORT, not
+# report a false '0 restored'. grep's exit 2 was masked by `|| true`, so a
+# readability failure silently restored nothing and still exited 0. F13.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+mkdir -p "$P/.operator/verdicts.d"
+printf '| T-F13 | crit | ev @abc123 | PASS |\n' >> "$P/.operator/verdicts.d/SESS-F13.md"
+# sanity: the fragment row is present and would be restored were the ledger readable
+check "premise: ledger exists" "$([ -f "$P/.operator/VERDICTS.md" ] && echo 0 || echo 1)"
+# make the ledger unreadable, then reconcile MUST abort non-zero (no '0 restored')
+chmod 000 "$P/.operator/VERDICTS.md"
+ROUT="$( cd "$P" && bash "$VERDICT" --reconcile 2>&1 )"; RRC=$?
+chmod 600 "$P/.operator/VERDICTS.md"
+check "--reconcile exits NON-ZERO on an unreadable VERDICTS.md" "$([ "$RRC" -ne 0 ] && echo 0 || echo 1)"
+check "--reconcile does NOT report '0 restored' success on grep failure" "$(! printf '%s' "$ROUT" | grep -q '0 row(s) restored' && echo 0 || echo 1)"
+rm -rf "$P"
+
+########################################################################
 echo "-- Case 13: the sentinel BODY is untrusted input"
 # INVARIANT: a sentinel is an ordinary file — a merge, a checkout, or a patch
 # can supply its contents. The stamped owner becomes a fragment FILENAME, so an

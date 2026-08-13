@@ -603,7 +603,8 @@ if [ "${1:-}" = "--reconcile" ]; then
   # guarantee evaporating exactly when it matters. Associative arrays would be
   # the other fix, but macOS /bin/bash is 3.2 and has none.
   CAND="$(mktemp "${TMPDIR:-/tmp}/opsrec.XXXXXX")"
-  trap 'lock_release; rm -f "$CAND"' EXIT
+  MISSINGF="$(mktemp "${TMPDIR:-/tmp}/opsmis.XXXXXX")"
+  trap 'lock_release; rm -f "$CAND" "$MISSINGF"' EXIT
   if [ -d "$FRAGDIR" ]; then
     for frag in "$FRAGDIR"/*.md; do
       [ -f "$frag" ] || continue
@@ -661,13 +662,23 @@ if [ "${1:-}" = "--reconcile" ]; then
   if [ -s "$CAND" ]; then
     # -F -x -v -f: keep candidate lines NOT present verbatim in the ledger.
     # Sorted -u so a row duplicated across fragments is added once.
-    MISSING="$(grep -Fxv -f "$VERDICTS" -- "$CAND" 2>/dev/null | sort -u || true)"
-    if [ -n "$MISSING" ]; then
-      printf '%s\n' "$MISSING" >> "$VERDICTS"
-      added="$(printf '%s\n' "$MISSING" | wc -l | tr -d ' ')"
+    # A ledger that became unreadable mid-reconcile (concurrent access, dropped
+    # perms) makes grep exit 2; the old `|| true` masked that as a false
+    # '0 restored' — silent data loss reported as success. Abort instead.
+    # exit 1 is the benign "nothing missing" case and stays green. F13.
+    # The pipeline writes to MISSINGF (not a command substitution) so grep's
+    # exit is readable from PIPESTATUS — an assignment resets it. The guard is
+    # the grep EXIT code (works on every uid, unlike a mode-bit test), so an
+    # unreadable ledger aborts regardless of who runs reconcile.
+    grep -Fxv -f "$VERDICTS" -- "$CAND" 2>/dev/null | sort -u > "$MISSINGF"
+    gstatus=${PIPESTATUS[0]}
+    [ "$gstatus" -le 1 ] || die "grep error ($gstatus) reading $VERDICTS during reconcile — refusing to report a false '0 restored' (check ledger readability)"
+    if [ -s "$MISSINGF" ]; then
+      added="$(wc -l < "$MISSINGF" | tr -d ' ')"
+      cat "$MISSINGF" >> "$VERDICTS"
     fi
   fi
-  rm -f "$CAND"
+  rm -f "$CAND" "$MISSINGF"
   lock_release
   if [ "$skipped" -gt 0 ]; then
     echo "reconciled: $added row(s) restored to $VERDICTS from $FRAGDIR/ ($skipped non-conformant line(s) skipped — see stderr)"
