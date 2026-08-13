@@ -1491,7 +1491,7 @@ def check_workflows(root, problems):
     # The alternation is spelled out rather than built from LENS_NAMESPACES:
     # these are four literal source files, and a generated regex would be one
     # more thing to keep in sync.
-    CANONICAL_ROUTABLE = r"/^glm-|\/|^claude-|^(?:glm|openrouter|deepseek|qwen|claude):./"
+    CANONICAL_ROUTABLE = r"/^(?:glm-|claude-)[^:]*$|^(?:glm|openrouter|deepseek|qwen|claude):.+|^(?=[^:]*\/[^:]*:).+$|^[^:]*\/[^:]*$/"
     CANONICAL_BAD_CHARSET = r"/[^\w./:@[\]-]/"
     for f in files:
         rel = f"workflows/{f.name}"

@@ -132,6 +132,23 @@ try {
 ok(bracketOk, "brainstorm tier: bracket-marked id 'glm-5.2[1m]' accepted (charset allows ])");
 await throws(() => run(WF("brainstorm.js"), { tiers: { MECHANICAL: "not-routable" } }, {}),
   "brainstorm tier: unroutable id rejected");
+// F8 (issue #35): the provider-lens allowlist must be consulted BEFORE the bare
+// slash fallback. A flat alternation whose bare `\/` arm precedes the lens lets
+// `bogus:vendor/model` route on the slash, while the shell check_routable
+// (lens-first) dies on it. Mirror that ordering here: reject the bypass...
+await throws(() => run(WF("brainstorm.js"), { tiers: { JUDGMENT: "bogus:vendor/model" } }, {}),
+  "brainstorm tier: provider-lens bypass 'bogus:vendor/model' rejected (F8)");
+// ...and accept every legal shape the lens-first rule keeps routable: bare
+// glm-/claude-, a slash-headed variant (`vendor/model:free`), and a known lens.
+for (const good of ["glm-5.2", "claude-opus-5", "deepseek/deepseek-r1:free",
+                    "openrouter:anthropic/claude-3-opus", "vendor/model:free"]) {
+  let accepted = true;
+  try {
+    await run(WF("brainstorm.js"), { tiers: { MECHANICAL: good } },
+      { blindspots: { findings: [] }, converge: { ranked: [], sharedConstraints: [], openQuestions: [] } });
+  } catch { accepted = false; }
+  ok(accepted, `brainstorm tier: legal id ${JSON.stringify(good)} accepted (F8)`);
+}
 // IMPLEMENT is in KNOWN_TIERS → accepted (no throw); it's unused but routable.
 let implOk = true;
 try {

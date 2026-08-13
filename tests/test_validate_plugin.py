@@ -285,11 +285,16 @@ def make_good_tree(root):
         '    "") die "$1 is empty" ;;\n'
         '    *[!A-Za-z0-9._:/@[\\]-]*) die "$1 outside charset" ;;\n'
         '  esac\n'
-        '  case "$2" in glm-*|claude-*) return 0 ;; */*) return 0 ;; esac\n'
         '  case "$2" in\n'
-        '    *:*) case " $LENS_NAMESPACES " in *" ${2%%:*} "*) return 0 ;;\n'
-        '           *) die "unknown lens" ;; esac ;;\n'
+        '    *:*)\n'
+        '      _lens_head="${2%%:*}"\n'
+        '      case "$_lens_head" in */*) ;;\n'
+        '        *) case " $LENS_NAMESPACES " in\n'
+        '             *" $_lens_head "*) return 0 ;;\n'
+        '             *) die "unknown lens" ;; esac ;;\n'
+        '      esac ;;\n'
         '  esac\n'
+        '  case "$2" in glm-*|claude-*) return 0 ;; */*) return 0 ;; esac\n'
         '  die "$1 is not cc-proxy-routable"\n'
         '}\n'
         'LENS_NAMESPACES="glm openrouter deepseek qwen claude"\n'
@@ -337,7 +342,7 @@ def make_good_tree(root):
     write(root / "agents" / "_templates" / "default.tmpl",
           '---\nname: op-NAME\nmodel: MODEL\ntools: Read\n---\nbody\n')
     WF_SHARED = (
-        'const ROUTABLE = /^glm-|\\/|^claude-|^(?:glm|openrouter|deepseek|qwen|claude):./;\n'
+        'const ROUTABLE = /^(?:glm-|claude-)[^:]*$|^(?:glm|openrouter|deepseek|qwen|claude):.+|^(?=[^:]*\\/[^:]*:).+$|^[^:]*\\/[^:]*$/;\n'
         'const BAD_CHARSET = /[^\\w./:@[\\]-]/;\n'
         'const KNOWN_TIERS = ["JUDGMENT","IMPLEMENT","MECHANICAL","RECON"];\n'
         'for (const [n, id] of Object.entries({JUDGMENT:"claude-opus-5"})) {\n'
@@ -1157,7 +1162,7 @@ class ValidatorTest(unittest.TestCase):
         """A conforming workflow with the shared invariants."""
         return (
             f'export const meta = {{ name: "{name}", description: "d" }};\n'
-            'const ROUTABLE = /^glm-|\\/|^claude-|^(?:glm|openrouter|deepseek|qwen|claude):./;\n'
+            'const ROUTABLE = /^(?:glm-|claude-)[^:]*$|^(?:glm|openrouter|deepseek|qwen|claude):.+|^(?=[^:]*\\/[^:]*:).+$|^[^:]*\\/[^:]*$/;\n'
             'const BAD_CHARSET = /[^\\w./:@[\\]-]/;\n'
             'for (const [n, id] of Object.entries({JUDGMENT:"claude-opus-5"})) {\n'
             '  if (!ROUTABLE.test(id) || BAD_CHARSET.test(id)) throw new Error("x");\n'
@@ -1171,7 +1176,7 @@ class ValidatorTest(unittest.TestCase):
 
     def test_workflow_divergent_routable_fires(self):
         write(self.dir / "workflows" / "review.js",
-              self._wf("review").replace("const ROUTABLE = /^glm-|\\/|^claude-|^(?:glm|openrouter|deepseek|qwen|claude):./;",
+              self._wf("review").replace("const ROUTABLE = /^(?:glm-|claude-)[^:]*$|^(?:glm|openrouter|deepseek|qwen|claude):.+|^(?=[^:]*\\/[^:]*:).+$|^[^:]*\\/[^:]*$/;",
                                          "const ROUTABLE = /^glm-5|^claude-5/;"))
         self.assertFires("ROUTABLE regex is")
 
@@ -1318,7 +1323,7 @@ class ValidatorTest(unittest.TestCase):
         # A conforming workflow that omits KNOWN_TIERS entirely.
         write(self.dir / "workflows" / "review.js",
               'export const meta = { name: "review", description: "d" };\n'
-              'const ROUTABLE = /^glm-|\\/|^claude-|^(?:glm|openrouter|deepseek|qwen|claude):./;\n'
+              'const ROUTABLE = /^(?:glm-|claude-)[^:]*$|^(?:glm|openrouter|deepseek|qwen|claude):.+|^(?=[^:]*\\/[^:]*:).+$|^[^:]*\\/[^:]*$/;\n'
               'const BAD_CHARSET = /[^\\w./:@[\\]-]/;\n'
               'for (const [n, id] of Object.entries({JUDGMENT:"claude-opus-5"})) {\n'
               '  if (!ROUTABLE.test(id)) throw new Error("x");\n'
@@ -1557,12 +1562,16 @@ class ResolverRendererParityTest(unittest.TestCase):
         '    *[!A-Za-z0-9._:/@[\\]-]*)\n'
         '      die "$1=\'$2\' outside charset" ;;\n'
         "  esac\n"
-        '  case "$2" in glm-*|claude-*) return 0 ;; */*) return 0 ;; esac\n'
         '  case "$2" in\n'
-        '    *:*) case " $LENS_NAMESPACES " in\n'
-        '           *" ${2%%:*} "*) return 0 ;;\n'
-        '           *) die "unknown lens" ;; esac ;;\n'
+        '    *:*)\n'
+        '      _lens_head="${2%%:*}"\n'
+        '      case "$_lens_head" in */*) ;;\n'
+        '        *) case " $LENS_NAMESPACES " in\n'
+        '             *" $_lens_head "*) return 0 ;;\n'
+        '             *) die "unknown lens" ;; esac ;;\n'
+        '      esac ;;\n'
         "  esac\n"
+        '  case "$2" in glm-*|claude-*) return 0 ;; */*) return 0 ;; esac\n'
         '  die "$1=\'$2\' is not cc-proxy-routable"\n'
         "}\n"
     )
@@ -1599,12 +1608,13 @@ class ResolverRendererParityTest(unittest.TestCase):
                     '  case "$2" in "") die "$1 is empty" ;;\n'
                     '    *[!A-Za-z0-9._:/@[\\]-]*)\n'
                     '      die "$1=\'$2\' outside charset" ;; esac\n'
+                    '  case "$2" in *:*) _lens_head="${2%%:*}"\n'
+                    '    case "$_lens_head" in */*) ;;\n'
+                    '      *) case " $LENS_NAMESPACES " in *" $_lens_head "*) return 0 ;;\n'
+                    '        *) die "unknown lens" ;; esac ;;\n'
+                    '    esac ;; esac\n'
                     '  case "$2" in glm-*|claude-*) return 0 ;;\n'
                     '    */*) return 0 ;; esac\n'
-                    '  case "$2" in *:*)\n'
-                    '      case " $LENS_NAMESPACES " in *" ${2%%:*} "*) return 0 ;;\n'
-                    '        *) die "unknown lens" ;; esac ;;\n'
-                    "  esac\n"
                     '  die "$1=\'$2\' is not cc-proxy-routable"\n}\n')
         self._write(render=reflowed + self.LENS + self.TIERS)
         self.assertEqual(self.problems(), [])

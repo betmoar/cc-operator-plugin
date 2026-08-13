@@ -24,7 +24,14 @@ const DEFAULT_TIERS = {
   MECHANICAL: "glm-5-turbo",
 };
 
-const ROUTABLE = /^glm-|\/|^claude-|^(?:glm|openrouter|deepseek|qwen|claude):./;
+// Lens-first mirror of ops-tiers.sh check_routable (F8, issue #35): a colon
+// names a LENS only when the head before it is a known provider and has no
+// slash (`vendor/model:free` is a variant suffix, not a lens — the slash means
+// fall through to the bare shapes). The bare `*/*` arm must not pre-empt the
+// allowlist or `bogus:vendor/model` routes through the slash. Bare shapes
+// (^glm-, ^claude-, slash-containing) never carry a colon, so they are
+// anchored `$`-less-colon here.
+const ROUTABLE = /^(?:glm-|claude-)[^:]*$|^(?:glm|openrouter|deepseek|qwen|claude):.+|^(?=[^:]*\/[^:]*:).+$|^[^:]*\/[^:]*$/;
 // Charset mirror of ops-tiers.sh's check_routable: a model id must be inside
 // [A-Za-z0-9._:/@[]-]. ROUTABLE checks SHAPE only — it accepts "claude opus/x"
 // (contains /) that the shell gate rejects for whitespace. Without this, a

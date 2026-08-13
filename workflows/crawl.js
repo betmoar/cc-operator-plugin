@@ -19,7 +19,14 @@ const DEFAULT_TIERS = {
   JUDGMENT: "claude-opus-5",
   MECHANICAL: "glm-5-turbo",
 };
-const ROUTABLE = /^glm-|\/|^claude-|^(?:glm|openrouter|deepseek|qwen|claude):./;
+// Lens-first mirror of ops-tiers.sh check_routable (F8, issue #35): a colon
+// names a LENS only when the head before it is a known provider and has no
+// slash (`vendor/model:free` is a variant suffix, not a lens — the slash means
+// fall through to the bare shapes). The bare `*/*` arm must not pre-empt the
+// allowlist or `bogus:vendor/model` routes through the slash. Bare shapes
+// (^glm-, ^claude-, slash-containing) never carry a colon, so they are
+// anchored colon-free here.
+const ROUTABLE = /^(?:glm-|claude-)[^:]*$|^(?:glm|openrouter|deepseek|qwen|claude):.+|^(?=[^:]*\/[^:]*:).+$|^[^:]*\/[^:]*$/;
 const BAD_CHARSET = /[^\w./:@[\]-]/;
 const KNOWN_TIERS = ["JUDGMENT", "IMPLEMENT", "MECHANICAL", "RECON"];
 
