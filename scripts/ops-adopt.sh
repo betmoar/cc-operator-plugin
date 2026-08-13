@@ -233,6 +233,12 @@ fallback_acquire() {
   return 0
 }
 
+# Reached ONLY through the trap strings installed by the two acquire paths. The
+# linter cannot follow a trap, so every line below reads as dead code (SC2317);
+# `lock_release` escapes the same fate only because it also has direct callers.
+# (A comment whose FIRST word is the linter's name is parsed as a directive —
+#  hence the wording above. SC1072/SC1073, hit while writing this.)
+# shellcheck disable=SC2317
 fallback_release() {
   [ "${FALLBACK_HELD:-0}" = "1" ] || return 0
   FALLBACK_HELD=0

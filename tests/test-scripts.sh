@@ -2401,7 +2401,7 @@ printf 'garbage-not-an-index' > "$B10FI/.git/index"
 check "B10.1f (F7) --census on a corrupted index → non-zero (not 'files: 0')" \
   "$([ "$B10FIRC" != 0 ] && echo 0 || echo 1)"
 # restore a real index so the temp repo is not left in a broken state
-( cd "$B10FI" && git read-tree HEAD 2>/dev/null || true )
+( cd "$B10FI" && git read-tree HEAD 2>/dev/null ) || true
 
 # B10.2 — a filename containing a SPACE must not vanish from the count. Bare
 # `xargs` word-splits on any whitespace, so `my file.py` became two bogus args,
@@ -2911,6 +2911,8 @@ check "statusline counts a long mine DEVIATION with no trailing newline (#10 rev
 check "no whole-file read survives in scan_deviations_bar (F10)" \
   "$(awk '/^scan_deviations_bar\(\)/{ins=1} ins && /done < "\$f"/{bad=1} /^}$/{ins=0} END{exit bad?1:0}' \
      "$SCRIPTS/statusline.sh" && echo 0 || echo 1)"
+# shellcheck disable=SC2016  # `\$f` is the LITERAL text being grepped for in the
+# renderer's source; expanding it here would search for this suite's own $f.
 check "the bar's NUL probe is fed by tail -n 256, like the scan (F10)" \
   "$([ "$(grep -c 'done < <(tail -n 256 "\$f" 2>/dev/null)' "$SCRIPTS/statusline.sh")" -eq 2 ] && echo 0 || echo 1)"
 # SEMANTIC: a NUL inside the tail window still classifies the ledger as corrupt,
