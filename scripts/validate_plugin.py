@@ -957,6 +957,20 @@ def check_guard_parity(root, problems):
                 f"*.exempt — a sentinel body naming a G3 grant parses as a "
                 f"valid owner, letting recompute_arm_marker delete another "
                 f"session's exemption (F1)")
+    # F15 follow-up: ops-adopt.sh's inline PREV reject-set is a FIFTH copy of
+    # the owner-reject pattern. It reads the same untrusted sentinel body and
+    # echoes PREV to stdout, so it must carry the same reserved-suffix guard
+    # — else a PREV ending in .exempt is echoed verbatim (the stdout-injection-
+    # adjacent path F15 closed) with no parity check catching the regression
+    # (the loop above is scoped to the three sentinel_owner parsers; this was
+    # the gap the final review surfaced).
+    p = root / "scripts" / "ops-adopt.sh"
+    if p.is_file() and "*.exempt" not in p.read_text(encoding="utf-8"):
+        problems.append(
+            "scripts/ops-adopt.sh: the PREV reject-set is missing *.exempt — "
+            "PREV is echoed to stdout from the untrusted sentinel body, so a "
+            "reserved-suffix value must degrade to <invalid> like the three "
+            "sentinel_owner parsers (F15 follow-up)")
     # F2: the F65 -L guard was applied to the five pending/ sites but never to
     # the verdicts.d/ evidence-fragment directory. A planted symlink at
     # .operator/verdicts.d/<owner>.md -> arbitrary-file makes append_fragment
@@ -1028,19 +1042,37 @@ def check_guard_parity(root, problems):
     # ops-armgate-hook.sh carry the isinstance(v, bool) -> "true"/"false"
     # coercion; ops-sessionstart-hook.sh omitted it (no live trigger today —
     # it reads only string fields — but the drift is real and the next
-    # boolean field added would ship broken). Pin the coercion literal in all
-    # three so the parity cannot drift again.
+    # boolean field added would ship broken). Pin the coercion in the CODE of
+    # json_get's body, not as a whole-file substring: a marker only in a
+    # comment (or a moved fragment) would satisfy a bare substring search and
+    # let the real coercion revert silently (final-review follow-up; modeled
+    # on check_resolver_renderer_parity's body extraction).
     for name in ("ops-sessionstart-hook.sh", "ops-stop-hook.sh",
                  "ops-armgate-hook.sh"):
         p = root / "scripts" / name
         if not p.is_file():
             continue
-        if "isinstance(v, bool)" not in p.read_text(encoding="utf-8"):
+        text = p.read_text(encoding="utf-8")
+        # Extract the json_get() body: from its definition to the closing brace
+        # on its own line. Strip comment lines so a comment-only marker does
+        # not satisfy the pin.
+        body = ""
+        m = re.search(r"json_get\(\)", text)
+        if m:
+            tail = text[m.start():]
+            bl = []
+            for ln in tail.splitlines():
+                bl.append(ln)
+                if ln.strip() == "}" and len(bl) > 1:
+                    break
+            body = "\n".join(ln for ln in bl if not ln.lstrip().startswith("#"))
+        if "isinstance(v, bool)" not in body:
             problems.append(
                 f"scripts/{name}: json_get() is missing the "
-                f"isinstance(v, bool) coercion — a JSON boolean renders Python "
-                f"True/False and a downstream '= \"true\"' test silently never "
-                f"matches (F14; the three hooks' json_get helpers must agree)")
+                f"isinstance(v, bool) coercion in its body — a JSON boolean "
+                f"renders Python True/False and a downstream '= \"true\"' test "
+                f"silently never matches (F14; the three hooks' json_get "
+                f"helpers must agree; a comment-only marker does not satisfy)")
 
 
 def check_claims(root, problems):

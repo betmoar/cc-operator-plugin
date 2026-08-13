@@ -229,7 +229,10 @@ def make_good_tree(root):
           "# --mark-handoff writes a HANDOFF-MARK line under the lock\n" +
           GOOD_LOCK_BLOCK + GOOD_SOURCE_STAMP)
     write(root / "scripts" / "ops-adopt.sh",
-          "#!/usr/bin/env bash\n" + guards + nolink + bounded + GOOD_LOCK_BLOCK)
+          "#!/usr/bin/env bash\n" + guards + nolink + bounded +
+          "# PREV reject-set (F15): carries *.exempt like the sentinel_owner parsers\n"
+          'case "${PREV:-}" in */* | .* | *"|"* | *[[:space:]]* | *[[:cntrl:]]* | *.exempt) PREV="<invalid>" ;; esac\n'
+          + GOOD_LOCK_BLOCK)
     # ops-claims.sh: a fourth gate CLI. check_claims pins its PROTECTED literal
     # and requires matches_protected applied to $p — the stub carries both so
     # the good tree is clean (and the check_claims mutation tests stub it out
@@ -933,7 +936,9 @@ class ValidatorTest(unittest.TestCase):
             "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
             "check_owner_name() { :; }\n"
             "[ ! -L \"$F\" ] || exit 0\n"
-            "while IFS= read -r -n 512 line; do :; done < \"$F\"\n")
+            "while IFS= read -r -n 512 line; do :; done < \"$F\"\n"
+            # PREV reject-set (F15): carries *.exempt (check_guard_parity pin)
+            'case "${PREV:-}" in */* | .* | *"|"* | *[[:space:]]* | *[[:cntrl:]]* | *.exempt) PREV="<invalid>" ;; esac\n')
         write(self.dir / "scripts" / "ops-stop-hook.sh", hook_body or good_hook)
         write(self.dir / "scripts" / "ops-verdict.sh", verdict_body or good_verdict)
         write(self.dir / "scripts" / "ops-adopt.sh", adopt_body or good_adopt)
@@ -1055,7 +1060,9 @@ class ValidatorTest(unittest.TestCase):
             "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
             "check_owner_name() { :; }\n"
             "[ ! -L \"$F\" ] || exit 0\n"
-            "while IFS= read -r -n 512 line; do :; done < \"$F\"\n"))
+            "while IFS= read -r -n 512 line; do :; done < \"$F\"\n"
+            # PREV reject-set (F15): carries *.exempt (check_guard_parity pin)
+            'case "${PREV:-}" in */* | .* | *"|"* | *[[:space:]]* | *[[:cntrl:]]* | *.exempt) PREV="<invalid>" ;; esac\n'))
         self.assertEqual(self.bounds_problems(), [])
 
     def test_missing_guard_in_one_cli_fires(self):

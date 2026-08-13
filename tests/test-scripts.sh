@@ -596,6 +596,15 @@ check "F15 ops-adopt still exits 0 (adoption succeeds; only the display is sanit
   "$([ "$PREVRC" -eq 0 ] && echo 0 || echo 1)"
 check "F15 ops-adopt does not echo the raw malicious body" \
   "$(printf '%s' "$PREVOUT" | grep -q 'evil path|with pipe' && echo 1 || echo 0)"
+# F15/#6: a PREV carrying an ANSI/OSC terminal-control escape (ESC ]0; ...)
+# passes the owner-shape reject-set but would rewrite the terminal title when
+# echoed. The [:cntrl:] arm must catch it -> <invalid>. (final-review #6.)
+printf 'session_id: \033]0;PWNED\007FAKEOWNER\n' > "$P/.operator/pending/T-PREV"
+ESCOUT="$( cd "$P" && bash "$ADOPT" --owner SESS-B T-PREV 2>/dev/null )"
+check "F15 ops-adopt sanitizes a PREV with an ANSI/OSC escape to <invalid>" \
+  "$(printf '%s' "$ESCOUT" | grep -q 'adopted T-PREV: <invalid> -> SESS-B' && echo 0 || echo 1)"
+check "F15 ops-adopt does not echo the raw escape sequence" \
+  "$(printf '%s' "$ESCOUT" | grep -q 'PWNED' && echo 1 || echo 0)"
 # F15 follow-up: an UNOWNED sentinel (opened with no --owner, so no session_id:
 # line) must report <unowned>, NOT <invalid>. Empty PREV is the normal state of
 # a legitimately unowned sentinel, not tampering — conflating them reads as a

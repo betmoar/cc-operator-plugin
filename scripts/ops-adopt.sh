@@ -483,8 +483,13 @@ for ID in ${IDS+"${IDS[@]}"}; do
   # UNOWNED sentinel (ops-task.sh omits session_id: with no --owner) — it must
   # fall through to the <unowned> fallback at the echo, NOT read as <invalid>
   # (which would conflate 'never owned' with 'tampered'). (review follow-up.)
+  # Also reject CONTROL CHARACTERS (final-review #6): a PREV carrying an ANSI/
+  # OSC escape (ESC ]0; ...) passes the owner-shape set but rewrites the
+  # operator's terminal title when echoed. The owner set mirrors the gate's
+  # name rules; this is a DISPLAY-sanitization concern, so [:cntrl:] (which
+  # includes ESC and all C0 controls) is added here, not to the owner set.
   case "${PREV:-}" in
-    */* | .* | *"|"* | *[[:space:]]* | *.exempt) PREV="<invalid>" ;;
+    */* | .* | *"|"* | *[[:space:]]* | *[[:cntrl:]]* | *.exempt) PREV="<invalid>" ;;
   esac
 
   # Rewrite via a temp file + mv so a crash mid-write cannot leave a sentinel
