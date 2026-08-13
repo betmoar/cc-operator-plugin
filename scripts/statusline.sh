@@ -155,7 +155,8 @@ sentinel_owner() { # sentinel_owner <path> → owner ("" = unowned)
   # Mirror check_bare_name's rejects across the three CLIs: a value our writers
   # could never have produced is not a claim of ownership. Degrade to "" —
   # unowned, which counts as blocking. Fail toward the honest warning.
-  case "$owner" in */* | .* | *"|"* | *[[:space:]]*) owner="" ;; esac
+  # *.exempt is reserved for G3 exemption grant names (F1).
+  case "$owner" in */* | .* | *"|"* | *[[:space:]]* | *.exempt) owner="" ;; esac
   printf '%s' "$owner"
 }
 

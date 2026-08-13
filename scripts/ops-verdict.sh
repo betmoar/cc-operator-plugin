@@ -430,7 +430,7 @@ sentinel_owner() { # sentinel_owner <id> → stamped session_id ("" if none/inva
   owner="${owner%$'\r'}"
   owner="${owner%"${owner##*[![:space:]]}"}"
   case "$owner" in
-    "" | */* | .* | *"|"* | *[[:space:]]*) return 0 ;;  # unusable → unowned → fails closed
+    "" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) return 0 ;;  # unusable → unowned → fails closed; *.exempt mirrors writer's check_owner_name (G3 grant names are reserved, F1)
   esac
   printf '%s' "$owner"
 }

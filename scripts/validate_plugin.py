@@ -941,6 +941,22 @@ def check_guard_parity(root, problems):
                 f"planted symlink in pending/, laundering an entry our CLIs "
                 f"never wrote into a trusted sentinel (F65/F66; the guard "
                 f"must live at every reader, see docs/PLAYBOOK.md)")
+    # sentinel_owner()'s reject-set must include *.exempt in all three body
+    # parsers, mirroring check_owner_name's reject of the reserved G3 grant
+    # namespace — else a corrupted body "session_id: victim.exempt" parses as
+    # a valid owner and recompute_arm_marker deletes another session's grant
+    # (F1, issue #30).
+    for name in ("ops-verdict.sh", "ops-stop-hook.sh", "statusline.sh"):
+        p = root / "scripts" / name
+        if not p.is_file():
+            continue
+        text = p.read_text(encoding="utf-8")
+        if "*.exempt" not in text:
+            problems.append(
+                f"scripts/{name}: sentinel_owner()'s reject-set is missing "
+                f"*.exempt — a sentinel body naming a G3 grant parses as a "
+                f"valid owner, letting recompute_arm_marker delete another "
+                f"session's exemption (F1)")
 
 
 def check_claims(root, problems):

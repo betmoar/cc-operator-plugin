@@ -2939,6 +2939,22 @@ check "G2 the recompute never touches .armed/\$S.exempt (G3 grant)" \
   "$([ -e "$P/.operator/.armed/$S.exempt" ] && echo 0 || echo 1)"
 rm -f "$P/.operator/.armed/$S.exempt"
 
+# F1 — a CORRUPTED sentinel body naming a G3 grant ("session_id: victim.exempt")
+# must not parse as a valid owner: check_owner_name (the writer) already rejects
+# *.exempt, but sentinel_owner() (the untrusted-body parser) did not mirror it,
+# so the smuggled name reached recompute_arm_marker and `rm -f
+# .armed/victim.exempt` deleted another session's real G3 exemption grant
+# (issue #30). Plant the victim's grant, then run a verdict on a task whose
+# body claims that reserved name and carries NO --owner (forcing the parser's
+# reject-set to be what's tested).
+: > "$P/.operator/.armed/victim.exempt"
+( cd "$P" && bash "$TASK" g2f1 --owner "$S" >/dev/null 2>&1 )
+printf 'session_id: victim.exempt\n' > "$P/.operator/pending/g2f1"
+( cd "$P" && bash "$VERDICT" g2f1 crit ev PASS >/dev/null 2>&1 )
+check "F1 a sentinel body naming a G3 grant is rejected as unowned" \
+  "$([ -e "$P/.operator/.armed/victim.exempt" ] && echo 0 || echo 1)"
+rm -f "$P/.operator/.armed/victim.exempt" "$P/.operator/pending/g2f1"
+
 # ops-adopt.sh re-creates the marker for the NEW owner — the recovery the deny
 # message names verbatim (stale-false mitigation 1).
 S2="SESS-G2-ROT"
