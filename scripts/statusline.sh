@@ -178,18 +178,30 @@ sentinel_owner() { # sentinel_owner <path> → owner ("" = unowned)
 # "  File: …\n1785…" that fails `[ -gt ]` and silently killed the whole segment
 # on Linux (same class as F12's `grep -c || echo 0`). Probe the flavor ONCE and
 # branch — never let a failing stat's stdout survive into the value.
+#
+# The probe is its OWN function, called from the caller's scope, because every
+# mtime call site is `$(mtime …)` — a SUBSHELL, whose assignment to _STAT_KIND
+# dies with it. Probing inside mtime therefore memoized nothing: the flavor was
+# re-detected on every single call (~3 stats each instead of 1 probe + N reads),
+# on the hottest reader in the plugin. Probe once per render, at the top of the
+# one function that uses mtime, and the nested subshells inherit the answer.
+# `/` (not the candidate path): it always exists and is always statable, so the
+# probe never mis-detects "none" from a file that merely vanished mid-render.
 _STAT_KIND=""
+stat_probe() { # stat_probe → sets _STAT_KIND once (gnu|bsd|none)
+  [ -z "$_STAT_KIND" ] || return 0
+  local v
+  if v="$(stat -c %Y / 2>/dev/null)" && case "$v" in ''|*[!0-9]*) false ;; *) true ;; esac; then
+    _STAT_KIND=gnu
+  elif v="$(stat -f %m / 2>/dev/null)" && case "$v" in ''|*[!0-9]*) false ;; *) true ;; esac; then
+    _STAT_KIND=bsd
+  else
+    _STAT_KIND=none
+  fi
+}
 mtime() { # mtime <path> → epoch seconds (0 on any failure)
   local v
-  if [ -z "$_STAT_KIND" ]; then
-    if v="$(stat -c %Y "$1" 2>/dev/null)" && case "$v" in ''|*[!0-9]*) false ;; *) true ;; esac; then
-      _STAT_KIND=gnu
-    elif v="$(stat -f %m "$1" 2>/dev/null)" && case "$v" in ''|*[!0-9]*) false ;; *) true ;; esac; then
-      _STAT_KIND=bsd
-    else
-      _STAT_KIND=none
-    fi
-  fi
+  stat_probe                       # no-op when the caller already probed
   case "$_STAT_KIND" in
     gnu) v="$(stat -c %Y "$1" 2>/dev/null)" ;;
     bsd) v="$(stat -f %m "$1" 2>/dev/null)" ;;
@@ -198,9 +210,34 @@ mtime() { # mtime <path> → epoch seconds (0 on any failure)
   case "$v" in ''|*[!0-9]*) printf '0' ;; *) printf '%s' "$v" ;; esac
 }
 
+# STALL_SEC is env-overridable and lands in `[ "$stall" -gt "$live" ]` below. A
+# non-numeric value makes that test ERROR (status 2), the `&&` chain
+# short-circuits, the stall window silently never extends, and a long run's
+# segment flaps off mid-run — exactly the bug the window was added to fix,
+# reintroduced by a typo that nothing reports. Validate it like ops-verdict.sh's
+# lock budgets: digits only, positive, fail LOUD. Loud here is a stderr warning
+# plus the 900 default, never an exit: the renderer's contract is "never block,
+# never fail loudly", and dying over a workflow-liveness knob would blank the
+# whole bar — op[ and dev[ included, which are the parts that gate a session.
+#
+# It is validated HERE, at file scope, and not inside the function: the caller
+# wraps that call in `2>/dev/null`, so a warning raised in there is swallowed
+# and the knob fails silent again — the very failure mode being fixed.
+STALL_SEC="${STALL_SEC:-900}"
+case "$STALL_SEC" in ''|*[!0-9]*) _stall_bad=1 ;; *) [ "$STALL_SEC" -ge 1 ] || _stall_bad=1 ;; esac
+if [ -n "${_stall_bad:-}" ]; then
+  echo "statusline: STALL_SEC is not a positive integer (got '$STALL_SEC') — using 900" >&2
+  STALL_SEC=900
+fi
+
+# Prints "<journal-path>\t<started>\t<result>" for a LIVE run, or nothing.
+# The two counts are RETURNED rather than recomputed by the wf segment: both
+# needed the identical pair of greps over the identical file, so computing them
+# twice doubled the render's external-process cost for no new information.
 glob_newest_live_journal() { # glob_newest_live_journal <session> [live_sec]
   [ -n "$1" ] || return 0
   local live="${2:-90}" newest="" nmtime=0
+  stat_probe                       # once per render, not once per $(mtime) call
   shopt -s nullglob
   local j
   for j in "$HOME/.claude/projects"/*/"$1"/subagents/workflows/wf_*/journal.jsonl; do
@@ -237,13 +274,17 @@ glob_newest_live_journal() { # glob_newest_live_journal <session> [live_sec]
   # unbalanced journal is also the signature of a run that FAILED and will
   # never balance, so without the backstop it would render forever.
   # Counting uses grep like the caller's done/started count; on a stripped
-  # PATH both greps fail the same way and we degrade to the plain 90s window.
-  local stall="${STALL_SEC:-900}" ns=0 nr=0
+  # PATH both greps fail the same way and we degrade to the plain 90s window
+  # (and to a countless wf segment: "" → 0 → nothing renders, as before).
+  # STALL_SEC is validated at file scope; see the note above the function.
+  local stall="$STALL_SEC" ns=0 nr=0
   ns="$(grep -c '"type":"started"' "$newest" 2>/dev/null)" || ns="${ns:-0}"
   nr="$(grep -c '"type":"result"' "$newest" 2>/dev/null)" || nr="${nr:-0}"
   case "$ns$nr" in *[!0-9]*) ns=0; nr=0 ;; esac
-  [ "$ns" -gt "$nr" ] && [ "$stall" -gt "$live" ] 2>/dev/null && live="$stall"
-  if [ $((now - nmtime)) -le "$live" ]; then printf '%s' "$newest"; fi
+  [ "$ns" -gt "$nr" ] && [ "$stall" -gt "$live" ] && live="$stall"
+  # Tab-separated: the caller splits on it. Path first — a journal path cannot
+  # contain a tab (it is harness-generated under $HOME/.claude/projects).
+  if [ $((now - nmtime)) -le "$live" ]; then printf '%s\t%s\t%s' "$newest" "$ns" "$nr"; fi
 }
 
 # --- partition pending sentinels ---------------------------------------------
@@ -296,11 +337,25 @@ scan_deviations_bar() { # scan_deviations_bar <decisions-path> <this-session>
   [ -f "$f" ] && [ ! -L "$f" ] || return 0
   # Reject a NUL/corrupt ledger up front (fail toward silence). The tail scan
   # below would otherwise parse garbage; a corrupt ledger must not render a count.
+  #
+  # It probes the SAME TAIL WINDOW the scan reads, not the whole file. The
+  # whole-file form re-introduced the O(n) cost the reverse-tail scan exists to
+  # avoid — measured ~200x the tail's own cost on a 658KB ledger, on a 300ms
+  # timer — while only rows inside the window can change the count anyway.
+  # A NUL IN the tail still classifies the ledger as corrupt and renders no
+  # dev[N]. A NUL far outside it no longer does, and that is deliberate: it is
+  # the same approximation the reverse-tail scan already makes (CR5 — the bar
+  # is informational and fails toward silence; the Stop hook stays whole-file
+  # fail-closed and is what actually gates), and it cannot make the bar under-
+  # report a gate, because the rows it counts were themselves NUL-free.
+  # `tail` runs twice (probe + scan) rather than once into a variable, because
+  # bash DROPS NULs from variables — a captured tail would make the probe
+  # vacuous, the same class of mistake as the `case $line in *$'\0'*)` above.
   if ! (LC_ALL=C _dp=0
         while IFS= read -r -d '' -n 512 _dprobe; do
           _dp=$((_dp + 1)); [ "$_dp" -le 4096 ] || exit 1
           [ "${#_dprobe}" -eq 512 ] || exit 1
-        done < "$f") 2>/dev/null; then
+        done < <(tail -n 256 "$f" 2>/dev/null)) 2>/dev/null; then
     return 0
   fi
   # CONTINUATION ACCUMULATION — issue #9. A ledger row may be many KB; read -n
@@ -381,14 +436,17 @@ RED=$'\033[31m'; DIM=$'\033[2m'; RESET=$'\033[0m'
 # progress number is worse than no progress number; fail toward silence.
 WFSEG=""
 if [ -n "$SESSION" ]; then
-  WFDIR="$(glob_newest_live_journal "$SESSION" 2>/dev/null || true)"
-  if [ -n "$WFDIR" ] && [ -f "$WFDIR" ]; then
-    # `grep -c` prints "0" AND exits 1 on zero matches, so `|| echo 0` would
-    # capture "0\n0" — an embedded newline that renders a two-line segment and
-    # breaks the composed bar (hit live: every run's first phase has done=0).
-    # Assignment form keeps the captured stdout and the fallback distinct.
-    started="$(grep -c '"type":"started"' "$WFDIR" 2>/dev/null)" || started="${started:-0}"
-    done="$(grep -c '"type":"result"' "$WFDIR" 2>/dev/null)" || done="${done:-0}"
+  # The counts come BACK from the liveness check, which already ran the identical
+  # `grep -c` pair over this same file for its stall decision. `grep -c` prints
+  # "0" AND exits 1 on zero matches, so a `|| echo 0` fallback there would
+  # capture "0\n0" — an embedded newline rendering a two-line segment that breaks
+  # the composed bar (hit live: every run's first phase has done=0). That guard
+  # now lives once, at the producer.
+  WFLINE="$(glob_newest_live_journal "$SESSION" 2>/dev/null || true)"
+  WFDIR="${WFLINE%%$'\t'*}"
+  started="${WFLINE#*$'\t'}"; done="${started#*$'\t'}"; started="${started%%$'\t'*}"
+  if [ -n "$WFLINE" ] && [ -n "$WFDIR" ] && [ -f "$WFDIR" ]; then
+    case "$started$done" in ''|*[!0-9]*) started=0; done=0 ;; esac
     if [ "${started:-0}" -gt 0 ] 2>/dev/null; then
       WFSEG="${DIM}wf ${done}/${started}${RESET}"
     fi

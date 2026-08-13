@@ -2175,6 +2175,67 @@ mkjournal 12 5
 agequiet "$WFDIR/journal.jsonl" 1200
 check "unbalanced journal quiet past STALL_SEC (1200s) → no wf segment (failed-run backstop)" \
   "$([ -z "$(render "$WFSESS" "$WFPROJ")" ] && echo 0 || echo 1)"
+# --- F12: STALL_SEC is validated, so a typo cannot silently kill the window ---
+# STALL_SEC is env-overridable and lands in `[ "$stall" -gt "$live" ]`. Unvalidated,
+# STALL_SEC=abc made that test ERROR (status 2) under the caller's 2>/dev/null, the
+# && chain short-circuited, the window never extended, and the segment of a live
+# unbalanced run flapped OFF mid-run — measured: the same payload rendered '' with
+# STALL_SEC=abc and 'wf 5/12' with STALL_SEC=900. Now: warn on stderr, use 900.
+mkjournal 12 5
+agequiet "$WFDIR/journal.jsonl" 300
+STALLBAD="$(STALL_SEC=abc sljson "$WFSESS" "$WFPROJ" | STALL_SEC=abc "$BASH_ABS" "$SL" 2>/dev/null \
+  | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g')"
+check "STALL_SEC=abc → the stall window still applies (no silent mid-run flap, F12)" \
+  "$([ "$STALLBAD" = "wf 5/12" ] && echo 0 || echo 1)"
+# ...and it says so, LOUD, on stderr — the knob is mistyped, not merely defaulted.
+# Validated at FILE scope on purpose: the wf caller wraps the function in
+# 2>/dev/null, so a warning raised inside it is swallowed and fails silent again.
+STALLERR="$(sljson "$WFSESS" "$WFPROJ" | STALL_SEC=abc "$BASH_ABS" "$SL" 2>&1 >/dev/null)"
+check "STALL_SEC=abc warns on stderr (fail loud, like the lock budgets) (F12)" \
+  "$(printf '%s' "$STALLERR" | grep -q 'STALL_SEC is not a positive integer' && echo 0 || echo 1)"
+# A zero/negative-shaped value is refused the same way (0 would collapse the
+# window, which is the knob doing the opposite of its job).
+STALLZERO="$(sljson "$WFSESS" "$WFPROJ" | STALL_SEC=0 "$BASH_ABS" "$SL" 2>/dev/null \
+  | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g')"
+check "STALL_SEC=0 → refused, falls back to 900 (F12)" \
+  "$([ "$STALLZERO" = "wf 5/12" ] && echo 0 || echo 1)"
+# A VALID override still wins: 100 < the 300s quiet period → the run reads dead.
+STALLOK="$(sljson "$WFSESS" "$WFPROJ" | STALL_SEC=100 "$BASH_ABS" "$SL" 2>/dev/null \
+  | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g')"
+check "a VALID STALL_SEC override is still honored (100 → no wf segment) (F12)" \
+  "$([ -z "$STALLOK" ] && echo 0 || echo 1)"
+
+# --- F11: the started/result greps run ONCE per render, not twice -------------
+# The stall decision and the wf segment needed the identical grep pair over the
+# identical file; computing them twice doubled the render's external-process cost
+# for no new information. The counts now come back from the liveness check.
+# Structural, because the observable output is identical either way: reverting the
+# fix re-adds a second `grep -c '"type":"started"'` call site.
+SLSTARTED="$(grep -c "grep -c '\"type\":\"started\"'" "$SL")"
+check "statusline greps the journal's started lines from ONE site (F11)" \
+  "$([ "$SLSTARTED" -eq 1 ] && echo 0 || echo 1)"
+# ...and the ratio itself is unchanged by the refactor (the counts still arrive).
+mkjournal 7 3
+check "the returned counts still render the same ratio 'wf 3/7' (F11)" \
+  "$([ "$(render "$WFSESS" "$WFPROJ")" = "wf 3/7" ] && echo 0 || echo 1)"
+
+# --- F9: the stat-flavor probe runs ONCE per render, not once per mtime call --
+# Every call site is `$(mtime …)` — a SUBSHELL — so the `_STAT_KIND` assignment
+# inside mtime died with it and the flavor was re-detected on every call (~3
+# stats each). Measured on a 3-journal session: 9 stat invocations before, 5
+# after. The probe is now its own function, called from glob_newest_live_journal's
+# own scope. Structural + behavioral: mtime must not contain the probe, and the
+# ratio must still render (a broken probe reads every mtime as 0 → nothing live).
+check "the stat-flavor probe is a separate function, not inside mtime (F9)" \
+  "$(awk '/^mtime\(\)/{inm=1} inm && /_STAT_KIND=(gnu|bsd|none)/{bad=1} /^}/{inm=0} END{exit bad?1:0}' "$SL" \
+     && echo 0 || echo 1)"
+check "glob_newest_live_journal probes the stat flavor once per render (F9)" \
+  "$(awk '/^glob_newest_live_journal\(\)/{ing=1} ing && /^ *stat_probe/{ok=1} END{exit ok?0:1}' "$SL" \
+     && echo 0 || echo 1)"
+mkjournal 12 5
+check "mtime still resolves after the probe split (live run renders) (F9)" \
+  "$([ "$(render "$WFSESS" "$WFPROJ")" = "wf 5/12" ] && echo 0 || echo 1)"
+
 # Missing journal entirely → nothing (the fail-toward-silence default).
 : > "$WFDIR/journal.jsonl"   # empty: zero started → no ratio
 check "empty journal (0 started) → no wf segment" \
@@ -2800,6 +2861,43 @@ LRBAR2="$(printf '{"session_id":"SESS-A","cwd":"%s","workspace":{"project_dir":"
   | "$BASH_ABS" "$SCRIPTS/statusline.sh" 2>/dev/null | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g')"
 check "statusline counts a long mine DEVIATION with no trailing newline (#10 review)" \
   "$(printf '%s' "$LRBAR2" | grep -q 'dev\[1\]' && echo 0 || echo 1)"
+
+# --- F10: the bar's NUL probe reads the TAIL WINDOW, never the whole ledger ---
+# The probe sat BEFORE the O(tail) reverse scan and read the whole file (capped
+# 4096x512B = 2MB), which re-introduced exactly the O(n) cost the tail scan
+# exists to avoid — measured ~200x the tail's own cost on a 658KB ledger, on a
+# ~300ms timer. Only rows inside the window can change the count, so probing the
+# window is equivalent for everything the bar reports.
+# STRUCTURAL first: a timing assertion is flaky under load, but re-adding the
+# whole-file redirect is a textual regression. Both probe/scan reads must be fed
+# by `tail`; no `done < "$f"` remains in scan_deviations_bar.
+check "no whole-file read survives in scan_deviations_bar (F10)" \
+  "$(awk '/^scan_deviations_bar\(\)/{ins=1} ins && /done < "\$f"/{bad=1} /^}$/{ins=0} END{exit bad?1:0}' \
+     "$SCRIPTS/statusline.sh" && echo 0 || echo 1)"
+check "the bar's NUL probe is fed by tail -n 256, like the scan (F10)" \
+  "$([ "$(grep -c 'done < <(tail -n 256 "\$f" 2>/dev/null)' "$SCRIPTS/statusline.sh")" -eq 2 ] && echo 0 || echo 1)"
+# SEMANTIC: a NUL inside the tail window still classifies the ledger as corrupt,
+# so no dev[ renders — the fail-toward-silence rule is unchanged where observable.
+F10DEC="$DEVPROJ/.operator/DECISIONS.md"
+{ printf '# Decisions\n'
+  printf '2026-08-05 | e.t | DEVIATION | [sid:SESS-A] mine | r\n'
+  printf '2026-08-05 | e.t | DEVIATION | [sid:SESS-A] nul\000here | r\n'; } > "$F10DEC"
+F10NUL="$(printf '{"session_id":"SESS-A","cwd":"%s","workspace":{"project_dir":"%s"}}' "$DEVPROJ" "$DEVPROJ" \
+  | "$BASH_ABS" "$SCRIPTS/statusline.sh" 2>/dev/null | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g')"
+check "a NUL inside the tail window still renders no dev[ (F10 semantics kept)" \
+  "$(printf '%s' "$F10NUL" | grep -q 'dev\[' || echo 0)"
+# ...and a LARGE clean ledger still counts exactly the in-window deviations: the
+# count is the same one the pre-fix whole-file probe produced (measured: dev[1]).
+{ printf '# Decisions\n'
+  i=0; while [ "$i" -lt 4000 ]; do i=$((i+1))
+    printf '2026-08-05 | e.t | NOTE | filler %s | r\n' "$i"
+  done
+  printf '2026-08-05 | e.t | DEVIATION | [sid:SESS-A] mine-late | r\n'; } > "$F10DEC"
+F10BIG="$(printf '{"session_id":"SESS-A","cwd":"%s","workspace":{"project_dir":"%s"}}' "$DEVPROJ" "$DEVPROJ" \
+  | "$BASH_ABS" "$SCRIPTS/statusline.sh" 2>/dev/null | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g')"
+check "a large clean ledger still counts its in-window deviation as dev[1] (F10)" \
+  "$(printf '%s' "$F10BIG" | grep -q 'dev\[1\]' && echo 0 || echo 1)"
+rm -f "$F10DEC"
 
 rm -f "$DEC" "$ATT"; rmdir "$ATT" 2>/dev/null || true
 # Restore a real (empty) DECISIONS.md for any later use.
