@@ -714,6 +714,28 @@ check "--reconcile refuses any over-celled row" "$([ "$(wc -l < "$P/.operator/VE
 rm -rf "$P"
 
 ########################################################################
+echo "-- Case 12b: --reconcile restores a long (>512B) conformant row"
+# INVARIANT: a verdict row whose evidence cell exceeds 512 bytes is legal and
+# conformant — the 4-cell schema counts cells, not bytes. But --reconcile read
+# the fragment with `read -r -n 512`, splitting such a row into chunks; each
+# chunk independently failed the 4-cell check and was silently skipped, so the
+# row was NEVER restored to the ledger. This is the issue-#9 long-row blindness
+# class at the reconcile site (retro_gate already used a 1MiB bound). F17.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+# a ~560-byte evidence cell (no pipe, no newline — still exactly 4 cells)
+LONG="$(printf 'e%.0s' $(seq 1 560))"
+mkdir -p "$P/.operator/verdicts.d"
+printf '| T-LONG | crit | %s @abc123 | PASS |\n' "$LONG" >> "$P/.operator/verdicts.d/SESS-LONG.md"
+# sanity: the planted row genuinely exceeds the 512B chunk bound (this is the
+# whole point of the case — a sub-512B row would pass even with the old bound)
+check "premise: long row is >512B" "$([ "$(wc -c < "$P/.operator/verdicts.d/SESS-LONG.md")" -gt 512 ] && echo 0 || echo 1)"
+ROUT="$( cd "$P" && bash "$VERDICT" --reconcile 2>&1 )"; RRC=$?
+check "--reconcile exits 0 with a long row present" "$([ "$RRC" -eq 0 ] && echo 0 || echo 1)"
+check "--reconcile does NOT skip the long row as non-conformant" "$(! printf '%s' "$ROUT" | grep -q 'non-conformant' && echo 0 || echo 1)"
+check "--reconcile restores the long row to VERDICTS.md" "$(grep -q 'T-LONG' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
+rm -rf "$P"
+
+########################################################################
 echo "-- Case 13: the sentinel BODY is untrusted input"
 # INVARIANT: a sentinel is an ordinary file — a merge, a checkout, or a patch
 # can supply its contents. The stamped owner becomes a fragment FILENAME, so an

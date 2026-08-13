@@ -981,6 +981,46 @@ def check_guard_parity(root, problems):
                 f"{guarded}/3. A planted symlink at verdicts.d/<owner>.md "
                 f"launders every verdict row into an arbitrary file, exit 0, "
                 f"silent (F65 class; F2)")
+    # F17: both fragment scanners in ops-verdict.sh — the --reconcile read loop
+    # and retro_gate's prior-row scan — must use the SAME `read -r -n N` bound.
+    # They read the same verdicts.d/ fragment body, so a long evidence cell
+    # (>512B) that splits into chunks at one site but not the other is a drift
+    # that silently drops honest rows from the ledger on every reconcile (the
+    # issue-#9 long-row blindness class — the reconcile site kept 512 while
+    # retro_gate moved to 1MiB). Pin them EQUAL, not just present: the two reads
+    # are copy-paste neighbors, so uniform drift to a smaller bound would pass a
+    # mere "both bounded" check.
+    p = root / "scripts" / "ops-verdict.sh"
+    if p.is_file():
+        code = [ln for ln in p.read_text(encoding="utf-8").splitlines()
+                if not ln.lstrip().startswith("#")]
+        # Locate the two verdicts.d/ fragment read loops. Each is a
+        # `read -r -n N row|line` loop whose body is drained by `done < "$frag"`
+        # (sentinel_owner's pending/ read drains `done < "$f"`, so it never
+        # matches). The reconcile loop iterates `row`; retro_gate iterates
+        # `line`. Walk forward from each candidate read to its redirect.
+        frag_reads = []
+        for i, ln in enumerate(code):
+            m = re.search(r"read -r -n (\d+) (row|line)\b", ln)
+            if not m:
+                continue
+            var = m.group(2)
+            if any(re.search(r'done < "\$frag"', code[j]) for j in range(i, min(i + 40, len(code)))):
+                frag_reads.append((var, int(m.group(1))))
+        by_var = {v: b for v, b in frag_reads}
+        if "row" in by_var and "line" in by_var:
+            if by_var["row"] != by_var["line"]:
+                problems.append(
+                    "scripts/ops-verdict.sh: the --reconcile and retro_gate "
+                    "fragment scanners disagree on the `read -r -n` bound "
+                    f"({by_var['row']} vs {by_var['line']}) — a long evidence "
+                    f"cell (>512B) splits into chunks at one site but not the "
+                    f"other, silently dropping honest rows from the ledger on "
+                    f"reconcile (issue-#9 class; F17)")
+        elif "line" not in by_var:
+            problems.append(
+                "scripts/ops-verdict.sh: cannot locate retro_gate's fragment "
+                "scan — F17 parity pin could not be applied (report, not skip)")
 
 
 def check_claims(root, problems):

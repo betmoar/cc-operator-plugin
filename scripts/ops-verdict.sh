@@ -521,7 +521,11 @@ if [ "${1:-}" = "--reconcile" ]; then
         echo "ops-verdict: refusing fragment ${frag##*/} — ${fragsz} bytes exceeds ${FRAG_MAX_BYTES}; it is corrupt, not a ledger (repair or delete it)" >&2
         skipped=$((skipped+1)); continue
       fi
-      while IFS= read -r -n 512 row || [ -n "$row" ]; do
+      # The bound is generous (1MiB) because a long evidence cell (>512B) splits
+      # a row across chunks and each split chunk fails row_is_conformant — the
+      # issue-#9 long-row blindness class, silently dropping honest rows from the
+      # ledger on every reconcile. Same bound as retro_gate's prior-row scan.
+      while IFS= read -r -n 1048576 row || [ -n "$row" ]; do
         [ -n "$row" ] || continue
         # Reconcile is a WRITE to the ledger of record, so it enforces the same
         # 4-cell schema the direct path does. A fragment is an ordinary file
