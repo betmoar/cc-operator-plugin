@@ -231,7 +231,10 @@ if [ -f "$_gi" ] && ! grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi" 2
   # (measured 2026-08-12). That is issue #32's own failure, one layer down.
   # Never `set -e` here: a hook that dies costs the session its id injection,
   # which is worse than an unmigrated gitignore. Hence explicit branching.
-  if [ -e "$_gi.v1.bak" ] && [ ! -f "$_gi.v1.bak" ]; then
+  # A symlink must be refused even when it resolves to a regular file: `-f`
+  # follows symlinks, so a symlink-to-regular passed this guard and `cp`
+  # then overwrote the link's target instead of a real backup.
+  if [ -L "$_gi.v1.bak" ] || { [ -e "$_gi.v1.bak" ] && [ ! -f "$_gi.v1.bak" ]; }; then
     _gi_backup_failed=1
   elif ! cp "$_gi" "$_gi.v1.bak" 2>/dev/null; then
     _gi_backup_failed=1

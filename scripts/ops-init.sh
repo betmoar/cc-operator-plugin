@@ -80,7 +80,10 @@ elif ! grep -qF "$_GI_MARK" "$OPDIR/.gitignore" 2>/dev/null; then
   # `cp` land the file inside it, leaving the advertised path pointing at a
   # directory; an unwritable one loses the rules outright). The backup must be a
   # regular file we can replace — anything else at that path is not ours.
-  if [ -e "$OPDIR/.gitignore.v1.bak" ] && [ ! -f "$OPDIR/.gitignore.v1.bak" ]; then
+  # A symlink must be refused even when it resolves to a regular file: `-f`
+  # follows symlinks, so a symlink-to-regular passed this guard and `cp`
+  # then overwrote the link's target instead of a real backup.
+  if [ -L "$OPDIR/.gitignore.v1.bak" ] || { [ -e "$OPDIR/.gitignore.v1.bak" ] && [ ! -f "$OPDIR/.gitignore.v1.bak" ]; }; then
     echo "cc-operator: $OPDIR/.gitignore.v1.bak exists and is not a regular file — refusing to migrate .gitignore (move it aside, then re-run)" >&2
   elif ! cp "$OPDIR/.gitignore" "$OPDIR/.gitignore.v1.bak" 2>/dev/null; then
     echo "cc-operator: could not write $OPDIR/.gitignore.v1.bak — refusing to migrate .gitignore without a backup (the v1 and v2 schemes contradict, so migration REPLACES the file)" >&2

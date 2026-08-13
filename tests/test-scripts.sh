@@ -3439,6 +3439,42 @@ check "init backup blocked: the refusal names the path to fix" \
   "$(printf '%s' "$INITFOUT" | grep -q 'gitignore.v1.bak' && echo 0 || echo 1)"
 rm -rf "$INITF"
 
+echo "-- Case: the migration REFUSES a .v1.bak that is a symlink to a regular file (F4)"
+# `-f` FOLLOWS symlinks, so a symlink-to-regular passed the old "refuse if
+# non-regular" guard and `cp` then overwrote the LINK'S TARGET instead of
+# writing a real backup — silently clobbering whatever the symlink pointed at.
+# The guard must refuse on `-L` before falling back to the `-f` check.
+MIGL="$(newproj)"
+mkdir -p "$MIGL/.operator"
+printf 'sensitive target contents\n' > "$MIGL/sensitive-target.txt"
+printf '# cc-operator gitignore (v1)\nbin/\n!my-own-rule.md\n' > "$MIGL/.operator/.gitignore"
+ln -s "$MIGL/sensitive-target.txt" "$MIGL/.operator/.gitignore.v1.bak"
+MIGLOUT="$(sed "s|<tmp>|$MIGL|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+check "symlink backup blocked: the sensitive target is untouched" \
+  "$(grep -q 'sensitive target contents' "$MIGL/sensitive-target.txt" && echo 0 || echo 1)"
+check "symlink backup blocked: the user's v1 rule survives" \
+  "$(grep -q 'my-own-rule' "$MIGL/.operator/.gitignore" && echo 0 || echo 1)"
+check "symlink backup blocked: the hook does NOT claim a migration happened" \
+  "$(printf '%s' "$MIGLOUT" | grep -q 'MIGRATED' && echo 1 || echo 0)"
+check "symlink backup blocked: the refusal is reported, not silent" \
+  "$(printf '%s' "$MIGLOUT" | grep -q 'REFUSED' && echo 0 || echo 1)"
+rm -rf "$MIGL"
+
+echo "-- Case: ops-init also refuses a .v1.bak symlink to a regular file (F4)"
+INITL="$(newproj)"
+mkdir -p "$INITL/.operator"
+printf 'sensitive target contents\n' > "$INITL/sensitive-target.txt"
+printf '# cc-operator gitignore (v1)\nbin/\n!my-own-rule.md\n' > "$INITL/.operator/.gitignore"
+ln -s "$INITL/sensitive-target.txt" "$INITL/.operator/.gitignore.v1.bak"
+INITLOUT="$( ( cd "$INITL" || exit 1; "$BASH_ABS" "$SCRIPTS/ops-init.sh" ) 2>&1 || true )"
+check "init symlink backup blocked: the sensitive target is untouched" \
+  "$(grep -q 'sensitive target contents' "$INITL/sensitive-target.txt" && echo 0 || echo 1)"
+check "init symlink backup blocked: the user's v1 rule survives" \
+  "$(grep -q 'my-own-rule' "$INITL/.operator/.gitignore" && echo 0 || echo 1)"
+check "init symlink backup blocked: it does NOT claim it migrated" \
+  "$(printf '%s' "$INITLOUT" | grep -q 'migrated ' && echo 1 || echo 0)"
+rm -rf "$INITL"
+
 echo "-- Case: ops-verdict refuses a non-regular entry BEFORE writing a row"
 # `retro_gate` tested `-e`, so a directory at pending/<id> read as an armed
 # sentinel: the GATE-EXCEPTION was suppressed, the row was appended anyway, and
