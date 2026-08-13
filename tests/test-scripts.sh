@@ -3494,8 +3494,18 @@ echo "-- Case: the suites do not contaminate the tree with bytecode"
 # Asserted against a COPY, not this tree: the real scripts/ and tests/ may
 # legitimately hold a __pycache__ from a maintainer's earlier hand-run, so
 # asserting on them would be a test of the developer's shell history.
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "  skip bytecode hygiene: python3 not available"
+# GATED ON PYTEST, NOT PYTHON3. Both mechanisms under test are pytest's —
+# conftest.py's bootstrap and pyproject's norecursedirs — and a missing pytest
+# exits non-zero, which is INDISTINGUISHABLE from the collection error the
+# second assertion exists to prove absent. Gating on python3 alone shipped a
+# red CI: ubuntu-latest has python3 and no pytest (validate.yml installs
+# nothing and runs `unittest discover`), so the case ran, `python3 -m pytest`
+# failed to start, and the assertion read that as "the seed dir broke
+# collection" — a false failure on the one platform that had never run it.
+# Measured locally: with the module absent the invocation returns rc 1, the
+# same rc a genuine collection error returns.
+if ! python3 -c "import pytest" >/dev/null 2>&1; then
+  echo "  skip bytecode hygiene: pytest not importable (the mechanisms under test are pytest's)"
 else
   HYG="$(newproj)"
   mkdir -p "$HYG/scripts" "$HYG/tests"
