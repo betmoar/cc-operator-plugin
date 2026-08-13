@@ -472,6 +472,17 @@ for ID in ${IDS+"${IDS[@]}"}; do
   done < "$F"
   fi
 
+  # PREV is captured from the sentinel BODY — untrusted input (a merge, a
+  # hand-edit, an attacker plant can supply it). It is echoed to stdout (the
+  # adoption report), so apply the SAME reject-set the three sentinel_owner
+  # parsers apply to an owner: a PREV carrying a slash, a leading dot, a pipe,
+  # whitespace, or the reserved .exempt suffix degrades to <invalid> rather
+  # than being echoed verbatim (F15 — stdout/log-injection-adjacent; the NEW
+  # owner $OWNER is already guarded by check_owner_name and is unaffected).
+  case "${PREV:-}" in
+    "" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) PREV="<invalid>" ;;
+  esac
+
   # Rewrite via a temp file + mv so a crash mid-write cannot leave a sentinel
   # that parses as unowned (which would silently widen the block to everyone).
   #

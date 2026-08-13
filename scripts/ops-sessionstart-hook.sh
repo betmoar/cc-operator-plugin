@@ -39,7 +39,12 @@ try:
 except Exception:
     sys.exit(0)
 v = d.get(sys.argv[1], "")
-print("" if v is None else v)
+if isinstance(v, bool):
+    print("true" if v else "false")
+elif v is None:
+    print("")
+else:
+    print(v)
 ' "$1" 2>/dev/null
       ;;
   esac

@@ -1022,6 +1022,26 @@ def check_guard_parity(root, problems):
                 "scripts/ops-verdict.sh: cannot locate retro_gate's fragment "
                 "scan — F17 parity pin could not be applied (report, not skip)")
 
+    # F14: the three hooks' json_get() helpers must agree. A JSON boolean
+    # renders Python True/False under a bare print(v), so a downstream
+    # [ "$x" = "true" ] silently never matches. ops-stop-hook.sh and
+    # ops-armgate-hook.sh carry the isinstance(v, bool) -> "true"/"false"
+    # coercion; ops-sessionstart-hook.sh omitted it (no live trigger today —
+    # it reads only string fields — but the drift is real and the next
+    # boolean field added would ship broken). Pin the coercion literal in all
+    # three so the parity cannot drift again.
+    for name in ("ops-sessionstart-hook.sh", "ops-stop-hook.sh",
+                 "ops-armgate-hook.sh"):
+        p = root / "scripts" / name
+        if not p.is_file():
+            continue
+        if "isinstance(v, bool)" not in p.read_text(encoding="utf-8"):
+            problems.append(
+                f"scripts/{name}: json_get() is missing the "
+                f"isinstance(v, bool) coercion — a JSON boolean renders Python "
+                f"True/False and a downstream '= \"true\"' test silently never "
+                f"matches (F14; the three hooks' json_get helpers must agree)")
+
 
 def check_claims(root, problems):
     r"""ops-claims.sh protected-set parity (F30 lesson + F-A2).

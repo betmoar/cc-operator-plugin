@@ -418,6 +418,13 @@ check "sessionstart hook emits additionalContext with the id" "$(printf '%s' "$S
 Q="$(newproj)"
 SSQ="$(sed "s|<tmp>|$Q|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"; SSQRC=$?
 check "sessionstart hook silent outside operator projects" "$([ "$SSQRC" -eq 0 ] && [ -z "$SSQ" ] && echo 0 || echo 1)"
+# F14: the three hooks' json_get() python3 branch must render a JSON boolean
+# as true/false (not Python True/False). The runtime path is exercised by the
+# stop_hook_active boolean cases above ("stop_hook_active true -> exit 0");
+# the DRIFT guarantee (all three hooks carry the isinstance(v, bool) coercion)
+# is pinned by validate_plugin's check_guard_parity F14 pin against the real
+# hook files, and its non-vacuity is proven by test_validate_plugin.py's good-
+# tree fixtures (which must carry the marker or the pin fires on them).
 # SessionStart migrates a v1 (blocklist) .operator/.gitignore to the v2
 # allowlist. The v1 scheme tracked by default, so every ephemera directory added
 # since had to be remembered and appended — twice (.lock/ for F05, then
@@ -576,6 +583,19 @@ check "ops-adopt refuses '|' in --owner" "$([ "$PVRC" -ne 0 ] && echo 0 || echo 
 check "ops-adopt refuses a bulk adopt (no ids)" "$([ "$BLRC" -ne 0 ] && echo 0 || echo 1)"
 ( cd "$P" && bash "$ADOPT" --owner SESS-B T-NOPE >/dev/null 2>&1 ); NORC=$?
 check "ops-adopt refuses an id with no open sentinel" "$([ "$NORC" -ne 0 ] && echo 0 || echo 1)"
+# F15: PREV is captured from the untrusted sentinel body and echoed to stdout.
+# A malicious body (traversal/pipe/whitespace/.exempt) must be sanitized to
+# <invalid>, not echoed verbatim — stdout/log-injection-adjacent. The NEW
+# owner is guarded by check_owner_name and is unaffected.
+( cd "$P" && bash "$TASK" T-PREV --owner SESS-A >/dev/null 2>&1 )
+printf 'session_id: ../../evil path|with pipe\n' > "$P/.operator/pending/T-PREV"
+PREVOUT="$( cd "$P" && bash "$ADOPT" --owner SESS-B T-PREV 2>/dev/null )"; PREVRC=$?
+check "F15 ops-adopt sanitizes a malicious PREV body to <invalid>" \
+  "$(printf '%s' "$PREVOUT" | grep -q 'adopted T-PREV: <invalid> -> SESS-B' && echo 0 || echo 1)"
+check "F15 ops-adopt still exits 0 (adoption succeeds; only the display is sanitized)" \
+  "$([ "$PREVRC" -eq 0 ] && echo 0 || echo 1)"
+check "F15 ops-adopt does not echo the raw malicious body" \
+  "$(printf '%s' "$PREVOUT" | grep -q 'evil path|with pipe' && echo 1 || echo 0)"
 ( cd "$P" && bash "$TASK" T-T --owner "a/b" >/dev/null 2>&1 ); OTRC=$?
 check "ops-task refuses '/' in --owner" "$([ "$OTRC" -ne 0 ] && echo 0 || echo 1)"
 # re-opening an open task never silently takes it over

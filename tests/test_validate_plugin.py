@@ -183,6 +183,10 @@ def make_good_tree(root):
     # the same verified backup.
     write(root / "scripts" / "ops-sessionstart-hook.sh",
           "#!/usr/bin/env bash\nset -eu\n" + _install_loop +
+          "# json_get python3 branch carries the bool coercion (F14 parity pin)\n"
+          "json_get() { printf '%s' \"$input\" | python3 -c 'import sys,json; "
+          "v=json.load(sys.stdin).get(sys.argv[1],\"\"); "
+          "print(\"true\" if isinstance(v, bool) and v else \"false\" if isinstance(v, bool) else v)' \"$1\"; }\n"
           "rm -rf \"$cwd/.operator/.compress-spill\" \"$cwd/.operator/.compress-state\"\n"
           "if ! grep -qF '# cc-operator gitignore v2 (allowlist)' \"$_gi\" 2>/dev/null; then\n"
           "  if [ -e \"$_gi.v1.bak\" ] && [ ! -f \"$_gi.v1.bak\" ]; then\n"
@@ -202,6 +206,10 @@ def make_good_tree(root):
     nolink = "[ ! -L \"$1\" ] || exit 0\n"
     write(root / "scripts" / "ops-stop-hook.sh",
           "#!/usr/bin/env bash\n" + nolink + bounded +
+          "# json_get python3 branch carries the bool coercion (F14 parity pin)\n"
+          "json_get() { printf '%s' \"$input\" | python3 -c 'import sys,json; "
+          "v=json.load(sys.stdin).get(sys.argv[1],\"\"); "
+          "print(\"true\" if isinstance(v, bool) and v else \"false\" if isinstance(v, bool) else v)' \"$1\"; }\n"
           "# deviation gate: counts DEVIATION|ESCALATION|GATE-EXCEPTION (HANDOFF-MARK)\n"
           "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
           "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) owner=\"\" ;; esac\n")
@@ -247,6 +255,10 @@ def make_good_tree(root):
     # pin makes the pin vacuous — the same lesson the timeout pin taught.
     write(root / "scripts" / "ops-armgate-hook.sh",
           "#!/usr/bin/env bash\n"
+          "# json_get python3 branch carries the bool coercion (F14 parity pin)\n"
+          "json_get() { printf '%s' \"$input\" | python3 -c 'import sys,json; "
+          "v=json.load(sys.stdin).get(sys.argv[1],\"\"); "
+          "print(\"true\" if isinstance(v, bool) and v else \"false\" if isinstance(v, bool) else v)' \"$1\"; }\n"
           '[ -f "$opdir/armgate.on" ] || exit 0\n'
           '[ -e "$opdir/.armed/$session" ] && exit 0\n'
           '[ -e "$opdir/.armed/$session.exempt" ] && exit 0\n'
@@ -892,6 +904,10 @@ class ValidatorTest(unittest.TestCase):
             "#!/usr/bin/env bash\n"
             "[ ! -L \"$1\" ] || exit 0\n"
             "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
+            "# json_get python3 branch carries the bool coercion (F14 parity pin)\n"
+            "json_get() { printf '%s' \"$input\" | python3 -c 'import sys,json; "
+            "v=json.load(sys.stdin).get(sys.argv[1],\"\"); "
+            "print(\"true\" if isinstance(v, bool) and v else \"false\" if isinstance(v, bool) else v)' \"$1\"; }\n"
             "# deviation gate: second bounded read of DECISIONS.md (HANDOFF-MARK)\n"
             "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
             "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) owner=\"\" ;; esac\n")
