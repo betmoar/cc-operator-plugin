@@ -1331,6 +1331,121 @@ rm -f "$P/.operator/.lock/holder" "$P/.operator/.lock.reclaim/holder" 2>/dev/nul
 rm -rf "$P" "$TMPD"
 
 ########################################################################
+echo "-- Case 21b: the give-up path is serialized by the fallback lock [F6]"
+# lock_acquire has two "proceed unlocked" exits — a CONFIRMED-LIVE holder that
+# outlasts LOCK_LIVE_SPINS, and a reclaim we could not win. Both used to return
+# 0 having acquired NOTHING, so every waiter that timed out in the same window
+# entered the critical section together: the unarbitrated multi-writer pile-up
+# the lock exists to prevent, N-wide. They now queue on $LOCKDIR.fallback.
+#
+# HONESTY, twice over:
+#  · This does NOT make the give-up safe against the live holder. One giver-up
+#    still runs beside it — the accepted liveness trade ("never block the
+#    operator forever"). The fallback reduces N to 1; it does not reach 0.
+#  · The overlap assertion below is a real detector, not a timing coincidence:
+#    each giver-up does an atomic `mkdir` of a WITNESS dir inside its fallback
+#    critical section and holds it for 0.4s. Two overlapping sections mean one
+#    of those mkdirs fails, deterministically, regardless of scheduling. What it
+#    cannot prove is the converse at every skew — it proves the mutex holds for
+#    the overlaps this suite actually produces.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+LK="$P/.operator/.lock"
+TMPD="$(newproj)"
+
+# The unit probe evals the real LOCK BLOCK, like case 21(f) — no reimplementation.
+cat > "$TMPD/fb.sh" <<'FBPROBE'
+set -eu
+OPDIR=".operator"; LOCKDIR="$OPDIR/.lock"
+eval "$(awk '/^# >>> LOCK BLOCK/,/^# <<< LOCK BLOCK/' "$1")"
+case "$2" in
+  cycle)   # a plain acquire/release leaves nothing behind
+    fallback_acquire
+    [ "$FALLBACK_HELD" = "1" ] || { echo "NOT-HELD"; exit 1; }
+    [ -s "$FALLBACK_DIR/holder" ] || { echo "NO-STAMP"; exit 1; }
+    fallback_release
+    [ -d "$FALLBACK_DIR" ] && { echo "NOT-RELEASED"; exit 1; }
+    echo OK ;;
+  reclaim) # a CRASHED giver-up's dir is reclaimed — staleness-free
+    fallback_acquire
+    [ "$FALLBACK_HELD" = "1" ] || { echo "NOT-RECLAIMED"; exit 1; }
+    fallback_release
+    echo OK ;;
+  live)    # a LIVE giver-up's dir is never stolen, and the wait is bounded
+    # Giving up on the fallback WARNS on stderr, and the harness folds stderr
+    # into the probe's output — keep the channel clean so "OK" means OK.
+    fallback_acquire 2>/dev/null
+    [ "$FALLBACK_HELD" = "0" ] || { echo "STOLE-LIVE"; exit 1; }
+    echo OK ;;
+  witness) # hold the fallback, then prove no one else is inside it
+    fallback_acquire
+    mkdir "$OPDIR/.witness" 2>/dev/null || { echo OVERLAP; exit 1; }
+    sleep 0.4
+    rmdir "$OPDIR/.witness"
+    fallback_release
+    echo OK ;;
+esac
+FBPROBE
+
+FBOUT="$( cd "$P" && bash "$TMPD/fb.sh" "$SCRIPTS/ops-verdict.sh" cycle 2>&1 )"
+check "fallback lock: acquire stamps, release leaves no dir" "$([ "$FBOUT" = "OK" ] && echo 0 || echo 1)"
+
+# A dead holder. A one-shot claim dir with no reclaim would dangle here forever
+# and wedge every later giver-up — the unexpirable-claim mistake this block has
+# already made once (.lock.reclaim, case 16).
+sleep 0.1 & FBDEAD=$!; wait "$FBDEAD" 2>/dev/null || true
+mkdir -p "$LK.fallback"; printf '%s %s %s\n' "${HOSTNAME:-nohost}" "${UID:-0}" "$FBDEAD" > "$LK.fallback/holder"
+FBOUT="$( cd "$P" && bash "$TMPD/fb.sh" "$SCRIPTS/ops-verdict.sh" reclaim 2>&1 )"
+check "fallback lock: a crashed giver-up's dir is reclaimed (staleness-free)" "$([ "$FBOUT" = "OK" ] && echo 0 || echo 1)"
+check "fallback lock: reclaimed and then released — nothing left behind" "$([ ! -d "$LK.fallback" ] && echo 0 || echo 1)"
+
+# A LIVE holder is waited on, never stolen, and the wait EXPIRES: an unbounded
+# one here would be a deadlock inside the code whose whole job is to degrade.
+sleep 300 & FBLIVE=$!
+mkdir -p "$LK.fallback"; printf '%s %s %s\n' "${HOSTNAME:-nohost}" "${UID:-0}" "$FBLIVE" > "$LK.fallback/holder"
+SEC0=$(date +%s)
+FBOUT="$( cd "$P" && FALLBACK_SPINS=10 bash "$TMPD/fb.sh" "$SCRIPTS/ops-verdict.sh" live 2>&1 )"
+SEC1=$(date +%s)
+check "fallback lock: a LIVE giver-up's dir is not stolen" "$([ "$FBOUT" = "OK" ] && echo 0 || echo 1)"
+check "fallback lock: waiting on a live holder is bounded (<10s at spins=10)" "$([ "$((SEC1 - SEC0))" -lt 10 ] && echo 0 || echo 1)"
+FBHOLD="$(cat "$LK.fallback/holder" 2>/dev/null || true)"
+FBOK=1; case "$FBHOLD" in *" $FBLIVE") FBOK=0 ;; esac
+check "fallback lock: live holder still owns it after the waiter gave up" "$FBOK"
+kill "$FBLIVE" 2>/dev/null || true; wait "$FBLIVE" 2>/dev/null || true
+rm -f "$LK.fallback/holder"; rm -rf "$LK.fallback"
+
+# Three concurrent givers-up. Overlap is caught by the witness mkdir, not by
+# reading a clock.
+OVERLAP=0
+for _i in 1 2 3; do
+  ( cd "$P" && bash "$TMPD/fb.sh" "$SCRIPTS/ops-verdict.sh" witness > "$TMPD/w$_i" 2>&1 ) &
+done
+wait
+for _i in 1 2 3; do
+  [ "$(cat "$TMPD/w$_i" 2>/dev/null)" = "OK" ] || OVERLAP=$((OVERLAP + 1))
+done
+check "fallback lock: 3 concurrent givers-up never overlap (witness mkdir)" "$([ "$OVERLAP" -eq 0 ] && echo 0 || echo 1)"
+check "fallback lock: nothing left behind after the 3-way run" "$([ ! -d "$LK.fallback" ] && [ ! -d "$P/.operator/.witness" ] && echo 0 || echo 1)"
+
+# END-TO-END, and this is the constraint that matters most: a giver-up must
+# never set LOCK_HELD or touch $LOCKDIR. lock_release would then rm the LIVE
+# holder's dir on exit — precisely the F03 displacement the confirmed-alive
+# branch was written to forbid. Real ops-verdict.sh, real live holder.
+sleep 300 & FBLIVE2=$!
+mkdir -p "$LK"; printf '%s %s %s\n' "${HOSTNAME:-nohost}" "${UID:-0}" "$FBLIVE2" > "$LK/holder"
+( cd "$P" && bash "$TASK" T-FB --owner SESS-A >/dev/null 2>&1 )
+( cd "$P" && LOCK_LIVE_SPINS=5 FALLBACK_SPINS=10 bash "$VERDICT" T-FB crit ev PASS --owner SESS-A >/dev/null 2>&1 )
+FBRC=$?
+check "give-up path: the writer still completes (degrade, never hang)" "$([ "$FBRC" -eq 0 ] && echo 0 || echo 1)"
+check "give-up path: verdict actually recorded" "$(grep -Eq '^\| T-FB \| crit \| ev @[^ |]+ \| PASS \|$' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
+FBHOLD="$(cat "$LK/holder" 2>/dev/null || true)"
+FBOK=1; case "$FBHOLD" in *" $FBLIVE2") FBOK=0 ;; esac
+check "give-up path: the LIVE holder's real lock is untouched (not displaced)" "$([ -d "$LK" ] && [ "$FBOK" = "0" ] && echo 0 || echo 1)"
+check "give-up path: its fallback lock was released on exit" "$([ ! -d "$LK.fallback" ] && echo 0 || echo 1)"
+kill "$FBLIVE2" 2>/dev/null || true; wait "$FBLIVE2" 2>/dev/null || true
+rm -f "$LK/holder" "$LK.fallback/holder" 2>/dev/null || true
+rm -rf "$P" "$TMPD"
+
+########################################################################
 echo "-- Case 22: the statusline segment reports the gate, not a file count"
 # The bar's whole value is that it answers "will my stop be blocked?". A raw
 # count of pending/ answers a DIFFERENT question and gets it wrong in both
