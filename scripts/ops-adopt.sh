@@ -475,12 +475,16 @@ for ID in ${IDS+"${IDS[@]}"}; do
   # PREV is captured from the sentinel BODY — untrusted input (a merge, a
   # hand-edit, an attacker plant can supply it). It is echoed to stdout (the
   # adoption report), so apply the SAME reject-set the three sentinel_owner
-  # parsers apply to an owner: a PREV carrying a slash, a leading dot, a pipe,
-  # whitespace, or the reserved .exempt suffix degrades to <invalid> rather
-  # than being echoed verbatim (F15 — stdout/log-injection-adjacent; the NEW
-  # owner $OWNER is already guarded by check_owner_name and is unaffected).
+  # parsers apply to an owner: a NON-EMPTY PREV carrying a slash, a leading
+  # dot, a pipe, whitespace, or the reserved .exempt suffix degrades to
+  # <invalid> rather than being echoed verbatim (F15 — stdout/log-injection-
+  # adjacent; the NEW owner $OWNER is already guarded by check_owner_name and
+  # is unaffected). An EMPTY PREV is the normal state of a legitimately
+  # UNOWNED sentinel (ops-task.sh omits session_id: with no --owner) — it must
+  # fall through to the <unowned> fallback at the echo, NOT read as <invalid>
+  # (which would conflate 'never owned' with 'tampered'). (review follow-up.)
   case "${PREV:-}" in
-    "" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) PREV="<invalid>" ;;
+    */* | .* | *"|"* | *[[:space:]]* | *.exempt) PREV="<invalid>" ;;
   esac
 
   # Rewrite via a temp file + mv so a crash mid-write cannot leave a sentinel

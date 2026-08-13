@@ -519,7 +519,7 @@ the fix is reverted.
   later `rm -f` failed on the directory — a non-zero exit with the ledger
   already mutated and no audit line. Every other sentinel reader already
   required a non-symlink regular file; this was the one outlier. Now refused in
-  `resolve_owner`, before any write.
+  `ownership_gate`, before any write.
 - **The compressor's out-of-tree spill was world-readable.** `os.tmpdir()` is
   `/tmp` on Linux — where CI runs — and the key is `sha256(cwd)[0:16]`, no
   secret in it. Under default modes any local user could read **pre-scrub** tool

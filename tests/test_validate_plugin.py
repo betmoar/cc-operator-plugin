@@ -42,6 +42,15 @@ GOOD_STATUSLINE = (
     "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
     "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) owner=\"\" ;; esac\n")
 
+# A json_get() whose python3 branch carries the bool coercion. The three hooks
+# must agree on it (F14 parity pin); fixtures embed this single source so the
+# four hook-stub sites cannot drift apart.
+JSON_GET = (
+    "# json_get python3 branch carries the bool coercion (F14 parity pin)\n"
+    "json_get() { printf '%s' \"$input\" | python3 -c 'import sys,json; "
+    "v=json.load(sys.stdin).get(sys.argv[1],\"\"); "
+    "print(\"true\" if isinstance(v, bool) and v else \"false\" if isinstance(v, bool) else v)' \"$1\"; }\n")
+
 GOOD_LOCK_BLOCK = (
     "# >>> LOCK BLOCK\n"
     "lock_acquire() { mkdir \"$LOCKDIR\" 2>/dev/null; }\n"
@@ -182,11 +191,7 @@ def make_good_tree(root):
     # migrates a v1 gitignore, so it carries the same allowlist body — behind
     # the same verified backup.
     write(root / "scripts" / "ops-sessionstart-hook.sh",
-          "#!/usr/bin/env bash\nset -eu\n" + _install_loop +
-          "# json_get python3 branch carries the bool coercion (F14 parity pin)\n"
-          "json_get() { printf '%s' \"$input\" | python3 -c 'import sys,json; "
-          "v=json.load(sys.stdin).get(sys.argv[1],\"\"); "
-          "print(\"true\" if isinstance(v, bool) and v else \"false\" if isinstance(v, bool) else v)' \"$1\"; }\n"
+          "#!/usr/bin/env bash\nset -eu\n" + _install_loop + JSON_GET +
           "rm -rf \"$cwd/.operator/.compress-spill\" \"$cwd/.operator/.compress-state\"\n"
           "if ! grep -qF '# cc-operator gitignore v2 (allowlist)' \"$_gi\" 2>/dev/null; then\n"
           "  if [ -e \"$_gi.v1.bak\" ] && [ ! -f \"$_gi.v1.bak\" ]; then\n"
@@ -205,11 +210,7 @@ def make_good_tree(root):
     # every sentinel touchpoint carries the -L symlink rejection (F65/F66)
     nolink = "[ ! -L \"$1\" ] || exit 0\n"
     write(root / "scripts" / "ops-stop-hook.sh",
-          "#!/usr/bin/env bash\n" + nolink + bounded +
-          "# json_get python3 branch carries the bool coercion (F14 parity pin)\n"
-          "json_get() { printf '%s' \"$input\" | python3 -c 'import sys,json; "
-          "v=json.load(sys.stdin).get(sys.argv[1],\"\"); "
-          "print(\"true\" if isinstance(v, bool) and v else \"false\" if isinstance(v, bool) else v)' \"$1\"; }\n"
+          "#!/usr/bin/env bash\n" + nolink + bounded + JSON_GET +
           "# deviation gate: counts DEVIATION|ESCALATION|GATE-EXCEPTION (HANDOFF-MARK)\n"
           "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
           "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) owner=\"\" ;; esac\n")
@@ -254,11 +255,7 @@ def make_good_tree(root):
     # #19/#27 guards having regressed. A synthetic tree that does not track a
     # pin makes the pin vacuous — the same lesson the timeout pin taught.
     write(root / "scripts" / "ops-armgate-hook.sh",
-          "#!/usr/bin/env bash\n"
-          "# json_get python3 branch carries the bool coercion (F14 parity pin)\n"
-          "json_get() { printf '%s' \"$input\" | python3 -c 'import sys,json; "
-          "v=json.load(sys.stdin).get(sys.argv[1],\"\"); "
-          "print(\"true\" if isinstance(v, bool) and v else \"false\" if isinstance(v, bool) else v)' \"$1\"; }\n"
+          "#!/usr/bin/env bash\n" + JSON_GET +
           '[ -f "$opdir/armgate.on" ] || exit 0\n'
           '[ -e "$opdir/.armed/$session" ] && exit 0\n'
           '[ -e "$opdir/.armed/$session.exempt" ] && exit 0\n'
@@ -393,6 +390,16 @@ class ValidatorTest(unittest.TestCase):
     # --- baseline ---
     def test_good_tree_is_clean(self):
         self.assertEqual(self.problems(), [])
+
+    # --- F14: json_get bool-coercion parity pin (must fire on a broken hook) ---
+    def test_f14_json_get_bool_coercion_missing_fires(self):
+        # Strip the coercion from one hook's json_get. The pin greps for the
+        # literal isinstance(v, bool); renaming it must make check_guard_parity
+        # report the drift (the file's docstring mandates fire-on-broken).
+        p = self.dir / "scripts" / "ops-sessionstart-hook.sh"
+        p.write_text(p.read_text(encoding="utf-8").replace(
+            "isinstance(v, bool)", "isinstance(v, wasbool)"), encoding="utf-8")
+        self.assertFires("json_get() is missing the isinstance(v, bool)")
 
     # --- the U10 source-state stamp (check_source_stamp) ---
     # Each mutation is one way the stamp stops binding a row to a tree. The
@@ -903,11 +910,7 @@ class ValidatorTest(unittest.TestCase):
         good_hook = (
             "#!/usr/bin/env bash\n"
             "[ ! -L \"$1\" ] || exit 0\n"
-            "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
-            "# json_get python3 branch carries the bool coercion (F14 parity pin)\n"
-            "json_get() { printf '%s' \"$input\" | python3 -c 'import sys,json; "
-            "v=json.load(sys.stdin).get(sys.argv[1],\"\"); "
-            "print(\"true\" if isinstance(v, bool) and v else \"false\" if isinstance(v, bool) else v)' \"$1\"; }\n"
+            "while IFS= read -r -n 512 line; do :; done < \"$1\"\n" + JSON_GET +
             "# deviation gate: second bounded read of DECISIONS.md (HANDOFF-MARK)\n"
             "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
             "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) owner=\"\" ;; esac\n")

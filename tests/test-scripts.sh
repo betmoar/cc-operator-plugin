@@ -596,6 +596,14 @@ check "F15 ops-adopt still exits 0 (adoption succeeds; only the display is sanit
   "$([ "$PREVRC" -eq 0 ] && echo 0 || echo 1)"
 check "F15 ops-adopt does not echo the raw malicious body" \
   "$(printf '%s' "$PREVOUT" | grep -q 'evil path|with pipe' && echo 1 || echo 0)"
+# F15 follow-up: an UNOWNED sentinel (opened with no --owner, so no session_id:
+# line) must report <unowned>, NOT <invalid>. Empty PREV is the normal state of
+# a legitimately unowned sentinel, not tampering — conflating them reads as a
+# regression. (Final-review finding on the initial F15.)
+( cd "$P" && bash "$TASK" T-UNOWNED >/dev/null 2>&1 )   # no --owner
+UNOWNEDOUT="$( cd "$P" && bash "$ADOPT" --owner SESS-B T-UNOWNED 2>/dev/null )"
+check "F15 ops-adopt reports <unowned> for an empty-PREV sentinel (not <invalid>)" \
+  "$(printf '%s' "$UNOWNEDOUT" | grep -q 'adopted T-UNOWNED: <unowned> -> SESS-B' && echo 0 || echo 1)"
 ( cd "$P" && bash "$TASK" T-T --owner "a/b" >/dev/null 2>&1 ); OTRC=$?
 check "ops-task refuses '/' in --owner" "$([ "$OTRC" -ne 0 ] && echo 0 || echo 1)"
 # re-opening an open task never silently takes it over
