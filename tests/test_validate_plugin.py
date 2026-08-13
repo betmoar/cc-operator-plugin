@@ -40,7 +40,7 @@ GOOD_STATUSLINE = (
     "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
     "# deviation-gate mirror: counts DEVIATION|ESCALATION|GATE-EXCEPTION (HANDOFF-MARK)\n"
     "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
-    "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]*) owner=\"\" ;; esac\n")
+    "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) owner=\"\" ;; esac\n")
 
 GOOD_LOCK_BLOCK = (
     "# >>> LOCK BLOCK\n"
@@ -204,12 +204,19 @@ def make_good_tree(root):
           "#!/usr/bin/env bash\n" + nolink + bounded +
           "# deviation gate: counts DEVIATION|ESCALATION|GATE-EXCEPTION (HANDOFF-MARK)\n"
           "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
-          "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]*) owner=\"\" ;; esac\n")
+          "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) owner=\"\" ;; esac\n")
     write(root / "scripts" / "ops-task.sh",
           "#!/usr/bin/env bash\n" + guards + nolink)
     write(root / "scripts" / "ops-verdict.sh",
           "#!/usr/bin/env bash\n" + guards + nolink + bounded +
-          "while IFS= read -r -n 512 row; do :; done < \"$frag\"\n" +
+          "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) return 0 ;; esac\n" +
+          "# F2: refuse a symlink fragment before the write + skip on both reads\n"
+          '[ -L "$FRAGDIR/$who.md" ] && exit 1\n'
+          '[ -f "$frag" ] && [ ! -L "$frag" ] && :;\n'
+          '[ -f "$frag" ] && [ ! -L "$frag" ] && :;\n'
+          "# F17: both verdicts.d fragment scanners use the same 1MiB read bound\n"
+          "while IFS= read -r -n 1048576 row; do :; done < \"$frag\"\n"
+          "while IFS= read -r -n 1048576 line; do :; done < \"$frag\"\n" +
           "# --mark-handoff writes a HANDOFF-MARK line under the lock\n" +
           GOOD_LOCK_BLOCK + GOOD_SOURCE_STAMP)
     write(root / "scripts" / "ops-adopt.sh",
@@ -882,14 +889,21 @@ class ValidatorTest(unittest.TestCase):
             "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
             "# deviation gate: second bounded read of DECISIONS.md (HANDOFF-MARK)\n"
             "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
-            "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]*) owner=\"\" ;; esac\n")
+            "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) owner=\"\" ;; esac\n")
         good_verdict = (
             "#!/usr/bin/env bash\n"
             "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
             "check_owner_name() { :; }\n"
             "[ ! -L \"$f\" ] || exit 0\n"
             "while IFS= read -r -n 512 line; do :; done < \"$f\"\n"
-            "while IFS= read -r -n 512 row; do :; done < \"$frag\"\n")
+            "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) return 0 ;; esac\n"
+            "# F2: refuse a symlink fragment before the write + skip on both reads\n"
+            '[ -L "$FRAGDIR/$who.md" ] && exit 1\n'
+            '[ -f "$frag" ] && [ ! -L "$frag" ] && :;\n'
+            '[ -f "$frag" ] && [ ! -L "$frag" ] && :;\n'
+            "# F17: both verdicts.d fragment scanners use the same 1MiB read bound\n"
+            "while IFS= read -r -n 1048576 row; do :; done < \"$frag\"\n"
+            "while IFS= read -r -n 1048576 line; do :; done < \"$frag\"\n")
         good_adopt = (
             "#!/usr/bin/env bash\n"
             "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
