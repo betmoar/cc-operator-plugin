@@ -1499,6 +1499,32 @@ check "give-up path: the LIVE holder's real lock is untouched (not displaced)" "
 check "give-up path: its fallback lock was released on exit" "$([ ! -d "$LK.fallback" ] && echo 0 || echo 1)"
 kill "$FBLIVE2" 2>/dev/null || true; wait "$FBLIVE2" 2>/dev/null || true
 rm -f "$LK/holder" "$LK.fallback/holder" 2>/dev/null || true
+
+# --- the SAME guarantee on the --reconcile path -----------------------------
+# `trap` REPLACES a handler for its signal; it does not stack. --reconcile calls
+# lock_acquire (which may install `lock_release; fallback_release`) and THEN
+# installs its own tempfile-cleanup trap. Naming only lock_release there silently
+# dropped fallback_release for the rest of the process, leaking $LOCKDIR.fallback
+# on every reconcile that ran under contention — the exact leak the two acquire
+# sites carry a comment against. The end-to-end case above could not see it: it
+# exercises the ordinary write path, which installs no trap of its own.
+# Asserted on the REAL script against a REAL live holder, because the defect is
+# in trap composition and a source-grep for the handler string would pass on a
+# trap that never runs.
+sleep 300 & FBLIVE3=$!
+mkdir -p "$LK"; printf '%s %s %s\n' "${HOSTNAME:-nohost}" "${UID:-0}" "$FBLIVE3" > "$LK/holder"
+( cd "$P" && LOCK_LIVE_SPINS=3 bash "$VERDICT" --reconcile >/dev/null 2>&1 )
+RECRC=$?
+check "--reconcile under contention: still completes (degrade, never hang)" \
+  "$([ "$RECRC" -eq 0 ] && echo 0 || echo 1)"
+check "--reconcile under contention: its fallback lock is released on exit" \
+  "$([ ! -d "$LK.fallback" ] && echo 0 || echo 1)"
+FBHOLD="$(cat "$LK/holder" 2>/dev/null || true)"
+FBOK=1; case "$FBHOLD" in *" $FBLIVE3") FBOK=0 ;; esac
+check "--reconcile under contention: the LIVE holder's real lock is untouched" \
+  "$([ -d "$LK" ] && [ "$FBOK" = "0" ] && echo 0 || echo 1)"
+kill "$FBLIVE3" 2>/dev/null || true; wait "$FBLIVE3" 2>/dev/null || true
+rm -f "$LK/holder" "$LK.fallback/holder" 2>/dev/null || true
 rm -rf "$P" "$TMPD"
 
 ########################################################################

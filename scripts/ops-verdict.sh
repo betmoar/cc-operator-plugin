@@ -610,7 +610,18 @@ if [ "${1:-}" = "--reconcile" ]; then
   # the other fix, but macOS /bin/bash is 3.2 and has none.
   CAND="$(mktemp "${TMPDIR:-/tmp}/opsrec.XXXXXX")"
   MISSINGF="$(mktemp "${TMPDIR:-/tmp}/opsmis.XXXXXX")"
-  trap 'lock_release; rm -f "$CAND" "$MISSINGF"' EXIT
+  # `trap` REPLACES a handler for the same signal, it does not stack. This runs
+  # AFTER lock_acquire, which may have degraded to fallback_acquire and installed
+  # `lock_release; fallback_release` — so naming only lock_release here silently
+  # dropped fallback_release for the rest of the process, leaking
+  # $LOCKDIR.fallback on every reconcile-under-contention. Measured: a live
+  # holder + LOCK_LIVE_SPINS=3 left .operator/.lock.fallback on disk after exit.
+  # The two acquire paths carry this same warning; this site is the one that
+  # ignored it. INT/TERM were absent entirely — a signal during reconcile skipped
+  # the lock release AND both tempfiles.
+  trap 'lock_release; fallback_release; rm -f "$CAND" "$MISSINGF"' EXIT
+  trap 'lock_release; fallback_release; rm -f "$CAND" "$MISSINGF"; exit 130' INT
+  trap 'lock_release; fallback_release; rm -f "$CAND" "$MISSINGF"; exit 143' TERM
   if [ -d "$FRAGDIR" ]; then
     for frag in "$FRAGDIR"/*.md; do
       [ -f "$frag" ] || continue
