@@ -2287,6 +2287,24 @@ B10NG="$(mktemp -d "${TMPDIR:-/tmp}/opstest.XXXXXX")"
 (cd "$B10NG" && bash "$SCRIPTS/ops-backlog.sh" --census 2>/dev/null); B10NGRC=$?
 check "B10.1 --census on a non-git dir → non-zero" "$([ "$B10NGRC" != 0 ] && echo 0 || echo 1)"
 
+# B10.1f (F7) — a CORRUPTED git index must make --census REFUSE, not print a
+# confident 'files: 0'. git rev-parse --git-dir passes on a corrupt index (the
+# repo exists), but `git ls-files -z` fatals — and under `set -eu` without
+# pipefail that fatal was masked by the trailing tr/wc into a silent 0, the
+# "silently wrong is worse than refusing" failure the file's own header names.
+# pipefail makes the pipeline inherit ls-files' non-zero, and `set -e` aborts.
+B10FI="$(newproj)"
+( cd "$B10FI" && git init -q && git config user.email t@t && git config user.name t )
+printf 'a = 1\n' > "$B10FI/x.py"
+( cd "$B10FI" && git add -A && git commit -qm base >/dev/null 2>&1 )
+# corrupt the index: git rev-parse still passes, git ls-files fatals (rc 128)
+printf 'garbage-not-an-index' > "$B10FI/.git/index"
+( cd "$B10FI" && bash "$SCRIPTS/ops-backlog.sh" --census 2>/dev/null ); B10FIRC=$?
+check "B10.1f (F7) --census on a corrupted index → non-zero (not 'files: 0')" \
+  "$([ "$B10FIRC" != 0 ] && echo 0 || echo 1)"
+# restore a real index so the temp repo is not left in a broken state
+( cd "$B10FI" && git read-tree HEAD 2>/dev/null || true )
+
 # B10.2 — a filename containing a SPACE must not vanish from the count. Bare
 # `xargs` word-splits on any whitespace, so `my file.py` became two bogus args,
 # both cats failed, 2>/dev/null swallowed it, and the file dropped out silently:
