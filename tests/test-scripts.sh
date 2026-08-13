@@ -1497,6 +1497,31 @@ FBHOLD="$(cat "$LK/holder" 2>/dev/null || true)"
 FBOK=1; case "$FBHOLD" in *" $FBLIVE2") FBOK=0 ;; esac
 check "give-up path: the LIVE holder's real lock is untouched (not displaced)" "$([ -d "$LK" ] && [ "$FBOK" = "0" ] && echo 0 || echo 1)"
 check "give-up path: its fallback lock was released on exit" "$([ ! -d "$LK.fallback" ] && echo 0 || echo 1)"
+
+# Every assertion above holds whether or not lock_acquire ever CALLS
+# fallback_acquire: one giver-up against one live holder completes, records, and
+# leaves nothing behind in both worlds. Measured — deleting all four call sites
+# (2 per CLI, in parity so the drift check stays silent) left the suite at
+# 588/0. The mechanism was tested only through the fb.sh probe, which evals the
+# LOCK BLOCK and calls fallback_acquire DIRECTLY; nothing exercised the wiring.
+#
+# So observe the TAKE, not the release. Pre-plant a fallback dir stamped with a
+# DEAD pid: wired, the giver-up judges it dead, reclaims it, takes it, and
+# releases on exit — the dir is GONE. Unwired, nobody looks at it — it SURVIVES.
+# A dead stamp rather than a live one on purpose: the two worlds must differ in
+# the END STATE, not in elapsed time, or the case is a load-flaky timing assert.
+sleep 300 & FBDEAD=$!
+kill "$FBDEAD" 2>/dev/null || true; wait "$FBDEAD" 2>/dev/null || true   # now a confirmed-dead pid
+mkdir -p "$LK" "$LK.fallback"
+printf '%s %s %s\n' "${HOSTNAME:-nohost}" "${UID:-0}" "$FBLIVE2" > "$LK/holder"
+printf '%s %s %s\n' "${HOSTNAME:-nohost}" "${UID:-0}" "$FBDEAD" > "$LK.fallback/holder"
+( cd "$P" && bash "$TASK" T-FB2 --owner SESS-A >/dev/null 2>&1 )
+( cd "$P" && LOCK_LIVE_SPINS=5 FALLBACK_SPINS=30 bash "$VERDICT" T-FB2 crit ev PASS --owner SESS-A >/dev/null 2>&1 )
+check "give-up path: the fallback lock is actually TAKEN (dead holder reclaimed, not ignored)" \
+  "$([ ! -d "$LK.fallback" ] && echo 0 || echo 1)"
+check "give-up path: the writer still records while reclaiming the fallback" \
+  "$(grep -Eq '^\| T-FB2 \| crit \| ev @[^ |]+ \| PASS \|$' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
+
 kill "$FBLIVE2" 2>/dev/null || true; wait "$FBLIVE2" 2>/dev/null || true
 rm -f "$LK/holder" "$LK.fallback/holder" 2>/dev/null || true
 
