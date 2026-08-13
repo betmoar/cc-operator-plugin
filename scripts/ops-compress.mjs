@@ -233,6 +233,21 @@ function writeSelfIgnore(root) {
   } catch { /* best effort — containment is a nicety, the spill is the contract */ }
 }
 
+// F3 — session_id arrives raw from the payload (untrusted). Sanitize to the
+// same charset as toolUseId, then verify the resolved path cannot escape
+// `base` (a defense-in-depth belt for the charset allowlist, not a
+// substitute for it) — anything that fails either check falls back to
+// "nosession" rather than ever joining an attacker-controlled path segment.
+function sanitizeSessionId(base, session) {
+  const sid = String(session || "nosession").replace(/[^A-Za-z0-9_.-]/g, "_");
+  const resolvedBase = path.resolve(base);
+  const resolvedDir = path.resolve(base, sid);
+  if (sid && (resolvedDir === resolvedBase || resolvedDir.startsWith(resolvedBase + path.sep))) {
+    return sid;
+  }
+  return "nosession";
+}
+
 function spill(original, { cwd, session, toolUseId, keep }) {
   try {
     // null = the root could not be established as ours (a hijacked tempdir
@@ -240,7 +255,7 @@ function spill(original, { cwd, session, toolUseId, keep }) {
     // user chose; the caller drops the cite and compression continues.
     const base = ephemeralRoot(cwd, ".compress-spill");
     if (!base) return null;
-    const dir = path.join(base, session || "nosession");
+    const dir = path.join(base, sanitizeSessionId(base, session));
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const name = String(toolUseId || `t${Date.now()}`).replace(/[^A-Za-z0-9_.-]/g, "_");
     const file = path.join(dir, name);
@@ -251,7 +266,18 @@ function spill(original, { cwd, session, toolUseId, keep }) {
     // Bounded: delete oldest past `keep`. A spill directory that grows without
     // limit is a disk leak in a long session.
     const entries = fs.readdirSync(dir)
-      .map((f) => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs }))
+      .map((f) => {
+        // F18 — an entry can vanish between readdirSync and statSync (a
+        // concurrent spill's own cleanup). An unguarded statSync throws out
+        // of the map into spill()'s outer catch, turning a benign race into
+        // a full spill FAILURE. Sort it oldest-first so it is preferred for
+        // deletion rather than kept.
+        try {
+          return { f, t: fs.statSync(path.join(dir, f)).mtimeMs };
+        } catch {
+          return { f, t: -Infinity };
+        }
+      })
       .sort((a, b) => a.t - b.t);
     for (const e of entries.slice(0, Math.max(0, entries.length - keep))) {
       try { fs.unlinkSync(path.join(dir, e.f)); } catch { /* best effort */ }
@@ -276,7 +302,10 @@ function dedupCheck(text, { cwd, session, tool }) {
   try {
     const base = ephemeralRoot(cwd, ".compress-state");
     if (!base) return false;   // no trusted root → no dedup; never a false HIT
-    const dir = path.join(base, session);
+    // F3 — same untrusted session_id as spill(); "nosession" here just means
+    // dedup degrades to a shared bucket, never a false HIT across sessions
+    // and never a path outside `base`.
+    const dir = path.join(base, sanitizeSessionId(base, session));
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const f = path.join(dir, String(tool).replace(/[^A-Za-z0-9_.-]/g, "_"));
     const h = crypto.createHash("sha256").update(text).digest("hex");

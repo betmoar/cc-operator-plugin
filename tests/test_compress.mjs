@@ -309,6 +309,56 @@ console.log("-- Case: ephemera are self-ignoring and never materialize .operator
   fs.rmSync(path.join(tmpBase, key), { recursive: true, force: true });
 }
 
+// ── F3: a traversal session_id must not escape the spill root ──────────────
+console.log("-- Case: F3 traversal session_id stays inside the spill root");
+{
+  const traversalRes = run({
+    tool_name: "Bash",
+    tool_use_id: "toolu_traversal",
+    session_id: "../../escaped",
+    tool_input: { command: "npm test" },
+    tool_response: { stdout: big, stderr: "" },
+  });
+  const tText = traversalRes?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
+  const tm = tText.match(/\.operator\/\.compress-spill\/[^\s\]]+/);
+  ok(tm != null, "a traversal session_id still elides and cites a spill");
+  if (tm) {
+    const spillRoot = path.resolve(TMP, ".operator", ".compress-spill");
+    const resolved = path.resolve(TMP, tm[0]);
+    ok(resolved === spillRoot || resolved.startsWith(spillRoot + path.sep),
+      "the resolved spill path stays INSIDE the spill root despite the traversal session_id");
+    ok(fs.existsSync(resolved) && fs.readFileSync(resolved, "utf8") === big,
+      "the spill file itself exists in-root and holds the verbatim original");
+  }
+}
+
+// ── F18: a vanished entry between readdirSync and statSync must not fail spill ──
+console.log("-- Case: F18 a vanished spill-dir entry does not fail the spill");
+{
+  const raceSession = `SESS-RACE${++sessN}`;
+  const spillRoot = path.join(TMP, ".operator", ".compress-spill");
+  const dir = path.join(spillRoot, raceSession);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // Seed an entry, then remove it right before spill() runs its readdir+stat
+  // pass — simulating the race the F18 fix guards (an entry present at
+  // readdirSync but gone by statSync, e.g. a concurrent spill's own cleanup).
+  const ghost = path.join(dir, "ghost");
+  fs.writeFileSync(ghost, "gone", { mode: 0o600 });
+  fs.unlinkSync(ghost);
+  const raceRes = run({
+    tool_name: "Bash",
+    tool_use_id: "toolu_race",
+    session_id: raceSession,
+    tool_input: { command: "npm test" },
+    tool_response: { stdout: big, stderr: "" },
+  });
+  const rText = raceRes?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
+  ok(/full output spilled to/.test(rText),
+    "spill() still returns a valid, non-null path when a listed entry has already vanished");
+  ok(!/TRUNCATED and the spill to disk FAILED/.test(rText),
+    "the vanished entry does not throw spill() into the outer FAILED-spill branch");
+}
+
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log(`\n== summary: ${pass} passed, ${fail} failed ==`);
 if (fail > 0) process.exit(1);
