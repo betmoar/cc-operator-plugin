@@ -3417,6 +3417,35 @@ check "#34 a current bin/ is NOT rewritten (the probe is staleness, not a timer)
   "$([ "$STALE_MTIME_BEFORE" = "$(ls -l "$STALEP/.operator/bin/ops-task.sh" 2>/dev/null)" ] && echo 0 || echo 1)"
 rm -rf "$STALEP"
 
+echo "-- Case: SessionStart replaces bin/ CLIs ATOMICALLY — the inode changes (F5)"
+# The upgrade used to write each CLI in place with `cp` (O_TRUNC, SAME inode), so
+# a bash concurrently mid-execution of the OLD file could be truncated (the F5
+# defect: truncation between LOCK_HELD=1 and the EXIT trap in ops-verdict.sh
+# leaves the lock held with no cleanup). The fix writes a temp file then `mv`s it
+# over the target — `mv` swaps the inode, so a concurrent reader keeps its old
+# inode. A changed inode across an upgrade is therefore the direct evidence of
+# atomic replace rather than in-place truncation.
+INOP="$(newproj)"
+( cd "$INOP" && git init -q . 2>/dev/null && "$BASH_ABS" "$SCRIPTS/ops-init.sh" >/dev/null 2>&1 )
+# Plant an OLD copy, note its inode, and force an upgrade via a stale stamp.
+printf '#!/usr/bin/env bash\n# STALE COPY\n' > "$INOP/.operator/bin/ops-verdict.sh"
+printf '0.1.0-old\n' > "$INOP/.operator/.version"
+_old_ino="$(stat -f '%i' "$INOP/.operator/bin/ops-verdict.sh" 2>/dev/null)"
+sed "s|<tmp>|$INOP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
+_new_ino="$(stat -f '%i' "$INOP/.operator/bin/ops-verdict.sh" 2>/dev/null)"
+check "F5 the upgraded bin/ CLI has a NEW inode (atomic replace, not in-place truncation)" \
+  "$([ -n "$_old_ino" ] && [ -n "$_new_ino" ] && [ "$_old_ino" != "$_new_ino" ] && echo 0 || echo 1)"
+check "F5 the upgraded bin/ CLI is byte-identical to the plugin's copy" \
+  "$(cmp -s "$INOP/.operator/bin/ops-verdict.sh" "$SCRIPTS/ops-verdict.sh" && echo 0 || echo 1)"
+# Steady state (version now matches, nothing stale): no rewrite, so the inode is
+# stable — proving the inode-change above was earned by a real upgrade, not by a
+# rewrite-on-every-session.
+_cur_ino="$(stat -f '%i' "$INOP/.operator/bin/ops-verdict.sh" 2>/dev/null)"
+sed "s|<tmp>|$INOP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
+check "F5 steady-state (version matches) does NOT rewrite, so the inode is stable" \
+  "$([ -n "$_cur_ino" ] && [ "$_cur_ino" = "$(stat -f '%i' "$INOP/.operator/bin/ops-verdict.sh" 2>/dev/null)" ] && echo 0 || echo 1)"
+rm -rf "$INOP"
+
 echo "-- Case: the SessionStart v1→v2 migration announces itself (#32)"
 # The migration REPLACES a file the user may have edited, and the .v1.bak it
 # leaves is itself hidden by the new bare `*` — so before this, a project with a
