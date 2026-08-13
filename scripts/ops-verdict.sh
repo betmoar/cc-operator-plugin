@@ -465,6 +465,15 @@ row_is_conformant() {
 append_fragment() { # append_fragment <owner-or-empty> <row>
   local who="${1:-unowned}"
   mkdir -p "$FRAGDIR"
+  # F2/F65 verdicts.d/: a symlink fragment is never a fragment our CLIs wrote.
+  # `-f` FOLLOWS a planted or merge-corrupted symlink here and would append every
+  # row for this owner THROUGH the link into an arbitrary target, exit 0, silent
+  # — the same laundering class fixed at the five pending/ sites, unguarded in
+  # the evidence-fragment directory. Refuse BEFORE the write, mirroring the
+  # pending/ refuse-before-write pattern (ownership_gate's regular-file check).
+  if [ -L "$FRAGDIR/$who.md" ]; then
+    die "verdicts.d/$who.md is a symlink — a fragment our CLIs never wrote; refusing to append every row through it into an arbitrary file (remove the symlink and rerun the verdict)"
+  fi
   printf '%s\n' "$2" >> "$FRAGDIR/$who.md"
 }
 
@@ -485,6 +494,12 @@ if [ "${1:-}" = "--reconcile" ]; then
   if [ -d "$FRAGDIR" ]; then
     for frag in "$FRAGDIR"/*.md; do
       [ -f "$frag" ] || continue
+      # F2: `-f` follows a symlink — a planted/merge-corrupted fragment must
+      # not be read as evidence. A symlink is never a fragment our CLIs wrote.
+      if [ -L "$frag" ]; then
+        echo "ops-verdict: refusing fragment ${frag##*/} — it is a symlink, not a fragment our CLIs wrote; skipping (remove it to reconcile the real fragment)" >&2
+        continue
+      fi
       # Reconcile cannot stop after N lines the way the sentinel parsers do —
       # reading every row IS its job — so a per-read byte cap does not save it:
       # a 64MB newline-less line still yields ~131k capped chunks and the loop
@@ -814,7 +829,10 @@ retro_gate() {
   # file is already size-capped above, so a corrupted newline-less line yields a
   # few bounded non-matching chunks, not an unbounded slurp.
   local frag="$FRAGDIR/${tag_owner}.md" fragsz=0 found=1 line n=0
-  if [ -f "$frag" ]; then
+  # F2: `-f` follows a symlink; a symlink fragment must not count as a prior
+  # row (it would either dodge the duplicate/GATE-EXCEPTION branch or leak the
+  # target's contents). A symlink is never a fragment our CLIs wrote.
+  if [ -f "$frag" ] && [ ! -L "$frag" ]; then
     fragsz="$(wc -c < "$frag" 2>/dev/null || echo 0)"
     if [ "$fragsz" -gt "$FRAG_MAX_BYTES" ]; then
       echo "ops-verdict: fragment ${frag##*/} exceeds FRAG_MAX_BYTES (${fragsz}); prior-row scan refused — treating as never-armed" >&2

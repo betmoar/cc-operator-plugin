@@ -957,6 +957,30 @@ def check_guard_parity(root, problems):
                 f"*.exempt — a sentinel body naming a G3 grant parses as a "
                 f"valid owner, letting recompute_arm_marker delete another "
                 f"session's exemption (F1)")
+    # F2: the F65 -L guard was applied to the five pending/ sites but never to
+    # the verdicts.d/ evidence-fragment directory. A planted symlink at
+    # .operator/verdicts.d/<owner>.md -> arbitrary-file makes append_fragment
+    # append every row for that owner THROUGH the link (exit 0, silent), and
+    # both read sites follow it. The file-wide "any -L in the file" check above
+    # could not see this hole — ops-verdict.sh already carries -L for pending/.
+    # Pin the verdicts.d/-specific guard: an -L test must reference a
+    # verdicts.d fragment path in append_fragment and both read sites.
+    p = root / "scripts" / "ops-verdict.sh"
+    if p.is_file():
+        text = p.read_text(encoding="utf-8")
+        code = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
+        # FRAGDIR is the verdicts.d path variable; the reads hold it in $frag.
+        guarded = sum(1 for ln in code
+                      if "-L" in ln and ("FRAGDIR" in ln or "frag" in ln))
+        if guarded < 3:
+            problems.append(
+                "scripts/ops-verdict.sh: verdicts.d/ is missing the F2 -L "
+                "symlink guard — expected an -L test on a FRAGDIR/verdicts.d "
+                "fragment path at the append_fragment write and both read "
+                "sites (--reconcile + retro_gate), found "
+                f"{guarded}/3. A planted symlink at verdicts.d/<owner>.md "
+                f"launders every verdict row into an arbitrary file, exit 0, "
+                f"silent (F65 class; F2)")
 
 
 def check_claims(root, problems):

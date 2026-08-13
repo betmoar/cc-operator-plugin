@@ -332,6 +332,30 @@ check "statusline counts a symlink sentinel as blocking, not foreign" "$([ "$SYS
 rm -f "$_SYT"; rm -rf "$P"
 
 ########################################################################
+echo "-- Case: a planted symlink FRAGMENT in verdicts.d/ is refused (F2/F65)"
+# The F65 -L guard landed at the five pending/ sites but never in the
+# evidence-fragment directory. append_fragment() and its reads used plain `-f`,
+# which FOLLOWS a symlink: a planted/merge-corrupted symlink at
+# .operator/verdicts.d/<owner>.md -> arbitrary-file made every verdict row for
+# that owner append THROUGH the link into the target, exit 0, silent. A symlink
+# is never a fragment our CLIs wrote. The write must refuse and the reads must
+# skip it, and the outside target must stay untouched.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+( cd "$P" && bash "$TASK" T-FRAG --owner SESSX >/dev/null 2>&1 )
+_FT="$(mktemp "${TMPDIR:-/tmp}/opstest-fragtgt.XXXXXX")"
+mkdir -p "$P/.operator/verdicts.d"
+ln -s "$_FT" "$P/.operator/verdicts.d/SESSX.md"
+VB0="$(wc -l < "$P/.operator/VERDICTS.md")"
+FOUT="$( cd "$P" && bash "$VERDICT" T-FRAG crit ev PASS --owner SESSX 2>&1 )"; FRC=$?
+check "verdict refuses a symlink fragment (non-zero exit)" "$([ "$FRC" -ne 0 ] && echo 0 || echo 1)"
+check "the refusal names the symlink fragment" "$(printf '%s' "$FOUT" | grep -qi 'symlink' && echo 0 || echo 1)"
+check "no ledger row was written for the symlink fragment" "$([ "$(wc -l < "$P/.operator/VERDICTS.md")" -eq "$VB0" ] && echo 0 || echo 1)"
+check "the symlink's outside target was not written through" "$([ ! -s "$_FT" ] && echo 0 || echo 1)"
+# the symlink must survive (not be launder-converted), so repair is possible
+check "the symlink fragment was not launder-converted" "$([ -L "$P/.operator/verdicts.d/SESSX.md" ] && echo 0 || echo 1)"
+rm -f "$_FT"; rm -rf "$P"
+
+########################################################################
 echo "-- Case 7: ledger cell hygiene — refuse, never corrupt (single-writer schema)"
 # INVARIANT: a VERDICTS row is exactly one line of exactly 4 pipe-delimited
 # cells; the single writer refuses anything that would break that schema.
