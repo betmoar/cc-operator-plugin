@@ -19,7 +19,7 @@ const DEFAULT_TIERS = {
   JUDGMENT: "claude-opus-5",
   MECHANICAL: "glm-5-turbo",
 };
-const ROUTABLE = /^glm-|\/|^claude-/;
+const ROUTABLE = /^glm-|\/|^claude-|^(?:glm|openrouter|deepseek|qwen|claude):./;
 const BAD_CHARSET = /[^\w./:@[\]-]/;
 const KNOWN_TIERS = ["JUDGMENT", "IMPLEMENT", "MECHANICAL", "RECON"];
 

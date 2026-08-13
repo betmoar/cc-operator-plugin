@@ -57,7 +57,10 @@ NL="$(printf '\nx')"; NL="${NL%x}"
 # per line), never unquoted `$ACTUAL`.
 _ACTUAL_TMP="$(mktemp "${TMPDIR:-/tmp}/opsclaims.XXXXXX")"
 _DEDUPED_TMP="$(mktemp "${TMPDIR:-/tmp}/opsclaims.XXXXXX")"
-trap 'rm -f "$_ACTUAL_TMP" "$_DEDUPED_TMP"' EXIT
+# The `.err` and `.ign` siblings are in the trap too: they are written on paths
+# that `die`, so relying on an explicit rm afterwards leaks them exactly when
+# something already went wrong.
+trap 'rm -f "$_ACTUAL_TMP" "$_ACTUAL_TMP.err" "$_ACTUAL_TMP.ign" "$_DEDUPED_TMP"' EXIT
 
 # --- protected set (F-A2: the builder cannot edit its own grader) ------------
 # A touched path matching any of these PATTERNS, without --gate-task, is
@@ -215,12 +218,35 @@ porcelain_paths() {  # porcelain_paths → emits one repo-relative path per line
 # wrote, or a workflow that mutated the tree — a FAIL-shaped finding logged
 # before any other action. Independent of --claimed (it can run alone).
 if [ "$EXPECT_CLEAN" = "1" ]; then
+  # GIT'S STATUS IS CHECKED BEFORE THE VERDICT, and it has to be. Reading this
+  # through a process substitution discarded it: `git … 2>/dev/null | …` inside
+  # `< <(…)` reports the PIPELINE's status, nobody consulted it anyway, and a
+  # git that died wrote nothing — so the loop body never ran, `stray` stayed
+  # empty, and the function fell through to "ok: clean". Measured with a
+  # truncated .git/index and a stray file still on disk: healthy git says
+  # `{item STRAY.txt} fail` rc 1, corrupt git says `ok: clean` rc 0, the file
+  # untouched in both. Fail-toward-the-strong-claim, which docs/PLAYBOOK.md
+  # forbids — and the same shape this file's ignored-state counter was fixed for
+  # eight lines below. Found by the review panel's silent-failure lens, PR #36.
+  #
+  # Distinct from the ignored-state line's polarity on purpose: that one is a
+  # REPORT and degrades to `unknown`, this one is the GATE and must refuse. A
+  # read-only-seat check that cannot see the tree has not verified anything.
+  # Captured to a FILE, not a variable: `-z` emits NUL-delimited records and
+  # bash cannot hold a NUL in a variable at all — it drops them with a warning
+  # and the record boundaries vanish, so a path containing a space would be
+  # silently mis-split. (Measured on the first draft of this fix: "warning:
+  # command substitution: ignored null byte in input".) The same reason the
+  # diff path below already streams through $_ACTUAL_TMP.
+  git status --porcelain -z --untracked-files=all >"$_ACTUAL_TMP" 2>"$_ACTUAL_TMP.err" \
+    && _ec_rc=0 || _ec_rc=$?
+  [ "$_ec_rc" -eq 0 ] || die "git status --porcelain failed (exit $_ec_rc): $(cat "$_ACTUAL_TMP.err") — refusing --expect-clean (a status failure must not read as a clean tree)"
   stray=""
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     is_ledger_path "$p" && continue
     stray="${stray:+$stray$NL}$p"
-  done < <(git status --porcelain -z --untracked-files=all 2>/dev/null | porcelain_paths)
+  done < <(porcelain_paths < "$_ACTUAL_TMP")
   if [ -n "$stray" ]; then
     printf '%s\n' "$stray" | while IFS= read -r p; do
       [ -n "$p" ] || continue
@@ -229,6 +255,80 @@ if [ "$EXPECT_CLEAN" = "1" ]; then
     exit 1
   fi
   echo "{item working-tree} ok: clean apart from .operator/ ledger paths"
+  # IGNORED STATE IS NOT TRACKED STATE, and the check above cannot see it.
+  # Porcelain's job is to describe the TRACKED tree, so the whole gitignored
+  # family — bytecode and build caches, node_modules, .venv, an editable
+  # install, a warmed fixture DB — is invisible to it. That is the exact
+  # mechanism of #23: a `__pycache__` the builder left makes a broken commit
+  # verify green in-tree and fail in a clean checkout of that same commit,
+  # with `git status --porcelain` reporting clean throughout.
+  #
+  # REPORT, NEVER FAIL. Ignored entries are overwhelmingly legitimate (34 in
+  # this repo: .archive/, .serena/, docs/audits/, the pilot seeds), so failing
+  # on them would make the check unusable and it would be disabled — a guard
+  # nobody can run is the vacuous-guard class (#21). What this line buys is
+  # SCOPE: a verdict citing --expect-clean now carries what "clean" did not
+  # cover. Closing #23 needs execution isolation, not a louder reader.
+  #
+  # `--ignored=matching`, not the `traditional` default: traditional expands
+  # every file below an ignored directory (204 lines here vs 34), and a line
+  # nobody reads is the same failure as no line. One summary line, not one per
+  # entry, for the same reason — the operator gets the count and the command.
+  #
+  # Failure degrades to the count `unknown`, never to silence and never to 0:
+  # "git could not tell me" and "there is nothing" are different answers, and
+  # only one of them is safe to read as clean.
+  #
+  # GIT'S EXIT STATUS IS CAPTURED SEPARATELY, and it has to be. The first draft
+  # ran the whole pipeline in one substitution and post-hoc tested the captured
+  # string for non-digits — unreachable, because `grep -c` on empty input PRINTS
+  # "0" and exits 1, so a git that died at 128 was indistinguishable from a
+  # clean tree. Both failure modes were measured (GIT_INDEX_FILE pointing at a
+  # non-directory; a truncated .git/index) and both reported "0" with rc 0,
+  # which is the fail-toward-the-strong-claim polarity the PLAYBOOK forbids and
+  # this very comment claimed to avoid. Found by the adversarial seat, PR #36.
+  #
+  # REACHABILITY, stated honestly: the tracked read above now `die`s on a git
+  # failure, and every failure mode probed so far (a truncated .git/index, a
+  # GIT_INDEX_FILE pointing at a non-directory, an unreadable or replaced
+  # .gitignore) breaks BOTH invocations or NEITHER — so no fixture in this
+  # suite currently reaches this branch, and its cases pin the refusal above
+  # instead. It stays because the two commands are not the same query: only
+  # `--ignored=matching` walks the ignore rules, and a failure specific to that
+  # walk would land here. An unreachable branch that fails safe is cheap; the
+  # alternative is re-deriving this reasoning the first time git grows one.
+  #
+  # Order matters: `git` must be the LAST command whose status we read, so its
+  # output goes to a variable and the counting happens after. A pipeline would
+  # hand us grep's status instead — the original bug.
+  # `&& rc=0 || rc=$?`, not a bare assignment: this file runs under `set -e`, so
+  # an assignment carrying git's non-zero status kills the script outright
+  # (measured: RC=128, the ignored-state line never printed and --expect-clean
+  # died mid-report). Same shape as ops-verdict.sh:source_stamp, for the same
+  # reason. The two-line form is required — `local rc=$(…)` returns the status
+  # of the assignment, which is always 0.
+  # CAPTURED TO A FILE, and `-z` is why. Command substitution DROPS NUL bytes,
+  # so `$(git … -z)` collapses every record onto one line: `tr '\0' '\n'` finds
+  # nothing to translate and `grep -c '^!!'` answers 1 for any non-zero count.
+  # Measured on the first draft of this line — a tree with 3 ignored entries
+  # reported 1, and this repo's 34 reported 0 (the `!!` records landed behind
+  # the ` M` ones on the single joined line, so the anchor missed entirely).
+  # The two tests passed anyway because their fixtures hold exactly 0 and
+  # exactly 1 entry: a constant that reads as a count, which is the
+  # vacuous-guard class this file's own comments keep naming. Found by the
+  # review panel's code lens, PR #36. Any test here needs >= 2 entries.
+  git status --porcelain --ignored=matching -z --untracked-files=all \
+    >"$_ACTUAL_TMP.ign" 2>/dev/null && _ign_rc=0 || _ign_rc=$?
+  if [ "$_ign_rc" -ne 0 ]; then
+    _ign_n="unknown"
+  else
+    _ign_n="$(tr '\0' '\n' < "$_ACTUAL_TMP.ign" | grep -c '^!!' || true)"
+    case "$_ign_n" in
+      ''|*[!0-9]*) _ign_n="unknown" ;;
+    esac
+  fi
+  rm -f "$_ACTUAL_TMP.ign"
+  echo "{item ignored-state} report: $_ign_n gitignored entr(y|ies) NOT covered by the check above — \`git status --porcelain --ignored=matching\` lists them; ignored build state can make a broken commit verify green (#23)"
   # --expect-clean may run alone (no --claimed): a clean read-only dispatch.
   [ -n "$CLAIMED" ] || exit 0
 fi
@@ -247,10 +347,34 @@ fi
 # `none` is the "CHANGED: none" report: no paths claimed. Normalize to empty.
 [ "$CLAIMED" = "none" ] && CLAIMED=""
 
-# Claimed paths inherit the charset discipline of task ids: no '|' or newline
-# (would break the space-separated list contract), no leading dot (an invisible
-# ledger claim), and — critically for a PATH — no traversal ('..'). A claimed
-# '/../etc/passwd' is not a claim about this repo. Reject, never sanitize.
+# Claimed paths inherit part of the charset discipline of task ids: no '|' or
+# newline (would break the space-separated list contract), and — critically for
+# a PATH — no traversal ('..'). A claimed '/../etc/passwd' is not a claim about
+# this repo. Reject, never sanitize.
+#
+# THE BLANKET DOT REJECT IS GONE (#37), and the reason it was wrong is worth
+# stating: it was a TASK-ID rule applied to PATHS. A task id becomes a filename
+# in `pending/`, where a leading dot hides the sentinel from a plain glob —
+# that is a real hazard and the three CLIs still refuse it. A claimed path is
+# never a filename we create; it is a string compared against git's output. The
+# two share a contract (space-separated, no pipe, no newline) and not this rule.
+#
+# What it cost: six tracked files in this repo start with a dot
+# (.github/workflows/*.yml, .claude-plugin/*.json, .gitignore), and a worker
+# that touched one had NO green path — claiming it died at exit 2, omitting it
+# fired C1 on the same path. Measured both halves before changing anything.
+#
+# `.operator/` is still refused, which is what the old comment's "invisible
+# ledger claim" was actually about: the ledger is an expected side-effect of
+# every dispatch, exempted from C1 by is_ledger_path, so claiming it as your
+# own work is a category error rather than a path problem.
+#
+# The trailing-dot half of the old message was never implemented — `foo.`
+# passed while the text promised otherwise. Rather than add a check nobody
+# asked for, the message now says only what the code does. (The old text
+# carried a parenthetical about a 2026-08-04 review catching exactly this
+# comment-vs-code mismatch, which is why the surviving half was worth fixing
+# instead of re-documenting.)
 check_claimed_path() {  # check_claimed_path <path>
   local nl
   nl="$(printf '\nx')"; nl="${nl%x}"
@@ -258,7 +382,7 @@ check_claimed_path() {  # check_claimed_path <path>
     *"|"*) die "claimed path contains '|' — rephrase without it" ;;
     *"$nl"*) die "claimed path contains a newline" ;;
     ../*|*/../*) die "claimed path contains '..' traversal — not a claim about this repo" ;;
-    .*|*/.*) die "claimed path has a leading/trailing dot — not a path the gate tracks (review REFUTED, 2026-08-04: the comment promised this, the code did not)" ;;
+    .operator|.operator/*) die "claimed path is under .operator/ — the ledger is an expected side-effect of every dispatch (exempt from the unclaimed-change check), not a worker's claimed work" ;;
   esac
 }
 # CLAIMED is space-separated on the CLI (the CHANGED: line contract). Iterate

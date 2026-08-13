@@ -7,6 +7,20 @@
 
 set -u
 
+# This suite shells out to python3 ~43 times. Every one of those would leave a
+# __pycache__ next to whatever it imported — gitignored, so `git status` stays
+# clean while the tree is not. Stale bytecode is the canonical example of build
+# state a tracked-tree check cannot see (the class the #23 case at the bottom of
+# this file demonstrates), and a test suite has no business generating it.
+# Exported, so it reaches the subshells and the scripts under test too.
+#
+# ONE CASE MUST OPT OUT, and it is the #23 fixture at the bottom: its whole
+# mechanism IS a written .pyc, so inheriting this turns it into a case that
+# cannot demonstrate what it asserts. It unsets the variable in its own
+# subshell. Found the direct way — setting this here took the suite to 505/2
+# with both #23 write-path cases red.
+export PYTHONDONTWRITEBYTECODE=1
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(dirname "$SCRIPT_DIR")"
 SCRIPTS="$REPO/scripts"
@@ -1485,6 +1499,72 @@ check "set NAME=id applies a one-off override (source shows --set)" \
 TIERSENV --set MECHANICAL=bogus-id >/dev/null 2>&1; BADRC=$?
 check "an unroutable --set id is refused (non-zero exit)" \
   "$([ "$BADRC" -ne 0 ] && echo 0 || echo 1)"
+# THE PROVIDER LENS (#35). cc-proxy's canonical spelling since 0.6.0 is
+# `<provider>:<model>`, and check_routable knew three shapes, none of them this
+# one — so tiers.env could not name a provider model at all. The accepted set
+# is an ALLOWLIST mirroring cc-proxy's PROVIDER_IDS, not `*:*`, because that
+# distinction IS the guard: measured against cc-proxy's own parseModelSelector,
+# `qwen:deepseek-v4-pro` is stripped to `deepseek-v4-pro` while
+# `bogus:some-model` is NOT stripped and reaches the default backend as a
+# literal model id — the silent mis-route check_routable exists to prevent.
+TIERSENV --set MECHANICAL=qwen:deepseek-v4-pro >/dev/null 2>&1; LENSRC=$?
+check "a known provider lens is routable (qwen:deepseek-v4-pro)" \
+  "$([ "$LENSRC" -eq 0 ] && echo 0 || echo 1)"
+TIERSENV --set MECHANICAL=bogus:some-model >/dev/null 2>&1; LENSBAD=$?
+check "an UNKNOWN provider lens is refused (it would not be stripped)" \
+  "$([ "$LENSBAD" -ne 0 ] && echo 0 || echo 1)"
+LENSMSG="$(TIERSENV --set MECHANICAL=typo:glm-5.2 2>&1)"
+check "the unknown-lens refusal names the offending namespace and the known set" \
+  "$(printf '%s' "$LENSMSG" | grep -q "unknown provider lens 'typo:'" \
+     && printf '%s' "$LENSMSG" | grep -q 'known: glm openrouter deepseek qwen claude' \
+     && echo 0 || echo 1)"
+TIERSENV --set MECHANICAL=qwen: >/dev/null 2>&1; LENSEMPTY=$?
+check "a lens with an empty model is refused (qwen:)" \
+  "$([ "$LENSEMPTY" -ne 0 ] && echo 0 || echo 1)"
+# FIRST colon, matching cc-proxy's indexOf: `qwen:a:b` sends tail `a:b`
+# upstream, so the guard must accept rather than second-guess the split.
+TIERSENV --set MECHANICAL=qwen:a:b >/dev/null 2>&1; LENSMULTI=$?
+check "the lens splits at the FIRST colon, as cc-proxy does (qwen:a:b)" \
+  "$([ "$LENSMULTI" -eq 0 ] && echo 0 || echo 1)"
+# THE SLASH BYPASS. The lens test must run BEFORE the bare-shape cases: with
+# `*/*` first, `bogus:vendor/model` returned on the slash arm and the allowlist
+# was never consulted — while cc-proxy answers providerId=null for it and sends
+# the literal string upstream, the exact silent mis-route the allowlist exists
+# to prevent. Found by the review panel's feasibility lens on PR #36; the
+# guard's own comment claimed the opposite was true.
+TIERSENV --set MECHANICAL=bogus:vendor/model >/dev/null 2>&1; LENSSLASH=$?
+check "an unknown lens is refused even when the model half holds a slash" \
+  "$([ "$LENSSLASH" -ne 0 ] && echo 0 || echo 1)"
+# The negative control that keeps the fix honest: a KNOWN lens whose model half
+# is a vendor/model id must still pass. Refusing it would trade one bug for
+# another — openrouter:qwen/x is a legal cc-proxy id (providerId=openrouter,
+# upstream `qwen/x`).
+TIERSENV --set MECHANICAL=openrouter:qwen/x >/dev/null 2>&1; LENSOKSLASH=$?
+check "a KNOWN lens with a slashed model half is still routable" \
+  "$([ "$LENSOKSLASH" -eq 0 ] && echo 0 || echo 1)"
+# And a bare vendor/model, which carries no lens at all, is untouched.
+TIERSENV --set MECHANICAL=openai/gpt-5 >/dev/null 2>&1; LENSBARE=$?
+check "a bare vendor/model id is unaffected by the lens ordering" \
+  "$([ "$LENSBARE" -eq 0 ] && echo 0 || echo 1)"
+# A SLASH BEFORE THE COLON IS A VARIANT SUFFIX, NOT A LENS. OpenRouter spells
+# `vendor/model:free`, `:nitro`, `:online` (cc-proxy's models.js matches a
+# `:batch` suffix), and cc-proxy routes the WHOLE string via rankRoutes because
+# parseModelSelector returns providerId=null for them. Ordering the lens first
+# made the guard refuse ids that were routable before this PR — measured
+# against origin/main: pre-PR rc 0, post-PR rc 2 — with a message calling
+# `deepseek/deepseek-r1:` a provider namespace. Both spellings are pinned
+# because one is not evidence for the other.
+TIERSENV --set MECHANICAL=deepseek/deepseek-r1:free >/dev/null 2>&1; LENSVAR1=$?
+check "an OpenRouter variant suffix stays routable (vendor/model:free)" \
+  "$([ "$LENSVAR1" -eq 0 ] && echo 0 || echo 1)"
+TIERSENV --set MECHANICAL=qwen/qwen3-max:nitro >/dev/null 2>&1; LENSVAR2=$?
+check "a variant whose vendor half NAMES a known lens is still routable" \
+  "$([ "$LENSVAR2" -eq 0 ] && echo 0 || echo 1)"
+# The bypass stays closed: here the slash is AFTER the colon, so `bogus` is
+# still the head and still unknown.
+TIERSENV --set MECHANICAL=bogus:vendor/model >/dev/null 2>&1; LENSVAR3=$?
+check "the variant carve-out does not reopen the slash bypass" \
+  "$([ "$LENSVAR3" -ne 0 ] && echo 0 || echo 1)"
 # tiers.env carries TWO line kinds (the renderer's seat bindings share the
 # file). The resolver must SKIP a seat line, not die on it — the scaffold's own
 # documented example ('#op-scout=MECHANICAL', ops-init.sh) used to kill every
@@ -1706,6 +1786,16 @@ check "guard: unroutable model id is refused (non-zero exit)" "$([ "$G1" -ne 0 ]
 printf 'op-scout=BOGUS\n' > "$RP/.operator/tiers.env"
 ( cd "$RP" && RENDERENV --show >/dev/null 2>&1 ); G2=$?
 check "guard: seat bound to unknown tier is refused (non-zero exit)" "$([ "$G2" -ne 0 ] && echo 0 || echo 1)"
+# The renderer carries its own copy of check_routable (validate_plugin's
+# check_resolver_renderer_parity pins the two equal, and LENS_NAMESPACES
+# separately since it lives outside the function braces). Both halves are
+# asserted HERE too: parity proves they are the same, not that either works.
+printf 'MECHANICAL=qwen:deepseek-v4-pro\n' > "$RP/.operator/tiers.env"
+( cd "$RP" && RENDERENV --show >/dev/null 2>&1 ); G3=$?
+check "guard: the renderer accepts a known provider lens too" "$([ "$G3" -eq 0 ] && echo 0 || echo 1)"
+printf 'MECHANICAL=bogus:some-model\n' > "$RP/.operator/tiers.env"
+( cd "$RP" && RENDERENV --show >/dev/null 2>&1 ); G4=$?
+check "guard: the renderer refuses an unknown provider lens too" "$([ "$G4" -ne 0 ] && echo 0 || echo 1)"
 printf 'MECHANICAL=glm 5\n' > "$RP/.operator/tiers.env"
 ( cd "$RP" && RENDERENV --show >/dev/null 2>&1 ); G3=$?
 check "guard: whitespace in model id is refused (non-zero exit)" "$([ "$G3" -ne 0 ] && echo 0 || echo 1)"
@@ -2084,6 +2174,53 @@ runclaims --expect-clean >/dev/null 2>&1; ECF=$?
 check "--expect-clean fail on a stray non-ledger file" "$([ "$ECF" != 0 ] && echo 0 || echo 1)"
 clean_tree
 
+# --expect-clean REPORTS ignored state (#23 scope line). The tracked-tree check
+# above cannot see a gitignored artifact, which is the exact mechanism by which
+# a stale __pycache__ makes a broken commit verify green in-tree and fail in a
+# clean checkout of the same commit. The line is report-only: the count moves,
+# the exit code does not. Both halves are asserted because a report that cannot
+# say 0 is not a count — it is a constant, and a constant guard pins nothing.
+# Discriminating: deleting the --ignored=matching read flips both counts to
+# empty and the first check fails; making it FAIL instead of report flips ECI2.
+runclaims --expect-clean 2>/dev/null | grep -q '{item ignored-state} report: 0 ' && ECI0=0 || ECI0=1
+check "--expect-clean reports 0 ignored entries on a tree with none" "$ECI0"
+printf '__pycache__/\n' > "$P/.gitignore"
+( cd "$P" && git add .gitignore && git commit -qm ignore )
+mkdir -p "$P/__pycache__"; printf 'stale\n' > "$P/__pycache__/a.cpython-311.pyc"
+runclaims --expect-clean 2>/dev/null | grep -q '{item ignored-state} report: 1 ' && ECI1=0 || ECI1=1
+check "--expect-clean counts a gitignored __pycache__ the tracked check cannot see" "$ECI1"
+# THREE, NOT ONE. A 0-vs-1 pair is satisfied by a counter stuck at 1, which is
+# exactly what shipped in the first draft: `-z` output captured through command
+# substitution loses its NUL separators, every record joins onto one line, and
+# `grep -c '^!!'` answers 1 for any non-zero count (measured: a 3-entry tree
+# reported 1, this repo's 34 reported 0). The fixtures could not see it because
+# neither held more than one entry. Any future case here needs >= 2.
+printf '__pycache__/\nbuild/\ndist/\n' > "$P/.gitignore"
+( cd "$P" && git add .gitignore && git commit -qm ignore3 )
+mkdir -p "$P/build" "$P/dist"; : > "$P/build/x"; : > "$P/dist/x"
+runclaims --expect-clean 2>/dev/null | grep -q '{item ignored-state} report: 3 ' && ECI3=0 || ECI3=1
+check "--expect-clean counts THREE ignored entries as 3 (not a stuck 1)" "$ECI3"
+runclaims --expect-clean >/dev/null 2>&1; ECI2=$?
+check "--expect-clean stays green on ignored state (report, never fail)" \
+  "$([ "$ECI2" = 0 ] && echo 0 || echo 1)"
+# A FAILED GIT READ MUST READ `unknown`, NOT `0`. The first draft ran the whole
+# pipeline in one substitution and tested the captured string for non-digits —
+# unreachable, because `grep -c` on empty input prints "0" and exits 1, so a git
+# that died at 128 was indistinguishable from a clean tree. The exit status is
+# now captured before any counting. GIT_INDEX_FILE pointing at a non-directory
+# is the cheapest reproducible failure; the script must still exit 0 (this is a
+# report line, not a gate) and must still print the tracked-tree verdict.
+ECIUERR="$( cd "$P" && GIT_INDEX_FILE=/dev/null/nope bash "$CLAIMS" --expect-clean 2>&1 )"; ECIURC=$?
+check "a failed git status REFUSES --expect-clean rather than reporting clean" \
+  "$(printf '%s' "$ECIUERR" | grep -q 'must not read as a clean tree' && echo 0 || echo 1)"
+check "the refusal exits non-zero (the gate must not pass on an unreadable tree)" \
+  "$([ "$ECIURC" != 0 ] && echo 0 || echo 1)"
+# And it must NOT have claimed the tree was clean on its way out — the failure
+# mode being pinned is a green verdict, not merely a missing error.
+check "the refusal prints no 'ok: clean' verdict" \
+  "$(printf '%s' "$ECIUERR" | grep -q '{item working-tree} ok' && echo 1 || echo 0)"
+clean_tree
+
 # --expect-clean exempts .operator/ ledger paths: scaffold + a verdict row, then
 # expect-clean must still pass (a verdict is a normal side-effect of a dispatch).
 ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
@@ -2103,6 +2240,34 @@ check "claimed '..' traversal is rejected" "$([ "$TRV" != 0 ] && echo 0 || echo 
 # '|' in a claimed path is rejected (would break the list contract).
 runclaims --since "$BASE_SHA" --claimed "a.txt|injected" >/dev/null 2>&1; PIP=$?
 check "claimed '|' is rejected" "$([ "$PIP" != 0 ] && echo 0 || echo 1)"
+# A DOT-DIRECTORY PATH IS CLAIMABLE (#37). The old blanket `.*` reject was a
+# TASK-ID rule applied to paths: a task id becomes a filename in pending/ where
+# a leading dot hides it from a glob, but a claimed path is only ever compared
+# against git's output. Six tracked files here start with a dot, and a worker
+# that touched one had no green path — claiming it died at exit 2, omitting it
+# fired C1 on the same path. Both halves are pinned: the claim must PASS, and
+# the ledger claim it was conflated with must still be refused.
+clean_tree
+mkdir -p "$P/.github/workflows"; printf 'name: v\n' > "$P/.github/workflows/w.yml"
+( cd "$P" && git add -A && git commit -qm dotdir )
+DOTSHA="$(cd "$P" && git rev-parse HEAD)"
+printf 'name: v2\n' > "$P/.github/workflows/w.yml"
+runclaims --since "$DOTSHA" --claimed ".github/workflows/w.yml" >/dev/null 2>&1; DOTC=$?
+check "#37 a claimed dot-directory path is accepted (.github/…)" \
+  "$([ "$DOTC" = 0 ] && echo 0 || echo 1)"
+# The negative control: not claiming it must still fire C1, or the case above
+# would pass against a gate that simply stopped checking.
+runclaims --since "$DOTSHA" --claimed "none" >/dev/null 2>&1; DOTN=$?
+check "#37 the same path unclaimed still fires C1" \
+  "$([ "$DOTN" != 0 ] && echo 0 || echo 1)"
+# And the rule that survives: the ledger is an expected side-effect of every
+# dispatch, so claiming it as your own work stays a refusal.
+DOTLED="$(runclaims --since "$DOTSHA" --claimed ".operator/VERDICTS.md" 2>&1)"; DOTL=$?
+check "#37 a claimed .operator/ path is still refused" \
+  "$([ "$DOTL" != 0 ] && echo 0 || echo 1)"
+check "#37 the refusal names the ledger, not a dot" \
+  "$(printf '%s' "$DOTLED" | grep -q 'under .operator/' && echo 0 || echo 1)"
+clean_tree
 
 # CR2: --since is MANDATORY (a HEAD default made a committed gate-trespass
 # invisible). Without --since, the gate must die loud, not default to HEAD.
@@ -3316,6 +3481,177 @@ check "dash-named file: code-loc counts it (3, not 0)" \
 check "dash-named file: the count is not PARTIAL" \
   "$(printf '%s' "$DASHOUT" | grep -q 'PARTIAL' && echo 1 || echo 0)"
 rm -rf "$DASHP"
+
+########################################################################
+echo "-- Case: the suites do not contaminate the tree with bytecode"
+# THE HYGIENE BEHAVIOUR HAD NO TEST AT ALL. Measured: reverting conftest.py to
+# a no-op leaves 2 __pycache__ dirs and pytest still reports 178 passed;
+# deleting `norecursedirs` reproduces the 4 collection errors while both suites
+# stay green. Prose in three files asserted this and nothing checked it — which
+# is the same "a claim with no gate" shape the #23 case below exists to expose.
+# Found by the review panel's test lens, PR #36.
+#
+# Asserted against a COPY, not this tree: the real scripts/ and tests/ may
+# legitimately hold a __pycache__ from a maintainer's earlier hand-run, so
+# asserting on them would be a test of the developer's shell history.
+# GATED ON PYTEST, NOT PYTHON3. Both mechanisms under test are pytest's —
+# conftest.py's bootstrap and pyproject's norecursedirs — and a missing pytest
+# exits non-zero, which is INDISTINGUISHABLE from the collection error the
+# second assertion exists to prove absent. Gating on python3 alone shipped a
+# red CI: ubuntu-latest has python3 and no pytest (validate.yml installs
+# nothing and runs `unittest discover`), so the case ran, `python3 -m pytest`
+# failed to start, and the assertion read that as "the seed dir broke
+# collection" — a false failure on the one platform that had never run it.
+# Measured locally: with the module absent the invocation returns rc 1, the
+# same rc a genuine collection error returns.
+if ! python3 -c "import pytest" >/dev/null 2>&1; then
+  echo "  skip bytecode hygiene: pytest not importable (the mechanisms under test are pytest's)"
+else
+  HYG="$(newproj)"
+  mkdir -p "$HYG/scripts" "$HYG/tests"
+  cp "$REPO/pyproject.toml" "$HYG/" 2>/dev/null
+  cp "$REPO/tests/conftest.py" "$HYG/tests/" 2>/dev/null
+  # A module to import and a test that imports it — the shape that produces a
+  # __pycache__ in BOTH directories.
+  printf 'def f():\n    return 1\n' > "$HYG/scripts/mod_under_test.py"
+  cat > "$HYG/tests/test_hyg.py" <<'PYEOF'
+import pathlib, sys
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
+from mod_under_test import f
+def test_f():
+    assert f() == 1
+PYEOF
+  # THE SUITE-WIDE EXPORT MUST BE UNSET HERE, or this case proves nothing about
+  # conftest.py. Measured: with PYTHONDONTWRITEBYTECODE inherited, neutering
+  # conftest to a no-op still leaves scripts/__pycache__ absent — the env var
+  # already did the work, so the case passed against the mutation (M3 of the
+  # round-2 discrimination sweep: 526/0, no flip). Unset, it discriminates
+  # cleanly: real conftest -> no scripts/__pycache__, no-op conftest -> one
+  # appears. Same opt-out the #23 fixture takes, for the same reason: a case
+  # about a mechanism must not inherit a second mechanism that hides it.
+  #
+  # pyproject's testpaths names the plugin's own modules, which do not exist
+  # here; point pytest at the local file explicitly.
+  ( unset PYTHONDONTWRITEBYTECODE; cd "$HYG" && python3 -m pytest tests/test_hyg.py -q >/dev/null 2>&1 )
+  # conftest.py's OWN .pyc is the documented residue — it is compiled before the
+  # line that disables bytecode runs — so tests/__pycache__ may exist. What must
+  # NOT appear is a cache for the imported module, i.e. scripts/__pycache__.
+  check "pytest writes no __pycache__ for imported modules (conftest suppression works)" \
+    "$([ ! -d "$HYG/scripts/__pycache__" ] && echo 0 || echo 1)"
+  # And the seed-dir prune: a directory named like the pilot seeds, holding an
+  # unimportable test_*, must not break collection.
+  mkdir -p "$HYG/tests/pilot-seeds/E9"
+  printf 'import nonexistent_module_xyz\n' > "$HYG/tests/pilot-seeds/E9/test_broken.py"
+  ( cd "$HYG" && python3 -m pytest tests/ -q >/dev/null 2>&1 ); HYGRC=$?
+  check "norecursedirs keeps an unimportable seed dir out of collection" \
+    "$([ "$HYGRC" = 0 ] && echo 0 || echo 1)"
+  rm -rf "$HYG"
+fi
+
+########################################################################
+echo "-- Case: gitignored build state diverges in-tree from a clean checkout (#23)"
+# THE FIXTURE FOR #23, in-tree at last. The issue states the mechanism; nothing
+# in this repo reproduced it, so the class had no tripwire and the eventual
+# worktree fix would have had nothing to prove itself against.
+#
+# What it demonstrates: the SAME commit verifies PASS in the builder's tree and
+# FAIL in a clean checkout of that commit, with `git status --porcelain` empty
+# throughout — because the contaminant is gitignored, which is exactly why the
+# tracked-tree check cannot see it.
+#
+# MEASURED CORRECTION to the issue's recipe. It says the two source lines being
+# "the same byte length" suffices, because CPython validates a .pyc by source
+# mtime + size. Size is the SECOND field: an edit moves the mtime, CPython
+# invalidates, recompiles, and BOTH sides FAIL — measured, no divergence at all.
+# The fixture must put the mtime back after the edit; only then does the header
+# still match and the stale bytecode get served.
+#
+# The mtime is stamped from the .pyc's own header, not from a `stat` taken
+# before the edit, and not left to timing. Measured: with the stamp removed,
+# the in-tree run passes 4 of 12 iterations — the builder run and the edit fall
+# on the same clock second often enough to look fixed and rarely enough to be
+# useless, so a timing-derived fixture is green or red by machine speed rather
+# than by the property under test. Reading the header makes them agree BY
+# CONSTRUCTION: 12/12. Format: 4-byte magic, 4-byte flags, then the source
+# mtime as a little-endian uint32 at offset 8 (PEP 552; flags bit 0 clear =
+# timestamp invalidation, the default py_compile writes).
+#
+# Consequence for anyone re-running discrimination on this case: deleting the
+# stamp does NOT reliably flip it — one run in three still passes by luck.
+# That is a property of the mechanism, not a weak assertion. The mutations that
+# DO discriminate every time are removing the builder warm-up (no .pyc exists:
+# 506/1) and un-ignoring __pycache__ (porcelain sees it: 505/2).
+#
+# Skipped without python3 — the mechanism IS CPython's cache. A skip is honest;
+# a case that silently does not run is the vacuous-guard class this repo keeps
+# catching, so the skip prints.
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "  skip #23 fixture: python3 not available (the mechanism is CPython's .pyc cache)"
+else
+  I23="$(newproj)"
+  (
+    # THE ONE OPT-OUT from this file's PYTHONDONTWRITEBYTECODE export: the
+    # mechanism under test IS a written .pyc. Inheriting the suite-wide setting
+    # leaves __pycache__ empty, the in-tree run recompiles from source and
+    # FAILs, and the case asserts nothing (measured: 505/2, both write-path
+    # halves red). Unset in this subshell only — every other python3 call in
+    # the file keeps the suppression.
+    unset PYTHONDONTWRITEBYTECODE
+    cd "$I23" || exit 1
+    git init -q -b work . && git config user.email t@t && git config user.name t
+    printf '__pycache__/\n' > .gitignore
+    printf 'def add(a, b):\n    return a + b\n' > calc.py
+    printf 'from calc import add\nassert add(2, 3) == 5, add(2, 3)\n' > test_calc.py
+    git add -A && git commit -qm correct
+    python3 test_calc.py >/dev/null 2>&1        # builder run: writes the .pyc
+    printf 'def add(a, b):\n    return a * b\n' > calc.py   # the defect
+    # Stamp calc.py with the mtime the .pyc header ITSELF records, so the two
+    # agree no matter how long the steps above took. Read AND applied in the
+    # same python3 call: `date`'s epoch flag is a flavor split (BSD `-r`, GNU
+    # `-d @`) and the `||` fallback shape between them is exactly what
+    # check_portability rejects — os.utime takes the epoch directly and is the
+    # same on every platform. python3 is already required by this case.
+    python3 -c "
+import glob, os, struct, sys
+f = glob.glob('__pycache__/calc.*.pyc')
+if not f: sys.exit(0)
+mt = struct.unpack('<I', open(f[0], 'rb').read(12)[8:12])[0]
+os.utime('calc.py', (mt, mt))
+" 2>/dev/null
+    git add -A && git commit -qm defect
+  ) >/dev/null 2>&1
+  # The tracked tree is clean — the control that makes this a trap rather than
+  # an oversight. If this ever fails the fixture leaked a tracked change and
+  # the two verdicts below prove nothing.
+  I23PORC="$( cd "$I23" && git status --porcelain 2>/dev/null )"
+  check "#23 the builder's tree reports clean (the contaminant is gitignored)" \
+    "$([ -z "$I23PORC" ] && echo 0 || echo 1)"
+  # Same opt-out as the builder subshell: this run must be allowed to CONSULT
+  # the cache. PYTHONDONTWRITEBYTECODE suppresses writing, and reading a
+  # already-written .pyc is unaffected — but keeping the two symmetrical is
+  # what stops the next edit from re-introducing the asymmetry that broke this.
+  ( unset PYTHONDONTWRITEBYTECODE; cd "$I23" && python3 test_calc.py >/dev/null 2>&1 ); I23IN=$?
+  check "#23 the defect verifies GREEN in the builder's tree (stale .pyc served)" \
+    "$([ "$I23IN" = 0 ] && echo 0 || echo 1)"
+  I23C="$(newproj)"; rm -rf "$I23C"
+  git clone -q "$I23" "$I23C" >/dev/null 2>&1
+  ( cd "$I23C" && git checkout -q work >/dev/null 2>&1 )
+  # A clone carries tracked files only, so the whole gitignored family evaporates
+  # — the same property `agent(..., {isolation:'worktree'})` would buy the seat.
+  check "#23 a clean checkout of that commit has no __pycache__" \
+    "$([ ! -d "$I23C/__pycache__" ] && echo 0 || echo 1)"
+  ( unset PYTHONDONTWRITEBYTECODE; cd "$I23C" && python3 test_calc.py >/dev/null 2>&1 ); I23CL=$?
+  check "#23 the SAME commit FAILS in a clean checkout (verdict is tree-dependent)" \
+    "$([ "$I23CL" != 0 ] && echo 0 || echo 1)"
+  # And the scope line from --expect-clean is what an operator would have to
+  # notice: green tree, non-zero ignored count.
+  I23OUT="$( cd "$I23" && bash "$CLAIMS" --expect-clean 2>/dev/null )"
+  check "#23 --expect-clean is green here yet reports the ignored entry" \
+    "$(printf '%s' "$I23OUT" | grep -q '{item working-tree} ok' \
+       && printf '%s' "$I23OUT" | grep -q '{item ignored-state} report: 1 ' \
+       && echo 0 || echo 1)"
+  rm -rf "$I23" "$I23C"
+fi
 
 ########################################################################
 echo "== summary: $PASS passed, $FAIL failed =="

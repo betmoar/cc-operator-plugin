@@ -8,6 +8,17 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    # No __pycache__ anywhere. Measured: the validator writes none (it is run as
+    # a script, not imported), but `unittest discover` and `pytest` each leave 2
+    # — scripts/ and tests/ — and those are gitignored, so `git status` stays
+    # clean while the tree is not. That is the #23 family in miniature: stale
+    # bytecode is the canonical example of build state a tracked-tree check
+    # cannot see, and this suite has no business generating it.
+    #
+    # Set at JOB level, not per step: a later step that adds a python call
+    # inherits it, which is the failure mode a per-step env invites.
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - uses: actions/checkout@v4
       # The runner's shellcheck is whatever ubuntu-latest ships, and that is NOT

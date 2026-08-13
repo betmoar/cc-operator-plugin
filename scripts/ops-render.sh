@@ -63,15 +63,37 @@ PORT="${CC_PROXY_PORT:-4000}"
 
 die() { echo "ops-render: $*" >&2; exit 2; }
 
-# ── guards (mirror ops-tiers.sh:57-68 check_routable + ledger check_bare_name)
+# ── guards (mirror ops-tiers.sh check_routable + ledger check_bare_name)
+# LENS_NAMESPACES mirrors cc-proxy's PROVIDER_IDS; see the resolver's copy for
+# why this is an allowlist rather than `*:*` (an unknown lens is NOT stripped
+# and reaches the default backend as a literal model id).
+LENS_NAMESPACES="glm openrouter deepseek qwen claude"
 check_routable() { # check_routable <label> <id>
   case "$2" in
     "") die "$1 is empty" ;;
     *[!A-Za-z0-9._:/@[\]-]*)
       die "$1='$2' contains characters outside [A-Za-z0-9._:/@[]-] (whitespace and quotes are never valid in a model id)" ;;
   esac
-  case "$2" in glm-*|claude-*) return 0 ;; */*) return 0 ;;
-    *) die "$1='$2' is not cc-proxy-routable (need glm-*, vendor/model, or claude-*)" ;; esac
+  # Lens FIRST, before the bare shapes — see the resolver's copy: ordering `*/*`
+  # ahead of it let `bogus:vendor/model` bypass the allowlist entirely.
+  case "$2" in
+    *:*)
+      _lens_head="${2%%:*}"; _lens_tail="${2#*:}"
+      [ -n "$_lens_tail" ] || die "$1='$2' has an empty model after the '$_lens_head:' lens"
+      # A slash before the colon means a variant suffix, not a lens — see the
+      # resolver's copy (OpenRouter's `vendor/model:free`).
+      case "$_lens_head" in */*) ;; *)
+        case " $LENS_NAMESPACES " in
+          *" $_lens_head "*) return 0 ;;
+          *) die "$1='$2' names the unknown provider lens '$_lens_head:' (known: $LENS_NAMESPACES) — cc-proxy strips only a lens it knows, so this would reach the default backend as a literal model id" ;;
+        esac ;;
+      esac ;;
+  esac
+  case "$2" in
+    glm-*|claude-*) return 0 ;;
+    */*) return 0 ;;
+  esac
+  die "$1='$2' is not cc-proxy-routable (need glm-*, vendor/model, <provider>:<model>, or claude-*)"
 }
 check_seat_name() { # check_seat_name <name>
   # Allowlist, not blocklist: a seat name reaches a grep/awk pattern (seat_add),

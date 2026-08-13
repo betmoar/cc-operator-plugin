@@ -269,15 +269,23 @@ def make_good_tree(root):
     # renderer parse the same tiers.env, so check_resolver_renderer_parity
     # requires both to declare each (a plugin shipping one guarded and one
     # unguarded is exactly what that check exists to reject).
+    # The stub tracks the guard's STRUCTURE, not just its name: since #35 the
+    # `<provider>:<model>` lens is gated on LENS_NAMESPACES, which the parity
+    # check pins both inside the body (the lookup) and outside it (the value).
     ROUTABLE_STUB = (
         'check_routable() {\n'
         '  case "$2" in\n'
         '    "") die "$1 is empty" ;;\n'
         '    *[!A-Za-z0-9._:/@[\\]-]*) die "$1 outside charset" ;;\n'
         '  esac\n'
-        '  case "$2" in glm-*|claude-*) return 0 ;; */*) return 0 ;;\n'
-        '    *) die "$1 is not cc-proxy-routable" ;; esac\n'
+        '  case "$2" in glm-*|claude-*) return 0 ;; */*) return 0 ;; esac\n'
+        '  case "$2" in\n'
+        '    *:*) case " $LENS_NAMESPACES " in *" ${2%%:*} "*) return 0 ;;\n'
+        '           *) die "unknown lens" ;; esac ;;\n'
+        '  esac\n'
+        '  die "$1 is not cc-proxy-routable"\n'
         '}\n'
+        'LENS_NAMESPACES="glm openrouter deepseek qwen claude"\n'
         'TIER_NAMES="JUDGMENT IMPLEMENT MECHANICAL RECON"\n'
     )
     write(root / "scripts" / "ops-tiers.sh",
@@ -322,7 +330,7 @@ def make_good_tree(root):
     write(root / "agents" / "_templates" / "default.tmpl",
           '---\nname: op-NAME\nmodel: MODEL\ntools: Read\n---\nbody\n')
     WF_SHARED = (
-        'const ROUTABLE = /^glm-|\\/|^claude-/;\n'
+        'const ROUTABLE = /^glm-|\\/|^claude-|^(?:glm|openrouter|deepseek|qwen|claude):./;\n'
         'const BAD_CHARSET = /[^\\w./:@[\\]-]/;\n'
         'const KNOWN_TIERS = ["JUDGMENT","IMPLEMENT","MECHANICAL","RECON"];\n'
         'for (const [n, id] of Object.entries({JUDGMENT:"claude-opus-5"})) {\n'
@@ -1135,7 +1143,7 @@ class ValidatorTest(unittest.TestCase):
         """A conforming workflow with the shared invariants."""
         return (
             f'export const meta = {{ name: "{name}", description: "d" }};\n'
-            'const ROUTABLE = /^glm-|\\/|^claude-/;\n'
+            'const ROUTABLE = /^glm-|\\/|^claude-|^(?:glm|openrouter|deepseek|qwen|claude):./;\n'
             'const BAD_CHARSET = /[^\\w./:@[\\]-]/;\n'
             'for (const [n, id] of Object.entries({JUDGMENT:"claude-opus-5"})) {\n'
             '  if (!ROUTABLE.test(id) || BAD_CHARSET.test(id)) throw new Error("x");\n'
@@ -1149,7 +1157,7 @@ class ValidatorTest(unittest.TestCase):
 
     def test_workflow_divergent_routable_fires(self):
         write(self.dir / "workflows" / "review.js",
-              self._wf("review").replace("const ROUTABLE = /^glm-|\\/|^claude-/;",
+              self._wf("review").replace("const ROUTABLE = /^glm-|\\/|^claude-|^(?:glm|openrouter|deepseek|qwen|claude):./;",
                                          "const ROUTABLE = /^glm-5|^claude-5/;"))
         self.assertFires("ROUTABLE regex is")
 
@@ -1296,7 +1304,7 @@ class ValidatorTest(unittest.TestCase):
         # A conforming workflow that omits KNOWN_TIERS entirely.
         write(self.dir / "workflows" / "review.js",
               'export const meta = { name: "review", description: "d" };\n'
-              'const ROUTABLE = /^glm-|\\/|^claude-/;\n'
+              'const ROUTABLE = /^glm-|\\/|^claude-|^(?:glm|openrouter|deepseek|qwen|claude):./;\n'
               'const BAD_CHARSET = /[^\\w./:@[\\]-]/;\n'
               'for (const [n, id] of Object.entries({JUDGMENT:"claude-opus-5"})) {\n'
               '  if (!ROUTABLE.test(id)) throw new Error("x");\n'
@@ -1523,6 +1531,11 @@ class ResolverRendererParityTest(unittest.TestCase):
     got a parity check after the same lesson.
     """
 
+    # A minimal but STRUCTURALLY CURRENT guard: the shipped one gates the
+    # `<provider>:<model>` lens on $LENS_NAMESPACES (#35), and the parity check
+    # pins both that lookup (inside the body) and the assignment's value
+    # (outside it). A fixture stuck at the pre-#35 shape fails every case here
+    # including the good-tree ones, which says nothing about the tree.
     ROUTABLE = (
         "check_routable() {\n"
         '  case "$2" in\n'
@@ -1530,10 +1543,16 @@ class ResolverRendererParityTest(unittest.TestCase):
         '    *[!A-Za-z0-9._:/@[\\]-]*)\n'
         '      die "$1=\'$2\' outside charset" ;;\n'
         "  esac\n"
-        '  case "$2" in glm-*|claude-*) return 0 ;; */*) return 0 ;;\n'
-        '    *) die "$1=\'$2\' is not cc-proxy-routable" ;; esac\n'
+        '  case "$2" in glm-*|claude-*) return 0 ;; */*) return 0 ;; esac\n'
+        '  case "$2" in\n'
+        '    *:*) case " $LENS_NAMESPACES " in\n'
+        '           *" ${2%%:*} "*) return 0 ;;\n'
+        '           *) die "unknown lens" ;; esac ;;\n'
+        "  esac\n"
+        '  die "$1=\'$2\' is not cc-proxy-routable"\n'
         "}\n"
     )
+    LENS = 'LENS_NAMESPACES="glm openrouter deepseek qwen claude"\n'
     TIERS = 'TIER_NAMES="JUDGMENT IMPLEMENT MECHANICAL RECON"\n'
 
     def setUp(self):
@@ -1547,7 +1566,7 @@ class ResolverRendererParityTest(unittest.TestCase):
         for name, body in (("ops-tiers.sh", tiers), ("ops-render.sh", render)):
             write(self.dir / "scripts" / name,
                   "#!/usr/bin/env bash\n" +
-                  (self.ROUTABLE + self.TIERS if body is None else body))
+                  (self.ROUTABLE + self.LENS + self.TIERS if body is None else body))
 
     def problems(self):
         probs = []
@@ -1567,10 +1586,13 @@ class ResolverRendererParityTest(unittest.TestCase):
                     '    *[!A-Za-z0-9._:/@[\\]-]*)\n'
                     '      die "$1=\'$2\' outside charset" ;; esac\n'
                     '  case "$2" in glm-*|claude-*) return 0 ;;\n'
-                    '    */*) return 0 ;;\n'
-                    '    *) die "$1=\'$2\' is not cc-proxy-routable" ;;\n'
-                    "  esac\n}\n")
-        self._write(render=reflowed + self.TIERS)
+                    '    */*) return 0 ;; esac\n'
+                    '  case "$2" in *:*)\n'
+                    '      case " $LENS_NAMESPACES " in *" ${2%%:*} "*) return 0 ;;\n'
+                    '        *) die "unknown lens" ;; esac ;;\n'
+                    "  esac\n"
+                    '  die "$1=\'$2\' is not cc-proxy-routable"\n}\n')
+        self._write(render=reflowed + self.LENS + self.TIERS)
         self.assertEqual(self.problems(), [])
 
     def test_drifted_charset_fires(self):
@@ -1602,15 +1624,46 @@ class ResolverRendererParityTest(unittest.TestCase):
     def test_renderer_tier_names_drift_fires(self):
         # A fifth tier added to the resolver per the coupling table leaves the
         # renderer's is_tier_name gating a stale namespace.
-        self._write(tiers=self.ROUTABLE +
+        self._write(tiers=self.ROUTABLE + self.LENS +
                     'TIER_NAMES="JUDGMENT IMPLEMENT MECHANICAL RECON EXTRA"\n')
         probs = self.problems()
         self.assertTrue(any("does not match the resolver's" in p
                             for p in probs), probs)
 
     def test_missing_tier_names_fires(self):
-        self._write(render=self.ROUTABLE)
+        self._write(render=self.ROUTABLE + self.LENS)
         self.assertTrue(any("no `TIER_NAMES" in p
+                            for p in self.problems()), self.problems())
+
+    def test_renderer_lens_drift_fires(self):
+        # #35: LENS_NAMESPACES lives OUTSIDE check_routable's braces, so the
+        # body comparison above cannot see it — two copies carrying different
+        # allowlists would compare equal. One accepting a lens the other
+        # refuses is the same class as a charset drift.
+        self._write(render=self.ROUTABLE +
+                    'LENS_NAMESPACES="glm qwen claude"\n' + self.TIERS)
+        probs = self.problems()
+        self.assertTrue(any("does not match the resolver's" in p
+                            for p in probs), probs)
+
+    def test_uniformly_wrong_lens_fires(self):
+        # Equality across the two copies is satisfied by two IDENTICALLY wrong
+        # allowlists — measured: editing BOTH shipped scripts to
+        # `LENS_NAMESPACES="bogus"` passed the entire validator. The canonical
+        # pin is what closes it, the same way CANONICAL_BAD_CHARSET does for the
+        # workflow regexes. Uniform drift is the realistic failure when two
+        # files are copy-pasted by design.
+        gutted = 'LENS_NAMESPACES="bogus"\n'
+        self._write(tiers=self.ROUTABLE + gutted + self.TIERS,
+                    render=self.ROUTABLE + gutted + self.TIERS)
+        probs = self.problems()
+        self.assertTrue(any("PROVIDER_IDS" in p for p in probs), probs)
+
+    def test_missing_lens_namespaces_fires(self):
+        # A rename or retype must update the validator's regex, not silence it
+        # — the same reporting rule TIER_NAMES follows.
+        self._write(render=self.ROUTABLE + self.TIERS)
+        self.assertTrue(any("no `LENS_NAMESPACES" in p
                             for p in self.problems()), self.problems())
 
     def test_real_scripts_are_in_parity(self):
@@ -2022,6 +2075,91 @@ class GitignoreParityTest(unittest.TestCase):
               self._real_init.replace("!verdicts.d/*.md\n", "", 1))
         self.assertTrue(any("verdicts.d/*.md" in str(p) for p in self._probs()),
                         self._probs())
+
+
+class ReleaseGateCoverageTest(unittest.TestCase):
+    """check_release_gates_cover_validate: the job that PUBLISHES must gate at
+    least as much as the job that does not.
+
+    #38: release.yml ran a strict subset of validate.yml — both node suites
+    (148 cases over the workflow layer and the compressor) were absent from
+    every tag build, while release.yml's header claimed "full validation".
+    """
+
+    VALIDATE = (
+        "jobs:\n  validate:\n    steps:\n"
+        "      - run: python3 scripts/validate_plugin.py\n"
+        "      - run: python3 -m unittest discover -s tests\n"
+        "      - run: bash tests/test-scripts.sh\n"
+        "      - run: node tests/test_workflows.mjs\n"
+        "      - run: node tests/test_compress.mjs\n"
+    )
+    RELEASE_FULL = (
+        "jobs:\n  release:\n    steps:\n"
+        "      - run: python3 scripts/validate_plugin.py\n"
+        "      - run: python3 -m unittest discover -s tests\n"
+        "      - run: bash tests/test-scripts.sh\n"
+        "      - run: node tests/test_workflows.mjs\n"
+        "      - run: node tests/test_compress.mjs\n"
+    )
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        (self.dir / ".github" / "workflows").mkdir(parents=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _write(self, validate=None, release=None):
+        wf = self.dir / ".github" / "workflows"
+        if validate is not None:
+            write(wf / "validate.yml", validate)
+        if release is not None:
+            write(wf / "release.yml", release)
+
+    def _probs(self):
+        probs = []
+        vp.check_release_gates_cover_validate(self.dir, probs)
+        return probs
+
+    def test_superset_passes(self):
+        self._write(self.VALIDATE, self.RELEASE_FULL)
+        self.assertEqual(self._probs(), [])
+
+    def test_missing_node_suites_fire(self):
+        # The exact #38 shape: release.yml drops both node steps.
+        subset = self.RELEASE_FULL.replace(
+            "      - run: node tests/test_workflows.mjs\n", "").replace(
+            "      - run: node tests/test_compress.mjs\n", "")
+        self._write(self.VALIDATE, subset)
+        probs = self._probs()
+        self.assertEqual(len(probs), 2, probs)
+        self.assertTrue(all("gates less" in p for p in probs), probs)
+
+    def test_extra_release_step_is_fine(self):
+        # release.yml legitimately runs MORE (release_gate.py, gh release
+        # create). Only the missing direction is a finding.
+        self._write(self.VALIDATE,
+                    self.RELEASE_FULL + "      - run: python3 scripts/release_gate.py v1\n")
+        self.assertEqual(self._probs(), [])
+
+    def test_no_workflows_at_all_is_skipped(self):
+        # A plugin tree without CI is not a half-configured one. This is the
+        # only legitimate skip, and it is what the validator's own fixtures
+        # build — a check that fired here would fail every good-tree test.
+        self.assertEqual(self._probs(), [])
+
+    def test_one_workflow_missing_is_reported(self):
+        # Half-configured CI: reported, not skipped. Silence here is how a
+        # publishing job with no counterpart to compare against goes unnoticed.
+        self._write(validate=self.VALIDATE)
+        probs = self._probs()
+        self.assertTrue(any("release.yml is missing" in p for p in probs), probs)
+
+    def test_real_workflows_are_covered(self):
+        probs = []
+        vp.check_release_gates_cover_validate(ROOT, probs)
+        self.assertEqual(probs, [])
 
 
 if __name__ == "__main__":

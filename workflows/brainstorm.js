@@ -28,7 +28,7 @@ const DEFAULT_TIERS = {
   MECHANICAL: "glm-5-turbo",
   RECON: "claude-haiku-4-5-20251001",
 };
-const ROUTABLE = /^glm-|\/|^claude-/;
+const ROUTABLE = /^glm-|\/|^claude-|^(?:glm|openrouter|deepseek|qwen|claude):./;
 // Charset mirror of ops-tiers.sh's check_routable (audit F01). See review.js.
 const BAD_CHARSET = /[^\w./:@[\]-]/;
 // Canonical tier namespace ops-tiers.sh (TIER_NAMES) may emit. This workflow

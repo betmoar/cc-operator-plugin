@@ -1297,15 +1297,62 @@ def check_resolver_renderer_parity(root, problems):
         # same hole CANONICAL_BAD_CHARSET closed for the workflow regexes,
         # reachable here by commenting the body out in both files (comments are
         # stripped above). Pin the two load-bearing rejects to their content.
+        # NOT "LENS_NAMESPACES" here: this loop searches the FUNCTION BODY, and
+        # the assignment is a file-scope variable outside the braces, so the
+        # fragment could never be found and the check would fire on every tree
+        # (re-measured on this tree: 11 pytest failures, the good-tree fixtures
+        # among them — an earlier draft of this comment and 679e9af's commit
+        # message both said 12, which no mutation reproduces). Its
+        # USE inside the body is what belongs here; the assignment's VALUE is
+        # pinned separately below, where the two files are compared.
         for frag, why in (
                 (r"[!A-Za-z0-9._:/@[\]-]", "the charset reject"),
-                ("not cc-proxy-routable", "the id-shape reject")):
+                ("not cc-proxy-routable", "the id-shape reject"),
+                ("$LENS_NAMESPACES", "the provider-lens allowlist lookup")):
             if frag not in bodies["ops-tiers.sh"]:
                 problems.append(
                     f"scripts/ops-tiers.sh + ops-render.sh: check_routable no "
                     f"longer contains {why} ({frag!r}) — the two copies agree, "
                     f"but agreeing on a guard that checks nothing is how a "
                     f"parity check passes while the guard is gone")
+
+    # LENS_NAMESPACES lives OUTSIDE check_routable's braces, so routable_body()
+    # above never sees it and two copies carrying DIFFERENT allowlists would
+    # compare equal. Pinned separately, and TWICE: equal across the two files,
+    # AND equal to the canonical set below. Equality alone was the vacuous shape
+    # — editing BOTH copies to `LENS_NAMESPACES="bogus"` passed the whole
+    # validator (measured), because the tuples still matched and the in-body
+    # `$LENS_NAMESPACES` lookup was still present. That is the same hole
+    # CANONICAL_BAD_CHARSET closes for the workflow regexes, and CLAUDE.md
+    # claimed this check already closed it. Now it does.
+    #
+    # The set mirrors PROVIDER_IDS in cc-proxy's src/providers.js. Adding a
+    # provider there means updating this literal AND both scripts — deliberately
+    # three edits, because a namespace cc-proxy does not know is not stripped and
+    # reaches the default backend as a literal model id.
+    canonical_lens = ("glm", "openrouter", "deepseek", "qwen", "claude")
+    lens = {}
+    for name, text in src.items():
+        m = re.search(r"^LENS_NAMESPACES=([\"'])(.*?)\1", text, re.MULTILINE)
+        if not m:
+            problems.append(
+                f"scripts/{name}: no `LENS_NAMESPACES=\"…\"` assignment found — "
+                f"check_routable gates the `<provider>:<model>` lens on it; a "
+                f"rename or retype must update this regex, not silence it")
+            return
+        lens[name] = tuple(m.group(2).split())
+    if lens["ops-tiers.sh"] != lens["ops-render.sh"]:
+        problems.append(
+            f"scripts/ops-render.sh: LENS_NAMESPACES={list(lens['ops-render.sh'])} "
+            f"does not match the resolver's {list(lens['ops-tiers.sh'])} in "
+            f"ops-tiers.sh — one of them would accept a lens the other refuses")
+    elif lens["ops-tiers.sh"] != canonical_lens:
+        problems.append(
+            f"scripts/ops-tiers.sh + ops-render.sh: LENS_NAMESPACES="
+            f"{list(lens['ops-tiers.sh'])} does not match cc-proxy's PROVIDER_IDS "
+            f"{list(canonical_lens)} — the two copies agree, which is what makes "
+            f"this worth checking: a uniformly wrong allowlist refuses ids "
+            f"cc-proxy routes, or admits a namespace it does not strip")
 
     names = {}
     for name, text in src.items():
@@ -1354,7 +1401,17 @@ def check_workflows(root, problems):
     files = sorted(wf_dir.glob("*.js")) if wf_dir.is_dir() else []
     if not files:
         return  # workflows/ is optional; the plugin ships review.js only at need
-    CANONICAL_ROUTABLE = r"/^glm-|\/|^claude-/"
+    # Carries the `<provider>:<model>` lens alternation as of 0.7.1: the shell
+    # guard learned a fourth id shape and this mirror had to move with it, or an
+    # operator who legally binds `MECHANICAL=qwen:deepseek-v4-pro` in tiers.env
+    # gets a hard throw the moment that map reaches a workflow. Divergence here
+    # fails LOUD rather than silently mis-routing (the F01 polarity), but it is
+    # still the coupling docs/PLAYBOOK.md names — and check_workflows could not
+    # have caught it, because all four copies drifted uniformly (the F30 shape).
+    # The alternation is spelled out rather than built from LENS_NAMESPACES:
+    # these are four literal source files, and a generated regex would be one
+    # more thing to keep in sync.
+    CANONICAL_ROUTABLE = r"/^glm-|\/|^claude-|^(?:glm|openrouter|deepseek|qwen|claude):./"
     CANONICAL_BAD_CHARSET = r"/[^\w./:@[\]-]/"
     for f in files:
         rel = f"workflows/{f.name}"
@@ -2035,6 +2092,61 @@ def check_issue_refs(root, problems):
                     f"a reference to another project's tracker")
 
 
+def check_release_gates_cover_validate(root, problems):
+    """release.yml must run every test suite validate.yml runs.
+
+    A tag build publishes; a PR build does not. So the release job has to be a
+    SUPERSET of the validate job, and it was a strict subset (#38): both node
+    suites — 148 cases over the workflow layer and the compressor — ran on
+    every PR and on no release. 0.7.1 changed the ROUTABLE regex in all four
+    workflows, code test_workflows.mjs covers, and the tag build that shipped it
+    would not have run one case over it.
+
+    The failure was invisible because release.yml's own header says it "re-runs
+    the full validation". A gate that names one scope and enforces another is
+    the class docs/PLAYBOOK.md exists to catch, and nothing compared the two
+    files.
+
+    Compares the SUITE COMMANDS, not whole `run:` blocks: the two jobs
+    legitimately differ elsewhere (release_gate.py, `gh release create`), and
+    shellcheck is invoked through docker in both with slightly different
+    argument spelling. What must not diverge is which test runners execute.
+    """
+    wf = root / ".github" / "workflows"
+    val, rel = wf / "validate.yml", wf / "release.yml"
+    if not val.is_file() and not rel.is_file():
+        return  # a tree with no CI at all — nothing to compare
+    if not val.is_file() or not rel.is_file():
+        # ONE present and the other absent is reported, not skipped: that is a
+        # half-configured CI, and the whole point of this check is that the
+        # publishing job must not be the weaker one. Only the both-absent case
+        # above is a legitimate skip (the validator's own fixtures build a
+        # plugin tree without workflows).
+        missing = val.name if not val.is_file() else rel.name
+        problems.append(
+            f".github/workflows: {missing} is missing while its counterpart "
+            f"exists — cannot verify that a tag build gates at least as much "
+            f"as a PR build")
+        return
+    # The runners this project uses. Matched as substrings of the file text so
+    # a step's formatting (block scalar, inline, extra flags) does not matter.
+    SUITES = (
+        "tests/test-scripts.sh",
+        "tests/test_workflows.mjs",
+        "tests/test_compress.mjs",
+        "validate_plugin.py",
+        "unittest discover",
+    )
+    vtext = val.read_text(encoding="utf-8")
+    rtext = rel.read_text(encoding="utf-8")
+    for suite in SUITES:
+        if suite in vtext and suite not in rtext:
+            problems.append(
+                f".github/workflows/release.yml: runs no `{suite}` step while "
+                f"validate.yml does — the tag build that PUBLISHES gates less "
+                f"than the PR build that does not (#38)")
+
+
 # The registry, in run order. Both main() and the test suite iterate THIS —
 # a hand-copied second list is how three guardrails (reader bounds, guard
 # parity, lock parity) ended up running in the build but not in the test that
@@ -2069,6 +2181,7 @@ CHECKS = (
     check_workflow_tier_namespace,
     check_workflow_agent_types,
     check_commands,
+    check_release_gates_cover_validate,
 )
 
 
