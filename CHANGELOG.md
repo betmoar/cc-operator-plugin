@@ -9,6 +9,207 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-08-14
+
+What a second live run of the replay charter found. Three code bugs, and four
+defects in the charter itself — three of the four the same class as the first
+run's: **the charter told the replayer to run something a replayer cannot run**,
+and the run worked around it live and recorded the phase green. So the charter
+is now linted like code.
+
+### Fixed
+
+- **`release_gate` refuses a tag while `[Unreleased]` is non-empty** ([#39]).
+  The release notes are the tag version's section alone, so anything written
+  above it shipped in the commits and appeared nowhere a reader looks. v0.7.0
+  went out exactly that way — five subsections describing work that *was* in the
+  tag, absent from the release page, repaired after the fact in `6f92b5d` at a
+  cost of 137 changelog lines. Reproduced against the real gate before fixing:
+  green, rc 0, content gone.
+
+  Every individual step was already correct, which is why nothing caught it.
+  `CHANGELOG_HEADING_RE` matches `[x.y.z]` **by design**, so `[Unreleased]` is
+  invisible to it and the newest *version* heading is found properly; no step
+  asked whether content sat above the section about to be published. The new
+  reader is deliberately separate rather than a loosened regex that every other
+  caller shares.
+
+  Three decisions, each the opposite of the obvious one: checked at **release**
+  time (the section is legitimate between releases — "reject any `[Unreleased]`"
+  would fail every commit that uses the file as intended); **refused, never
+  auto-folded** (rewriting a maintainer's changelog mid-tag-build is a write
+  nobody asked for — the lesson already paid for by the `.gitignore` v1→v2
+  migration); and **whitespace-only is empty** (a bare heading is this file's
+  normal resting state, and a gate firing there would be switched off within one
+  release). Six cases, four of them controls, including one pinning that the
+  section stops at the link-def block: reading to EOF would swallow every
+  definition and report `[Unreleased]` as permanently non-empty — a gate nobody
+  could satisfy.
+- **A mistyped `--owner` no longer degrades the ownership gate to a warning**
+  ([#64]). The main parser had no unknown-option arm, so `--ownr WRONG` fell into
+  the positional bucket, was discarded past `$4`, and the *hard* refusal (closing
+  a task you do not own) silently became the *missing-owner* warning — which
+  reads as routine, because a session whose id rotated after `/clear` produces
+  exactly that line. One session closed another's task at rc 0. Measured worse
+  than reported: in the evidence slot the typo'd flag was written into the ledger
+  **as the evidence cell** (`| probe3 | crit | --ownr=WRONG @… | PASS |`).
+  The reject arm is `--*`, not `-*`, and the difference is load-bearing in both
+  directions — a single-dash evidence cell is legitimate and common
+  (`-v output: 3 passed`), so a blind dash reject breaks real usage, which is how
+  a guard gets deleted instead of fixed. `--` escapes a cell that genuinely opens
+  with `--`, and a surplus-positional check catches the other half of the slip.
+- **The F05 repo-root warning no longer fires on every symlinked path** ([#61]).
+  It compared git's *physical* toplevel against the *logical* `$PWD`, which
+  differ by construction under any symlinked ancestor — and `/tmp` is a symlink
+  to `private/tmp` on every macOS install, so every scratch project warned at its
+  own repo root. A warning that is always wrong is how a real signal gets trained
+  out, and this one lands on the first line a new user sees from
+  `/cc-operator:start`. Now `pwd -P` on both sides; the genuine mis-aim case
+  (scaffolding in a subdirectory) still fires, which is the half that keeps the
+  fix from being a mute button.
+- **`ops-claims.sh`'s green line counts what it actually adjudicated** ([#63]).
+  It reported the full changed-path set — including the `.operator/` paths C1 had
+  just exempted — so a scaffold plus one claimed change read `7 changed path(s)
+  all claimed` for one claimed path, and the number grew with every `verdicts.d/`
+  fragment. An operator citing that line into a verdict row banked an inflated
+  count: the summary-over-record failure the charter's evidence rules exist to
+  prevent. The exempt paths are now reported separately rather than dropped.
+
+### Fixed — found by reviewing the fixes
+
+A four-lens review panel over this branch. Two lenses landed before the run was
+stopped (the mutation-testing agents were sharing one working tree with the
+mutation run, which is its own lesson); both found real defects in the 0.8.1
+fixes themselves, each reproduced independently before changing anything.
+
+- **The surplus-positional ceiling was sized for the wrong form.** `[ $# -le 4 ]`
+  bounds the verdict form's arity; the defer form's is three, so it kept one
+  free slot and `<id> --defer "reason" STRAY --owner <sid>` deferred at rc 0
+  with `STRAY` silently discarded — measured. A realistic shape (a forgotten
+  `--owner` leaves the bare session id sitting there) and precisely the #64
+  class surviving in the form the fix did not bound. Now a per-form ceiling,
+  with a control that the legitimate three-positional defer still works.
+- **`pwd -P` was unguarded under `set -eu`.** Its sibling `TOPLEVEL` carries
+  `2>/dev/null || true` for exactly this reason: an unguarded command
+  substitution *aborts* the script, so a cwd whose physical path cannot be
+  resolved would kill the whole scaffold — including the `mkdir -p` that
+  follows — with a raw bash error, inverting this file's warn-and-continue
+  polarity. Now guarded, and an empty result *skips* the comparison rather than
+  comparing against `""`, which would fire the mis-aim warning on every project.
+  Honestly recorded: this hardening is **unexercised** — reverting it does not
+  move the suite, because an unresolvable cwd cannot be created deterministically
+  from inside it. Defensive, not proven.
+- **A near-miss `[Unreleased]` heading read as empty** — `##[Unreleased]`,
+  `## Unreleased`, `## [unreleased]`, a leading indent: every one returned `""`
+  with real content underneath (measured), reopening the bug above through a
+  typo instead of an empty section, with nothing downstream to catch it. The
+  anchor is now tolerant. Tolerance is right *here* and wrong in
+  `CHANGELOG_HEADING_RE`: this reader asks "is anything pending?", where a false
+  positive costs one look; that one names the version being published, where
+  guessing at a malformed heading would publish under the wrong number.
+- **`check_replay_charter` had no vacuity floor** — the F48 class, in the check
+  written to catch that class one level down. Its whole result is regex-driven
+  against the charter's current markdown shape, so a convention change makes it
+  match nothing and report clean. Measured: a charter describing the same
+  commands in prose produced zero findings. The floor lives in the function
+  rather than a test, so it protects any charter, not just this repo's fixture.
+- **The F05 warning printed the logical `$PWD` beside the physical toplevel**, so
+  under a symlink the two paths differed by resolution as well as by directory —
+  inviting the exact misreading #61 was. Both sides are physical now. (Found by
+  the live replay run, fixed here.)
+- **A stale number: 137, not 139.** The `[Unreleased]` fold cost 137 changelog
+  lines (`405 - 268`, from `6f92b5d`'s own message), a figure inherited from the
+  issue text and repeated in two places without being re-derived. Corrected in
+  both, and the mutation-count comment in `test_workflows.mjs` now names the
+  baseline its numbers were measured against — they read differently against the
+  pre-#60 suite of 79 than against today's 85, and it did not say which.
+
+### Added
+
+- **The routability guard is now proven APPLIED in all four workflows** ([#60]).
+  The issue filed this as defence-in-depth — the static pin
+  (`check_workflows`) compares the `ROUTABLE` literal across the four copies, so
+  it catches any drift in the regex text, and three missing runtime assertions
+  looked like redundancy. It carried an invalidator: if the static pin fires
+  first every time, close this rather than add tests by symmetry.
+
+  Measured both halves, and the answer inverted the premise. Reverting a file's
+  regex to the pre-F8 shape: static pin **2 findings in all four**, runtime
+  silent for three — the redundancy claim holds. But leaving the regex intact
+  and neutering its application (`false && !ROUTABLE.test(id)`): static pin
+  **0 findings**, and only the file with a runtime assertion notices. The pin
+  cannot see a correct regex that is never applied — the F30 vacuity shape —
+  so three of four workflows had nothing covering it, and a workflow whose
+  routability guard did nothing would have shipped with every gate green.
+
+  Six assertions, one pair per file rather than a shared loop (a helper looping
+  over the four passes with three deleted). Per-file discrimination verified:
+  each mutation fails exactly its own file's assertion, 84/1 each, with the
+  static pin blind in all four.
+- **`check_replay_charter`** — the charter's own commands are now resolvable or
+  the build fails. Two runs, and both times the defective party was the charter:
+  the first found `bash .operator/bin/ops-init.sh`, a command that could never
+  run (ops-init is the one CLI *not* in the install set, because it creates
+  `bin/`); the second found three phases invoking `${CLAUDE_PLUGIN_ROOT}`, unset
+  in the Bash tool env ([#62]). Neither is subtle. Both survived because nothing
+  read the file except a human under load.
+
+  Resolvability only — no execution, no network. It cannot tell you the expected-
+  output strings still match the scripts (prose, hand-maintained) or whether a
+  phase proves what it claims. Two things it *does* get right, both found while
+  mutation-checking it: flags are looked up in `shell_code()`, not `read_text()`,
+  because `ops-verdict.sh` documents `--ownr` at length while refusing it and the
+  raw lookup passed on that prose; and a declared negative control is exempt,
+  because the charter is now *required* to type wrong commands and a lint that
+  forbade them would forbid the controls.
+
+### Changed
+
+- **`docs/REPLAY-CHARTER.md`** — four corrections from the 2026-08-14 run:
+  - R0 resolves `$PR` by hand and says why the repo's own `scripts/` is the
+    wrong substitute (it silently audits the tree, not the installed plugin —
+    the confusion R0's build-identity check exists to prevent) ([#62]).
+  - **R2 is split into R2a and R2b**, because the first run recorded the pair as
+    one PASS on the script half alone. A phase that was never executed must not
+    read PASS on its own authority.
+
+    R2b was then declared unexecutable on two grounds, and **running it proved
+    one of them false the same day**. Right: the Stop hook resolves the nearest
+    `.operator/` above *the session's* cwd, so the probe sentinel must be opened
+    in the session's own project. Wrong: "a session that blocks its own Stop
+    cannot report having done so" — a blocked Stop **grants another turn** with
+    the hook's stderr as guidance, and that continuation is the observation.
+    R2b now ships as executable, with the three preconditions that make a block
+    attributable (baseline rc 0, loop guard confirmed, a probe id existing
+    nowhere else), and a human observer as corroboration rather than the only
+    channel. **Measured PASS, live.**
+  - **R8 gains the general rule**: before recording a phase as unexecutable, try
+    to execute it. "Cannot be tested" is a claim and owes evidence like any
+    other; this one sounded structural and survived a release.
+
+- **`templates/OPERATOR.md`** — two clauses added to ORCHESTRATED MODE's routing
+  line: do not idle while a dispatch runs (work the main thread on what does not
+  depend on its result), and enough information to act means act — an obvious
+  default is not a decision worth surveying. Both are latency rules the charter
+  implied and never stated; the operator had no instruction against waiting.
+
+  Deliberately NOT adopted from the same source: "parallelize aggressively". The
+  charter's `[D:CHART-r6]` — one implementer at a time, read-only workers in
+  parallel on disjoint inputs — is the stricter rule and it is stricter on
+  purpose. Charter now 141/150 lines, 8621/9000 bytes.
+  - **A negative control per phase is now rule 3**, alongside the meter check
+    this charter has demanded since it was written. This repo's recurring failure
+    is not a gate that answers wrongly — it is a gate that has stopped answering
+    while every observation stays green.
+  - The scorecard counts deferred and human-verified as their own categories
+    rather than folding them into PASS, which is how R2b read green.
+
+[#39]: https://github.com/betmoar/cc-operator-plugin/issues/39
+[#61]: https://github.com/betmoar/cc-operator-plugin/issues/61
+[#62]: https://github.com/betmoar/cc-operator-plugin/issues/62
+[#63]: https://github.com/betmoar/cc-operator-plugin/issues/63
+[#64]: https://github.com/betmoar/cc-operator-plugin/issues/64
+
 ## [0.8.0] - 2026-08-14
 
 Eighteen audit findings, and four review rounds that found three more defects in

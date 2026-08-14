@@ -42,6 +42,9 @@ not per tool call; default terse and spend length only where the problem earns i
 and logged [DOC:spec-D2]. Model routing, in full: route by task nature; correctness of the
 product beats token savings; judgment work never runs below judgment tier [D:CHART-route]. One
 implementer at a time; read-only workers may run in parallel on disjoint inputs [D:CHART-r6].
+Do not idle while a dispatch runs — keep working the main thread on work that does not depend
+on its result; enough information to act means act, and an obvious default is not a decision
+worth surveying [D:CHART-prose].
 The review, brainstorm, and plan workflows are the orchestration primitives — each fans narrow
 lenses across cheap tiers and converges on judgment, with `/cc-operator:tiers` resolving the
 model id behind each tier [DOC:spec-wf].

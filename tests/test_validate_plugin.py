@@ -2389,5 +2389,157 @@ class ReleaseGateCoverageTest(unittest.TestCase):
         self.assertEqual(probs, [])
 
 
+class ReplayCharterLintTest(unittest.TestCase):
+    """check_replay_charter: every command the charter tells a human to type
+    must resolve — the script exists, the flags exist.
+
+    Two replay runs, and both times the defective party was the charter: a
+    `bash .operator/bin/ops-init.sh` that could never run (ops-init is not in
+    the install set), then three phases invoking `${CLAUDE_PLUGIN_ROOT}` from
+    the Bash tool env, where it is unset (#62). Neither survived because it was
+    subtle; they survived because nothing read the file.
+    """
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        (self.dir / "docs").mkdir(parents=True)
+        (self.dir / "scripts").mkdir(parents=True)
+        write(self.dir / "scripts" / "ops-verdict.sh",
+              "#!/usr/bin/env bash\ncase \"$1\" in --owner) ;; --defer) ;; esac\n")
+        write(self.dir / "scripts" / "ops-claims.sh",
+              "#!/usr/bin/env bash\ncase \"$1\" in --claimed) ;; --since) ;; esac\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _probs(self, charter):
+        write(self.dir / "docs" / "REPLAY-CHARTER.md", charter)
+        probs = []
+        vp.check_replay_charter(self.dir, probs)
+        return probs
+
+    def test_resolvable_invocation_passes(self):
+        self.assertEqual(
+            self._probs("`ops-verdict.sh R1 c e PASS --owner <sid>`\n"), [])
+
+    def test_missing_script_fires(self):
+        # The branch that was DEAD in the first draft: the tail regex required
+        # whitespace right after `.sh`, but the real shape carries a closing
+        # quote (`bash "$PR/scripts/ops-x.sh" --owner`). Found by mutating a
+        # script name and observing no finding — a lint that cannot see its own
+        # headline case.
+        probs = self._probs('run `bash "$PR/scripts/ops-gone.sh" --owner X`\n')
+        self.assertTrue(any("does not exist" in p for p in probs), probs)
+
+    def test_missing_script_fires_through_every_path_prefix(self):
+        for prefix in ("", ".operator/bin/", "$PR/scripts/"):
+            with self.subTest(prefix=prefix):
+                probs = self._probs(f"`{prefix}ops-gone.sh --owner X`\n")
+                self.assertTrue(any("does not exist" in p for p in probs),
+                                (prefix, probs))
+
+    def test_unknown_flag_fires(self):
+        probs = self._probs("`ops-claims.sh --expect-tidy`\n")
+        self.assertTrue(any("--expect-tidy" in p for p in probs), probs)
+
+    def test_flag_named_only_in_a_comment_is_not_a_flag(self):
+        # THE VACUITY. ops-verdict.sh documents `--ownr` at length while
+        # refusing it (#64's fix), so a raw read_text() lookup is satisfied by
+        # the prose describing the bug. Measured on the real tree while
+        # mutation-checking this check; the fix is shell_code().
+        write(self.dir / "scripts" / "ops-verdict.sh",
+              "#!/usr/bin/env bash\n# a typo'd --ownr used to be absorbed\n"
+              "case \"$1\" in --owner) ;; esac\n")
+        probs = self._probs("`ops-verdict.sh id c e PASS --ownr <sid>`\n")
+        self.assertTrue(any("--ownr" in p for p in probs), probs)
+
+    def test_declared_negative_control_is_exempt(self):
+        # The charter MUST be able to type wrong commands — rule 3 requires a
+        # negative control per phase. The exemption is not blanket: it costs
+        # the expectation, on the line.
+        self.assertEqual(
+            self._probs("`ops-verdict.sh id c e PASS --ownr <sid>` must exit "
+                        "non-zero naming unknown option\n"), [])
+
+    def test_control_exemption_is_not_a_blanket_escape(self):
+        # Same bad flag, no stated expectation → still a finding. Without this
+        # pair the exemption would silently accept any wrong command.
+        probs = self._probs("`ops-verdict.sh id c e PASS --ownr <sid>`\n")
+        self.assertTrue(any("--ownr" in p for p in probs), probs)
+
+    def test_plugin_root_in_a_command_fires(self):
+        probs = self._probs(
+            'drive it: `bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-verdict.sh"`\n')
+        self.assertTrue(any("CLAUDE_PLUGIN_ROOT" in p for p in probs), probs)
+
+    def test_plugin_root_in_prose_does_not_fire(self):
+        # The charter must be able to EXPLAIN the variable — it devotes a
+        # paragraph to why it is unset. Only a line that RUNS it is a finding.
+        self.assertEqual(self._probs(
+            "hooks resolve through `${CLAUDE_PLUGIN_ROOT}/scripts/...` and are "
+            "current immediately, unlike the Bash tool env\n"), [])
+
+    def test_a_bare_mention_is_not_an_invocation(self):
+        # Every sentence naming a CLI would otherwise be a finding, and a lint
+        # that fires on prose gets disabled.
+        self.assertEqual(self._probs(
+            "the install set is `ops-verdict.sh ops-task.sh ops-adopt.sh`\n"), [])
+
+    def test_absent_charter_is_skipped(self):
+        probs = []
+        vp.check_replay_charter(self.dir, probs)
+        self.assertEqual(probs, [])
+
+    def test_a_charter_that_resolves_nothing_is_reported(self):
+        # THE VACUITY FLOOR. Everything this check does is regex-driven against
+        # the charter's current markdown shape, so a convention change (fenced
+        # commands, a renamed CLI prefix, different quoting) makes inv_re match
+        # nothing — and zero findings is indistinguishable from a clean pass.
+        # Measured: a charter describing the same commands in prose produced
+        # [] findings before the floor existed. This is the F48 class the check
+        # itself exists to catch one level down.
+        probs = self._probs(
+            "Run the tool named opsVerdict with flag ownerFlag. " * 60)
+        self.assertTrue(any("below the floor" in p for p in probs), probs)
+
+    def test_a_short_stub_charter_is_exempt_from_the_floor(self):
+        # The control that keeps the floor from being a tripwire on any small
+        # or partial document — it fires on a CONVENTION change, not on editing.
+        self.assertEqual(self._probs("# tiny stub charter\n"), [])
+
+    def test_real_charter_clears_the_floor(self):
+        # …and the real charter is well above it, so the floor is not passing
+        # merely because the bound is trivially low.
+        probs = []
+        vp.check_replay_charter(ROOT, probs)
+        self.assertEqual(probs, [], probs)
+
+    def test_check_is_registered_in_CHECKS(self):
+        # Every other test here calls the function DIRECTLY, so a check dropped
+        # from the registry runs in no build while all of them stay green —
+        # measured: removing the CHECKS entry left 190/190 passing. The
+        # good-tree fixture cannot cover this either, because it ships no
+        # charter and the check correctly skips. This is the F48 vacuous-guard
+        # shape at the registry level, and the same one that let three
+        # guardrails fall out of the good-tree assertion (see ValidatorTest).
+        self.assertIn(vp.check_replay_charter, vp.CHECKS)
+
+    def test_registry_run_sees_the_real_charter(self):
+        # …and the registry path actually reaches this repo's charter: a
+        # membership pin alone would pass with the check wired to a path that
+        # does not exist.
+        probs = []
+        for check in vp.CHECKS:
+            if check is vp.check_replay_charter:
+                check(ROOT, probs)
+        self.assertEqual(probs, [])
+        self.assertTrue((ROOT / "docs" / "REPLAY-CHARTER.md").is_file())
+
+    def test_real_charter_is_clean(self):
+        probs = []
+        vp.check_replay_charter(ROOT, probs)
+        self.assertEqual(probs, [])
+
+
 if __name__ == "__main__":
     unittest.main()

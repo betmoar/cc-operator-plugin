@@ -496,10 +496,27 @@ fi
 
 # Green: state what was verified (the SSSF "a green gate answers what did you
 # verify" shape). The operator's PASS verdict row cites these lines.
+#
+# Count only what C1 ACTUALLY adjudicated (issue #63). The old count read
+# _DEDUPED_TMP whole, ledger paths included — so a scaffold plus one real change
+# reported "7 changed path(s) all claimed" for ONE claimed path, and it grew
+# with every verdicts.d/ fragment. An operator citing that line into a verdict
+# row banks an inflated number: the summary-over-record failure the charter's
+# evidence rules exist to prevent. The exempt paths are reported separately
+# rather than dropped — they were skipped by policy, which is worth saying.
 n_actual=0
-while IFS= read -r _l; do [ -n "$_l" ] && n_actual=$((n_actual + 1)); done < "$_DEDUPED_TMP"
+n_ledger=0
+while IFS= read -r _l; do
+  [ -n "$_l" ] || continue
+  if is_ledger_path "$_l"; then n_ledger=$((n_ledger + 1)); else n_actual=$((n_actual + 1)); fi
+done < "$_DEDUPED_TMP"
+_exempt_note=""
+# `.operator/` is spelled out, matching is_ledger_path's own literal — this
+# script has no OPDIR variable, and inventing one here would be a second place
+# for the prefix to drift from the function that decides it.
+[ "$n_ledger" -gt 0 ] && _exempt_note=" ($n_ledger .operator/ ledger path(s) exempt)"
 if [ -n "$CLAIMED" ]; then
-  echo "{item diff-matches-claims} ok: $n_actual changed path(s) all claimed; no phantom claims"
+  echo "{item diff-matches-claims} ok: $n_actual changed path(s) all claimed; no phantom claims$_exempt_note"
 else
   echo "{item diff-matches-claims} ok: CHANGED none and no protected-path trespass"
 fi

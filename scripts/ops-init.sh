@@ -15,12 +15,33 @@ OPDIR=".operator"
 # a mis-aimed /cc-operator:start — and used to report success either way, writing
 # the evidence somewhere nobody will merge or review. Warn, never hard-fail: a
 # non-git project is unusual but legitimate. (Audit F05.)
+#
+# Compare PHYSICAL to PHYSICAL (issue #61). `git rev-parse --show-toplevel`
+# resolves symlinks; `$PWD` preserves the logical path used to `cd` there. Under
+# any symlinked ancestor the two differ by construction and the comparison
+# always failed — and `/tmp` is a symlink to `private/tmp` on every macOS
+# install, so EVERY scratch project under /tmp tripped this. A warning that
+# cries wolf is how a real signal gets trained out; the genuine mis-aim case
+# (scaffolding in a subdirectory) still fires, because that difference survives
+# resolution.
+#
+# `pwd -P` is guarded exactly like TOPLEVEL above, and for the same reason: under
+# `set -eu` an unguarded command substitution ABORTS the script, so a cwd whose
+# physical path cannot be resolved (deleted out from under us, an ancestor losing
+# +x, a stale automount) would kill the whole scaffold — including the `mkdir -p`
+# below — with a raw bash error, instead of this file's warn-and-continue
+# polarity. An empty PHYS_PWD SKIPS the comparison rather than comparing against
+# "", which would fire the mis-aim warning on every project.
 if command -v git >/dev/null 2>&1; then
   TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  PHYS_PWD="$(pwd -P 2>/dev/null || true)"
   if [ -z "$TOPLEVEL" ]; then
     echo "ops-init: warning — $PWD is not a git repository; the ledger will not be tracked or reviewable" >&2
-  elif [ "$TOPLEVEL" != "$PWD" ]; then
-    echo "ops-init: warning — scaffolding at $PWD, which is NOT the repository root ($TOPLEVEL)" >&2
+  elif [ -n "$PHYS_PWD" ] && [ "$TOPLEVEL" != "$PHYS_PWD" ]; then
+    # Both paths printed PHYSICALLY: the message used to name the logical $PWD
+    # beside the physical toplevel, so under a symlink the two differed by
+    # resolution as well as by directory — inviting the same misreading #61 was.
+    echo "ops-init: warning — scaffolding at $PHYS_PWD, which is NOT the repository root ($TOPLEVEL)" >&2
     echo "ops-init:           the Stop hook resolves the nearest .operator/ above its cwd, so a" >&2
     echo "ops-init:           second ledger here will shadow the root one for anything beneath it" >&2
   fi

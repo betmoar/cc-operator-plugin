@@ -2328,6 +2328,180 @@ def check_issue_refs(root, problems):
                     f"a reference to another project's tracker")
 
 
+def check_replay_charter(root, problems):
+    r"""Every CLI invocation the replay charter tells a human to type must
+    resolve: the script exists, and the flags it passes exist in that script.
+
+    **Why this check exists, stated bluntly: two runs of the replay charter, and
+    the defective party was the charter itself both times.** The 2026-08-12 run
+    found `bash .operator/bin/ops-init.sh` — a command that could never have
+    run, because ops-init is the one CLI NOT in the install set (it creates
+    `bin/`). The 2026-08-14 run found three phases invoking
+    `${CLAUDE_PLUGIN_ROOT}/scripts/…`, which is unset in the Bash tool env and
+    expands to `/scripts/…` (#62). Neither is subtle; both survived because
+    nothing read the charter except a human following it under load, who worked
+    around the breakage live and recorded the phase green. That is the exact
+    shape this repo's guards exist to catch, applied to the one document that
+    audits the guards.
+
+    **Resolvability ONLY.** No execution, no network, no semantic claim. This
+    cannot tell you the expected-output strings still match the scripts (prose,
+    maintained by hand — CLAUDE.md says so), whether a phase proves what it
+    says, or whether a flag is passed sensibly. It answers one question: would
+    this command die with "no such file" or "unknown option" before doing
+    anything? That is a small question with a measured 100% hit rate on the
+    charter's real defects to date.
+
+    Scope is deliberately narrow to stay quiet:
+
+      - Only lines that look like an INVOCATION — a path ending in `ops-*.sh`
+        followed by arguments — are parsed. A bare mention (``ops-verdict.sh``
+        in prose, or the install-set enumeration in R1) is not a command and is
+        skipped, or every sentence naming a CLI becomes a finding.
+      - `<placeholder>` arguments are ignored; the charter is a template.
+      - A path is resolved by BASENAME against `scripts/`, because the charter
+        legitimately writes three different bases for the same file
+        (`.operator/bin/…`, `$PR/scripts/…`, bare) and they are all the same
+        script at different install points. What matters is that the name is a
+        CLI this plugin ships.
+      - Flags are checked against the target script's own `--flag` literals,
+        with COMMENTS STRIPPED FIRST. That is not tidiness: the charter's #64
+        negative control types `--ownr` on purpose, and the fix for #64 put the
+        word `--ownr` in ops-verdict.sh's explanatory comment — so the lookup
+        passed against prose describing the bug rather than against any code.
+        Measured here while mutation-checking this very function. A flag the
+        script never mentions in code is a typo or a rename that left the
+        charter behind — the #64 class, one level up.
+      - A **negative control** is exempt, and declares itself: if the line
+        carrying the invocation also says the command must be refused (`must
+        exit non-zero`, `must be refused`), the flag is deliberately invalid
+        and is not checked. The charter needs to type wrong commands — rule 3
+        requires one per phase — and a lint that forbids them would forbid the
+        controls. Requiring the expectation ON THE SAME LINE keeps that from
+        becoming an escape hatch: a charter line that types a bad flag and says
+        nothing about it is still a finding.
+
+    The charter is untracked-adjacent but real: it ships in-tree, it is the
+    protocol a release "claiming a live-verified gate" must run, and a broken
+    command in it costs a replayer a phase. If the file is absent (a stripped
+    tree), skip — like every other doc check here, this one grades what ships.
+    """
+    charter = root / "docs" / "REPLAY-CHARTER.md"
+    if not charter.is_file():
+        return
+    try:
+        text = charter.read_text(encoding="utf-8")
+    except OSError as exc:
+        problems.append(f"docs/REPLAY-CHARTER.md: unreadable ({exc})")
+        return
+
+    scripts_dir = root / "scripts"
+    # An invocation: an optional path prefix, then ops-<name>.sh, then the rest
+    # of the line. The prefix alternatives are the three the charter uses; a
+    # bare name counts only when arguments follow (that is what separates a
+    # command from a mention). The tail skips a closing quote before the
+    # arguments — `bash "$PR/scripts/ops-init.sh" --owner X` is the real shape,
+    # and a tail anchored on whitespace alone matched none of them, which made
+    # the missing-script branch below unreachable (measured while mutation-
+    # checking this function: renaming an invoked script produced no finding).
+    inv_re = re.compile(
+        r"(?:\$PR/scripts/|\.operator/bin/|\$\{CLAUDE_PLUGIN_ROOT\}/scripts/)?"
+        r"(ops-[a-z-]+\.sh)\"?((?:[ \t]+[^\n`|]+)?)")
+    # A flag in the argument tail. `--` alone (end-of-options) is not a flag.
+    flag_re = re.compile(r"(?<![\w-])--([a-z][a-z-]*)")
+    # A line that declares its own command invalid — see the docstring. Kept
+    # narrow and literal so it cannot be satisfied by incidental prose.
+    control_re = re.compile(r"must (?:exit non-zero|be refused|fail)")
+
+    lines = text.splitlines()
+    seen = set()
+    for m in inv_re.finditer(text):
+        name, tail = m.group(1), m.group(2) or ""
+        flags = flag_re.findall(tail)
+        if not flags:
+            continue  # a mention, or a flagless form — nothing to resolve
+        line_no = text.count("\n", 0, m.start()) + 1
+        # The expectation may wrap onto the next line — the charter hard-wraps
+        # at 80. Two lines, not the whole paragraph: the point is that the
+        # control declares itself AT the command.
+        window = " ".join(lines[line_no - 1:line_no + 1])
+        is_control = bool(control_re.search(window))
+        target = scripts_dir / name
+        key = (name, tuple(sorted(set(flags))), is_control)
+        if key in seen:
+            continue
+        seen.add(key)
+        if not target.is_file():
+            problems.append(
+                f"docs/REPLAY-CHARTER.md:{line_no}: invokes `{name} "
+                f"--{flags[0]} …` but scripts/{name} does not exist — a "
+                f"replayer following this literally hits a missing command "
+                f"(the 2026-08-12 run's `.operator/bin/ops-init.sh` defect)")
+            continue
+        if is_control:
+            continue  # a deliberately-wrong command with its refusal stated
+        # shell_code(), NOT read_text(): a flag named only in a COMMENT is not
+        # a flag the CLI has. ops-verdict.sh documents `--ownr` at length while
+        # rejecting it, and a raw-text lookup passed on that prose.
+        try:
+            body = shell_code(target)
+        except OSError as exc:
+            problems.append(f"scripts/{name}: unreadable ({exc})")
+            continue
+        for flag in flags:
+            # `--flag)` in a case arm, `--flag=*`, or the flag inside a usage
+            # string all count as "this script knows this word" — the question
+            # is resolvability, not parse position.
+            if f"--{flag}" not in body:
+                problems.append(
+                    f"docs/REPLAY-CHARTER.md:{line_no}: invokes `{name} "
+                    f"--{flag}` but scripts/{name}'s CODE never mentions "
+                    f"`--{flag}` — the charter names a flag the CLI does not "
+                    f"have (state the refusal on the line if it is a control)")
+
+    # THE VACUITY FLOOR — the check must prove it still examined something.
+    #
+    # Everything above is regex-driven against the charter's current markdown
+    # shape (inline code spans, these three path prefixes). Change the charter's
+    # convention — fence the commands, rename the CLI prefix, quote differently
+    # — and `inv_re` matches nothing, `seen` stays empty, and this function
+    # reports zero problems: indistinguishable from "every command resolves".
+    # Measured: a charter describing the same commands in prose ("run the tool
+    # named opsVerdict with flag ownerFlag") produced [] findings.
+    #
+    # That is the F48 class this very check exists to catch one level down, and
+    # the floor belongs in the FUNCTION rather than in a test: it then protects
+    # any charter, not just this repo's. The bound is deliberately low — a real
+    # charter drives the gate CLIs many times over (this one, well clear of the
+    # floor; the exact count is deliberately not written down, since it changes
+    # with any charter edit and a stale number here is the rot this file warns
+    # about elsewhere) — so it fires
+    # on a convention change, never on ordinary editing.
+    MIN_INVOCATIONS = 5
+    if len(text.split()) > 200 and len(seen) < MIN_INVOCATIONS:
+        problems.append(
+            f"docs/REPLAY-CHARTER.md: this check resolved only {len(seen)} "
+            f"CLI invocation(s) in a {len(text.splitlines())}-line charter — "
+            f"below the floor of {MIN_INVOCATIONS}. Either the charter stopped "
+            f"driving the gate CLIs, or its command convention changed and the "
+            f"parser above no longer matches it. A silently-zero result reads "
+            f"exactly like a clean pass (F48)")
+
+    # The variable the 2026-08-14 run tripped over. It is legitimate in PROSE
+    # (the charter explains why it is unset) but never inside a command: a
+    # `bash "${CLAUDE_PLUGIN_ROOT}/scripts/…"` line expands to `/scripts/…` in
+    # the Bash tool env. Distinguish by looking only at lines that RUN it.
+    for i, line in enumerate(text.splitlines(), 1):
+        if "CLAUDE_PLUGIN_ROOT" not in line:
+            continue
+        if re.search(r"(?:bash|sh|cmp -s .*)\s+\"?\$\{CLAUDE_PLUGIN_ROOT\}", line):
+            problems.append(
+                f"docs/REPLAY-CHARTER.md:{i}: a command runs "
+                f"${{CLAUDE_PLUGIN_ROOT}}, which is NOT set in the Bash tool "
+                f"environment — it expands to `/scripts/…` and fails (#62). "
+                f"Use the $PR the charter resolves in R0.")
+
+
 def check_release_gates_cover_validate(root, problems):
     """release.yml must run every test suite validate.yml runs.
 
@@ -2417,6 +2591,7 @@ CHECKS = (
     check_workflow_tier_namespace,
     check_workflow_agent_types,
     check_commands,
+    check_replay_charter,
     check_release_gates_cover_validate,
 )
 
