@@ -9,6 +9,144 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-14
+
+Eighteen audit findings, and four review rounds that found three more defects in
+the fixes written to close them. Every fix is mutation-checked: reverted, suite
+run, the specific assertion confirmed red, then restored byte-identical. A claim
+that did not reproduce was measured and rejected rather than fixed.
+
+### Security — untrusted input and filesystem primitives
+
+- **`sentinel_owner`'s reject-set refuses `.exempt` in all three body parsers**,
+  not only at the writer ([#40]). `.armed/` holds two marker kinds in one flat
+  namespace — `<sid>` (a derived cache the recompute may delete) and
+  `<sid>.exempt` (a G3 grant it must never touch). A corrupted body
+  `session_id: victim.exempt` parsed as a valid owner, and `recompute_arm_marker`
+  deleted another session's exemption while the ledger row still asserted it
+  held. The writer had always refused the suffix; the parser had not.
+- **The `-L` symlink refusal extends to `verdicts.d/`** ([#41]). The F65 guard
+  reached all five `pending/` sites and never the evidence-fragment directory: a
+  planted symlink at `verdicts.d/<owner>.md` appended every verdict row for that
+  owner **through the link**, exit 0, silent. Now refused at the
+  `append_fragment` write and both read sites.
+- **`session_id` is sanitized as a path segment** before it joins a spill or
+  dedup path ([#42]). It arrives raw from the hook payload; a traversal value
+  put pre-scrub tool output at a path the payload chose.
+- **The `.gitignore` migration guard uses `-L`, not `-f`** ([#43]). `-f` follows
+  a symlink, so a `.gitignore.v1.bak` symlinked at a regular file made the
+  backup overwrite that file's contents. Both writers — `ops-init.sh` and the
+  SessionStart hook — carry the guard.
+- **The compressor's `SPILL_KEEP` `statSync` is guarded** ([#54]): an entry
+  vanishing between `readdirSync` and `statSync` (a concurrent cleanup) threw
+  out of the map and reported a false `spill FAILED`.
+
+### Fixed — concurrency
+
+- **The `.operator/bin/` upgrade is atomic** (temp + rename), so it can no
+  longer truncate a verdict running from the same inode ([#44]). The in-place
+  `cp` held the lock but installed no cleanup trap.
+- **Lock give-up waiters serialize on a fallback lockdir** ([#45]). Both
+  "proceed unlocked" exits returned having acquired nothing, so every waiter
+  that timed out in the same window entered the critical section together — the
+  N-wide pile-up the lock exists to prevent. They now queue one at a time.
+  - **Residual, stated not eliminated:** one giver-up may still run beside a
+    confirmed-live holder. That is the accepted liveness trade at the
+    "confirmed alive" branch — never block the operator forever — and it is
+    recorded in the issue and beside the code, not silently absorbed.
+
+### Fixed — silent wrong answers
+
+- **`--reconcile` reads fragments at `-n 1048576`**, matching `retro_gate`
+  ([#53]). At `-n 512` a long evidence cell split across reads and the row was
+  dropped — silently losing exactly the rows most likely to need recovery.
+- **`--reconcile` dies on a `grep` failure** instead of reporting `0 restored`
+  ([#49]) — an unreadable ledger read as "nothing to restore".
+- **The census fails closed on a git error** ([#46]). Without `pipefail` a
+  corrupted index was masked by the trailing `wc` and reported as a confident
+  `files: 0`, which is the whole input to the "is this repo big enough to need
+  an unknowns pass" decision.
+- **The workflow `ROUTABLE` regex tests the provider lens first** ([#47]).
+  `bogus:vendor/model` matched the bare-slash arm and reached the default
+  backend as a literal model id, because cc-proxy strips a lens it knows and
+  leaves one it does not. All four workflows plus the canonical literal.
+- **Four statusline hot-path regressions** on a ~300ms render budget ([#48]):
+  the mtime memoization was defeated by its own probe, the NUL check read the
+  whole file before the tail, duplicate greps recounted the same lines, and
+  `STALL_SEC` was unvalidated.
+
+### Fixed — hygiene
+
+- **`json_get` bool-coercion parity** across the three hooks, with a validator
+  pin ([#50]); **`ops-adopt.sh`'s echoed PREV** carries the same reject-set as
+  the parsers it mirrors ([#51]); a coupling-table symbol name corrected
+  ([#52]).
+
+### Fixed — found by reviewing the fixes
+
+Three defects the original eighteen did not cover, each caught by measurement:
+
+- **`--reconcile` leaked the fallback lockdir.** `trap` replaces a handler
+  rather than stacking, so the reconcile block's own EXIT trap silently dropped
+  the `fallback_release` that `lock_acquire` installs on the degraded path.
+  Both acquire sites carry a comment warning about exactly this composition;
+  this site predates the fallback lock and was never updated. INT/TERM were
+  added — the block had none of its own.
+- **The fallback lock's wiring was untested.** Deleting all four
+  `fallback_acquire` call sites left the suite at 588/0: the mechanism was
+  exercised only through a probe that called it directly, and the end-to-end
+  assertions were satisfied by never acquiring at all. The new case observes
+  the *take*, not the release.
+- **The guard pins were reading their own comments.** `check_guard_parity`
+  searched raw file text, so a guard's explanatory comment satisfied its pin —
+  removing `*.exempt` from the Stop hook's reject-set with comments intact left
+  the validator green **and** the bash suite at 590/0. Seven pins had the shape.
+  Two later rounds found the same hole one site over (`ops-adopt.sh`'s PREV
+  set, where a writer-side copy of the literal satisfied a file-wide search),
+  and two new assertions of my own that could not fail in either direction.
+  `shell_code()` and `_function_body()` now scope every pin, and
+  `GuardParityVacuityTest` mutation-tests all seven rather than pinning the
+  helpers' existence — a helper nobody calls is the same vacuity one level up.
+
+### Verification
+
+| gate | 0.7.1 | 0.8.0 |
+|---|---|---|
+| validator | 0 | 0 |
+| `unittest discover -s tests` | 184 | 190 |
+| `bash tests/test-scripts.sh` | 530/0 | 590/0 |
+| `node test_workflows.mjs` | 73/0 | 79/0 |
+| `node test_compress.mjs` | 75/0 | 90/0 |
+
+shellcheck 0.10 (the CI-pinned image) exits 0.
+
+### Known, filed, not silently dropped
+
+[#59] — F18's TOCTOU guard is never entered by its own test (the ghost file is
+gone before `readdirSync`). [#60] — F8 has a runtime assertion for one of four
+workflows; the static pin covers the other three. [#58] — no north star is
+pinned during brainstorm/plan, so the goal exists as an artifact only once the
+BAR block lands, after decomposition.
+
+[#40]: https://github.com/betmoar/cc-operator-plugin/issues/40
+[#41]: https://github.com/betmoar/cc-operator-plugin/issues/41
+[#42]: https://github.com/betmoar/cc-operator-plugin/issues/42
+[#43]: https://github.com/betmoar/cc-operator-plugin/issues/43
+[#44]: https://github.com/betmoar/cc-operator-plugin/issues/44
+[#45]: https://github.com/betmoar/cc-operator-plugin/issues/45
+[#46]: https://github.com/betmoar/cc-operator-plugin/issues/46
+[#47]: https://github.com/betmoar/cc-operator-plugin/issues/47
+[#48]: https://github.com/betmoar/cc-operator-plugin/issues/48
+[#49]: https://github.com/betmoar/cc-operator-plugin/issues/49
+[#50]: https://github.com/betmoar/cc-operator-plugin/issues/50
+[#51]: https://github.com/betmoar/cc-operator-plugin/issues/51
+[#52]: https://github.com/betmoar/cc-operator-plugin/issues/52
+[#53]: https://github.com/betmoar/cc-operator-plugin/issues/53
+[#54]: https://github.com/betmoar/cc-operator-plugin/issues/54
+[#58]: https://github.com/betmoar/cc-operator-plugin/issues/58
+[#59]: https://github.com/betmoar/cc-operator-plugin/issues/59
+[#60]: https://github.com/betmoar/cc-operator-plugin/issues/60
+
 ## [0.7.1] - 2026-08-12
 
 ### Added — `--expect-clean` reports the ignored state it cannot check
