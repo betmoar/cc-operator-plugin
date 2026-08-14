@@ -332,6 +332,53 @@ console.log("-- Case: F3 traversal session_id stays inside the spill root");
   }
 }
 
+// ── A dot-only session_id must not COLLAPSE the spill dir onto its root ─────
+// Not the traversal above: `.` resolves to `base` itself, so the containment
+// test passed it — the sid then names no subdirectory and every session shares
+// one bucket. spill()'s `keep` cleanup unlinks the oldest entries of whatever
+// dir it is given, so a collapsed session prunes OTHER sessions' spills, and
+// those hold unredacted tool output. Asserted on the observable path, not on
+// the sanitizer's return value, so it survives a refactor of the helper.
+// (Copilot review of PR #56, round 2.)
+console.log("-- Case: a dot-only session_id gets its own subdir, never the root");
+{
+  const spillRoot = path.resolve(TMP, ".operator", ".compress-spill");
+  // A real neighbour spill that must SURVIVE the dot-session's cleanup pass.
+  const victimDir = path.join(spillRoot, `SESS-VICTIM${++sessN}`);
+  fs.mkdirSync(victimDir, { recursive: true, mode: 0o700 });
+  const victim = path.join(victimDir, "keepme");
+  fs.writeFileSync(victim, "neighbour spill", { mode: 0o600 });
+
+  for (const sid of [".", "..", "..."]) {
+    // Vary the body per iteration: all three sids correctly resolve to the SAME
+    // "nosession" bucket, so identical text would be suppressed as a dedup HIT
+    // and the later two would never reach spill() at all — the case would pass
+    // by not testing anything. (Cost one red run to notice.)
+    const res = run({
+      tool_name: "Bash",
+      tool_use_id: `toolu_dot${sid.length}`,
+      session_id: sid,
+      tool_input: { command: "npm test" },
+      tool_response: { stdout: `${"d".repeat(sid.length)}${big}`, stderr: "" },
+    });
+    const dText = res?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
+    const dm = dText.match(/\.operator\/\.compress-spill\/[^\s\]]+/);
+    ok(dm != null, `session_id ${JSON.stringify(sid)} still elides and cites a spill`);
+    if (dm) {
+      const resolved = path.resolve(TMP, dm[0]);
+      ok(resolved.startsWith(spillRoot + path.sep),
+        `session_id ${JSON.stringify(sid)}: the spill stays inside the root`);
+      // The real assertion: the spill's PARENT is a subdirectory of the root,
+      // never the root itself. `===` on the parent is what `.` used to give.
+      ok(path.dirname(resolved) !== spillRoot,
+        `session_id ${JSON.stringify(sid)}: the spill dir is NOT the shared root ` +
+        `(a collapsed sid mixes sessions and lets one prune another's spills)`);
+    }
+  }
+  ok(fs.existsSync(victim) && fs.readFileSync(victim, "utf8") === "neighbour spill",
+    "a neighbouring session's spill survives the dot-session's cleanup pass");
+}
+
 // ── F18: a vanished entry between readdirSync and statSync must not fail spill ──
 console.log("-- Case: F18 a vanished spill-dir entry does not fail the spill");
 {

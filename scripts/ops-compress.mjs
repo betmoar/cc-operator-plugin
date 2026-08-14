@@ -238,11 +238,27 @@ function writeSelfIgnore(root) {
 // `base` (a defense-in-depth belt for the charset allowlist, not a
 // substitute for it) — anything that fails either check falls back to
 // "nosession" rather than ever joining an attacker-controlled path segment.
+// A dot-only sid is refused BEFORE the containment test, because containment is
+// the wrong question for it: `.` resolves to `base` itself, which is inside
+// `base` and so passed — the sid then names no subdirectory at all and every
+// session shares one bucket. That is not a traversal (`..` was already caught,
+// it resolves outside), it is a COLLAPSE, and the damage is on the other side:
+// spill()'s `keep` cleanup unlinks the oldest entries of whatever directory it
+// is handed, so a collapsed session prunes every other session's spills — and
+// those hold UNREDACTED tool output. `...` and longer runs are refused for the
+// same reason they are refused everywhere else: a name that is only dots is
+// never a session id our harness emits, so admitting it buys nothing.
+// (Copilot review of PR #56, round 2. `session_id` is raw payload — the same
+// untrusted input F3 was about.)
 function sanitizeSessionId(base, session) {
   const sid = String(session || "nosession").replace(/[^A-Za-z0-9_.-]/g, "_");
+  if (/^\.+$/.test(sid)) return "nosession";
   const resolvedBase = path.resolve(base);
   const resolvedDir = path.resolve(base, sid);
-  if (sid && (resolvedDir === resolvedBase || resolvedDir.startsWith(resolvedBase + path.sep))) {
+  // `resolvedDir === resolvedBase` can no longer be reached by a dot-only sid;
+  // it stays because path.resolve may still collapse some future input to it,
+  // and returning a sid that names `base` is what the line above now forbids.
+  if (sid && resolvedDir !== resolvedBase && resolvedDir.startsWith(resolvedBase + path.sep)) {
     return sid;
   }
   return "nosession";
