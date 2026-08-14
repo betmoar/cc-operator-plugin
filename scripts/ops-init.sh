@@ -15,11 +15,21 @@ OPDIR=".operator"
 # a mis-aimed /cc-operator:start — and used to report success either way, writing
 # the evidence somewhere nobody will merge or review. Warn, never hard-fail: a
 # non-git project is unusual but legitimate. (Audit F05.)
+#
+# Compare PHYSICAL to PHYSICAL (issue #61). `git rev-parse --show-toplevel`
+# resolves symlinks; `$PWD` preserves the logical path used to `cd` there. Under
+# any symlinked ancestor the two differ by construction and the comparison
+# always failed — and `/tmp` is a symlink to `private/tmp` on every macOS
+# install, so EVERY scratch project under /tmp tripped this. A warning that
+# cries wolf is how a real signal gets trained out; the genuine mis-aim case
+# (scaffolding in a subdirectory) still fires, because that difference survives
+# resolution.
 if command -v git >/dev/null 2>&1; then
   TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  PHYS_PWD="$(pwd -P)"
   if [ -z "$TOPLEVEL" ]; then
     echo "ops-init: warning — $PWD is not a git repository; the ledger will not be tracked or reviewable" >&2
-  elif [ "$TOPLEVEL" != "$PWD" ]; then
+  elif [ "$TOPLEVEL" != "$PHYS_PWD" ]; then
     echo "ops-init: warning — scaffolding at $PWD, which is NOT the repository root ($TOPLEVEL)" >&2
     echo "ops-init:           the Stop hook resolves the nearest .operator/ above its cwd, so a" >&2
     echo "ops-init:           second ledger here will shadow the root one for anything beneath it" >&2

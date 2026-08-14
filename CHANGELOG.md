@@ -9,6 +9,89 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-08-14
+
+What a second live run of the replay charter found. Three code bugs, and four
+defects in the charter itself — three of the four the same class as the first
+run's: **the charter told the replayer to run something a replayer cannot run**,
+and the run worked around it live and recorded the phase green. So the charter
+is now linted like code.
+
+### Fixed
+
+- **A mistyped `--owner` no longer degrades the ownership gate to a warning**
+  ([#64]). The main parser had no unknown-option arm, so `--ownr WRONG` fell into
+  the positional bucket, was discarded past `$4`, and the *hard* refusal (closing
+  a task you do not own) silently became the *missing-owner* warning — which
+  reads as routine, because a session whose id rotated after `/clear` produces
+  exactly that line. One session closed another's task at rc 0. Measured worse
+  than reported: in the evidence slot the typo'd flag was written into the ledger
+  **as the evidence cell** (`| probe3 | crit | --ownr=WRONG @… | PASS |`).
+  The reject arm is `--*`, not `-*`, and the difference is load-bearing in both
+  directions — a single-dash evidence cell is legitimate and common
+  (`-v output: 3 passed`), so a blind dash reject breaks real usage, which is how
+  a guard gets deleted instead of fixed. `--` escapes a cell that genuinely opens
+  with `--`, and a surplus-positional check catches the other half of the slip.
+- **The F05 repo-root warning no longer fires on every symlinked path** ([#61]).
+  It compared git's *physical* toplevel against the *logical* `$PWD`, which
+  differ by construction under any symlinked ancestor — and `/tmp` is a symlink
+  to `private/tmp` on every macOS install, so every scratch project warned at its
+  own repo root. A warning that is always wrong is how a real signal gets trained
+  out, and this one lands on the first line a new user sees from
+  `/cc-operator:start`. Now `pwd -P` on both sides; the genuine mis-aim case
+  (scaffolding in a subdirectory) still fires, which is the half that keeps the
+  fix from being a mute button.
+- **`ops-claims.sh`'s green line counts what it actually adjudicated** ([#63]).
+  It reported the full changed-path set — including the `.operator/` paths C1 had
+  just exempted — so a scaffold plus one claimed change read `7 changed path(s)
+  all claimed` for one claimed path, and the number grew with every `verdicts.d/`
+  fragment. An operator citing that line into a verdict row banked an inflated
+  count: the summary-over-record failure the charter's evidence rules exist to
+  prevent. The exempt paths are now reported separately rather than dropped.
+
+### Added
+
+- **`check_replay_charter`** — the charter's own commands are now resolvable or
+  the build fails. Two runs, and both times the defective party was the charter:
+  the first found `bash .operator/bin/ops-init.sh`, a command that could never
+  run (ops-init is the one CLI *not* in the install set, because it creates
+  `bin/`); the second found three phases invoking `${CLAUDE_PLUGIN_ROOT}`, unset
+  in the Bash tool env ([#62]). Neither is subtle. Both survived because nothing
+  read the file except a human under load.
+
+  Resolvability only — no execution, no network. It cannot tell you the expected-
+  output strings still match the scripts (prose, hand-maintained) or whether a
+  phase proves what it claims. Two things it *does* get right, both found while
+  mutation-checking it: flags are looked up in `shell_code()`, not `read_text()`,
+  because `ops-verdict.sh` documents `--ownr` at length while refusing it and the
+  raw lookup passed on that prose; and a declared negative control is exempt,
+  because the charter is now *required* to type wrong commands and a lint that
+  forbade them would forbid the controls.
+
+### Changed
+
+- **`docs/REPLAY-CHARTER.md`** — four corrections from the 2026-08-14 run:
+  - R0 resolves `$PR` by hand and says why the repo's own `scripts/` is the
+    wrong substitute (it silently audits the tree, not the installed plugin —
+    the confusion R0's build-identity check exists to prevent) ([#62]).
+  - **R2 is split into R2a (executable) and R2b (human-verified)**. The live
+    block is not reachable by a replaying session: the Stop hook resolves the
+    nearest `.operator/` above *the session's* cwd, and a session that blocks its
+    own Stop cannot then report having done so. The first run recorded the pair
+    as one PASS on the script half. A phase that cannot execute must not be able
+    to read PASS on its own authority.
+  - **A negative control per phase is now rule 3**, alongside the meter check
+    this charter has demanded since it was written. This repo's recurring failure
+    is not a gate that answers wrongly — it is a gate that has stopped answering
+    while every observation stays green.
+  - The scorecard counts deferred and human-verified as their own categories
+    rather than folding them into PASS, which is how R2b read green.
+
+[#61]: https://github.com/betmoar/cc-operator-plugin/issues/61
+[#62]: https://github.com/betmoar/cc-operator-plugin/issues/62
+[#63]: https://github.com/betmoar/cc-operator-plugin/issues/63
+[#64]: https://github.com/betmoar/cc-operator-plugin/issues/64
+
 ## [0.8.0] - 2026-08-14
 
 Eighteen audit findings, and four review rounds that found three more defects in

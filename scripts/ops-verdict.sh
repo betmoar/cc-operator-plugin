@@ -813,6 +813,24 @@ fi
 
 # --- Argument parse ----------------------------------------------------------
 # --owner may appear anywhere; everything else keeps its positional meaning.
+#
+# The unknown-option arm is `--*`, NOT `-*`, and the difference is load-bearing
+# in both directions (issue #64):
+#
+#   without it — a typo'd `--ownr WRONG` fell through to the positional bucket,
+#     was discarded past $4, and the HARD ownership refusal silently degraded to
+#     the missing-owner WARNING, letting one session close another's task at
+#     rc 0. Worse, measured: `<id> <crit> --ownr=X PASS` wrote the typo'd flag
+#     into the ledger AS THE EVIDENCE CELL.
+#   with `-*` instead — a single-dash evidence cell is legitimate and common
+#     (`-v output: 3 passed` records correctly today, measured against 0.8.0);
+#     a blind dash reject refuses real usage, which is how a guard gets removed.
+#
+# So: double-dash is a flag namespace WE own and can adjudicate; single-dash is
+# left to the positional slots, where the surplus check below catches the rest.
+# `--` ends option parsing for the case a cell genuinely opens with `--`.
+# `--defer` is a positional by design — the defer path tests `${2:-}`, i.e. it
+# is legal only in slot 2, and passing it through here keeps that the one rule.
 OWNER=""
 POS=()
 while [ $# -gt 0 ]; do
@@ -824,10 +842,20 @@ while [ $# -gt 0 ]; do
     --owner=*)
       [ -z "$OWNER" ] || die "--owner given more than once"
       OWNER="${1#--owner=}"; shift ;;
+    --)
+      shift
+      while [ $# -gt 0 ]; do POS+=("$1"); shift; done ;;
+    --defer) POS+=("$1"); shift ;;
+    --*) die "unknown option '$1' (usage: ops-verdict.sh <id> <criterion> <evidence> <PASS|FAIL> [--owner <sid>] | <id> --defer \"<reason>\" | --reconcile; use -- before a cell that starts with --)" ;;
     *) POS+=("$1"); shift ;;
   esac
 done
 set -- ${POS+"${POS[@]}"}
+
+# A surplus positional is the other half of the same slip: `--ownr WRONG` split
+# into two extra positionals, and everything past $4 was silently dropped. Four
+# is the verdict form's full arity; the defer form uses three.
+[ $# -le 4 ] || die "unexpected extra argument '$5' — the verdict form takes exactly <id> <criterion> <evidence> <PASS|FAIL> (a mistyped flag lands here as a positional)"
 
 ID="${1:-}"
 [ -n "$ID" ] || die "missing task-id (usage: ops-verdict.sh <id> <criterion> <evidence> <PASS|FAIL> [--owner <sid>] | <id> --defer \"<reason>\" | --reconcile)"

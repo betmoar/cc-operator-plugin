@@ -622,6 +622,47 @@ check "re-open does not steal ownership" "$(grep -q '^session_id: SESS-A$' "$P/.
 rm -rf "$P"
 
 ########################################################################
+echo "-- Case: a mistyped flag cannot degrade the ownership gate to a warning [#64]"
+# The gate's design is asymmetric ON PURPOSE: a MISMATCHED --owner is a hard
+# refusal, a MISSING one only warns (a /clear'd session must still close its
+# work). A typo'd flag converted the first into the second — `--ownr WRONG` fell
+# through to the positional bucket, was dropped past $4, and one session closed
+# another's task at rc 0 with a warning that reads as the routine post-/clear
+# case. Measured against 0.8.0 before the fix, all three shapes below returned 0.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+( cd "$P" && bash "$TASK" T-TYPO --owner SESS-A >/dev/null 2>&1 )
+ROWS_BEFORE="$(wc -l < "$P/.operator/VERDICTS.md")"
+( cd "$P" && bash "$VERDICT" T-TYPO "crit" "evid" PASS --ownr SESS-B junk >/dev/null 2>&1 ); TYRC=$?
+check "typo'd --owner on a foreign task is refused, not warned" "$([ "$TYRC" -ne 0 ] && echo 0 || echo 1)"
+check "typo'd --owner writes no row and leaves the sentinel" "$([ "$(wc -l < "$P/.operator/VERDICTS.md")" = "$ROWS_BEFORE" ] && [ -e "$P/.operator/pending/T-TYPO" ] && echo 0 || echo 1)"
+# The worse half, also measured: in the EVIDENCE slot the typo'd flag was not
+# merely dropped, it was written into the ledger as the evidence cell.
+( cd "$P" && bash "$VERDICT" T-TYPO "crit" --ownr=SESS-B PASS >/dev/null 2>&1 ); TYRC2=$?
+check "a typo'd flag never lands in the ledger as evidence" "$([ "$TYRC2" -ne 0 ] && ! grep -q -- '--ownr=' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
+# Surplus positional: the other half of the same slip (`--ownr WRONG` split into
+# two extras). Everything past $4 used to be discarded in silence.
+( cd "$P" && bash "$VERDICT" T-TYPO "crit" "evid" PASS surplus >/dev/null 2>&1 ); SPRC=$?
+check "a surplus positional is refused" "$([ "$SPRC" -ne 0 ] && echo 0 || echo 1)"
+# NEGATIVE CONTROL, and the reason the reject arm is `--*` and not `-*`: a
+# single-dash EVIDENCE cell is legitimate and common. It records correctly on
+# 0.8.0; a blind dash reject would break real usage, which is how a guard gets
+# deleted rather than fixed.
+( cd "$P" && bash "$VERDICT" T-TYPO "crit" "-v output: 3 passed" PASS --owner SESS-A >/dev/null 2>&1 ); DSRC=$?
+check "single-dash evidence still records (the reject is --*, not -*)" "$([ "$DSRC" -eq 0 ] && grep -q -- '| -v output: 3 passed' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
+# …and the escape hatch for a cell that genuinely opens with `--`.
+( cd "$P" && bash "$TASK" T-ESC --owner SESS-A >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" -- T-ESC "crit" "--strict output ok" PASS >/dev/null 2>&1 ); ESRC=$?
+check "-- passes a --dash cell through as a positional" "$([ "$ESRC" -eq 0 ] && grep -q -- '| --strict output ok' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
+# The three shapes the arm must NOT break: legit --owner, --defer, --reconcile.
+( cd "$P" && bash "$TASK" T-OK --owner SESS-A >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" T-OK "crit" "evid" PASS --owner SESS-A >/dev/null 2>&1 ); OKRC=$?
+( cd "$P" && bash "$TASK" T-DEF --owner SESS-A >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" T-DEF --defer "blocked" --owner SESS-A >/dev/null 2>&1 ); DFRC=$?
+( cd "$P" && bash "$VERDICT" --reconcile >/dev/null 2>&1 ); RCRC=$?
+check "the reject arm breaks neither --owner, --defer, nor --reconcile" "$([ "$OKRC" -eq 0 ] && [ "$DFRC" -eq 0 ] && [ "$RCRC" -eq 0 ] && echo 0 || echo 1)"
+rm -rf "$P"
+
+########################################################################
 echo "-- Case 11: concurrent appends never interleave; --reconcile repairs a merge"
 # INVARIANT (spec §4.3 criterion 4): the file header claims append+clear is one
 # atomic action. Before 0.4 that was a property of printf's buffer size, not a
@@ -1214,6 +1255,29 @@ check "ops-init ignores its own lock ephemera" \
   "$( cd "$Q" && git init -q . >/dev/null 2>&1; mkdir -p .operator/.lock; : > .operator/.lock/held
       git check-ignore -q .operator/.lock/held && echo 0 || echo 1 )"
 rm -rf "$Q"
+
+# F05's warning must not cry wolf (issue #61). It compared git's PHYSICAL
+# toplevel against the LOGICAL $PWD, so any symlinked ancestor made the two
+# differ by construction — and /tmp is a symlink to private/tmp on every macOS
+# install, so every scratch project under /tmp fired the warning at the repo
+# root. A warning that is always wrong is how the real signal gets trained out.
+# The symlink is BUILT here rather than assumed: Linux CI has no /tmp symlink,
+# and a case that silently no-ops on the build machine proves nothing.
+R="$(newproj)"; mkdir -p "$R/real"
+( cd "$R/real" && git init -q . >/dev/null 2>&1 )
+ln -s "$R/real" "$R/link"
+SYMOUT="$( cd "$R/link" && bash "$INIT" 2>&1 )"
+check "#61 repo root reached via a symlink does NOT warn" "$(printf '%s' "$SYMOUT" | grep -q 'NOT the repository root' && echo 1 || echo 0)"
+# The control that keeps the fix from being a mute button: a GENUINE
+# subdirectory scaffold still warns, because that difference survives resolution.
+mkdir -p "$R/real/sub"
+SUBOUT="$( cd "$R/real/sub" && bash "$INIT" 2>&1 )"
+check "#61 a genuine subdirectory scaffold still warns" "$(printf '%s' "$SUBOUT" | grep -q 'NOT the repository root' && echo 0 || echo 1)"
+# …and the same subdirectory reached THROUGH the symlink also still warns —
+# the fix resolves both sides, so the mis-aim is caught by either route.
+SUBLNK="$( cd "$R/link/sub" && bash "$INIT" 2>&1 )"
+check "#61 a subdirectory reached via the symlink still warns" "$(printf '%s' "$SUBLNK" | grep -q 'NOT the repository root' && echo 0 || echo 1)"
+rm -rf "$R"
 
 ########################################################################
 echo "-- Case 21: a crashed lock holder is identified, not inferred from time"
@@ -2745,6 +2809,36 @@ check "green run emits a diff-matches-claims ok line" "$(printf '%s' "$GE" | gre
 mkdir -p "$P/.operator/pending"; printf 'session_id: OTHER\n' > "$P/.operator/pending/planted"
 runclaims --since "$SINCE_SHA" --claimed none >/dev/null 2>&1; NPD=$?
 check "ops-claims ignores .operator/pending (not a sentinel reader)" "$([ "$NPD" = 0 ] && echo 0 || echo 1)"
+
+# The green line's COUNT is what an operator cites into a verdict row, so it
+# must count what C1 adjudicated — not the ledger paths C1 exempted (issue #63).
+# The bug reported "7 changed path(s) all claimed" for ONE claimed path and grew
+# with every verdicts.d/ fragment: an inflated number, banked as evidence.
+# THREE ledger paths here on purpose — with one, an off-by-N is indistinguishable
+# from an off-by-one, and the count could still be wrong in a way this case
+# cannot see.
+clean_tree
+mkdir -p "$P/.operator/verdicts.d"
+printf '| x | c | e | PASS |\n' > "$P/.operator/VERDICTS.md"
+printf '| x | c | e | PASS |\n' > "$P/.operator/verdicts.d/S1.md"
+printf '| y | c | e | PASS |\n' > "$P/.operator/verdicts.d/S2.md"
+printf 'w\n' > "$P/worker.txt"
+CNTOUT="$(runclaims --since "$SINCE_SHA" --claimed "worker.txt" 2>/dev/null)"; CNTRC=$?
+check "green count excludes exempted ledger paths (#63)" "$([ "$CNTRC" = 0 ] && printf '%s' "$CNTOUT" | grep -q 'ok: 1 changed path(s) all claimed' && echo 0 || echo 1)"
+check "the exempted ledger paths are reported, not dropped (#63)" "$(printf '%s' "$CNTOUT" | grep -q '3 .operator/ ledger path(s) exempt' && echo 0 || echo 1)"
+# NEGATIVE CONTROL — the count must not become a mute button: with no ledger
+# path dirty, the parenthetical is absent entirely rather than reading "0".
+clean_tree
+printf 'w2\n' > "$P/worker.txt"
+NOLED="$(runclaims --since "$SINCE_SHA" --claimed "worker.txt" 2>/dev/null)"
+check "no ledger change → no exempt note at all (not '0 exempt')" "$(printf '%s' "$NOLED" | grep -q 'all claimed; no phantom claims$' && echo 0 || echo 1)"
+# …and the GATE itself is untouched by the counting change: an unclaimed real
+# path still fails while the ledger paths stay exempt.
+printf 'u\n' > "$P/unclaimed.txt"
+printf '| z | c | e | PASS |\n' > "$P/.operator/verdicts.d/S3.md"
+runclaims --since "$SINCE_SHA" --claimed "worker.txt" >/dev/null 2>&1; GRC=$?
+check "counting change does not weaken C1 (unclaimed path still fails)" "$([ "$GRC" != 0 ] && echo 0 || echo 1)"
+clean_tree
 rm -rf "$P"
 
 ########################################################################

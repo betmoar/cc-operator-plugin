@@ -8,7 +8,7 @@ this charter proves the *harness* honors those answers — the rows in
 PR #12's live G2 proof (2026-08-08) is the precedent; this charter is that
 method made repeatable.
 
-Three rules bind the whole run, all inherited from the operator charter:
+Four rules bind the whole run, all inherited from the operator charter:
 
 1. **The replay uses the gate it audits.** Every phase's result is recorded as
    a verdict row via `ops-task.sh`/`ops-verdict.sh` — dogfooding is the point.
@@ -16,7 +16,16 @@ Three rules bind the whole run, all inherited from the operator charter:
 2. **Record over summary.** The evidence cell cites the actual command output,
    never a paraphrase. Meter check per phase: state in one line what would make
    the observation invalid, and check that.
-3. **Cap: one retry per failing phase**, then record FAIL with the observed
+3. **A negative control per phase.** State, and run, the command that would make
+   the phase go red — then confirm it does. A phase that has only ever been
+   observed green cannot distinguish "the gate works" from "the gate is not
+   running", and this repo has shipped both: `check_routable` returning 0 before
+   the allowlist was consulted, a `--expect-clean` count stuck at 1, four
+   identically-broken `ROUTABLE` copies passing a parity check. Each phase below
+   names its control; if you invent a new phase, it owes one too. Where a control
+   is genuinely unavailable (R2's live half — a replayer cannot make the harness
+   ignore a block), say so in the row rather than omitting the line.
+4. **Cap: one retry per failing phase**, then record FAIL with the observed
    output and continue. A wedged replay proves less than a completed one with
    an honest FAIL row.
 
@@ -63,15 +72,38 @@ this is a live-harness FAIL the suite can never see. Call the id `<sid>` below;
 verify it by opening the tracking task below and confirming the sentinel reports
 `owned by <sid>` rather than opening unowned.
 
+**Resolve the plugin root first — `${CLAUDE_PLUGIN_ROOT}` is NOT set in the Bash
+tool environment** (issue #62, measured 2026-08-14: it expands to empty, so every
+phase that ran a script through that variable was really running `/scripts/…`,
+and failed). This is the same asymmetry CLAUDE.md records for `CLAUDE_SESSION_ID`:
+**hooks** get the plugin environment, the **Bash tool** does not. Resolve it once,
+by hand, and use `$PR` everywhere the charter used to write the variable:
+
+```
+PR="$HOME/.claude/plugins/cache/<owner>/cc-operator/<version>"
+[ -d "$PR/scripts" ] || { echo "PR does not resolve — find it: ls -d $HOME/.claude/plugins/cache/*/cc-operator/*"; }
+```
+
+Do **not** substitute the repo's own `scripts/` here. It is the reachable-looking
+fix and it silently audits the tree instead of the installed plugin — precisely
+the build-identity confusion the next check exists to prevent. The `cmp` below is
+what licenses treating the cache copy as the tree; run it before you rely on `$PR`.
+
 **Build identity — do this before any other phase.** Establish *which* code the
 run is about to test, because there are two answers and they can differ:
 
 ```
 for f in ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh ops-backlog.sh; do
-  cmp -s ".operator/bin/$f" "${CLAUDE_PLUGIN_ROOT}/scripts/$f" \
+  cmp -s ".operator/bin/$f" "$PR/scripts/$f" \
     && echo "$f CURRENT" || echo "$f STALE"
 done
 ```
+
+**Negative control (R0):** a `cmp` that can only say CURRENT proves nothing about
+staleness. Copy one CLI aside, mutate a byte in `.operator/bin/`, and confirm the
+loop reports `STALE` for exactly that file — then restore it and re-run to
+CURRENT. Without this, an `ls`-typo in `$PR` reads as five CURRENTs on a path
+that does not exist.
 
 Anything `STALE` invalidates every later phase that runs through
 `.operator/bin/…` — those phases then test the installed copy, not the tree you
@@ -100,16 +132,60 @@ Open the replay's own tracking task:
   set is `ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh ops-backlog.sh`
   (`ops-init.sh:194`), because init is what *creates* `bin/` and would have to
   install itself. So run it the way the harness does, from the plugin root:
-  `bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-init.sh"`, or re-issue
-  `/cc-operator:start`. Expected on stderr, naming file and line:
-  `ops-init: WARNING — the evidence ledger is gitignored by a rule outside
-  .operator/.gitignore:`. Then remove the line and re-run: warning absent.
+  `bash "$PR/scripts/ops-init.sh"` (see R0 — `${CLAUDE_PLUGIN_ROOT}` is unset
+  here), or re-issue `/cc-operator:start`. Expected on stderr, naming file and
+  line: `ops-init: WARNING — the evidence ledger is gitignored by a rule outside
+  .operator/.gitignore:`. Then remove the line and re-run: warning absent —
+  **that removal IS this phase's negative control**, and it is the half that
+  distinguishes a working detector from a script that always warns.
+- **F05 root check:** the scaffold must NOT warn `NOT the repository root` at the
+  repo root. On macOS this is load-bearing: `/tmp` is a symlink to `private/tmp`,
+  and the pre-0.8.1 comparison of git's physical toplevel against `$PWD` fired on
+  every scratch project (issue #61). Control: `mkdir sub && cd sub` and re-run —
+  the warning must appear there, or the check has merely been muted.
 
 Record: `ops-verdict.sh R1 "scaffold + F67 warning" "<paste stderr line>" PASS
 --owner <sid>` — and note the row itself must end `@<sha>` (R4 checks this
 deliberately; seeing it here early is the stamp working).
 
-## R2 — Stop gate, live (the harness-interpretation seam)
+## R2 — Stop gate (script half: executable · live half: HUMAN-VERIFIED)
+
+**Read this before recording R2.** The phase has two halves and they are not
+equally reachable:
+
+- **R2a, the script half** — feeding the hook a payload — is executable by a
+  replayer and is where the citable bytes come from.
+- **R2b, the live half** — the harness actually blocking a Stop — is **not
+  executable by a replaying session** and must never be recorded as a normal
+  PASS. The Stop hook resolves the nearest `.operator/` above *the session's*
+  cwd, not above the scratch project: a session running in this repo with a
+  scratch project at `/tmp/replay` gets blocked (or not) by **this repo's**
+  ledger, so a green R2b would be evidence about the wrong project. And a
+  session that genuinely blocks its own Stop cannot then report that it did —
+  the block is the thing preventing the turn from ending.
+
+  R2b is therefore **human-verified**: the operator opens a task, ends the turn,
+  and the *human* observes the block. Record it as `--defer "R2b live block is
+  human-verified; see <what the human saw>"`, or as a PASS whose evidence cell
+  cites the human's observation and says so. A phase that cannot execute must
+  not be able to read PASS on its own authority — that is how a replay reports a
+  gate it never exercised. (Found by the 2026-08-14 run, which recorded R2 green
+  on the script half alone.)
+
+### R2a — script half (executable)
+
+With `replay-run` open, drive the hook directly — this is how you get the exact
+bytes to cite:
+
+```
+printf '{"session_id":"<sid>","cwd":"'"$PWD"'"}' | bash "$PR/scripts/ops-stop-hook.sh"; echo "rc=$?"
+```
+
+Expected: rc 2 and the blocking line below on stderr. **Negative control:** close
+or defer the task and re-feed the same payload — rc 0, no output. A hook that
+blocks unconditionally passes the positive half alone.
+
+### R2b — live half (human-verified, see above)
 
 With `replay-run` open, **attempt to end the session** (finish the turn).
 Expected: the Stop is blocked and the model receives, verbatim shape:
@@ -131,11 +207,9 @@ OTHER-SESSION, opened <ISO-8601>) — not blocking.` — reported, and the block
 line for your own task still follows it. Close it: `ops-verdict.sh foreign-probe
 --defer "replay probe" --owner OTHER-SESSION`.
 
-Both halves can also be driven directly, which is how you get the exact bytes to
-cite: `printf '{"session_id":"<sid>","cwd":"'"$PWD"'"}' | bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/ops-stop-hook.sh"; echo "rc=$?"`. That proves the
-*script's* answer; the live block above is what proves the harness honors it.
-Both are required — the charter's claim is about the pair.
+R2a proves the *script's* answer; R2b is what proves the harness honors it. Both
+are required — the charter's claim is about the pair, and R2a alone is the
+weaker claim the 2026-08-14 run mistakenly recorded as the whole phase.
 
 ## R3 — Arm gate, live (G2/G3; the four controls from PR #12)
 
@@ -157,7 +231,7 @@ actually running in:
 ```
 printf '{"session_id":"<psid>","cwd":"'"$PWD"'","tool_name":"Write",
 "tool_input":{"file_path":"'"$PWD"'/probe.txt"}}' \
-  | bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-armgate-hook.sh"; echo "rc=$?"
+  | bash "$PR/scripts/ops-armgate-hook.sh"; echo "rc=$?"
 ```
 
 | Control | Setup | Expected |
@@ -173,6 +247,12 @@ Clean up after: `ops-verdict.sh arm-probe --defer "replay R3 control probe"
 Every deny is confirmed by **reading the file back** — `probe.txt` must not
 exist after (a) and (c). rc 2 with the file present would mean the hook denied
 after the write, which is a different and worse bug.
+
+**Negative control (R3):** controls (b) and (d) ARE the control — they are the
+allowed half, and without them a hook that denies unconditionally passes (a) and
+(c). Add one more, because the gate is opt-in: with `.operator/armgate.on`
+removed, the same payload from an unarmed `<psid>` must be **allowed**. A gate
+that denies while switched off is not a gate, it is a wedge.
 
 With `<psid>` doing the probing there is no ordering constraint against R2: your
 own session keeps `replay-run` open the whole time. Still exercise **G3**, on a
@@ -202,6 +282,20 @@ Record R2+R3 as verdict rows citing the observed stderr.
    framework failure has misread the stamp's contract: provenance, never
    attestation. Restore calc.sh.
 
+**Negative control (R4):** step 2 is the control for step 1 — `+dirty` appearing
+only when the tree is dirty is what makes the stamp a measurement rather than a
+constant. Check the pair explicitly: the two rows must carry the SAME sha and
+differ only by the suffix. Two identical stamps, or two that differ in the sha,
+both mean the stamp is not reading what it claims to read.
+
+**Also verify the parser refuses a mistyped flag** (issue #64, fixed 0.8.1) —
+this is the ownership gate's own control:
+`ops-verdict.sh R4-pass "c" "e" PASS --ownr <sid>` must exit non-zero naming
+`unknown option`, and **no row may appear**. Before the fix it warned, wrote the
+row, and cleared the sentinel at rc 0. Control for the control: an evidence cell
+that legitimately starts with a single dash still records —
+`ops-verdict.sh R4-dash "c" "-v output: 3 passed" PASS --owner <sid>` exits 0.
+
 ## R5 — Retro-gate (G1) and the deviation gate
 
 `ops-verdict.sh never-armed-probe "retro" "no sentinel existed" PASS --owner
@@ -217,14 +311,29 @@ operator: 1 unpresented decision(s) in DECISIONS.md — present them
 Present it in your reply, then `ops-verdict.sh --mark-handoff --owner <sid>`.
 Attempt Stop → clean. Record the sequence as one row.
 
+**Negative control (R5):** the `--mark-handoff` half IS the control — a
+deviation gate that never clears blocks forever and would pass the block
+assertion alone. Drive both through the hook (R2a's payload) so the rc flip
+2 → 0 is citable, not inferred from the harness's silence.
+
 ## R6 — Claims boundary
 
 `printf 'y\n' > worker.txt`. Then:
 `ops-claims.sh --claimed "worker.txt" --since <pre-change sha>` → every line in
 the `{item <path>} ok: …` shape, exit 0. Negative control:
 `ops-claims.sh --claimed "none" --since <same sha>` → C1 unclaimed-change FAIL,
-exit non-zero, naming `worker.txt`. `git checkout`/`rm` the probe file, then
-`ops-claims.sh --expect-clean` → ok. Record.
+exit non-zero, naming `worker.txt`. That FAIL is this phase's **negative
+control**: it is what separates a working C1 from one that has stopped checking.
+`git checkout`/`rm` the probe file, then `ops-claims.sh --expect-clean` → ok.
+Record.
+
+**Read the green line's COUNT, do not just read `ok`** (issue #63, fixed 0.8.1).
+By this point the scaffold plus your own verdict rows have made several
+`.operator/` paths dirty; they are exempt from C1 by design, and the count must
+therefore report the CLAIMED path only, with the exempt ones named separately:
+`ok: 1 changed path(s) all claimed; no phantom claims (N .operator/ ledger
+path(s) exempt)`. The pre-0.8.1 line read `7 changed path(s) all claimed` for one
+claimed path — an inflated number an operator then banks into a verdict row.
 
 ## R7 — Workflow layer (optional; judgment-tier spend)
 
@@ -237,6 +346,11 @@ operator treats it as a hard stop — record what the operator *did*, not what
 the workflow returned. Skip is legitimate; record `--defer "no workflow
 runtime in this session"` rather than silence.
 
+**Negative control (R7):** run one lens against an artifact with a KNOWN defect
+and confirm it is found. A panel that returns CONFIRMED on everything is the
+dead-lens failure F31's ratio line exists to expose, and a green run against
+clean code cannot tell the two apart.
+
 ## R8 — Close honestly
 
 `/cc-operator:handoff` → six sections, every claim ledger-cited. Close
@@ -244,6 +358,15 @@ runtime in this session"` rather than silence.
 <n> PASS / <n> FAIL / <n> deferred`). Attempt Stop → clean exit. The ledger
 IS the scorecard; a separate report is summary, and the charter's rule is
 record over summary.
+
+The scorecard must count **human-verified** and **deferred** as their own
+categories, not fold them into PASS. R2b is the standing case: a run that reports
+"8 PASS" when one of them was never executed has produced exactly the summary
+this charter exists to replace.
+
+**Negative control (R8):** before closing `replay-run`, confirm the Stop is
+still blocked with it open (R2a's payload, rc 2). A clean exit at R8 only means
+something if it was blocked a moment earlier.
 
 ---
 
@@ -288,3 +411,33 @@ next reader knows these lines are measured rather than designed.
 Not changed: R4.3's honesty probe behaved exactly as written — broken criterion,
 silent Stop, PASS row standing. The one phase designed to confirm a limitation
 rather than a capability is the one that needed no correction.
+
+## What the second real run changed (2026-08-14, `de6ae4e` → 0.8.1)
+
+The second execution found four charter defects and three code bugs. Three of the
+four charter defects are the same class as the first run's: **the charter told
+the replayer to run something a replayer cannot run.** That is now the thing to
+look for first when this document is revised.
+
+- **`${CLAUDE_PLUGIN_ROOT}` is unset in the Bash tool env** (#62) — R0's `cmp`,
+  R1's scaffold re-run and R3's arm payload all expanded to `/scripts/…`. R0 now
+  resolves `$PR` by hand and says why the repo's own `scripts/` is the wrong
+  substitute. Note the shape: the run WORKED AROUND this live and recorded the
+  phases green, so the charter's own text stayed wrong while the run passed.
+- **R2's live half is not executable by a replaying session** — the Stop hook
+  resolves the nearest `.operator/` above the *session's* cwd, and a session that
+  blocks its own Stop cannot report having done so. Split into R2a (executable)
+  and R2b (human-verified); the first run recorded the pair as one PASS on the
+  script half alone.
+- **No phase required a negative control**, though the charter has demanded a
+  meter check since it was written. Now rule 3, with a control named per phase —
+  this repo's recurring failure is not a gate that answers wrongly, it is a gate
+  that has stopped answering while every observation stays green.
+- **The scorecard folded deferred and human-verified into PASS**, which is how
+  R2b read green.
+
+Code bugs found by the run and fixed in 0.8.1: #61 (F05 warning fired on every
+symlinked path, i.e. every `/tmp` scratch project on macOS), #63 (the claims
+green line counted the ledger paths it had just exempted), #64 (a mistyped
+`--owner` degraded the hard ownership refusal to a warning, letting one session
+close another's task at rc 0).
