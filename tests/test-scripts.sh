@@ -1418,6 +1418,14 @@ case "$2" in
     fallback_acquire
     [ "$FALLBACK_HELD" = "1" ] || { echo "NOT-HELD"; exit 1; }
     [ -s "$FALLBACK_DIR/holder" ] || { echo "NO-STAMP"; exit 1; }
+    # A non-empty stamp is not enough: it must name US. `-s` alone passes on a
+    # reclaim that removes the dead holder's dir and recreates it WITHOUT
+    # restoring ownership — the dir would be held, stamped, and owned by nobody,
+    # and every later reclaim-vs-live judgement would read the wrong record.
+    # Checked here rather than in the end-to-end cases: the stamp exists only
+    # while the lock is HELD, and those observe the process from outside, after
+    # it exits. This is the one seat that can see mid-hold.
+    case "$(cat "$FALLBACK_DIR/holder")" in *" $$") ;; *) echo "STAMP-NOT-MINE"; exit 1 ;; esac
     fallback_release
     [ -d "$FALLBACK_DIR" ] && { echo "NOT-RELEASED"; exit 1; }
     echo OK ;;

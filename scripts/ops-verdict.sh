@@ -617,8 +617,12 @@ if [ "${1:-}" = "--reconcile" ]; then
   # $LOCKDIR.fallback on every reconcile-under-contention. Measured: a live
   # holder + LOCK_LIVE_SPINS=3 left .operator/.lock.fallback on disk after exit.
   # The two acquire paths carry this same warning; this site is the one that
-  # ignored it. INT/TERM were absent entirely — a signal during reconcile skipped
-  # the lock release AND both tempfiles.
+  # ignored it. The reconcile block also named no INT/TERM of its own. That was
+  # survivable but not safe: on a signal the acquire path's OWN handler ran the
+  # releases, then this EXIT trap ran and removed the tempfiles — correct only
+  # by inheritance, and silently wrong for any invocation that reaches here
+  # without one (a future caller, or an acquire path that stops trapping).
+  # Naming all three here makes the block self-sufficient.
   trap 'lock_release; fallback_release; rm -f "$CAND" "$MISSINGF"' EXIT
   trap 'lock_release; fallback_release; rm -f "$CAND" "$MISSINGF"; exit 130' INT
   trap 'lock_release; fallback_release; rm -f "$CAND" "$MISSINGF"; exit 143' TERM
