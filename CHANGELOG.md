@@ -19,6 +19,32 @@ is now linted like code.
 
 ### Fixed
 
+- **`release_gate` refuses a tag while `[Unreleased]` is non-empty** ([#39]).
+  The release notes are the tag version's section alone, so anything written
+  above it shipped in the commits and appeared nowhere a reader looks. v0.7.0
+  went out exactly that way — five subsections describing work that *was* in the
+  tag, absent from the release page, repaired after the fact in `6f92b5d` at a
+  cost of 139 changelog lines. Reproduced against the real gate before fixing:
+  green, rc 0, content gone.
+
+  Every individual step was already correct, which is why nothing caught it.
+  `CHANGELOG_HEADING_RE` matches `[x.y.z]` **by design**, so `[Unreleased]` is
+  invisible to it and the newest *version* heading is found properly; no step
+  asked whether content sat above the section about to be published. The new
+  reader is deliberately separate rather than a loosened regex that every other
+  caller shares.
+
+  Three decisions, each the opposite of the obvious one: checked at **release**
+  time (the section is legitimate between releases — "reject any `[Unreleased]`"
+  would fail every commit that uses the file as intended); **refused, never
+  auto-folded** (rewriting a maintainer's changelog mid-tag-build is a write
+  nobody asked for — the lesson already paid for by the `.gitignore` v1→v2
+  migration); and **whitespace-only is empty** (a bare heading is this file's
+  normal resting state, and a gate firing there would be switched off within one
+  release). Six cases, four of them controls, including one pinning that the
+  section stops at the link-def block: reading to EOF would swallow every
+  definition and report `[Unreleased]` as permanently non-empty — a gate nobody
+  could satisfy.
 - **A mistyped `--owner` no longer degrades the ownership gate to a warning**
   ([#64]). The main parser had no unknown-option arm, so `--ownr WRONG` fell into
   the positional bucket, was discarded past `$4`, and the *hard* refusal (closing
@@ -109,6 +135,7 @@ is now linted like code.
   - The scorecard counts deferred and human-verified as their own categories
     rather than folding them into PASS, which is how R2b read green.
 
+[#39]: https://github.com/betmoar/cc-operator-plugin/issues/39
 [#61]: https://github.com/betmoar/cc-operator-plugin/issues/61
 [#62]: https://github.com/betmoar/cc-operator-plugin/issues/62
 [#63]: https://github.com/betmoar/cc-operator-plugin/issues/63

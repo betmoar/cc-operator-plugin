@@ -93,6 +93,31 @@ def extract_section_checked(changelog_text, version):
     return notes, unresolved
 
 
+def unreleased_body(changelog_text):
+    """The `## [Unreleased]` section's content, stripped. "" when absent or
+    whitespace-only.
+
+    Deliberately a SEPARATE reader from `extract_section`, not a call into it:
+    that function is keyed on a version string and `CHANGELOG_HEADING_RE`
+    matches `[x.y.z]` only — by design, so the newest *version* heading is found
+    correctly. `[Unreleased]` is invisible to it, and making it visible would
+    mean loosening the regex every other caller depends on.
+
+    Stops at the next `## [` heading OR the trailing `^[` link-definition
+    block, the same two terminators `extract_section` uses. A changelog whose
+    Unreleased section is followed directly by the def block (no versions yet)
+    would otherwise swallow every definition in the file and read as non-empty
+    forever.
+    """
+    start = re.search(r"^## \[Unreleased\][^\n]*\n", changelog_text,
+                      re.MULTILINE)
+    if not start:
+        return ""
+    rest = changelog_text[start.end():]
+    stop = re.search(r"^## \[|^\[", rest, re.MULTILINE)
+    return (rest[:stop.start()] if stop else rest).strip()
+
+
 def gate(root, tag):
     """Return (problems, notes); empty problems means the tag may ship."""
     root = pathlib.Path(root)
@@ -126,7 +151,35 @@ def gate(root, tag):
             f"newest CHANGELOG heading is '[{newest}]' but the tag is {tag} — "
             f"the '## [{ver}]' entry must be the first heading below "
             f"[Unreleased]")
-    else:
+    # A non-empty [Unreleased] at TAG TIME is content about to be dropped on the
+    # floor (#39): the notes are the tag version's section alone, so anything
+    # written above it ships in the commits and appears nowhere a reader looks.
+    # v0.7.0 shipped exactly this way — five subsections describing work that
+    # WAS in the tag, absent from the release page, repaired after the fact in
+    # 6f92b5d at a cost of 139 changelog lines.
+    #
+    # Three decisions, each the opposite of the obvious one:
+    #   - Checked at RELEASE time, not on every PR. The section is legitimate
+    #     between releases; "reject any [Unreleased]" would fail every commit
+    #     that uses the file as intended.
+    #   - REFUSED, never auto-folded. Rewriting a maintainer's changelog during
+    #     a tag build is a write nobody asked for, and this project already
+    #     learned that lesson from the .gitignore v1->v2 migration, where a
+    #     silent rewrite could destroy the user's rules.
+    #   - Whitespace-only is EMPTY. A bare heading with a blank line under it is
+    #     the normal resting state of this file (it is main's state today), and
+    #     a gate that fires on it would be disabled within a release.
+    pending = unreleased_body(text)
+    if pending:
+        first = next((ln for ln in pending.splitlines() if ln.strip()), "")
+        problems.append(
+            f"CHANGELOG [Unreleased] is not empty while tagging {tag} — its "
+            f"content is published nowhere (release notes are the [{ver}] "
+            f"section alone), so it would ship in the commits and vanish from "
+            f"the release page. Fold it into [{ver}] or empty it deliberately, "
+            f"then re-tag. First line: {first.strip()!r}")
+
+    if newest == ver:
         notes, unresolved = extract_section_checked(text, ver)
         if not notes:
             problems.append(
