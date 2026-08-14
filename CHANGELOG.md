@@ -91,6 +91,17 @@ is now linted like code.
   - **R8 gains the general rule**: before recording a phase as unexecutable, try
     to execute it. "Cannot be tested" is a claim and owes evidence like any
     other; this one sounded structural and survived a release.
+
+- **`templates/OPERATOR.md`** — two clauses added to ORCHESTRATED MODE's routing
+  line: do not idle while a dispatch runs (work the main thread on what does not
+  depend on its result), and enough information to act means act — an obvious
+  default is not a decision worth surveying. Both are latency rules the charter
+  implied and never stated; the operator had no instruction against waiting.
+
+  Deliberately NOT adopted from the same source: "parallelize aggressively". The
+  charter's `[D:CHART-r6]` — one implementer at a time, read-only workers in
+  parallel on disjoint inputs — is the stricter rule and it is stricter on
+  purpose. Charter now 141/150 lines, 8621/9000 bytes.
   - **A negative control per phase is now rule 3**, alongside the meter check
     this charter has demanded since it was written. This repo's recurring failure
     is not a gate that answers wrongly — it is a gate that has stopped answering
