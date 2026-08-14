@@ -853,9 +853,21 @@ done
 set -- ${POS+"${POS[@]}"}
 
 # A surplus positional is the other half of the same slip: `--ownr WRONG` split
-# into two extra positionals, and everything past $4 was silently dropped. Four
-# is the verdict form's full arity; the defer form uses three.
-[ $# -le 4 ] || die "unexpected extra argument '$5' — the verdict form takes exactly <id> <criterion> <evidence> <PASS|FAIL> (a mistyped flag lands here as a positional)"
+# into two extra positionals, and everything past $4 was silently dropped.
+#
+# The ceiling is PER FORM, because the two forms have different arities and a
+# single `-le 4` bounds only the wider one. The defer form is three
+# (`<id> --defer "<reason>"` — `--defer` is itself a positional, passed through
+# by the parse loop above), so a `-le 4` ceiling left it exactly one free slot:
+# `ops-verdict.sh <id> --defer "reason" STRAY --owner <sid>` deferred the task
+# at rc 0 with STRAY silently discarded (measured). A realistic shape — a
+# forgotten `--owner` flag leaves the bare session id sitting there — and it is
+# the very class this check was added to close, surviving in the other form.
+if [ "${2:-}" = "--defer" ]; then
+  [ $# -le 3 ] || die "unexpected extra argument '$4' — the defer form takes exactly <id> --defer \"<reason>\" (a mistyped flag lands here as a positional)"
+else
+  [ $# -le 4 ] || die "unexpected extra argument '$5' — the verdict form takes exactly <id> <criterion> <evidence> <PASS|FAIL> (a mistyped flag lands here as a positional)"
+fi
 
 ID="${1:-}"
 [ -n "$ID" ] || die "missing task-id (usage: ops-verdict.sh <id> <criterion> <evidence> <PASS|FAIL> [--owner <sid>] | <id> --defer \"<reason>\" | --reconcile)"

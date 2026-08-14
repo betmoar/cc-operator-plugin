@@ -190,6 +190,29 @@ class ReleaseGateTest(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertFalse(out.exists(), "notes were written despite the refusal")
 
+    def test_near_miss_unreleased_headings_are_still_caught(self):
+        # A one-character slip in the heading used to return "" — "nothing
+        # pending, safe to tag" — with real content sitting underneath, which
+        # reopens #39 through a typo instead of an empty section. Nothing
+        # downstream catches it: check_changelog validates only the VERSIONED
+        # heading. A guard a typo disables is not a guard.
+        for heading in ("## [Unreleased]", "##[Unreleased]", " ## [Unreleased]",
+                        "## Unreleased", "## [unreleased]", "### Unreleased"):
+            with self.subTest(heading=heading):
+                body = rg.unreleased_body(
+                    f"# C\n\n{heading}\n\n- real pending content\n\n"
+                    f"## [0.1.0] - x\n\n- shipped\n")
+                self.assertTrue(body, f"{heading!r} read as empty")
+
+    def test_tolerance_does_not_swallow_the_version_heading(self):
+        # The looser terminator must still stop at a version heading, or the
+        # Unreleased section absorbs the release notes and reads non-empty
+        # forever — a gate nobody could satisfy, the same shape as the def-block
+        # case above.
+        self.assertEqual(
+            rg.unreleased_body("# C\n\n## [Unreleased]\n\n## [0.1.0] - x\n\n"
+                               "- shipped\n"), "")
+
     def test_real_repo_gate_passes(self):
         # This repo's own CHANGELOG at its own version — the check must not
         # fire on the tree that ships it.

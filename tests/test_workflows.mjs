@@ -516,7 +516,10 @@ ok(!/\bmost at cheap tiers\b/.test(metaBlock) || mechanicalLenses > judgmentLens
 //                                         files; runtime silent for three
 //   regex intact, `!ROUTABLE.test(id)`  → static pin 0 findings; runtime
 //     neutered to `false && …`            catches it ONLY where an assertion
-//                                         exists (brainstorm 77/2, review 79/0)
+//                                         exists (brainstorm 77/2, review 79/0
+//                                         — measured against the PRE-#60 suite
+//                                         of 79; against the 85 below the same
+//                                         mutations read 84/1, per-file)
 //
 // So this is not defence in depth, which is what the issue assumed. The pin
 // cannot see a correct regex that is never applied — the F30 vacuity shape —

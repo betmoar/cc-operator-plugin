@@ -2459,6 +2459,34 @@ def check_replay_charter(root, problems):
                     f"`--{flag}` — the charter names a flag the CLI does not "
                     f"have (state the refusal on the line if it is a control)")
 
+    # THE VACUITY FLOOR — the check must prove it still examined something.
+    #
+    # Everything above is regex-driven against the charter's current markdown
+    # shape (inline code spans, these three path prefixes). Change the charter's
+    # convention — fence the commands, rename the CLI prefix, quote differently
+    # — and `inv_re` matches nothing, `seen` stays empty, and this function
+    # reports zero problems: indistinguishable from "every command resolves".
+    # Measured: a charter describing the same commands in prose ("run the tool
+    # named opsVerdict with flag ownerFlag") produced [] findings.
+    #
+    # That is the F48 class this very check exists to catch one level down, and
+    # the floor belongs in the FUNCTION rather than in a test: it then protects
+    # any charter, not just this repo's. The bound is deliberately low — a real
+    # charter drives the gate CLIs many times over (this one, well clear of the
+    # floor; the exact count is deliberately not written down, since it changes
+    # with any charter edit and a stale number here is the rot this file warns
+    # about elsewhere) — so it fires
+    # on a convention change, never on ordinary editing.
+    MIN_INVOCATIONS = 5
+    if len(text.split()) > 200 and len(seen) < MIN_INVOCATIONS:
+        problems.append(
+            f"docs/REPLAY-CHARTER.md: this check resolved only {len(seen)} "
+            f"CLI invocation(s) in a {len(text.splitlines())}-line charter — "
+            f"below the floor of {MIN_INVOCATIONS}. Either the charter stopped "
+            f"driving the gate CLIs, or its command convention changed and the "
+            f"parser above no longer matches it. A silently-zero result reads "
+            f"exactly like a clean pass (F48)")
+
     # The variable the 2026-08-14 run tripped over. It is legitimate in PROSE
     # (the charter explains why it is unset) but never inside a command: a
     # `bash "${CLAUDE_PLUGIN_ROOT}/scripts/…"` line expands to `/scripts/…` in

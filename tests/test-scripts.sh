@@ -643,6 +643,20 @@ check "a typo'd flag never lands in the ledger as evidence" "$([ "$TYRC2" -ne 0 
 # two extras). Everything past $4 used to be discarded in silence.
 ( cd "$P" && bash "$VERDICT" T-TYPO "crit" "evid" PASS surplus >/dev/null 2>&1 ); SPRC=$?
 check "a surplus positional is refused" "$([ "$SPRC" -ne 0 ] && echo 0 || echo 1)"
+# The ceiling is PER FORM. A single `-le 4` bounds only the verdict form; the
+# defer form's arity is three, so it kept one free slot and
+# `<id> --defer "reason" STRAY --owner <sid>` deferred at rc 0 with STRAY
+# silently dropped — the #64 class surviving in the other form (found by the
+# silent-failure review, reproduced before fixing).
+( cd "$P" && bash "$TASK" T-DEFX --owner SESS-A >/dev/null 2>&1 )
+DLBEFORE="$(wc -l < "$P/.operator/DECISIONS.md")"
+( cd "$P" && bash "$VERDICT" T-DEFX --defer "a real reason" STRAY --owner SESS-A >/dev/null 2>&1 ); DFXRC=$?
+check "a surplus positional on the DEFER form is refused too" "$([ "$DFXRC" -ne 0 ] && echo 0 || echo 1)"
+check "the refused defer writes no DECISIONS line and leaves the sentinel" "$([ "$(wc -l < "$P/.operator/DECISIONS.md")" = "$DLBEFORE" ] && [ -e "$P/.operator/pending/T-DEFX" ] && echo 0 || echo 1)"
+# CONTROL: the legitimate three-positional defer form still works, or the
+# per-form ceiling has simply broken defer.
+( cd "$P" && bash "$VERDICT" T-DEFX --defer "a real reason" --owner SESS-A >/dev/null 2>&1 ); DFOKRC=$?
+check "the legitimate defer form still works under the per-form ceiling" "$([ "$DFOKRC" -eq 0 ] && [ ! -e "$P/.operator/pending/T-DEFX" ] && echo 0 || echo 1)"
 # NEGATIVE CONTROL, and the reason the reject arm is `--*` and not `-*`: a
 # single-dash EVIDENCE cell is legitimate and common. It records correctly on
 # 0.8.0; a blind dash reject would break real usage, which is how a guard gets
@@ -1277,6 +1291,12 @@ check "#61 a genuine subdirectory scaffold still warns" "$(printf '%s' "$SUBOUT"
 # the fix resolves both sides, so the mis-aim is caught by either route.
 SUBLNK="$( cd "$R/link/sub" && bash "$INIT" 2>&1 )"
 check "#61 a subdirectory reached via the symlink still warns" "$(printf '%s' "$SUBLNK" | grep -q 'NOT the repository root' && echo 0 || echo 1)"
+# …and it names PHYSICAL paths on BOTH sides. The message used to print the
+# LOGICAL $PWD beside the physical toplevel, so reached through the symlink the
+# two paths differed by resolution as well as by directory — inviting the exact
+# misreading #61 was. Asserted here, where the logical and physical paths
+# genuinely differ, so a message that reverted to $PWD would fail.
+check "#61 the warning names physical paths on both sides" "$(printf '%s' "$SUBLNK" | grep -q "scaffolding at $( cd "$R/real/sub" && pwd -P ), which is NOT" && echo 0 || echo 1)"
 rm -rf "$R"
 
 ########################################################################

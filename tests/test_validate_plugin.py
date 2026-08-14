@@ -2490,6 +2490,30 @@ class ReplayCharterLintTest(unittest.TestCase):
         vp.check_replay_charter(self.dir, probs)
         self.assertEqual(probs, [])
 
+    def test_a_charter_that_resolves_nothing_is_reported(self):
+        # THE VACUITY FLOOR. Everything this check does is regex-driven against
+        # the charter's current markdown shape, so a convention change (fenced
+        # commands, a renamed CLI prefix, different quoting) makes inv_re match
+        # nothing — and zero findings is indistinguishable from a clean pass.
+        # Measured: a charter describing the same commands in prose produced
+        # [] findings before the floor existed. This is the F48 class the check
+        # itself exists to catch one level down.
+        probs = self._probs(
+            "Run the tool named opsVerdict with flag ownerFlag. " * 60)
+        self.assertTrue(any("below the floor" in p for p in probs), probs)
+
+    def test_a_short_stub_charter_is_exempt_from_the_floor(self):
+        # The control that keeps the floor from being a tripwire on any small
+        # or partial document — it fires on a CONVENTION change, not on editing.
+        self.assertEqual(self._probs("# tiny stub charter\n"), [])
+
+    def test_real_charter_clears_the_floor(self):
+        # …and the real charter is well above it, so the floor is not passing
+        # merely because the bound is trivially low.
+        probs = []
+        vp.check_replay_charter(ROOT, probs)
+        self.assertEqual(probs, [], probs)
+
     def test_check_is_registered_in_CHECKS(self):
         # Every other test here calls the function DIRECTLY, so a check dropped
         # from the registry runs in no build while all of them stay green —

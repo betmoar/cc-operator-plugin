@@ -24,7 +24,7 @@ is now linted like code.
   above it shipped in the commits and appeared nowhere a reader looks. v0.7.0
   went out exactly that way — five subsections describing work that *was* in the
   tag, absent from the release page, repaired after the fact in `6f92b5d` at a
-  cost of 139 changelog lines. Reproduced against the real gate before fixing:
+  cost of 137 changelog lines. Reproduced against the real gate before fixing:
   green, rc 0, content gone.
 
   Every individual step was already correct, which is why nothing caught it.
@@ -74,6 +74,55 @@ is now linted like code.
   fragment. An operator citing that line into a verdict row banked an inflated
   count: the summary-over-record failure the charter's evidence rules exist to
   prevent. The exempt paths are now reported separately rather than dropped.
+
+### Fixed — found by reviewing the fixes
+
+A four-lens review panel over this branch. Two lenses landed before the run was
+stopped (the mutation-testing agents were sharing one working tree with the
+mutation run, which is its own lesson); both found real defects in the 0.8.1
+fixes themselves, each reproduced independently before changing anything.
+
+- **The surplus-positional ceiling was sized for the wrong form.** `[ $# -le 4 ]`
+  bounds the verdict form's arity; the defer form's is three, so it kept one
+  free slot and `<id> --defer "reason" STRAY --owner <sid>` deferred at rc 0
+  with `STRAY` silently discarded — measured. A realistic shape (a forgotten
+  `--owner` leaves the bare session id sitting there) and precisely the #64
+  class surviving in the form the fix did not bound. Now a per-form ceiling,
+  with a control that the legitimate three-positional defer still works.
+- **`pwd -P` was unguarded under `set -eu`.** Its sibling `TOPLEVEL` carries
+  `2>/dev/null || true` for exactly this reason: an unguarded command
+  substitution *aborts* the script, so a cwd whose physical path cannot be
+  resolved would kill the whole scaffold — including the `mkdir -p` that
+  follows — with a raw bash error, inverting this file's warn-and-continue
+  polarity. Now guarded, and an empty result *skips* the comparison rather than
+  comparing against `""`, which would fire the mis-aim warning on every project.
+  Honestly recorded: this hardening is **unexercised** — reverting it does not
+  move the suite, because an unresolvable cwd cannot be created deterministically
+  from inside it. Defensive, not proven.
+- **A near-miss `[Unreleased]` heading read as empty** — `##[Unreleased]`,
+  `## Unreleased`, `## [unreleased]`, a leading indent: every one returned `""`
+  with real content underneath (measured), reopening the bug above through a
+  typo instead of an empty section, with nothing downstream to catch it. The
+  anchor is now tolerant. Tolerance is right *here* and wrong in
+  `CHANGELOG_HEADING_RE`: this reader asks "is anything pending?", where a false
+  positive costs one look; that one names the version being published, where
+  guessing at a malformed heading would publish under the wrong number.
+- **`check_replay_charter` had no vacuity floor** — the F48 class, in the check
+  written to catch that class one level down. Its whole result is regex-driven
+  against the charter's current markdown shape, so a convention change makes it
+  match nothing and report clean. Measured: a charter describing the same
+  commands in prose produced zero findings. The floor lives in the function
+  rather than a test, so it protects any charter, not just this repo's fixture.
+- **The F05 warning printed the logical `$PWD` beside the physical toplevel**, so
+  under a symlink the two paths differed by resolution as well as by directory —
+  inviting the exact misreading #61 was. Both sides are physical now. (Found by
+  the live replay run, fixed here.)
+- **A stale number: 137, not 139.** The `[Unreleased]` fold cost 137 changelog
+  lines (`405 - 268`, from `6f92b5d`'s own message), a figure inherited from the
+  issue text and repeated in two places without being re-derived. Corrected in
+  both, and the mutation-count comment in `test_workflows.mjs` now names the
+  baseline its numbers were measured against — they read differently against the
+  pre-#60 suite of 79 than against today's 85, and it did not say which.
 
 ### Added
 

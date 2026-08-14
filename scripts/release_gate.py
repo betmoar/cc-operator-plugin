@@ -108,13 +108,25 @@ def unreleased_body(changelog_text):
     Unreleased section is followed directly by the def block (no versions yet)
     would otherwise swallow every definition in the file and read as non-empty
     forever.
+
+    The anchor is TOLERANT of near-miss spellings — `##[Unreleased]`,
+    `## Unreleased`, `## [unreleased]`, a leading indent — because the strict
+    form silently returned "" for every one of them (measured), which reads as
+    "nothing pending, safe to tag" while real content sits underneath. That
+    reopens #39 through a typo instead of an empty section, and nothing
+    downstream catches it: `check_changelog` validates only the *versioned*
+    heading. A guard that a one-character slip disables is not a guard.
+    Tolerance is right HERE and wrong in `CHANGELOG_HEADING_RE`: this reader
+    asks "is there pending content?", where a false positive costs a maintainer
+    one look; that one names the version being published, where guessing at a
+    malformed heading would publish under the wrong number.
     """
-    start = re.search(r"^## \[Unreleased\][^\n]*\n", changelog_text,
-                      re.MULTILINE)
+    start = re.search(r"^[ \t]*#{1,6}[ \t]*\[?[Uu]nreleased\]?[^\n]*\n",
+                      changelog_text, re.MULTILINE)
     if not start:
         return ""
     rest = changelog_text[start.end():]
-    stop = re.search(r"^## \[|^\[", rest, re.MULTILINE)
+    stop = re.search(r"^[ \t]*#{1,6}[ \t]*\[|^\[", rest, re.MULTILINE)
     return (rest[:stop.start()] if stop else rest).strip()
 
 
@@ -156,7 +168,8 @@ def gate(root, tag):
     # written above it ships in the commits and appears nowhere a reader looks.
     # v0.7.0 shipped exactly this way — five subsections describing work that
     # WAS in the tag, absent from the release page, repaired after the fact in
-    # 6f92b5d at a cost of 139 changelog lines.
+    # 6f92b5d at a cost of 137 changelog lines (that commit's own message: the
+    # generated notes went 268 -> 405 with the fold; re-derived, not inherited).
     #
     # Three decisions, each the opposite of the obvious one:
     #   - Checked at RELEASE time, not on every PR. The section is legitimate
