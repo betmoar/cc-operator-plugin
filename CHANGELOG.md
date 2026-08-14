@@ -77,6 +77,26 @@ is now linted like code.
 
 ### Added
 
+- **The routability guard is now proven APPLIED in all four workflows** ([#60]).
+  The issue filed this as defence-in-depth — the static pin
+  (`check_workflows`) compares the `ROUTABLE` literal across the four copies, so
+  it catches any drift in the regex text, and three missing runtime assertions
+  looked like redundancy. It carried an invalidator: if the static pin fires
+  first every time, close this rather than add tests by symmetry.
+
+  Measured both halves, and the answer inverted the premise. Reverting a file's
+  regex to the pre-F8 shape: static pin **2 findings in all four**, runtime
+  silent for three — the redundancy claim holds. But leaving the regex intact
+  and neutering its application (`false && !ROUTABLE.test(id)`): static pin
+  **0 findings**, and only the file with a runtime assertion notices. The pin
+  cannot see a correct regex that is never applied — the F30 vacuity shape —
+  so three of four workflows had nothing covering it, and a workflow whose
+  routability guard did nothing would have shipped with every gate green.
+
+  Six assertions, one pair per file rather than a shared loop (a helper looping
+  over the four passes with three deleted). Per-file discrimination verified:
+  each mutation fails exactly its own file's assertion, 84/1 each, with the
+  static pin blind in all four.
 - **`check_replay_charter`** — the charter's own commands are now resolvable or
   the build fails. Two runs, and both times the defective party was the charter:
   the first found `bash .operator/bin/ops-init.sh`, a command that could never

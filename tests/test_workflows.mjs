@@ -507,5 +507,37 @@ ok(claimedJudgment != null && NUMBER_WORD[claimedJudgment[1].toLowerCase()] === 
 ok(!/\bmost at cheap tiers\b/.test(metaBlock) || mechanicalLenses > judgmentLenses,
   `review: meta's "most at cheap tiers" holds against the table (F40; ${mechanicalLenses} cheap vs ${judgmentLenses} judgment)`);
 
+// ── the routability guard is APPLIED in all four workflows (#60) ────────────
+// The static pin (validate_plugin.check_workflows) compares the ROUTABLE
+// literal across the four copies, so it sees any change to the regex TEXT.
+// Measured, both halves:
+//
+//   regex reverted to the pre-F8 shape  → static pin 2 findings, in all four
+//                                         files; runtime silent for three
+//   regex intact, `!ROUTABLE.test(id)`  → static pin 0 findings; runtime
+//     neutered to `false && …`            catches it ONLY where an assertion
+//                                         exists (brainstorm 77/2, review 79/0)
+//
+// So this is not defence in depth, which is what the issue assumed. The pin
+// cannot see a correct regex that is never applied — the F30 vacuity shape —
+// and until now three of the four workflows had nothing covering it. A
+// workflow whose routability guard does nothing would ship with every gate
+// green.
+//
+// One assertion per file, each exercising that file's own call site: a shared
+// helper looping over the four would pass with three of them deleted.
+await throws(() => run(WF("review.js"), { tiers: { JUDGMENT: "bogus:vendor/model" } }, {}),
+  "review tier: provider-lens bypass 'bogus:vendor/model' rejected (#60)");
+await throws(() => run(WF("review.js"), { tiers: { MECHANICAL: "not routable" } }, {}),
+  "review tier: unroutable id rejected — the guard is applied, not merely present (#60)");
+await throws(() => run(WF("crawl.js"), { tiers: { JUDGMENT: "bogus:vendor/model" }, shards: ["x"] }, {}),
+  "crawl tier: provider-lens bypass 'bogus:vendor/model' rejected (#60)");
+await throws(() => run(WF("crawl.js"), { tiers: { MECHANICAL: "not routable" }, shards: ["x"] }, {}),
+  "crawl tier: unroutable id rejected — the guard is applied, not merely present (#60)");
+await throws(() => run(WF("plan.js"), { tiers: { JUDGMENT: "bogus:vendor/model" }, spec: "s" }, {}),
+  "plan tier: provider-lens bypass 'bogus:vendor/model' rejected (#60)");
+await throws(() => run(WF("plan.js"), { tiers: { MECHANICAL: "not routable" }, spec: "s" }, {}),
+  "plan tier: unroutable id rejected — the guard is applied, not merely present (#60)");
+
 console.log(`\n== summary: ${pass} passed, ${fail} failed ==`);
 if (fail > 0) process.exit(1);
