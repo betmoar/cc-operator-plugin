@@ -2178,6 +2178,32 @@ class GuardParityVacuityTest(unittest.TestCase):
          '*[[:space:]]* | *.exempt) return 0 ;;',
          '*[[:space:]]*) return 0 ;;',
          "*.exempt"),
+        # The statusline is the fourth sentinel reader and the third *.exempt
+        # parser; it renders the same partition the Stop hook gates on.
+        ("statusline.sh",
+         '*[[:space:]]* | *.exempt) owner="" ;;',
+         '*[[:space:]]*) owner="" ;;',
+         "*.exempt"),
+        # F15's PREV set — the fifth copy, and the one whose pin was file-wide
+        # until this round. ops-adopt.sh carries *.exempt at the WRITER too, so
+        # the pin must read this arm specifically or the writer satisfies it.
+        ("ops-adopt.sh",
+         '*[[:cntrl:]]* | *.exempt) PREV="<invalid>" ;;',
+         '*[[:cntrl:]]*) PREV="<invalid>" ;;',
+         "*.exempt"),
+        # Not an *.exempt case: the whitespace arm the hook needs so an owner
+        # that can never equal a real session id cannot make a task permanently
+        # non-blocking. Different literal, same vacuity shape.
+        ("ops-stop-hook.sh",
+         '*"|"* | *[[:space:]]* | *.exempt) owner="" ;;',
+         '*"|"* | *.exempt) owner="" ;;',
+         "[[:space:]]"),
+        # The leading-dot rule, one per writer CLI: a dotfile sentinel is
+        # invisible to the Stop hook's glob, so the gate never sees the task.
+        ("ops-task.sh",
+         """.*) die "$1 must not start with '.'""",
+         """.__NOPE__) die "$1 must not start with '.'""",
+         ".*)"),
     )
 
     def setUp(self):
@@ -2205,28 +2231,61 @@ class GuardParityVacuityTest(unittest.TestCase):
         self._install_real()
         self.assertEqual(self._probs(), [])
 
-    def test_guard_deleted_but_comment_kept_still_fires(self):
-        # The vacuity case: code out, prose in. Each guard, one at a time.
+    def _mutate(self, script, guard, without):
+        """Delete a guard from the real script; return (leftover_text, problems)."""
+        self._install_real()
+        p = self.dir / "scripts" / script
+        text = p.read_text(encoding="utf-8")
+        self.assertIn(guard, text, f"{script}: anchor moved — update CASES")
+        mutated = text.replace(guard, without, 1)
+        write(p, mutated)
+        return mutated, self._probs()
+
+    def test_every_pin_fires_when_its_guard_is_deleted(self):
+        """The base question, asked of ALL seven pins: does removing the guard
+        from the CODE make check_guard_parity complain? A pin that stays silent
+        here pins nothing at all — which is how ops-adopt.sh's PREV set was
+        found (its file-wide search was satisfied by the writer-side guard in
+        the same file, so gutting the parser left validator AND bash both
+        green; measured 2026-08-14, the F1 hole reopened one site over)."""
         for script, guard, without, literal in self.CASES:
-            with self.subTest(script=script):
-                self._install_real()
-                p = self.dir / "scripts" / script
-                text = p.read_text(encoding="utf-8")
-                self.assertIn(guard, text,
-                              f"{script}: anchor moved — update CASES")
-                mutated = text.replace(guard, without, 1)
-                # The comment mentioning the literal MUST survive, or the test
-                # proves nothing about comment-blindness.
-                self.assertIn(literal, mutated,
-                              f"{script}: no comment left mentioning {literal}; "
-                              f"this case would pass for the wrong reason")
-                write(p, mutated)
+            with self.subTest(script=script, literal=literal):
+                _, probs = self._mutate(script, guard, without)
                 self.assertTrue(
-                    any(script in str(x) and literal in str(x)
-                        for x in self._probs()),
-                    f"{script}: guard removed from CODE with its comment intact "
-                    f"and check_guard_parity stayed silent — the pin is reading "
-                    f"raw text again, not shell_code()")
+                    any(script in str(x) for x in probs),
+                    f"{script}: the {literal} guard was deleted from the CODE "
+                    f"and check_guard_parity stayed SILENT — this pin is "
+                    f"vacuous. Scope it (see _function_body / the PREV arm) "
+                    f"so a sibling copy of the literal cannot satisfy it")
+
+    def test_a_surviving_comment_does_not_satisfy_a_pin(self):
+        """The comment-blindness question, asked only where it is ASKABLE: a
+        case qualifies when the literal still appears after the mutation, i.e.
+        a comment (or another line) still mentions it. Split from the test
+        above because conflating the two rejected sound cases — ops-task.sh's
+        `.*)` and the stop-hook's `[[:space:]]` each appear exactly ONCE, in
+        code, with no comment quoting them, so there is nothing to be blind to
+        and the base test is the whole story for them."""
+        asked = 0
+        for script, guard, without, literal in self.CASES:
+            leftover = None
+            self._install_real()
+            p = self.dir / "scripts" / script
+            text = p.read_text(encoding="utf-8")
+            if literal not in text.replace(guard, without, 1):
+                continue          # nothing survives to be blind to — not askable
+            with self.subTest(script=script, literal=literal):
+                asked += 1
+                leftover, probs = self._mutate(script, guard, without)
+                self.assertIn(literal, leftover)
+                self.assertTrue(
+                    any(script in str(x) and literal in str(x) for x in probs),
+                    f"{script}: {literal} survives elsewhere in the file after "
+                    f"the guard was deleted, and the pin was satisfied by it — "
+                    f"reading raw text, or scoped too widely")
+        self.assertGreater(asked, 0,
+                           "no case exercised comment/sibling blindness — the "
+                           "CASES table lost every literal that appears twice")
 
     def test_shell_code_ignores_a_comment_only_mention(self):
         # The helper itself, directly: a file whose ONLY mention is a comment

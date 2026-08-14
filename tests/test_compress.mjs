@@ -343,11 +343,27 @@ console.log("-- Case: F3 traversal session_id stays inside the spill root");
 console.log("-- Case: a dot-only session_id gets its own subdir, never the root");
 {
   const spillRoot = path.resolve(TMP, ".operator", ".compress-spill");
-  // A real neighbour spill that must SURVIVE the dot-session's cleanup pass.
-  const victimDir = path.join(spillRoot, `SESS-VICTIM${++sessN}`);
-  fs.mkdirSync(victimDir, { recursive: true, mode: 0o700 });
-  const victim = path.join(victimDir, "keepme");
+  // The neighbour must be a FILE directly under the root, and the root must
+  // hold more than SPILL_KEEP entries. Both were wrong in the first draft: the
+  // victim was a subdirectory (spill()'s cleanup calls unlinkSync, which throws
+  // EPERM on a non-empty dir and is swallowed by its best-effort catch — the
+  // victim was structurally immune) and the root held ~5 entries against
+  // SPILL_KEEP=50, so the eviction loop's slice was empty and never ran. The
+  // assertion could not fail in either direction. A collapsed session's spills
+  // land as plain files at the top level, which is what is modelled now.
+  // (Both facts measured; found by the review panel, round 3.)
+  fs.mkdirSync(spillRoot, { recursive: true, mode: 0o700 });
+  const victim = path.join(spillRoot, "aaa-neighbour-spill");
   fs.writeFileSync(victim, "neighbour spill", { mode: 0o600 });
+  // Oldest by mtime => first in line for eviction. Without this the padding
+  // below could be evicted instead and the case would pass by luck.
+  const old = Date.now() / 1000 - 86400;
+  fs.utimesSync(victim, old, old);
+  for (let i = 0; i < DEFAULTS.SPILL_KEEP + 10; i++) {
+    const pad = path.join(spillRoot, `pad-${i}`);
+    fs.writeFileSync(pad, "pad", { mode: 0o600 });
+    fs.utimesSync(pad, old + 1 + i, old + 1 + i);
+  }
 
   for (const sid of [".", "..", "..."]) {
     // Vary the body per iteration: all three sids correctly resolve to the SAME

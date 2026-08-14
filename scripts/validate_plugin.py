@@ -93,9 +93,12 @@ def shell_code(path):
     hold", bash 590/0). The F1 pin was guarding its own documentation.
 
     Whole-line only, deliberately: a trailing-comment stripper would have to
-    understand shell quoting, and `case` arms legitimately contain `#`. A guard
-    hidden behind code on the same line as a comment is not a shape this repo
-    writes.
+    understand shell quoting, and `case` arms legitimately contain `#`. So a
+    pinned literal must not sit in a TRAILING comment — that text lands in the
+    "code" this returns and re-opens the vacuity. ops-verdict.sh:552 was exactly
+    that and was moved onto its own line; a scan of every pinned literal
+    (`*.exempt`, `[[:space:]]`, `check_bare_name()`, `check_owner_name()`, `.*)`)
+    across scripts/*.sh found no other. Re-run that scan when adding a pin.
 
     Found by the Copilot review of PR #56, which flagged two of the seven sites;
     the other five had the same hole. `test_validate_plugin.py` now mutation-
@@ -118,6 +121,17 @@ def _function_body(code, fn):
     Brace-counting, not a shell parser: these are our own files, written in one
     style (`name() {` … a closing brace at the function's own indent). A guard
     hidden in a construct this cannot follow is a guard nobody can review.
+
+    KNOWN LIMIT, recorded because it fails toward None and None is REPORTED, not
+    skipped: a K&R head (`name()` with `{` on the next line) does not match the
+    locator regex. No function in scripts/*.sh is written that way — verified by
+    grep — so this is unexercised, not live. The first one written will fail the
+    build with "cannot locate", which is the correct direction: a security pin
+    that cannot find its target must say so, never quietly pin nothing. Widen
+    the regex then; do not make the caller tolerate None.
+
+    An unbalanced `{` inside a string truncates the body early. Also the safe
+    direction — a short body fails the literal search and reports.
     """
     lines = code.splitlines()
     for i, ln in enumerate(lines):
@@ -1031,13 +1045,36 @@ def check_guard_parity(root, problems):
     # adjacent path F15 closed) with no parity check catching the regression
     # (the loop above is scoped to the three sentinel_owner parsers; this was
     # the gap the final review surfaced).
+    #
+    # SCOPED TO THE PREV CASE-ARM, for the same reason the F1 loop above is
+    # scoped to a function body — and this site had the identical hole, found by
+    # the review panel one round after the F1 one was fixed here. ops-adopt.sh
+    # carries `*.exempt` TWICE in real code: check_owner_name's writer-side die
+    # (~389) and this parser-side reject (~498). A file-wide search is satisfied
+    # by the writer alone, so deleting `| *.exempt` from the PREV arm left BOTH
+    # gates silent — validator "all contracts hold" AND bash 590/0 (measured
+    # 2026-08-14). That is F15 reopened by the check meant to pin it shut.
+    #
+    # Matched on the arm rather than a function body because PREV's reject-set
+    # is inline at top level, not inside a function — `_function_body` has
+    # nothing to bind to. The arm is identified by what only it does: assign
+    # PREV. REPORTS when it cannot find the arm, never skips.
     p = root / "scripts" / "ops-adopt.sh"
-    if p.is_file() and "*.exempt" not in shell_code(p):
-        problems.append(
-            "scripts/ops-adopt.sh: the PREV reject-set is missing *.exempt — "
-            "PREV is echoed to stdout from the untrusted sentinel body, so a "
-            "reserved-suffix value must degrade to <invalid> like the three "
-            "sentinel_owner parsers (F15 follow-up)")
+    if p.is_file():
+        prev_arms = [ln for ln in shell_code(p).splitlines()
+                     if re.search(r'PREV\s*=\s*"<invalid>"', ln)]
+        if not prev_arms:
+            problems.append(
+                "scripts/ops-adopt.sh: cannot locate the PREV reject-set arm "
+                "(a line assigning PREV=\"<invalid>\") — the F15 pin has "
+                "nothing to check. Reshaping that guard must update this "
+                "locator, not silently skip it")
+        elif not any("*.exempt" in ln for ln in prev_arms):
+            problems.append(
+                "scripts/ops-adopt.sh: the PREV reject-set is missing *.exempt — "
+                "PREV is echoed to stdout from the untrusted sentinel body, so a "
+                "reserved-suffix value must degrade to <invalid> like the three "
+                "sentinel_owner parsers (F15 follow-up)")
     # F2: the F65 -L guard was applied to the five pending/ sites but never to
     # the verdicts.d/ evidence-fragment directory. A planted symlink at
     # .operator/verdicts.d/<owner>.md -> arbitrary-file makes append_fragment
