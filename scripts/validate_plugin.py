@@ -80,6 +80,72 @@ CHARTER_REQUIRED_CLIS = ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh", "ops-c
 AGENT_MODEL_ALIASES = ("opus", "sonnet", "haiku")
 
 
+def shell_code(path):
+    """A shell file's CODE, with whole-line comments removed.
+
+    Every pin that asserts "this guard exists" by searching for a literal must
+    search THIS, never `read_text()`. A raw-text search is satisfied by the
+    comment that explains the guard, so deleting the guard while leaving its
+    comment — the realistic regression, since the comment is what a careless
+    edit preserves — keeps the validator green. Measured on 2026-08-14: removing
+    `*.exempt` from `ops-stop-hook.sh`'s reject-set while its two explanatory
+    comment lines stayed put left BOTH gates silent (validator "all contracts
+    hold", bash 590/0). The F1 pin was guarding its own documentation.
+
+    Whole-line only, deliberately: a trailing-comment stripper would have to
+    understand shell quoting, and `case` arms legitimately contain `#`. So a
+    pinned literal must not sit in a TRAILING comment — that text lands in the
+    "code" this returns and re-opens the vacuity. ops-verdict.sh:552 was exactly
+    that and was moved onto its own line; a scan of every pinned literal
+    (`*.exempt`, `[[:space:]]`, `check_bare_name()`, `check_owner_name()`, `.*)`)
+    across scripts/*.sh found no other. Re-run that scan when adding a pin.
+
+    Found by the Copilot review of PR #56, which flagged two of the seven sites;
+    the other five had the same hole. `test_validate_plugin.py` now mutation-
+    tests every one of them (`GuardParityVacuityTest`) rather than pinning the
+    helper's existence — a shared helper nobody calls is the same vacuity one
+    level up.
+    """
+    return "\n".join(
+        ln for ln in path.read_text(encoding="utf-8").splitlines()
+        if not ln.lstrip().startswith("#"))
+
+
+def _function_body(code, fn):
+    """The lines of shell function `fn`, or None if it cannot be located.
+
+    Returns None rather than "" so a caller can REPORT an unlocatable function
+    instead of silently pinning nothing — the failure mode `check_source_stamp`
+    and `check_install_set_parity` were both bitten by.
+
+    Brace-counting, not a shell parser: these are our own files, written in one
+    style (`name() {` … a closing brace at the function's own indent). A guard
+    hidden in a construct this cannot follow is a guard nobody can review.
+
+    KNOWN LIMIT, recorded because it fails toward None and None is REPORTED, not
+    skipped: a K&R head (`name()` with `{` on the next line) does not match the
+    locator regex. No function in scripts/*.sh is written that way — verified by
+    grep — so this is unexercised, not live. The first one written will fail the
+    build with "cannot locate", which is the correct direction: a security pin
+    that cannot find its target must say so, never quietly pin nothing. Widen
+    the regex then; do not make the caller tolerate None.
+
+    An unbalanced `{` inside a string truncates the body early. Also the safe
+    direction — a short body fails the literal search and reports.
+    """
+    lines = code.splitlines()
+    for i, ln in enumerate(lines):
+        if re.match(rf"^\s*{re.escape(fn)}\s*\(\)\s*\{{", ln):
+            depth, body = 0, []
+            for cur in lines[i:]:
+                depth += cur.count("{") - cur.count("}")
+                body.append(cur)
+                if depth <= 0 and len(body) > 0 and "{" in "".join(body):
+                    break
+            return "\n".join(body)
+    return None
+
+
 def load_json(path, problems):
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -901,7 +967,7 @@ def check_guard_parity(root, problems):
         p = root / "scripts" / name
         if not p.is_file():
             continue
-        text = p.read_text(encoding="utf-8")
+        text = shell_code(p)
         for fn in ("check_bare_name", "check_owner_name"):
             if f"{fn}()" not in text:
                 problems.append(
@@ -916,7 +982,7 @@ def check_guard_parity(root, problems):
     # sentinel reads as a valid foreign owner and the gate opens
     hook = root / "scripts" / "ops-stop-hook.sh"
     if hook.is_file():
-        text = hook.read_text(encoding="utf-8")
+        text = shell_code(hook)
         if "[[:space:]]" not in text:
             problems.append(
                 "scripts/ops-stop-hook.sh: sentinel_owner does not reject "
@@ -941,6 +1007,176 @@ def check_guard_parity(root, problems):
                 f"planted symlink in pending/, laundering an entry our CLIs "
                 f"never wrote into a trusted sentinel (F65/F66; the guard "
                 f"must live at every reader, see docs/PLAYBOOK.md)")
+    # sentinel_owner()'s reject-set must include *.exempt in all three body
+    # parsers, mirroring check_owner_name's reject of the reserved G3 grant
+    # namespace — else a corrupted body "session_id: victim.exempt" parses as
+    # a valid owner and recompute_arm_marker deletes another session's grant
+    # (F1, issue #30).
+    #
+    # SCOPED TO THE FUNCTION BODY, not the file. ops-verdict.sh carries
+    # `*.exempt` TWICE in real code: check_owner_name's writer-side die (line
+    # ~161) and sentinel_owner's parser-side reject (~552). A file-wide search
+    # is satisfied by the writer alone — which is F1 itself, verbatim: "rejects
+    # .exempt at the writer but not the body parser". The pin would have
+    # green-lit the exact regression it was written to prevent. Caught by
+    # GuardParityVacuityTest when the file-wide version failed to fire on a
+    # parser-only deletion (2026-08-14).
+    for name in ("ops-verdict.sh", "ops-stop-hook.sh", "statusline.sh"):
+        p = root / "scripts" / name
+        if not p.is_file():
+            continue
+        text = _function_body(shell_code(p), "sentinel_owner")
+        if text is None:
+            problems.append(
+                f"scripts/{name}: cannot locate sentinel_owner() — the F1 "
+                f"reject-set pin has nothing to check. Renaming or reshaping "
+                f"the parser must update this locator, not silently skip it")
+            continue
+        if "*.exempt" not in text:
+            problems.append(
+                f"scripts/{name}: sentinel_owner()'s reject-set is missing "
+                f"*.exempt — a sentinel body naming a G3 grant parses as a "
+                f"valid owner, letting recompute_arm_marker delete another "
+                f"session's exemption (F1)")
+    # F15 follow-up: ops-adopt.sh's inline PREV reject-set is a FIFTH copy of
+    # the owner-reject pattern. It reads the same untrusted sentinel body and
+    # echoes PREV to stdout, so it must carry the same reserved-suffix guard
+    # — else a PREV ending in .exempt is echoed verbatim (the stdout-injection-
+    # adjacent path F15 closed) with no parity check catching the regression
+    # (the loop above is scoped to the three sentinel_owner parsers; this was
+    # the gap the final review surfaced).
+    #
+    # SCOPED TO THE PREV CASE-ARM, for the same reason the F1 loop above is
+    # scoped to a function body — and this site had the identical hole, found by
+    # the review panel one round after the F1 one was fixed here. ops-adopt.sh
+    # carries `*.exempt` TWICE in real code: check_owner_name's writer-side die
+    # (~389) and this parser-side reject (~498). A file-wide search is satisfied
+    # by the writer alone, so deleting `| *.exempt` from the PREV arm left BOTH
+    # gates silent — validator "all contracts hold" AND bash 590/0 (measured
+    # 2026-08-14). That is F15 reopened by the check meant to pin it shut.
+    #
+    # Matched on the arm rather than a function body because PREV's reject-set
+    # is inline at top level, not inside a function — `_function_body` has
+    # nothing to bind to. The arm is identified by what only it does: assign
+    # PREV. REPORTS when it cannot find the arm, never skips.
+    p = root / "scripts" / "ops-adopt.sh"
+    if p.is_file():
+        prev_arms = [ln for ln in shell_code(p).splitlines()
+                     if re.search(r'PREV\s*=\s*"<invalid>"', ln)]
+        if not prev_arms:
+            problems.append(
+                "scripts/ops-adopt.sh: cannot locate the PREV reject-set arm "
+                "(a line assigning PREV=\"<invalid>\") — the F15 pin has "
+                "nothing to check. Reshaping that guard must update this "
+                "locator, not silently skip it")
+        elif not any("*.exempt" in ln for ln in prev_arms):
+            problems.append(
+                "scripts/ops-adopt.sh: the PREV reject-set is missing *.exempt — "
+                "PREV is echoed to stdout from the untrusted sentinel body, so a "
+                "reserved-suffix value must degrade to <invalid> like the three "
+                "sentinel_owner parsers (F15 follow-up)")
+    # F2: the F65 -L guard was applied to the five pending/ sites but never to
+    # the verdicts.d/ evidence-fragment directory. A planted symlink at
+    # .operator/verdicts.d/<owner>.md -> arbitrary-file makes append_fragment
+    # append every row for that owner THROUGH the link (exit 0, silent), and
+    # both read sites follow it. The file-wide "any -L in the file" check above
+    # could not see this hole — ops-verdict.sh already carries -L for pending/.
+    # Pin the verdicts.d/-specific guard: an -L test must reference a
+    # verdicts.d fragment path in append_fragment and both read sites.
+    p = root / "scripts" / "ops-verdict.sh"
+    if p.is_file():
+        text = p.read_text(encoding="utf-8")
+        code = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
+        # FRAGDIR is the verdicts.d path variable; the reads hold it in $frag.
+        guarded = sum(1 for ln in code
+                      if "-L" in ln and ("FRAGDIR" in ln or "frag" in ln))
+        if guarded < 3:
+            problems.append(
+                "scripts/ops-verdict.sh: verdicts.d/ is missing the F2 -L "
+                "symlink guard — expected an -L test on a FRAGDIR/verdicts.d "
+                "fragment path at the append_fragment write and both read "
+                "sites (--reconcile + retro_gate), found "
+                f"{guarded}/3. A planted symlink at verdicts.d/<owner>.md "
+                f"launders every verdict row into an arbitrary file, exit 0, "
+                f"silent (F65 class; F2)")
+    # F17: both fragment scanners in ops-verdict.sh — the --reconcile read loop
+    # and retro_gate's prior-row scan — must use the SAME `read -r -n N` bound.
+    # They read the same verdicts.d/ fragment body, so a long evidence cell
+    # (>512B) that splits into chunks at one site but not the other is a drift
+    # that silently drops honest rows from the ledger on every reconcile (the
+    # issue-#9 long-row blindness class — the reconcile site kept 512 while
+    # retro_gate moved to 1MiB). Pin them EQUAL, not just present: the two reads
+    # are copy-paste neighbors, so uniform drift to a smaller bound would pass a
+    # mere "both bounded" check.
+    p = root / "scripts" / "ops-verdict.sh"
+    if p.is_file():
+        code = [ln for ln in p.read_text(encoding="utf-8").splitlines()
+                if not ln.lstrip().startswith("#")]
+        # Locate the two verdicts.d/ fragment read loops. Each is a
+        # `read -r -n N row|line` loop whose body is drained by `done < "$frag"`
+        # (sentinel_owner's pending/ read drains `done < "$f"`, so it never
+        # matches). The reconcile loop iterates `row`; retro_gate iterates
+        # `line`. Walk forward from each candidate read to its redirect.
+        frag_reads = []
+        for i, ln in enumerate(code):
+            m = re.search(r"read -r -n (\d+) (row|line)\b", ln)
+            if not m:
+                continue
+            var = m.group(2)
+            if any(re.search(r'done < "\$frag"', code[j]) for j in range(i, min(i + 40, len(code)))):
+                frag_reads.append((var, int(m.group(1))))
+        by_var = {v: b for v, b in frag_reads}
+        if "row" in by_var and "line" in by_var:
+            if by_var["row"] != by_var["line"]:
+                problems.append(
+                    "scripts/ops-verdict.sh: the --reconcile and retro_gate "
+                    "fragment scanners disagree on the `read -r -n` bound "
+                    f"({by_var['row']} vs {by_var['line']}) — a long evidence "
+                    f"cell (>512B) splits into chunks at one site but not the "
+                    f"other, silently dropping honest rows from the ledger on "
+                    f"reconcile (issue-#9 class; F17)")
+        elif "line" not in by_var:
+            problems.append(
+                "scripts/ops-verdict.sh: cannot locate retro_gate's fragment "
+                "scan — F17 parity pin could not be applied (report, not skip)")
+
+    # F14: the three hooks' json_get() helpers must agree. A JSON boolean
+    # renders Python True/False under a bare print(v), so a downstream
+    # [ "$x" = "true" ] silently never matches. ops-stop-hook.sh and
+    # ops-armgate-hook.sh carry the isinstance(v, bool) -> "true"/"false"
+    # coercion; ops-sessionstart-hook.sh omitted it (no live trigger today —
+    # it reads only string fields — but the drift is real and the next
+    # boolean field added would ship broken). Pin the coercion in the CODE of
+    # json_get's body, not as a whole-file substring: a marker only in a
+    # comment (or a moved fragment) would satisfy a bare substring search and
+    # let the real coercion revert silently (final-review follow-up; modeled
+    # on check_resolver_renderer_parity's body extraction).
+    for name in ("ops-sessionstart-hook.sh", "ops-stop-hook.sh",
+                 "ops-armgate-hook.sh"):
+        p = root / "scripts" / name
+        if not p.is_file():
+            continue
+        text = p.read_text(encoding="utf-8")
+        # Extract the json_get() body: from its definition to the closing brace
+        # on its own line. Strip comment lines so a comment-only marker does
+        # not satisfy the pin.
+        body = ""
+        m = re.search(r"json_get\(\)", text)
+        if m:
+            tail = text[m.start():]
+            bl = []
+            for ln in tail.splitlines():
+                bl.append(ln)
+                if ln.strip() == "}" and len(bl) > 1:
+                    break
+            body = "\n".join(ln for ln in bl if not ln.lstrip().startswith("#"))
+        if "isinstance(v, bool)" not in body:
+            problems.append(
+                f"scripts/{name}: json_get() is missing the "
+                f"isinstance(v, bool) coercion in its body — a JSON boolean "
+                f"renders Python True/False and a downstream '= \"true\"' test "
+                f"silently never matches (F14; the three hooks' json_get "
+                f"helpers must agree; a comment-only marker does not satisfy)")
 
 
 def check_claims(root, problems):
@@ -1411,7 +1647,7 @@ def check_workflows(root, problems):
     # The alternation is spelled out rather than built from LENS_NAMESPACES:
     # these are four literal source files, and a generated regex would be one
     # more thing to keep in sync.
-    CANONICAL_ROUTABLE = r"/^glm-|\/|^claude-|^(?:glm|openrouter|deepseek|qwen|claude):./"
+    CANONICAL_ROUTABLE = r"/^(?:glm-|claude-)[^:]*$|^(?:glm|openrouter|deepseek|qwen|claude):.+|^(?=[^:]*\/[^:]*:).+$|^[^:]*\/[^:]*$/"
     CANONICAL_BAD_CHARSET = r"/[^\w./:@[\]-]/"
     for f in files:
         rel = f"workflows/{f.name}"

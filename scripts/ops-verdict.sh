@@ -248,9 +248,34 @@ _lock_check_budget LOCK_LIVE_SPINS "$LOCK_LIVE_SPINS" "$LOCK_LIVE_SPINS"
 _lock_check_budget RECLAIM_WAIT "$RECLAIM_WAIT" "$RECLAIM_WAIT"
 [ "$RECLAIM_WAIT" -lt "$LOCK_SPINS" ] || _lock_budget_die "RECLAIM_WAIT (must be < LOCK_SPINS)" "$RECLAIM_WAIT"
 
+# The two "proceed unlocked" exits below (a confirmed-LIVE holder outlasting
+# LOCK_LIVE_SPINS, and a reclaim we could not win) serialized NOTHING: every
+# waiter that gave up entered the critical section at once, which is the
+# unarbitrated multi-writer pile-up this whole block exists to prevent — N
+# givers-up, not one. They now queue on a SEPARATE mutex, $LOCKDIR.fallback,
+# built from the same mkdir + stamp + kernel-judged reclaim idiom (there is no
+# flock on macOS, and a one-shot claim dir would dangle on a crash).
+#
+# RESIDUAL, stated plainly: this reduces N to 1. ONE giver-up may still run
+# beside the confirmed-live holder — that is the accepted liveness trade at the
+# "confirmed alive" branch above (never block the operator forever), and the
+# fallback does not remove it. 1-vs-live-holder is the floor, not zero.
+#
+# It must NEVER touch $LOCKDIR: a giver-up never owned the real lock, so
+# LOCK_HELD stays 0 and lock_release stays a no-op for it. Setting LOCK_HELD=1
+# here would make its release rm the LIVE holder's dir — the exact F03
+# displacement the "confirmed alive" branch was written to forbid. Hence its own
+# state, its own release, and its own budget.
+FALLBACK_SPINS=${FALLBACK_SPINS:-50}   # × 0.1s = 5s to wait on a LIVE giver-up, then proceed anyway
+_lock_check_budget FALLBACK_SPINS "$FALLBACK_SPINS" "$FALLBACK_SPINS"
+
 LOCK_HELD=0
 LOCK_MINE=""
 LOCK_HOLDER_REC=""
+FALLBACK_DIR="$LOCKDIR.fallback"
+FALLBACK_HELD=0
+FALLBACK_MINE=""
+FALLBACK_REC=""
 
 # host + uid + pid: the three facts needed to decide whether `kill -0` can answer
 # for this holder at all. Written INSIDE the lock we already hold, so it never
@@ -285,6 +310,91 @@ holder_state() { # holder_state <record>
   return 1
 }
 
+# Same 128-byte bound as lock_holder_read, for the same reason: every reader in
+# this codebase is byte-bounded, and this one also runs on a spin.
+fallback_holder_read() {
+  FALLBACK_REC=""
+  [ -f "$FALLBACK_DIR/holder" ] || return 0
+  IFS= read -r -n 128 FALLBACK_REC < "$FALLBACK_DIR/holder" 2>/dev/null || true
+  FALLBACK_REC="${FALLBACK_REC%$'\r'}"
+}
+
+# Queue the givers-up. Returns 0 whether or not the fallback was won: the caller
+# proceeds either way — blocking the operator forever is the one outcome worse
+# than a second writer, and it is why the real lock degrades in the first place.
+# FALLBACK_HELD records which happened.
+fallback_acquire() {
+  local i=0 fstate=2 rec0=""
+  while ! mkdir "$FALLBACK_DIR" 2>/dev/null; do
+    i=$((i+1))
+    # ONE bound, checked before any branch — it must cover the reclaim path too.
+    # A dir we judge dead but cannot rmdir (permissions, a non-empty leftover)
+    # would otherwise spin here without even a sleep: an unbounded wait inside
+    # the code whose entire purpose is to stay bounded.
+    if [ "$i" -ge "$FALLBACK_SPINS" ]; then
+      echo "ops-verdict: warning — fallback lock $FALLBACK_DIR held by another degraded writer for >$((FALLBACK_SPINS / 10))s; proceeding without it" >&2
+      return 0
+    fi
+    fallback_holder_read
+    fstate=0; holder_state "$FALLBACK_REC" || fstate=$?
+    if [ "$fstate" -eq 1 ]; then
+      # Confirmed dead: a giver-up crashed holding the fallback. Nothing may
+      # dangle here — a one-shot marker with no reclaim would wedge every later
+      # giver-up, the unexpirable-claim mistake this block already made once.
+      # Re-verify first, exactly as the real reclaim does under its claim: the
+      # dir may have been released and retaken between the judgement and the act,
+      # and a retaker is briefly held-but-UNSTAMPED, so a changed record (a new
+      # stamp, or none) means back off rather than delete someone's fresh dir.
+      # No separate .reclaim claim here on purpose: this path is already the
+      # degraded one, its worst case is two givers-up instead of one (still
+      # bounded, still better than the N this replaces), and a second claim
+      # marker is the construct that wedged every writer the first time.
+      # Delete the stamp before the dir — rmdir refuses a non-empty directory.
+      rec0="$FALLBACK_REC"
+      fallback_holder_read
+      if [ "$FALLBACK_REC" != "$rec0" ]; then sleep 0.1; continue; fi
+      rm -f "$FALLBACK_DIR/holder" 2>/dev/null || true
+      rmdir "$FALLBACK_DIR" 2>/dev/null || true
+      continue
+    fi
+    # Alive, or unjudgeable (held-but-unstamped window, foreign uid): wait out
+    # the short budget above rather than stealing a running giver-up's dir.
+    sleep 0.1
+  done
+  FALLBACK_HELD=1
+  FALLBACK_MINE="$(holder_stamp)"
+  printf '%s\n' "$FALLBACK_MINE" > "$FALLBACK_DIR/holder" 2>/dev/null || true
+  # The give-up path never installed the real lock's trap (that is set only after
+  # a successful acquire), so it installs its own. A crashed giver-up MUST leave
+  # a reclaimable dir, not a permanent one.
+  # Both releases, same as the real-acquire path: whichever trap is installed
+  # last must still clean up what the other one owned.
+  trap 'lock_release; fallback_release' EXIT
+  trap 'lock_release; fallback_release; exit 130' INT
+  trap 'lock_release; fallback_release; exit 143' TERM
+  return 0
+}
+
+# Reached ONLY through the trap strings installed by the two acquire paths. The
+# linter cannot follow a trap, so every line below reads as dead code (SC2317);
+# `lock_release` escapes the same fate only because it also has direct callers.
+# (A comment whose FIRST word is the linter's name is parsed as a directive —
+#  hence the wording above. SC1072/SC1073, hit while writing this.)
+# shellcheck disable=SC2317
+fallback_release() {
+  [ "${FALLBACK_HELD:-0}" = "1" ] || return 0
+  FALLBACK_HELD=0
+  # Same displacement guard as lock_release: if the fallback no longer names us
+  # a later giver-up reclaimed it, and removing it would delete THAT holder's dir.
+  fallback_holder_read
+  if [ -n "$FALLBACK_MINE" ] && [ -n "$FALLBACK_REC" ] && [ "$FALLBACK_REC" != "$FALLBACK_MINE" ]; then
+    echo "ops-verdict: warning — $FALLBACK_DIR was reclaimed while this process held it; not releasing another holder's fallback lock" >&2
+    return 0
+  fi
+  rm -f "$FALLBACK_DIR/holder" 2>/dev/null || true
+  rmdir "$FALLBACK_DIR" 2>/dev/null || true
+}
+
 lock_acquire() {
   local i=0 defers=0 state=2 rec0=""
   while ! mkdir "$LOCKDIR" 2>/dev/null; do
@@ -300,6 +410,10 @@ lock_acquire() {
       # the case the timed draft got wrong (audit F03).
       if [ "$i" -ge "$LOCK_LIVE_SPINS" ]; then
         echo "ops-verdict: warning — lock $LOCKDIR held by a LIVE process for >$((LOCK_LIVE_SPINS / 10))s; proceeding unlocked rather than stealing a running writer's lock" >&2
+        # Unlocked with respect to the LIVE holder, but not with respect to the
+        # other waiters that gave up in the same instant: queue on the fallback
+        # so they enter one at a time. LOCK_HELD stays 0 — we never owned $LOCKDIR.
+        fallback_acquire
         return 0
       fi
       sleep 0.1
@@ -331,6 +445,7 @@ lock_acquire() {
         fi
         rmdir "$LOCKDIR.reclaim" 2>/dev/null || true
         echo "ops-verdict: warning — could not reclaim $LOCKDIR; proceeding unlocked" >&2
+        fallback_acquire      # same reason as the live-holder give-up above
         return 0
       fi
       # Someone else holds the reclaim claim. A LIVE reclaimer needs only
@@ -350,11 +465,15 @@ lock_acquire() {
   LOCK_HELD=1
   LOCK_MINE="$(holder_stamp)"
   printf '%s\n' "$LOCK_MINE" > "$LOCKDIR/holder" 2>/dev/null || true
-  trap 'lock_release' EXIT
+  # Both releases, in both handlers: a caller that takes the fallback on one
+  # acquire and the real lock on a later one would otherwise have the second
+  # trap silently replace the first and leak the fallback dir for the rest of
+  # the process's life. Each release is a no-op unless its own HELD flag is set.
+  trap 'lock_release; fallback_release' EXIT
   # A signal handler that only releases would let bash RESUME the critical
   # section with the lock already gone. Release and exit.
-  trap 'lock_release; exit 130' INT
-  trap 'lock_release; exit 143' TERM
+  trap 'lock_release; fallback_release; exit 130' INT
+  trap 'lock_release; fallback_release; exit 143' TERM
 }
 
 lock_release() {
@@ -429,8 +548,13 @@ sentinel_owner() { # sentinel_owner <id> → stamped session_id ("" if none/inva
   # task compare unequal to its id — a fail-OPEN in the central invariant.
   owner="${owner%$'\r'}"
   owner="${owner%"${owner##*[![:space:]]}"}"
+  # Unusable → unowned → fails closed. The `*.exempt` arm mirrors the writer's
+  # check_owner_name: G3 grant names are reserved (F1). Kept on its own line,
+  # NOT as a trailing comment — validate_plugin's shell_code() strips whole-line
+  # comments only, so a trailing one sits in the "code" it searches and would
+  # keep the F1 pin green after the arm itself was deleted (measured).
   case "$owner" in
-    "" | */* | .* | *"|"* | *[[:space:]]*) return 0 ;;  # unusable → unowned → fails closed
+    "" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) return 0 ;;
   esac
   printf '%s' "$owner"
 }
@@ -465,6 +589,15 @@ row_is_conformant() {
 append_fragment() { # append_fragment <owner-or-empty> <row>
   local who="${1:-unowned}"
   mkdir -p "$FRAGDIR"
+  # F2/F65 verdicts.d/: a symlink fragment is never a fragment our CLIs wrote.
+  # `-f` FOLLOWS a planted or merge-corrupted symlink here and would append every
+  # row for this owner THROUGH the link into an arbitrary target, exit 0, silent
+  # — the same laundering class fixed at the five pending/ sites, unguarded in
+  # the evidence-fragment directory. Refuse BEFORE the write, mirroring the
+  # pending/ refuse-before-write pattern (ownership_gate's regular-file check).
+  if [ -L "$FRAGDIR/$who.md" ]; then
+    die "verdicts.d/$who.md is a symlink — a fragment our CLIs never wrote; refusing to append every row through it into an arbitrary file (remove the symlink and rerun the verdict)"
+  fi
   printf '%s\n' "$2" >> "$FRAGDIR/$who.md"
 }
 
@@ -481,10 +614,32 @@ if [ "${1:-}" = "--reconcile" ]; then
   # guarantee evaporating exactly when it matters. Associative arrays would be
   # the other fix, but macOS /bin/bash is 3.2 and has none.
   CAND="$(mktemp "${TMPDIR:-/tmp}/opsrec.XXXXXX")"
-  trap 'lock_release; rm -f "$CAND"' EXIT
+  MISSINGF="$(mktemp "${TMPDIR:-/tmp}/opsmis.XXXXXX")"
+  # `trap` REPLACES a handler for the same signal, it does not stack. This runs
+  # AFTER lock_acquire, which may have degraded to fallback_acquire and installed
+  # `lock_release; fallback_release` — so naming only lock_release here silently
+  # dropped fallback_release for the rest of the process, leaking
+  # $LOCKDIR.fallback on every reconcile-under-contention. Measured: a live
+  # holder + LOCK_LIVE_SPINS=3 left .operator/.lock.fallback on disk after exit.
+  # The two acquire paths carry this same warning; this site is the one that
+  # ignored it. The reconcile block also named no INT/TERM of its own. That was
+  # survivable but not safe: on a signal the acquire path's OWN handler ran the
+  # releases, then this EXIT trap ran and removed the tempfiles — correct only
+  # by inheritance, and silently wrong for any invocation that reaches here
+  # without one (a future caller, or an acquire path that stops trapping).
+  # Naming all three here makes the block self-sufficient.
+  trap 'lock_release; fallback_release; rm -f "$CAND" "$MISSINGF"' EXIT
+  trap 'lock_release; fallback_release; rm -f "$CAND" "$MISSINGF"; exit 130' INT
+  trap 'lock_release; fallback_release; rm -f "$CAND" "$MISSINGF"; exit 143' TERM
   if [ -d "$FRAGDIR" ]; then
     for frag in "$FRAGDIR"/*.md; do
       [ -f "$frag" ] || continue
+      # F2: `-f` follows a symlink — a planted/merge-corrupted fragment must
+      # not be read as evidence. A symlink is never a fragment our CLIs wrote.
+      if [ -L "$frag" ]; then
+        echo "ops-verdict: refusing fragment ${frag##*/} — it is a symlink, not a fragment our CLIs wrote; skipping (remove it to reconcile the real fragment)" >&2
+        continue
+      fi
       # Reconcile cannot stop after N lines the way the sentinel parsers do —
       # reading every row IS its job — so a per-read byte cap does not save it:
       # a 64MB newline-less line still yields ~131k capped chunks and the loop
@@ -506,7 +661,11 @@ if [ "${1:-}" = "--reconcile" ]; then
         echo "ops-verdict: refusing fragment ${frag##*/} — ${fragsz} bytes exceeds ${FRAG_MAX_BYTES}; it is corrupt, not a ledger (repair or delete it)" >&2
         skipped=$((skipped+1)); continue
       fi
-      while IFS= read -r -n 512 row || [ -n "$row" ]; do
+      # The bound is generous (1MiB) because a long evidence cell (>512B) splits
+      # a row across chunks and each split chunk fails row_is_conformant — the
+      # issue-#9 long-row blindness class, silently dropping honest rows from the
+      # ledger on every reconcile. Same bound as retro_gate's prior-row scan.
+      while IFS= read -r -n 1048576 row || [ -n "$row" ]; do
         [ -n "$row" ] || continue
         # Reconcile is a WRITE to the ledger of record, so it enforces the same
         # 4-cell schema the direct path does. A fragment is an ordinary file
@@ -529,13 +688,23 @@ if [ "${1:-}" = "--reconcile" ]; then
   if [ -s "$CAND" ]; then
     # -F -x -v -f: keep candidate lines NOT present verbatim in the ledger.
     # Sorted -u so a row duplicated across fragments is added once.
-    MISSING="$(grep -Fxv -f "$VERDICTS" -- "$CAND" 2>/dev/null | sort -u || true)"
-    if [ -n "$MISSING" ]; then
-      printf '%s\n' "$MISSING" >> "$VERDICTS"
-      added="$(printf '%s\n' "$MISSING" | wc -l | tr -d ' ')"
+    # A ledger that became unreadable mid-reconcile (concurrent access, dropped
+    # perms) makes grep exit 2; the old `|| true` masked that as a false
+    # '0 restored' — silent data loss reported as success. Abort instead.
+    # exit 1 is the benign "nothing missing" case and stays green. F13.
+    # The pipeline writes to MISSINGF (not a command substitution) so grep's
+    # exit is readable from PIPESTATUS — an assignment resets it. The guard is
+    # the grep EXIT code (works on every uid, unlike a mode-bit test), so an
+    # unreadable ledger aborts regardless of who runs reconcile.
+    grep -Fxv -f "$VERDICTS" -- "$CAND" 2>/dev/null | sort -u > "$MISSINGF"
+    gstatus=${PIPESTATUS[0]}
+    [ "$gstatus" -le 1 ] || die "grep error ($gstatus) reading $VERDICTS during reconcile — refusing to report a false '0 restored' (check ledger readability)"
+    if [ -s "$MISSINGF" ]; then
+      added="$(wc -l < "$MISSINGF" | tr -d ' ')"
+      cat "$MISSINGF" >> "$VERDICTS"
     fi
   fi
-  rm -f "$CAND"
+  rm -f "$CAND" "$MISSINGF"
   lock_release
   if [ "$skipped" -gt 0 ]; then
     echo "reconciled: $added row(s) restored to $VERDICTS from $FRAGDIR/ ($skipped non-conformant line(s) skipped — see stderr)"
@@ -814,7 +983,10 @@ retro_gate() {
   # file is already size-capped above, so a corrupted newline-less line yields a
   # few bounded non-matching chunks, not an unbounded slurp.
   local frag="$FRAGDIR/${tag_owner}.md" fragsz=0 found=1 line n=0
-  if [ -f "$frag" ]; then
+  # F2: `-f` follows a symlink; a symlink fragment must not count as a prior
+  # row (it would either dodge the duplicate/GATE-EXCEPTION branch or leak the
+  # target's contents). A symlink is never a fragment our CLIs wrote.
+  if [ -f "$frag" ] && [ ! -L "$frag" ]; then
     fragsz="$(wc -c < "$frag" 2>/dev/null || echo 0)"
     if [ "$fragsz" -gt "$FRAG_MAX_BYTES" ]; then
       echo "ops-verdict: fragment ${frag##*/} exceeds FRAG_MAX_BYTES (${fragsz}); prior-row scan refused — treating as never-armed" >&2

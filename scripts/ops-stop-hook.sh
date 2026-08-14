@@ -211,9 +211,10 @@ sentinel_owner() { # sentinel_owner <path> → "owner|opened_at"
   # An owner our CLIs could never have written is not a trustworthy claim of
   # ownership — treat it as unowned so it BLOCKS, rather than as a foreign
   # session's task which would wave the stop through. Must mirror the same
-  # rejects as check_bare_name in the three CLIs.
+  # rejects as check_bare_name in the three CLIs; *.exempt is reserved for G3
+  # exemption grant names (F1) and must never be treated as a valid owner.
   case "$owner" in
-    */* | .* | *"|"* | *[[:space:]]*) owner="" ;;
+    */* | .* | *"|"* | *[[:space:]]* | *.exempt) owner="" ;;
   esac
   # opened_at is display-only, so it is sanitized rather than rejected: a '|'
   # would break the field split, and a newline cannot survive `read -r` anyway.

@@ -233,6 +233,37 @@ function writeSelfIgnore(root) {
   } catch { /* best effort — containment is a nicety, the spill is the contract */ }
 }
 
+// F3 — session_id arrives raw from the payload (untrusted). Sanitize to the
+// same charset as toolUseId, then verify the resolved path cannot escape
+// `base` (a defense-in-depth belt for the charset allowlist, not a
+// substitute for it) — anything that fails either check falls back to
+// "nosession" rather than ever joining an attacker-controlled path segment.
+// A dot-only sid is refused BEFORE the containment test, because containment is
+// the wrong question for it: `.` resolves to `base` itself, which is inside
+// `base` and so passed — the sid then names no subdirectory at all and every
+// session shares one bucket. That is not a traversal (`..` was already caught,
+// it resolves outside), it is a COLLAPSE, and the damage is on the other side:
+// spill()'s `keep` cleanup unlinks the oldest entries of whatever directory it
+// is handed, so a collapsed session prunes every other session's spills — and
+// those hold UNREDACTED tool output. `...` and longer runs are refused for the
+// same reason they are refused everywhere else: a name that is only dots is
+// never a session id our harness emits, so admitting it buys nothing.
+// (Copilot review of PR #56, round 2. `session_id` is raw payload — the same
+// untrusted input F3 was about.)
+function sanitizeSessionId(base, session) {
+  const sid = String(session || "nosession").replace(/[^A-Za-z0-9_.-]/g, "_");
+  if (/^\.+$/.test(sid)) return "nosession";
+  const resolvedBase = path.resolve(base);
+  const resolvedDir = path.resolve(base, sid);
+  // `resolvedDir === resolvedBase` can no longer be reached by a dot-only sid;
+  // it stays because path.resolve may still collapse some future input to it,
+  // and returning a sid that names `base` is what the line above now forbids.
+  if (sid && resolvedDir !== resolvedBase && resolvedDir.startsWith(resolvedBase + path.sep)) {
+    return sid;
+  }
+  return "nosession";
+}
+
 function spill(original, { cwd, session, toolUseId, keep }) {
   try {
     // null = the root could not be established as ours (a hijacked tempdir
@@ -240,7 +271,7 @@ function spill(original, { cwd, session, toolUseId, keep }) {
     // user chose; the caller drops the cite and compression continues.
     const base = ephemeralRoot(cwd, ".compress-spill");
     if (!base) return null;
-    const dir = path.join(base, session || "nosession");
+    const dir = path.join(base, sanitizeSessionId(base, session));
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const name = String(toolUseId || `t${Date.now()}`).replace(/[^A-Za-z0-9_.-]/g, "_");
     const file = path.join(dir, name);
@@ -251,7 +282,18 @@ function spill(original, { cwd, session, toolUseId, keep }) {
     // Bounded: delete oldest past `keep`. A spill directory that grows without
     // limit is a disk leak in a long session.
     const entries = fs.readdirSync(dir)
-      .map((f) => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs }))
+      .map((f) => {
+        // F18 — an entry can vanish between readdirSync and statSync (a
+        // concurrent spill's own cleanup). An unguarded statSync throws out
+        // of the map into spill()'s outer catch, turning a benign race into
+        // a full spill FAILURE. Sort it oldest-first so it is preferred for
+        // deletion rather than kept.
+        try {
+          return { f, t: fs.statSync(path.join(dir, f)).mtimeMs };
+        } catch {
+          return { f, t: -Infinity };
+        }
+      })
       .sort((a, b) => a.t - b.t);
     for (const e of entries.slice(0, Math.max(0, entries.length - keep))) {
       try { fs.unlinkSync(path.join(dir, e.f)); } catch { /* best effort */ }
@@ -276,7 +318,10 @@ function dedupCheck(text, { cwd, session, tool }) {
   try {
     const base = ephemeralRoot(cwd, ".compress-state");
     if (!base) return false;   // no trusted root → no dedup; never a false HIT
-    const dir = path.join(base, session);
+    // F3 — same untrusted session_id as spill(); "nosession" here just means
+    // dedup degrades to a shared bucket, never a false HIT across sessions
+    // and never a path outside `base`.
+    const dir = path.join(base, sanitizeSessionId(base, session));
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const f = path.join(dir, String(tool).replace(/[^A-Za-z0-9_.-]/g, "_"));
     const h = crypto.createHash("sha256").update(text).digest("hex");

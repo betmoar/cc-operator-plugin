@@ -332,6 +332,30 @@ check "statusline counts a symlink sentinel as blocking, not foreign" "$([ "$SYS
 rm -f "$_SYT"; rm -rf "$P"
 
 ########################################################################
+echo "-- Case: a planted symlink FRAGMENT in verdicts.d/ is refused (F2/F65)"
+# The F65 -L guard landed at the five pending/ sites but never in the
+# evidence-fragment directory. append_fragment() and its reads used plain `-f`,
+# which FOLLOWS a symlink: a planted/merge-corrupted symlink at
+# .operator/verdicts.d/<owner>.md -> arbitrary-file made every verdict row for
+# that owner append THROUGH the link into the target, exit 0, silent. A symlink
+# is never a fragment our CLIs wrote. The write must refuse and the reads must
+# skip it, and the outside target must stay untouched.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+( cd "$P" && bash "$TASK" T-FRAG --owner SESSX >/dev/null 2>&1 )
+_FT="$(mktemp "${TMPDIR:-/tmp}/opstest-fragtgt.XXXXXX")"
+mkdir -p "$P/.operator/verdicts.d"
+ln -s "$_FT" "$P/.operator/verdicts.d/SESSX.md"
+VB0="$(wc -l < "$P/.operator/VERDICTS.md")"
+FOUT="$( cd "$P" && bash "$VERDICT" T-FRAG crit ev PASS --owner SESSX 2>&1 )"; FRC=$?
+check "verdict refuses a symlink fragment (non-zero exit)" "$([ "$FRC" -ne 0 ] && echo 0 || echo 1)"
+check "the refusal names the symlink fragment" "$(printf '%s' "$FOUT" | grep -qi 'symlink' && echo 0 || echo 1)"
+check "no ledger row was written for the symlink fragment" "$([ "$(wc -l < "$P/.operator/VERDICTS.md")" -eq "$VB0" ] && echo 0 || echo 1)"
+check "the symlink's outside target was not written through" "$([ ! -s "$_FT" ] && echo 0 || echo 1)"
+# the symlink must survive (not be launder-converted), so repair is possible
+check "the symlink fragment was not launder-converted" "$([ -L "$P/.operator/verdicts.d/SESSX.md" ] && echo 0 || echo 1)"
+rm -f "$_FT"; rm -rf "$P"
+
+########################################################################
 echo "-- Case 7: ledger cell hygiene — refuse, never corrupt (single-writer schema)"
 # INVARIANT: a VERDICTS row is exactly one line of exactly 4 pipe-delimited
 # cells; the single writer refuses anything that would break that schema.
@@ -394,6 +418,13 @@ check "sessionstart hook emits additionalContext with the id" "$(printf '%s' "$S
 Q="$(newproj)"
 SSQ="$(sed "s|<tmp>|$Q|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"; SSQRC=$?
 check "sessionstart hook silent outside operator projects" "$([ "$SSQRC" -eq 0 ] && [ -z "$SSQ" ] && echo 0 || echo 1)"
+# F14: the three hooks' json_get() python3 branch must render a JSON boolean
+# as true/false (not Python True/False). The runtime path is exercised by the
+# stop_hook_active boolean cases above ("stop_hook_active true -> exit 0");
+# the DRIFT guarantee (all three hooks carry the isinstance(v, bool) coercion)
+# is pinned by validate_plugin's check_guard_parity F14 pin against the real
+# hook files, and its non-vacuity is proven by test_validate_plugin.py's good-
+# tree fixtures (which must carry the marker or the pin fires on them).
 # SessionStart migrates a v1 (blocklist) .operator/.gitignore to the v2
 # allowlist. The v1 scheme tracked by default, so every ephemera directory added
 # since had to be remembered and appended — twice (.lock/ for F05, then
@@ -552,6 +583,36 @@ check "ops-adopt refuses '|' in --owner" "$([ "$PVRC" -ne 0 ] && echo 0 || echo 
 check "ops-adopt refuses a bulk adopt (no ids)" "$([ "$BLRC" -ne 0 ] && echo 0 || echo 1)"
 ( cd "$P" && bash "$ADOPT" --owner SESS-B T-NOPE >/dev/null 2>&1 ); NORC=$?
 check "ops-adopt refuses an id with no open sentinel" "$([ "$NORC" -ne 0 ] && echo 0 || echo 1)"
+# F15: PREV is captured from the untrusted sentinel body and echoed to stdout.
+# A malicious body (traversal/pipe/whitespace/.exempt) must be sanitized to
+# <invalid>, not echoed verbatim — stdout/log-injection-adjacent. The NEW
+# owner is guarded by check_owner_name and is unaffected.
+( cd "$P" && bash "$TASK" T-PREV --owner SESS-A >/dev/null 2>&1 )
+printf 'session_id: ../../evil path|with pipe\n' > "$P/.operator/pending/T-PREV"
+PREVOUT="$( cd "$P" && bash "$ADOPT" --owner SESS-B T-PREV 2>/dev/null )"; PREVRC=$?
+check "F15 ops-adopt sanitizes a malicious PREV body to <invalid>" \
+  "$(printf '%s' "$PREVOUT" | grep -q 'adopted T-PREV: <invalid> -> SESS-B' && echo 0 || echo 1)"
+check "F15 ops-adopt still exits 0 (adoption succeeds; only the display is sanitized)" \
+  "$([ "$PREVRC" -eq 0 ] && echo 0 || echo 1)"
+check "F15 ops-adopt does not echo the raw malicious body" \
+  "$(printf '%s' "$PREVOUT" | grep -q 'evil path|with pipe' && echo 1 || echo 0)"
+# F15/#6: a PREV carrying an ANSI/OSC terminal-control escape (ESC ]0; ...)
+# passes the owner-shape reject-set but would rewrite the terminal title when
+# echoed. The [:cntrl:] arm must catch it -> <invalid>. (final-review #6.)
+printf 'session_id: \033]0;PWNED\007FAKEOWNER\n' > "$P/.operator/pending/T-PREV"
+ESCOUT="$( cd "$P" && bash "$ADOPT" --owner SESS-B T-PREV 2>/dev/null )"
+check "F15 ops-adopt sanitizes a PREV with an ANSI/OSC escape to <invalid>" \
+  "$(printf '%s' "$ESCOUT" | grep -q 'adopted T-PREV: <invalid> -> SESS-B' && echo 0 || echo 1)"
+check "F15 ops-adopt does not echo the raw escape sequence" \
+  "$(printf '%s' "$ESCOUT" | grep -q 'PWNED' && echo 1 || echo 0)"
+# F15 follow-up: an UNOWNED sentinel (opened with no --owner, so no session_id:
+# line) must report <unowned>, NOT <invalid>. Empty PREV is the normal state of
+# a legitimately unowned sentinel, not tampering — conflating them reads as a
+# regression. (Final-review finding on the initial F15.)
+( cd "$P" && bash "$TASK" T-UNOWNED >/dev/null 2>&1 )   # no --owner
+UNOWNEDOUT="$( cd "$P" && bash "$ADOPT" --owner SESS-B T-UNOWNED 2>/dev/null )"
+check "F15 ops-adopt reports <unowned> for an empty-PREV sentinel (not <invalid>)" \
+  "$(printf '%s' "$UNOWNEDOUT" | grep -q 'adopted T-UNOWNED: <unowned> -> SESS-B' && echo 0 || echo 1)"
 ( cd "$P" && bash "$TASK" T-T --owner "a/b" >/dev/null 2>&1 ); OTRC=$?
 check "ops-task refuses '/' in --owner" "$([ "$OTRC" -ne 0 ] && echo 0 || echo 1)"
 # re-opening an open task never silently takes it over
@@ -687,6 +748,47 @@ printf '| a | b | c | injected | PASS |\n| a | b | c | d | e | f | FAIL |\n' >> 
 ( cd "$P" && bash "$VERDICT" --reconcile >/dev/null 2>&1 )
 check "--reconcile refuses a 5-cell row (counts cells, not globs)" "$(! grep -q 'injected' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
 check "--reconcile refuses any over-celled row" "$([ "$(wc -l < "$P/.operator/VERDICTS.md")" = "$RB2" ] && echo 0 || echo 1)"
+rm -rf "$P"
+
+########################################################################
+echo "-- Case 12b: --reconcile restores a long (>512B) conformant row"
+# INVARIANT: a verdict row whose evidence cell exceeds 512 bytes is legal and
+# conformant — the 4-cell schema counts cells, not bytes. But --reconcile read
+# the fragment with `read -r -n 512`, splitting such a row into chunks; each
+# chunk independently failed the 4-cell check and was silently skipped, so the
+# row was NEVER restored to the ledger. This is the issue-#9 long-row blindness
+# class at the reconcile site (retro_gate already used a 1MiB bound). F17.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+# a ~560-byte evidence cell (no pipe, no newline — still exactly 4 cells)
+LONG="$(printf 'e%.0s' $(seq 1 560))"
+mkdir -p "$P/.operator/verdicts.d"
+printf '| T-LONG | crit | %s @abc123 | PASS |\n' "$LONG" >> "$P/.operator/verdicts.d/SESS-LONG.md"
+# sanity: the planted row genuinely exceeds the 512B chunk bound (this is the
+# whole point of the case — a sub-512B row would pass even with the old bound)
+check "premise: long row is >512B" "$([ "$(wc -c < "$P/.operator/verdicts.d/SESS-LONG.md")" -gt 512 ] && echo 0 || echo 1)"
+ROUT="$( cd "$P" && bash "$VERDICT" --reconcile 2>&1 )"; RRC=$?
+check "--reconcile exits 0 with a long row present" "$([ "$RRC" -eq 0 ] && echo 0 || echo 1)"
+check "--reconcile does NOT skip the long row as non-conformant" "$(! printf '%s' "$ROUT" | grep -q 'non-conformant' && echo 0 || echo 1)"
+check "--reconcile restores the long row to VERDICTS.md" "$(grep -q 'T-LONG' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
+rm -rf "$P"
+
+########################################################################
+echo "-- Case 12c: --reconcile aborts on an unreadable VERDICTS.md (F13)"
+# INVARIANT: reconcile is a WRITE to the ledger of record; a ledger that became
+# unreadable mid-reconcile (concurrent access, dropped perms) must ABORT, not
+# report a false '0 restored'. grep's exit 2 was masked by `|| true`, so a
+# readability failure silently restored nothing and still exited 0. F13.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+mkdir -p "$P/.operator/verdicts.d"
+printf '| T-F13 | crit | ev @abc123 | PASS |\n' >> "$P/.operator/verdicts.d/SESS-F13.md"
+# sanity: the fragment row is present and would be restored were the ledger readable
+check "premise: ledger exists" "$([ -f "$P/.operator/VERDICTS.md" ] && echo 0 || echo 1)"
+# make the ledger unreadable, then reconcile MUST abort non-zero (no '0 restored')
+chmod 000 "$P/.operator/VERDICTS.md"
+ROUT="$( cd "$P" && bash "$VERDICT" --reconcile 2>&1 )"; RRC=$?
+chmod 600 "$P/.operator/VERDICTS.md"
+check "--reconcile exits NON-ZERO on an unreadable VERDICTS.md" "$([ "$RRC" -ne 0 ] && echo 0 || echo 1)"
+check "--reconcile does NOT report '0 restored' success on grep failure" "$(! printf '%s' "$ROUT" | grep -q '0 row(s) restored' && echo 0 || echo 1)"
 rm -rf "$P"
 
 ########################################################################
@@ -1282,6 +1384,180 @@ check "zero LOCK_SPINS is refused (no budget collapse, F-B)" "$([ "$(ABORT_BUDGE
 check "RECLAIM_WAIT >= LOCK_SPINS is refused (no broken backoff, F-C)" "$([ "$(ABORT_BUDGET LOCK_SPINS=10 RECLAIM_WAIT=50)" -eq 2 ] && echo 0 || echo 1)"
 # Stamps first: a stamped lock dir is non-empty and survives `rm -rf` otherwise.
 rm -f "$P/.operator/.lock/holder" "$P/.operator/.lock.reclaim/holder" 2>/dev/null || true
+rm -rf "$P" "$TMPD"
+
+########################################################################
+echo "-- Case 21b: the give-up path is serialized by the fallback lock [F6]"
+# lock_acquire has two "proceed unlocked" exits — a CONFIRMED-LIVE holder that
+# outlasts LOCK_LIVE_SPINS, and a reclaim we could not win. Both used to return
+# 0 having acquired NOTHING, so every waiter that timed out in the same window
+# entered the critical section together: the unarbitrated multi-writer pile-up
+# the lock exists to prevent, N-wide. They now queue on $LOCKDIR.fallback.
+#
+# HONESTY, twice over:
+#  · This does NOT make the give-up safe against the live holder. One giver-up
+#    still runs beside it — the accepted liveness trade ("never block the
+#    operator forever"). The fallback reduces N to 1; it does not reach 0.
+#  · The overlap assertion below is a real detector, not a timing coincidence:
+#    each giver-up does an atomic `mkdir` of a WITNESS dir inside its fallback
+#    critical section and holds it for 0.4s. Two overlapping sections mean one
+#    of those mkdirs fails, deterministically, regardless of scheduling. What it
+#    cannot prove is the converse at every skew — it proves the mutex holds for
+#    the overlaps this suite actually produces.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+LK="$P/.operator/.lock"
+TMPD="$(newproj)"
+
+# The unit probe evals the real LOCK BLOCK, like case 21(f) — no reimplementation.
+cat > "$TMPD/fb.sh" <<'FBPROBE'
+set -eu
+OPDIR=".operator"; LOCKDIR="$OPDIR/.lock"
+eval "$(awk '/^# >>> LOCK BLOCK/,/^# <<< LOCK BLOCK/' "$1")"
+case "$2" in
+  cycle)   # a plain acquire/release leaves nothing behind
+    fallback_acquire
+    [ "$FALLBACK_HELD" = "1" ] || { echo "NOT-HELD"; exit 1; }
+    [ -s "$FALLBACK_DIR/holder" ] || { echo "NO-STAMP"; exit 1; }
+    # A non-empty stamp is not enough: it must name US. `-s` alone passes on a
+    # reclaim that removes the dead holder's dir and recreates it WITHOUT
+    # restoring ownership — the dir would be held, stamped, and owned by nobody,
+    # and every later reclaim-vs-live judgement would read the wrong record.
+    # Checked here rather than in the end-to-end cases: the stamp exists only
+    # while the lock is HELD, and those observe the process from outside, after
+    # it exits. This is the one seat that can see mid-hold.
+    case "$(cat "$FALLBACK_DIR/holder")" in *" $$") ;; *) echo "STAMP-NOT-MINE"; exit 1 ;; esac
+    fallback_release
+    [ -d "$FALLBACK_DIR" ] && { echo "NOT-RELEASED"; exit 1; }
+    echo OK ;;
+  reclaim) # a CRASHED giver-up's dir is reclaimed — staleness-free
+    fallback_acquire
+    [ "$FALLBACK_HELD" = "1" ] || { echo "NOT-RECLAIMED"; exit 1; }
+    fallback_release
+    echo OK ;;
+  live)    # a LIVE giver-up's dir is never stolen, and the wait is bounded
+    # Giving up on the fallback WARNS on stderr, and the harness folds stderr
+    # into the probe's output — keep the channel clean so "OK" means OK.
+    fallback_acquire 2>/dev/null
+    [ "$FALLBACK_HELD" = "0" ] || { echo "STOLE-LIVE"; exit 1; }
+    echo OK ;;
+  witness) # hold the fallback, then prove no one else is inside it
+    fallback_acquire
+    mkdir "$OPDIR/.witness" 2>/dev/null || { echo OVERLAP; exit 1; }
+    sleep 0.4
+    rmdir "$OPDIR/.witness"
+    fallback_release
+    echo OK ;;
+esac
+FBPROBE
+
+FBOUT="$( cd "$P" && bash "$TMPD/fb.sh" "$SCRIPTS/ops-verdict.sh" cycle 2>&1 )"
+check "fallback lock: acquire stamps, release leaves no dir" "$([ "$FBOUT" = "OK" ] && echo 0 || echo 1)"
+
+# A dead holder. A one-shot claim dir with no reclaim would dangle here forever
+# and wedge every later giver-up — the unexpirable-claim mistake this block has
+# already made once (.lock.reclaim, case 16).
+sleep 0.1 & FBDEAD=$!; wait "$FBDEAD" 2>/dev/null || true
+mkdir -p "$LK.fallback"; printf '%s %s %s\n' "${HOSTNAME:-nohost}" "${UID:-0}" "$FBDEAD" > "$LK.fallback/holder"
+FBOUT="$( cd "$P" && bash "$TMPD/fb.sh" "$SCRIPTS/ops-verdict.sh" reclaim 2>&1 )"
+check "fallback lock: a crashed giver-up's dir is reclaimed (staleness-free)" "$([ "$FBOUT" = "OK" ] && echo 0 || echo 1)"
+check "fallback lock: reclaimed and then released — nothing left behind" "$([ ! -d "$LK.fallback" ] && echo 0 || echo 1)"
+
+# A LIVE holder is waited on, never stolen, and the wait EXPIRES: an unbounded
+# one here would be a deadlock inside the code whose whole job is to degrade.
+sleep 300 & FBLIVE=$!
+mkdir -p "$LK.fallback"; printf '%s %s %s\n' "${HOSTNAME:-nohost}" "${UID:-0}" "$FBLIVE" > "$LK.fallback/holder"
+SEC0=$(date +%s)
+FBOUT="$( cd "$P" && FALLBACK_SPINS=10 bash "$TMPD/fb.sh" "$SCRIPTS/ops-verdict.sh" live 2>&1 )"
+SEC1=$(date +%s)
+check "fallback lock: a LIVE giver-up's dir is not stolen" "$([ "$FBOUT" = "OK" ] && echo 0 || echo 1)"
+check "fallback lock: waiting on a live holder is bounded (<10s at spins=10)" "$([ "$((SEC1 - SEC0))" -lt 10 ] && echo 0 || echo 1)"
+FBHOLD="$(cat "$LK.fallback/holder" 2>/dev/null || true)"
+FBOK=1; case "$FBHOLD" in *" $FBLIVE") FBOK=0 ;; esac
+check "fallback lock: live holder still owns it after the waiter gave up" "$FBOK"
+kill "$FBLIVE" 2>/dev/null || true; wait "$FBLIVE" 2>/dev/null || true
+rm -f "$LK.fallback/holder"; rm -rf "$LK.fallback"
+
+# Three concurrent givers-up. Overlap is caught by the witness mkdir, not by
+# reading a clock.
+OVERLAP=0
+for _i in 1 2 3; do
+  ( cd "$P" && bash "$TMPD/fb.sh" "$SCRIPTS/ops-verdict.sh" witness > "$TMPD/w$_i" 2>&1 ) &
+done
+wait
+for _i in 1 2 3; do
+  [ "$(cat "$TMPD/w$_i" 2>/dev/null)" = "OK" ] || OVERLAP=$((OVERLAP + 1))
+done
+check "fallback lock: 3 concurrent givers-up never overlap (witness mkdir)" "$([ "$OVERLAP" -eq 0 ] && echo 0 || echo 1)"
+check "fallback lock: nothing left behind after the 3-way run" "$([ ! -d "$LK.fallback" ] && [ ! -d "$P/.operator/.witness" ] && echo 0 || echo 1)"
+
+# END-TO-END, and this is the constraint that matters most: a giver-up must
+# never set LOCK_HELD or touch $LOCKDIR. lock_release would then rm the LIVE
+# holder's dir on exit — precisely the F03 displacement the confirmed-alive
+# branch was written to forbid. Real ops-verdict.sh, real live holder.
+sleep 300 & FBLIVE2=$!
+mkdir -p "$LK"; printf '%s %s %s\n' "${HOSTNAME:-nohost}" "${UID:-0}" "$FBLIVE2" > "$LK/holder"
+( cd "$P" && bash "$TASK" T-FB --owner SESS-A >/dev/null 2>&1 )
+( cd "$P" && LOCK_LIVE_SPINS=5 FALLBACK_SPINS=10 bash "$VERDICT" T-FB crit ev PASS --owner SESS-A >/dev/null 2>&1 )
+FBRC=$?
+check "give-up path: the writer still completes (degrade, never hang)" "$([ "$FBRC" -eq 0 ] && echo 0 || echo 1)"
+check "give-up path: verdict actually recorded" "$(grep -Eq '^\| T-FB \| crit \| ev @[^ |]+ \| PASS \|$' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
+FBHOLD="$(cat "$LK/holder" 2>/dev/null || true)"
+FBOK=1; case "$FBHOLD" in *" $FBLIVE2") FBOK=0 ;; esac
+check "give-up path: the LIVE holder's real lock is untouched (not displaced)" "$([ -d "$LK" ] && [ "$FBOK" = "0" ] && echo 0 || echo 1)"
+check "give-up path: its fallback lock was released on exit" "$([ ! -d "$LK.fallback" ] && echo 0 || echo 1)"
+
+# Every assertion above holds whether or not lock_acquire ever CALLS
+# fallback_acquire: one giver-up against one live holder completes, records, and
+# leaves nothing behind in both worlds. Measured — deleting all four call sites
+# (2 per CLI, in parity so the drift check stays silent) left the suite at
+# 588/0. The mechanism was tested only through the fb.sh probe, which evals the
+# LOCK BLOCK and calls fallback_acquire DIRECTLY; nothing exercised the wiring.
+#
+# So observe the TAKE, not the release. Pre-plant a fallback dir stamped with a
+# DEAD pid: wired, the giver-up judges it dead, reclaims it, takes it, and
+# releases on exit — the dir is GONE. Unwired, nobody looks at it — it SURVIVES.
+# A dead stamp rather than a live one on purpose: the two worlds must differ in
+# the END STATE, not in elapsed time, or the case is a load-flaky timing assert.
+sleep 300 & FBDEAD=$!
+kill "$FBDEAD" 2>/dev/null || true; wait "$FBDEAD" 2>/dev/null || true   # now a confirmed-dead pid
+mkdir -p "$LK" "$LK.fallback"
+printf '%s %s %s\n' "${HOSTNAME:-nohost}" "${UID:-0}" "$FBLIVE2" > "$LK/holder"
+printf '%s %s %s\n' "${HOSTNAME:-nohost}" "${UID:-0}" "$FBDEAD" > "$LK.fallback/holder"
+( cd "$P" && bash "$TASK" T-FB2 --owner SESS-A >/dev/null 2>&1 )
+( cd "$P" && LOCK_LIVE_SPINS=5 FALLBACK_SPINS=30 bash "$VERDICT" T-FB2 crit ev PASS --owner SESS-A >/dev/null 2>&1 )
+check "give-up path: the fallback lock is actually TAKEN (dead holder reclaimed, not ignored)" \
+  "$([ ! -d "$LK.fallback" ] && echo 0 || echo 1)"
+check "give-up path: the writer still records while reclaiming the fallback" \
+  "$(grep -Eq '^\| T-FB2 \| crit \| ev @[^ |]+ \| PASS \|$' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
+
+kill "$FBLIVE2" 2>/dev/null || true; wait "$FBLIVE2" 2>/dev/null || true
+rm -f "$LK/holder" "$LK.fallback/holder" 2>/dev/null || true
+
+# --- the SAME guarantee on the --reconcile path -----------------------------
+# `trap` REPLACES a handler for its signal; it does not stack. --reconcile calls
+# lock_acquire (which may install `lock_release; fallback_release`) and THEN
+# installs its own tempfile-cleanup trap. Naming only lock_release there silently
+# dropped fallback_release for the rest of the process, leaking $LOCKDIR.fallback
+# on every reconcile that ran under contention — the exact leak the two acquire
+# sites carry a comment against. The end-to-end case above could not see it: it
+# exercises the ordinary write path, which installs no trap of its own.
+# Asserted on the REAL script against a REAL live holder, because the defect is
+# in trap composition and a source-grep for the handler string would pass on a
+# trap that never runs.
+sleep 300 & FBLIVE3=$!
+mkdir -p "$LK"; printf '%s %s %s\n' "${HOSTNAME:-nohost}" "${UID:-0}" "$FBLIVE3" > "$LK/holder"
+( cd "$P" && LOCK_LIVE_SPINS=3 bash "$VERDICT" --reconcile >/dev/null 2>&1 )
+RECRC=$?
+check "--reconcile under contention: still completes (degrade, never hang)" \
+  "$([ "$RECRC" -eq 0 ] && echo 0 || echo 1)"
+check "--reconcile under contention: its fallback lock is released on exit" \
+  "$([ ! -d "$LK.fallback" ] && echo 0 || echo 1)"
+FBHOLD="$(cat "$LK/holder" 2>/dev/null || true)"
+FBOK=1; case "$FBHOLD" in *" $FBLIVE3") FBOK=0 ;; esac
+check "--reconcile under contention: the LIVE holder's real lock is untouched" \
+  "$([ -d "$LK" ] && [ "$FBOK" = "0" ] && echo 0 || echo 1)"
+kill "$FBLIVE3" 2>/dev/null || true; wait "$FBLIVE3" 2>/dev/null || true
+rm -f "$LK/holder" "$LK.fallback/holder" 2>/dev/null || true
 rm -rf "$P" "$TMPD"
 
 ########################################################################
@@ -1995,6 +2271,67 @@ mkjournal 12 5
 agequiet "$WFDIR/journal.jsonl" 1200
 check "unbalanced journal quiet past STALL_SEC (1200s) → no wf segment (failed-run backstop)" \
   "$([ -z "$(render "$WFSESS" "$WFPROJ")" ] && echo 0 || echo 1)"
+# --- F12: STALL_SEC is validated, so a typo cannot silently kill the window ---
+# STALL_SEC is env-overridable and lands in `[ "$stall" -gt "$live" ]`. Unvalidated,
+# STALL_SEC=abc made that test ERROR (status 2) under the caller's 2>/dev/null, the
+# && chain short-circuited, the window never extended, and the segment of a live
+# unbalanced run flapped OFF mid-run — measured: the same payload rendered '' with
+# STALL_SEC=abc and 'wf 5/12' with STALL_SEC=900. Now: warn on stderr, use 900.
+mkjournal 12 5
+agequiet "$WFDIR/journal.jsonl" 300
+STALLBAD="$(STALL_SEC=abc sljson "$WFSESS" "$WFPROJ" | STALL_SEC=abc "$BASH_ABS" "$SL" 2>/dev/null \
+  | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g')"
+check "STALL_SEC=abc → the stall window still applies (no silent mid-run flap, F12)" \
+  "$([ "$STALLBAD" = "wf 5/12" ] && echo 0 || echo 1)"
+# ...and it says so, LOUD, on stderr — the knob is mistyped, not merely defaulted.
+# Validated at FILE scope on purpose: the wf caller wraps the function in
+# 2>/dev/null, so a warning raised inside it is swallowed and fails silent again.
+STALLERR="$(sljson "$WFSESS" "$WFPROJ" | STALL_SEC=abc "$BASH_ABS" "$SL" 2>&1 >/dev/null)"
+check "STALL_SEC=abc warns on stderr (fail loud, like the lock budgets) (F12)" \
+  "$(printf '%s' "$STALLERR" | grep -q 'STALL_SEC is not a positive integer' && echo 0 || echo 1)"
+# A zero/negative-shaped value is refused the same way (0 would collapse the
+# window, which is the knob doing the opposite of its job).
+STALLZERO="$(sljson "$WFSESS" "$WFPROJ" | STALL_SEC=0 "$BASH_ABS" "$SL" 2>/dev/null \
+  | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g')"
+check "STALL_SEC=0 → refused, falls back to 900 (F12)" \
+  "$([ "$STALLZERO" = "wf 5/12" ] && echo 0 || echo 1)"
+# A VALID override still wins: 100 < the 300s quiet period → the run reads dead.
+STALLOK="$(sljson "$WFSESS" "$WFPROJ" | STALL_SEC=100 "$BASH_ABS" "$SL" 2>/dev/null \
+  | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g')"
+check "a VALID STALL_SEC override is still honored (100 → no wf segment) (F12)" \
+  "$([ -z "$STALLOK" ] && echo 0 || echo 1)"
+
+# --- F11: the started/result greps run ONCE per render, not twice -------------
+# The stall decision and the wf segment needed the identical grep pair over the
+# identical file; computing them twice doubled the render's external-process cost
+# for no new information. The counts now come back from the liveness check.
+# Structural, because the observable output is identical either way: reverting the
+# fix re-adds a second `grep -c '"type":"started"'` call site.
+SLSTARTED="$(grep -c "grep -c '\"type\":\"started\"'" "$SL")"
+check "statusline greps the journal's started lines from ONE site (F11)" \
+  "$([ "$SLSTARTED" -eq 1 ] && echo 0 || echo 1)"
+# ...and the ratio itself is unchanged by the refactor (the counts still arrive).
+mkjournal 7 3
+check "the returned counts still render the same ratio 'wf 3/7' (F11)" \
+  "$([ "$(render "$WFSESS" "$WFPROJ")" = "wf 3/7" ] && echo 0 || echo 1)"
+
+# --- F9: the stat-flavor probe runs ONCE per render, not once per mtime call --
+# Every call site is `$(mtime …)` — a SUBSHELL — so the `_STAT_KIND` assignment
+# inside mtime died with it and the flavor was re-detected on every call (~3
+# stats each). Measured on a 3-journal session: 9 stat invocations before, 5
+# after. The probe is now its own function, called from glob_newest_live_journal's
+# own scope. Structural + behavioral: mtime must not contain the probe, and the
+# ratio must still render (a broken probe reads every mtime as 0 → nothing live).
+check "the stat-flavor probe is a separate function, not inside mtime (F9)" \
+  "$(awk '/^mtime\(\)/{inm=1} inm && /_STAT_KIND=(gnu|bsd|none)/{bad=1} /^}/{inm=0} END{exit bad?1:0}' "$SL" \
+     && echo 0 || echo 1)"
+check "glob_newest_live_journal probes the stat flavor once per render (F9)" \
+  "$(awk '/^glob_newest_live_journal\(\)/{ing=1} ing && /^ *stat_probe/{ok=1} END{exit ok?0:1}' "$SL" \
+     && echo 0 || echo 1)"
+mkjournal 12 5
+check "mtime still resolves after the probe split (live run renders) (F9)" \
+  "$([ "$(render "$WFSESS" "$WFPROJ")" = "wf 5/12" ] && echo 0 || echo 1)"
+
 # Missing journal entirely → nothing (the fail-toward-silence default).
 : > "$WFDIR/journal.jsonl"   # empty: zero started → no ratio
 check "empty journal (0 started) → no wf segment" \
@@ -2106,6 +2443,24 @@ check "B10.1 --census counts code-loc=3 (non-blank lines only)" "$(printf '%s' "
 B10NG="$(mktemp -d "${TMPDIR:-/tmp}/opstest.XXXXXX")"
 (cd "$B10NG" && bash "$SCRIPTS/ops-backlog.sh" --census 2>/dev/null); B10NGRC=$?
 check "B10.1 --census on a non-git dir → non-zero" "$([ "$B10NGRC" != 0 ] && echo 0 || echo 1)"
+
+# B10.1f (F7) — a CORRUPTED git index must make --census REFUSE, not print a
+# confident 'files: 0'. git rev-parse --git-dir passes on a corrupt index (the
+# repo exists), but `git ls-files -z` fatals — and under `set -eu` without
+# pipefail that fatal was masked by the trailing tr/wc into a silent 0, the
+# "silently wrong is worse than refusing" failure the file's own header names.
+# pipefail makes the pipeline inherit ls-files' non-zero, and `set -e` aborts.
+B10FI="$(newproj)"
+( cd "$B10FI" && git init -q && git config user.email t@t && git config user.name t )
+printf 'a = 1\n' > "$B10FI/x.py"
+( cd "$B10FI" && git add -A && git commit -qm base >/dev/null 2>&1 )
+# corrupt the index: git rev-parse still passes, git ls-files fatals (rc 128)
+printf 'garbage-not-an-index' > "$B10FI/.git/index"
+( cd "$B10FI" && bash "$SCRIPTS/ops-backlog.sh" --census 2>/dev/null ); B10FIRC=$?
+check "B10.1f (F7) --census on a corrupted index → non-zero (not 'files: 0')" \
+  "$([ "$B10FIRC" != 0 ] && echo 0 || echo 1)"
+# restore a real index so the temp repo is not left in a broken state
+( cd "$B10FI" && git read-tree HEAD 2>/dev/null ) || true
 
 # B10.2 — a filename containing a SPACE must not vanish from the count. Bare
 # `xargs` word-splits on any whitespace, so `my file.py` became two bogus args,
@@ -2603,6 +2958,45 @@ LRBAR2="$(printf '{"session_id":"SESS-A","cwd":"%s","workspace":{"project_dir":"
 check "statusline counts a long mine DEVIATION with no trailing newline (#10 review)" \
   "$(printf '%s' "$LRBAR2" | grep -q 'dev\[1\]' && echo 0 || echo 1)"
 
+# --- F10: the bar's NUL probe reads the TAIL WINDOW, never the whole ledger ---
+# The probe sat BEFORE the O(tail) reverse scan and read the whole file (capped
+# 4096x512B = 2MB), which re-introduced exactly the O(n) cost the tail scan
+# exists to avoid — measured ~200x the tail's own cost on a 658KB ledger, on a
+# ~300ms timer. Only rows inside the window can change the count, so probing the
+# window is equivalent for everything the bar reports.
+# STRUCTURAL first: a timing assertion is flaky under load, but re-adding the
+# whole-file redirect is a textual regression. Both probe/scan reads must be fed
+# by `tail`; no `done < "$f"` remains in scan_deviations_bar.
+check "no whole-file read survives in scan_deviations_bar (F10)" \
+  "$(awk '/^scan_deviations_bar\(\)/{ins=1} ins && /done < "\$f"/{bad=1} /^}$/{ins=0} END{exit bad?1:0}' \
+     "$SCRIPTS/statusline.sh" && echo 0 || echo 1)"
+# shellcheck disable=SC2016  # `\$f` is the LITERAL text being grepped for in the
+# renderer's source; expanding it here would search for this suite's own $f.
+check "the bar's NUL probe is fed by tail -n 256, like the scan (F10)" \
+  "$([ "$(grep -c 'done < <(tail -n 256 "\$f" 2>/dev/null)' "$SCRIPTS/statusline.sh")" -eq 2 ] && echo 0 || echo 1)"
+# SEMANTIC: a NUL inside the tail window still classifies the ledger as corrupt,
+# so no dev[ renders — the fail-toward-silence rule is unchanged where observable.
+F10DEC="$DEVPROJ/.operator/DECISIONS.md"
+{ printf '# Decisions\n'
+  printf '2026-08-05 | e.t | DEVIATION | [sid:SESS-A] mine | r\n'
+  printf '2026-08-05 | e.t | DEVIATION | [sid:SESS-A] nul\000here | r\n'; } > "$F10DEC"
+F10NUL="$(printf '{"session_id":"SESS-A","cwd":"%s","workspace":{"project_dir":"%s"}}' "$DEVPROJ" "$DEVPROJ" \
+  | "$BASH_ABS" "$SCRIPTS/statusline.sh" 2>/dev/null | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g')"
+check "a NUL inside the tail window still renders no dev[ (F10 semantics kept)" \
+  "$(printf '%s' "$F10NUL" | grep -q 'dev\[' || echo 0)"
+# ...and a LARGE clean ledger still counts exactly the in-window deviations: the
+# count is the same one the pre-fix whole-file probe produced (measured: dev[1]).
+{ printf '# Decisions\n'
+  i=0; while [ "$i" -lt 4000 ]; do i=$((i+1))
+    printf '2026-08-05 | e.t | NOTE | filler %s | r\n' "$i"
+  done
+  printf '2026-08-05 | e.t | DEVIATION | [sid:SESS-A] mine-late | r\n'; } > "$F10DEC"
+F10BIG="$(printf '{"session_id":"SESS-A","cwd":"%s","workspace":{"project_dir":"%s"}}' "$DEVPROJ" "$DEVPROJ" \
+  | "$BASH_ABS" "$SCRIPTS/statusline.sh" 2>/dev/null | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g')"
+check "a large clean ledger still counts its in-window deviation as dev[1] (F10)" \
+  "$(printf '%s' "$F10BIG" | grep -q 'dev\[1\]' && echo 0 || echo 1)"
+rm -f "$F10DEC"
+
 rm -f "$DEC" "$ATT"; rmdir "$ATT" 2>/dev/null || true
 # Restore a real (empty) DECISIONS.md for any later use.
 printf '# Decisions\n' > "$DEC"
@@ -2938,6 +3332,22 @@ check "G2 --defer recomputes: no owned sentinel left → marker removed" \
 check "G2 the recompute never touches .armed/\$S.exempt (G3 grant)" \
   "$([ -e "$P/.operator/.armed/$S.exempt" ] && echo 0 || echo 1)"
 rm -f "$P/.operator/.armed/$S.exempt"
+
+# F1 — a CORRUPTED sentinel body naming a G3 grant ("session_id: victim.exempt")
+# must not parse as a valid owner: check_owner_name (the writer) already rejects
+# *.exempt, but sentinel_owner() (the untrusted-body parser) did not mirror it,
+# so the smuggled name reached recompute_arm_marker and `rm -f
+# .armed/victim.exempt` deleted another session's real G3 exemption grant
+# (issue #30). Plant the victim's grant, then run a verdict on a task whose
+# body claims that reserved name and carries NO --owner (forcing the parser's
+# reject-set to be what's tested).
+: > "$P/.operator/.armed/victim.exempt"
+( cd "$P" && bash "$TASK" g2f1 --owner "$S" >/dev/null 2>&1 )
+printf 'session_id: victim.exempt\n' > "$P/.operator/pending/g2f1"
+( cd "$P" && bash "$VERDICT" g2f1 crit ev PASS >/dev/null 2>&1 )
+check "F1 a sentinel body naming a G3 grant is rejected as unowned" \
+  "$([ -e "$P/.operator/.armed/victim.exempt" ] && echo 0 || echo 1)"
+rm -f "$P/.operator/.armed/victim.exempt" "$P/.operator/pending/g2f1"
 
 # ops-adopt.sh re-creates the marker for the NEW owner — the recovery the deny
 # message names verbatim (stale-false mitigation 1).
@@ -3355,6 +3765,35 @@ check "#34 a current bin/ is NOT rewritten (the probe is staleness, not a timer)
   "$([ "$STALE_MTIME_BEFORE" = "$(ls -l "$STALEP/.operator/bin/ops-task.sh" 2>/dev/null)" ] && echo 0 || echo 1)"
 rm -rf "$STALEP"
 
+echo "-- Case: SessionStart replaces bin/ CLIs ATOMICALLY — the inode changes (F5)"
+# The upgrade used to write each CLI in place with `cp` (O_TRUNC, SAME inode), so
+# a bash concurrently mid-execution of the OLD file could be truncated (the F5
+# defect: truncation between LOCK_HELD=1 and the EXIT trap in ops-verdict.sh
+# leaves the lock held with no cleanup). The fix writes a temp file then `mv`s it
+# over the target — `mv` swaps the inode, so a concurrent reader keeps its old
+# inode. A changed inode across an upgrade is therefore the direct evidence of
+# atomic replace rather than in-place truncation.
+INOP="$(newproj)"
+( cd "$INOP" && git init -q . 2>/dev/null && "$BASH_ABS" "$SCRIPTS/ops-init.sh" >/dev/null 2>&1 )
+# Plant an OLD copy, note its inode, and force an upgrade via a stale stamp.
+printf '#!/usr/bin/env bash\n# STALE COPY\n' > "$INOP/.operator/bin/ops-verdict.sh"
+printf '0.1.0-old\n' > "$INOP/.operator/.version"
+_old_ino="$(stat -f '%i' "$INOP/.operator/bin/ops-verdict.sh" 2>/dev/null)"
+sed "s|<tmp>|$INOP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
+_new_ino="$(stat -f '%i' "$INOP/.operator/bin/ops-verdict.sh" 2>/dev/null)"
+check "F5 the upgraded bin/ CLI has a NEW inode (atomic replace, not in-place truncation)" \
+  "$([ -n "$_old_ino" ] && [ -n "$_new_ino" ] && [ "$_old_ino" != "$_new_ino" ] && echo 0 || echo 1)"
+check "F5 the upgraded bin/ CLI is byte-identical to the plugin's copy" \
+  "$(cmp -s "$INOP/.operator/bin/ops-verdict.sh" "$SCRIPTS/ops-verdict.sh" && echo 0 || echo 1)"
+# Steady state (version now matches, nothing stale): no rewrite, so the inode is
+# stable — proving the inode-change above was earned by a real upgrade, not by a
+# rewrite-on-every-session.
+_cur_ino="$(stat -f '%i' "$INOP/.operator/bin/ops-verdict.sh" 2>/dev/null)"
+sed "s|<tmp>|$INOP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
+check "F5 steady-state (version matches) does NOT rewrite, so the inode is stable" \
+  "$([ -n "$_cur_ino" ] && [ "$_cur_ino" = "$(stat -f '%i' "$INOP/.operator/bin/ops-verdict.sh" 2>/dev/null)" ] && echo 0 || echo 1)"
+rm -rf "$INOP"
+
 echo "-- Case: the SessionStart v1→v2 migration announces itself (#32)"
 # The migration REPLACES a file the user may have edited, and the .v1.bak it
 # leaves is itself hidden by the new bare `*` — so before this, a project with a
@@ -3438,6 +3877,42 @@ check "init backup blocked: it does NOT claim it migrated" \
 check "init backup blocked: the refusal names the path to fix" \
   "$(printf '%s' "$INITFOUT" | grep -q 'gitignore.v1.bak' && echo 0 || echo 1)"
 rm -rf "$INITF"
+
+echo "-- Case: the migration REFUSES a .v1.bak that is a symlink to a regular file (F4)"
+# `-f` FOLLOWS symlinks, so a symlink-to-regular passed the old "refuse if
+# non-regular" guard and `cp` then overwrote the LINK'S TARGET instead of
+# writing a real backup — silently clobbering whatever the symlink pointed at.
+# The guard must refuse on `-L` before falling back to the `-f` check.
+MIGL="$(newproj)"
+mkdir -p "$MIGL/.operator"
+printf 'sensitive target contents\n' > "$MIGL/sensitive-target.txt"
+printf '# cc-operator gitignore (v1)\nbin/\n!my-own-rule.md\n' > "$MIGL/.operator/.gitignore"
+ln -s "$MIGL/sensitive-target.txt" "$MIGL/.operator/.gitignore.v1.bak"
+MIGLOUT="$(sed "s|<tmp>|$MIGL|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+check "symlink backup blocked: the sensitive target is untouched" \
+  "$(grep -q 'sensitive target contents' "$MIGL/sensitive-target.txt" && echo 0 || echo 1)"
+check "symlink backup blocked: the user's v1 rule survives" \
+  "$(grep -q 'my-own-rule' "$MIGL/.operator/.gitignore" && echo 0 || echo 1)"
+check "symlink backup blocked: the hook does NOT claim a migration happened" \
+  "$(printf '%s' "$MIGLOUT" | grep -q 'MIGRATED' && echo 1 || echo 0)"
+check "symlink backup blocked: the refusal is reported, not silent" \
+  "$(printf '%s' "$MIGLOUT" | grep -q 'REFUSED' && echo 0 || echo 1)"
+rm -rf "$MIGL"
+
+echo "-- Case: ops-init also refuses a .v1.bak symlink to a regular file (F4)"
+INITL="$(newproj)"
+mkdir -p "$INITL/.operator"
+printf 'sensitive target contents\n' > "$INITL/sensitive-target.txt"
+printf '# cc-operator gitignore (v1)\nbin/\n!my-own-rule.md\n' > "$INITL/.operator/.gitignore"
+ln -s "$INITL/sensitive-target.txt" "$INITL/.operator/.gitignore.v1.bak"
+INITLOUT="$( ( cd "$INITL" || exit 1; "$BASH_ABS" "$SCRIPTS/ops-init.sh" ) 2>&1 || true )"
+check "init symlink backup blocked: the sensitive target is untouched" \
+  "$(grep -q 'sensitive target contents' "$INITL/sensitive-target.txt" && echo 0 || echo 1)"
+check "init symlink backup blocked: the user's v1 rule survives" \
+  "$(grep -q 'my-own-rule' "$INITL/.operator/.gitignore" && echo 0 || echo 1)"
+check "init symlink backup blocked: it does NOT claim it migrated" \
+  "$(printf '%s' "$INITLOUT" | grep -q 'migrated ' && echo 1 || echo 0)"
+rm -rf "$INITL"
 
 echo "-- Case: ops-verdict refuses a non-regular entry BEFORE writing a row"
 # `retro_gate` tested `-e`, so a directory at pending/<id> read as an armed

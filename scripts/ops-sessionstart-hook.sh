@@ -39,7 +39,12 @@ try:
 except Exception:
     sys.exit(0)
 v = d.get(sys.argv[1], "")
-print("" if v is None else v)
+if isinstance(v, bool):
+    print("true" if v else "false")
+elif v is None:
+    print("")
+else:
+    print(v)
 ' "$1" 2>/dev/null
       ;;
   esac
@@ -157,18 +162,32 @@ if [ -n "$_newver" ] && { [ "$_newver" != "$_oldver" ] || _bin_stale; }; then
   # artifacts tracking the installed plugin version). mkdir the bin/ dir first
   # (ops-init does; without it a project whose .operator/bin was never created
   # stamps itself current while installing nothing). Track whether EVERY copy
-  # succeeded and ONLY re-stamp then: a failed/truncated cp (ENOSPC, quota)
+  # succeeded and ONLY re-stamp then: a failed/truncated copy (ENOSPC, quota)
   # must leave the OLD stamp so the next session retries — a partial refresh is
   # retried, not silently kept as "current" with truncated CLIs (CR3/H2, code-
   # review 2026-08-04). Best-effort for the banner; the stamp is the contract.
+  #
+  # ATOMIC REPLACE (F5): each CLI is written to a temp file then `mv`-ed over
+  # the target — never an in-place `cp` into `.operator/bin/<tool>`. `mv` swaps
+  # the inode, so a bash concurrently mid-execution of the OLD file keeps
+  # reading the old inode from its open fd and is not truncated (an in-place
+  # O_TRUNC cp races that reader: truncation between LOCK_HELD=1 and the EXIT
+  # trap in ops-verdict.sh leaves the lock held with no cleanup). The temp lives
+  # in the same .operator/bin/ dir so the rename is same-filesystem; the mode
+  # cp produced is preserved because mv keeps the temp's mode, and chmod +x is
+  # applied to the temp BEFORE the rename. The temp is removed on any failure so
+  # no `.tmp.$$` litter survives a partial refresh.
   _upgrade_ok=1
   if [ -d "$_ssdir" ] && mkdir -p "$cwd/.operator/bin" 2>/dev/null; then
     for _tool in $_OPS_TOOLS; do
       [ -f "$_ssdir/$_tool" ] || continue
-      if cp "$_ssdir/$_tool" "$cwd/.operator/bin/$_tool" 2>/dev/null \
-         && chmod +x "$cwd/.operator/bin/$_tool" 2>/dev/null; then
+      _tmp="$cwd/.operator/bin/.$_tool.tmp.$$"
+      if cp "$_ssdir/$_tool" "$_tmp" 2>/dev/null \
+         && chmod +x "$_tmp" 2>/dev/null \
+         && mv -f "$_tmp" "$cwd/.operator/bin/$_tool" 2>/dev/null; then
         :
       else
+        rm -f "$_tmp" 2>/dev/null
         _upgrade_ok=0
         echo "operator: warning — upgrade copy of $_tool failed; will retry next session" >&2
       fi
@@ -231,7 +250,10 @@ if [ -f "$_gi" ] && ! grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi" 2
   # (measured 2026-08-12). That is issue #32's own failure, one layer down.
   # Never `set -e` here: a hook that dies costs the session its id injection,
   # which is worse than an unmigrated gitignore. Hence explicit branching.
-  if [ -e "$_gi.v1.bak" ] && [ ! -f "$_gi.v1.bak" ]; then
+  # A symlink must be refused even when it resolves to a regular file: `-f`
+  # follows symlinks, so a symlink-to-regular passed this guard and `cp`
+  # then overwrote the link's target instead of a real backup.
+  if [ -L "$_gi.v1.bak" ] || { [ -e "$_gi.v1.bak" ] && [ ! -f "$_gi.v1.bak" ]; }; then
     _gi_backup_failed=1
   elif ! cp "$_gi" "$_gi.v1.bak" 2>/dev/null; then
     _gi_backup_failed=1

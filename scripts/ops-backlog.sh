@@ -24,7 +24,12 @@
 #
 # Usage: run from the project root (cwd):
 #   ops-backlog.sh --census
-set -eu
+# `pipefail`: the census pipelines are `git ls-files -z | tr | wc`. Without it a
+# failing `git ls-files` (corrupted index, permission error) is masked by the
+# trailing wc and reported as a confident count of 0 — the "silently wrong is
+# worse than refusing" failure the comment below names. The whole file's only
+# pipelines are the three census ones, so pipefail has no masking side-effects.
+set -euo pipefail
 
 die() { echo "ops-backlog: $1" >&2; exit 2; }
 

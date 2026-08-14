@@ -309,6 +309,119 @@ console.log("-- Case: ephemera are self-ignoring and never materialize .operator
   fs.rmSync(path.join(tmpBase, key), { recursive: true, force: true });
 }
 
+// ── F3: a traversal session_id must not escape the spill root ──────────────
+console.log("-- Case: F3 traversal session_id stays inside the spill root");
+{
+  const traversalRes = run({
+    tool_name: "Bash",
+    tool_use_id: "toolu_traversal",
+    session_id: "../../escaped",
+    tool_input: { command: "npm test" },
+    tool_response: { stdout: big, stderr: "" },
+  });
+  const tText = traversalRes?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
+  const tm = tText.match(/\.operator\/\.compress-spill\/[^\s\]]+/);
+  ok(tm != null, "a traversal session_id still elides and cites a spill");
+  if (tm) {
+    const spillRoot = path.resolve(TMP, ".operator", ".compress-spill");
+    const resolved = path.resolve(TMP, tm[0]);
+    ok(resolved === spillRoot || resolved.startsWith(spillRoot + path.sep),
+      "the resolved spill path stays INSIDE the spill root despite the traversal session_id");
+    ok(fs.existsSync(resolved) && fs.readFileSync(resolved, "utf8") === big,
+      "the spill file itself exists in-root and holds the verbatim original");
+  }
+}
+
+// ── A dot-only session_id must not COLLAPSE the spill dir onto its root ─────
+// Not the traversal above: `.` resolves to `base` itself, so the containment
+// test passed it — the sid then names no subdirectory and every session shares
+// one bucket. spill()'s `keep` cleanup unlinks the oldest entries of whatever
+// dir it is given, so a collapsed session prunes OTHER sessions' spills, and
+// those hold unredacted tool output. Asserted on the observable path, not on
+// the sanitizer's return value, so it survives a refactor of the helper.
+// (Copilot review of PR #56, round 2.)
+console.log("-- Case: a dot-only session_id gets its own subdir, never the root");
+{
+  const spillRoot = path.resolve(TMP, ".operator", ".compress-spill");
+  // The neighbour must be a FILE directly under the root, and the root must
+  // hold more than SPILL_KEEP entries. Both were wrong in the first draft: the
+  // victim was a subdirectory (spill()'s cleanup calls unlinkSync, which throws
+  // EPERM on a non-empty dir and is swallowed by its best-effort catch — the
+  // victim was structurally immune) and the root held ~5 entries against
+  // SPILL_KEEP=50, so the eviction loop's slice was empty and never ran. The
+  // assertion could not fail in either direction. A collapsed session's spills
+  // land as plain files at the top level, which is what is modelled now.
+  // (Both facts measured; found by the review panel, round 3.)
+  fs.mkdirSync(spillRoot, { recursive: true, mode: 0o700 });
+  const victim = path.join(spillRoot, "aaa-neighbour-spill");
+  fs.writeFileSync(victim, "neighbour spill", { mode: 0o600 });
+  // Oldest by mtime => first in line for eviction. Without this the padding
+  // below could be evicted instead and the case would pass by luck.
+  const old = Date.now() / 1000 - 86400;
+  fs.utimesSync(victim, old, old);
+  for (let i = 0; i < DEFAULTS.SPILL_KEEP + 10; i++) {
+    const pad = path.join(spillRoot, `pad-${i}`);
+    fs.writeFileSync(pad, "pad", { mode: 0o600 });
+    fs.utimesSync(pad, old + 1 + i, old + 1 + i);
+  }
+
+  for (const sid of [".", "..", "..."]) {
+    // Vary the body per iteration: all three sids correctly resolve to the SAME
+    // "nosession" bucket, so identical text would be suppressed as a dedup HIT
+    // and the later two would never reach spill() at all — the case would pass
+    // by not testing anything. (Cost one red run to notice.)
+    const res = run({
+      tool_name: "Bash",
+      tool_use_id: `toolu_dot${sid.length}`,
+      session_id: sid,
+      tool_input: { command: "npm test" },
+      tool_response: { stdout: `${"d".repeat(sid.length)}${big}`, stderr: "" },
+    });
+    const dText = res?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
+    const dm = dText.match(/\.operator\/\.compress-spill\/[^\s\]]+/);
+    ok(dm != null, `session_id ${JSON.stringify(sid)} still elides and cites a spill`);
+    if (dm) {
+      const resolved = path.resolve(TMP, dm[0]);
+      ok(resolved.startsWith(spillRoot + path.sep),
+        `session_id ${JSON.stringify(sid)}: the spill stays inside the root`);
+      // The real assertion: the spill's PARENT is a subdirectory of the root,
+      // never the root itself. `===` on the parent is what `.` used to give.
+      ok(path.dirname(resolved) !== spillRoot,
+        `session_id ${JSON.stringify(sid)}: the spill dir is NOT the shared root ` +
+        `(a collapsed sid mixes sessions and lets one prune another's spills)`);
+    }
+  }
+  ok(fs.existsSync(victim) && fs.readFileSync(victim, "utf8") === "neighbour spill",
+    "a neighbouring session's spill survives the dot-session's cleanup pass");
+}
+
+// ── F18: a vanished entry between readdirSync and statSync must not fail spill ──
+console.log("-- Case: F18 a vanished spill-dir entry does not fail the spill");
+{
+  const raceSession = `SESS-RACE${++sessN}`;
+  const spillRoot = path.join(TMP, ".operator", ".compress-spill");
+  const dir = path.join(spillRoot, raceSession);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // Seed an entry, then remove it right before spill() runs its readdir+stat
+  // pass — simulating the race the F18 fix guards (an entry present at
+  // readdirSync but gone by statSync, e.g. a concurrent spill's own cleanup).
+  const ghost = path.join(dir, "ghost");
+  fs.writeFileSync(ghost, "gone", { mode: 0o600 });
+  fs.unlinkSync(ghost);
+  const raceRes = run({
+    tool_name: "Bash",
+    tool_use_id: "toolu_race",
+    session_id: raceSession,
+    tool_input: { command: "npm test" },
+    tool_response: { stdout: big, stderr: "" },
+  });
+  const rText = raceRes?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
+  ok(/full output spilled to/.test(rText),
+    "spill() still returns a valid, non-null path when a listed entry has already vanished");
+  ok(!/TRUNCATED and the spill to disk FAILED/.test(rText),
+    "the vanished entry does not throw spill() into the outer FAILED-spill branch");
+}
+
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log(`\n== summary: ${pass} passed, ${fail} failed ==`);
 if (fail > 0) process.exit(1);
