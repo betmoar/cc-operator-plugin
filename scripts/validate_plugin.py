@@ -80,6 +80,58 @@ CHARTER_REQUIRED_CLIS = ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh", "ops-c
 AGENT_MODEL_ALIASES = ("opus", "sonnet", "haiku")
 
 
+def shell_code(path):
+    """A shell file's CODE, with whole-line comments removed.
+
+    Every pin that asserts "this guard exists" by searching for a literal must
+    search THIS, never `read_text()`. A raw-text search is satisfied by the
+    comment that explains the guard, so deleting the guard while leaving its
+    comment — the realistic regression, since the comment is what a careless
+    edit preserves — keeps the validator green. Measured on 2026-08-14: removing
+    `*.exempt` from `ops-stop-hook.sh`'s reject-set while its two explanatory
+    comment lines stayed put left BOTH gates silent (validator "all contracts
+    hold", bash 590/0). The F1 pin was guarding its own documentation.
+
+    Whole-line only, deliberately: a trailing-comment stripper would have to
+    understand shell quoting, and `case` arms legitimately contain `#`. A guard
+    hidden behind code on the same line as a comment is not a shape this repo
+    writes.
+
+    Found by the Copilot review of PR #56, which flagged two of the seven sites;
+    the other five had the same hole. `test_validate_plugin.py` now mutation-
+    tests every one of them (`GuardParityVacuityTest`) rather than pinning the
+    helper's existence — a shared helper nobody calls is the same vacuity one
+    level up.
+    """
+    return "\n".join(
+        ln for ln in path.read_text(encoding="utf-8").splitlines()
+        if not ln.lstrip().startswith("#"))
+
+
+def _function_body(code, fn):
+    """The lines of shell function `fn`, or None if it cannot be located.
+
+    Returns None rather than "" so a caller can REPORT an unlocatable function
+    instead of silently pinning nothing — the failure mode `check_source_stamp`
+    and `check_install_set_parity` were both bitten by.
+
+    Brace-counting, not a shell parser: these are our own files, written in one
+    style (`name() {` … a closing brace at the function's own indent). A guard
+    hidden in a construct this cannot follow is a guard nobody can review.
+    """
+    lines = code.splitlines()
+    for i, ln in enumerate(lines):
+        if re.match(rf"^\s*{re.escape(fn)}\s*\(\)\s*\{{", ln):
+            depth, body = 0, []
+            for cur in lines[i:]:
+                depth += cur.count("{") - cur.count("}")
+                body.append(cur)
+                if depth <= 0 and len(body) > 0 and "{" in "".join(body):
+                    break
+            return "\n".join(body)
+    return None
+
+
 def load_json(path, problems):
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -901,7 +953,7 @@ def check_guard_parity(root, problems):
         p = root / "scripts" / name
         if not p.is_file():
             continue
-        text = p.read_text(encoding="utf-8")
+        text = shell_code(p)
         for fn in ("check_bare_name", "check_owner_name"):
             if f"{fn}()" not in text:
                 problems.append(
@@ -916,7 +968,7 @@ def check_guard_parity(root, problems):
     # sentinel reads as a valid foreign owner and the gate opens
     hook = root / "scripts" / "ops-stop-hook.sh"
     if hook.is_file():
-        text = hook.read_text(encoding="utf-8")
+        text = shell_code(hook)
         if "[[:space:]]" not in text:
             problems.append(
                 "scripts/ops-stop-hook.sh: sentinel_owner does not reject "
@@ -946,11 +998,26 @@ def check_guard_parity(root, problems):
     # namespace — else a corrupted body "session_id: victim.exempt" parses as
     # a valid owner and recompute_arm_marker deletes another session's grant
     # (F1, issue #30).
+    #
+    # SCOPED TO THE FUNCTION BODY, not the file. ops-verdict.sh carries
+    # `*.exempt` TWICE in real code: check_owner_name's writer-side die (line
+    # ~161) and sentinel_owner's parser-side reject (~552). A file-wide search
+    # is satisfied by the writer alone — which is F1 itself, verbatim: "rejects
+    # .exempt at the writer but not the body parser". The pin would have
+    # green-lit the exact regression it was written to prevent. Caught by
+    # GuardParityVacuityTest when the file-wide version failed to fire on a
+    # parser-only deletion (2026-08-14).
     for name in ("ops-verdict.sh", "ops-stop-hook.sh", "statusline.sh"):
         p = root / "scripts" / name
         if not p.is_file():
             continue
-        text = p.read_text(encoding="utf-8")
+        text = _function_body(shell_code(p), "sentinel_owner")
+        if text is None:
+            problems.append(
+                f"scripts/{name}: cannot locate sentinel_owner() — the F1 "
+                f"reject-set pin has nothing to check. Renaming or reshaping "
+                f"the parser must update this locator, not silently skip it")
+            continue
         if "*.exempt" not in text:
             problems.append(
                 f"scripts/{name}: sentinel_owner()'s reject-set is missing "
@@ -965,7 +1032,7 @@ def check_guard_parity(root, problems):
     # (the loop above is scoped to the three sentinel_owner parsers; this was
     # the gap the final review surfaced).
     p = root / "scripts" / "ops-adopt.sh"
-    if p.is_file() and "*.exempt" not in p.read_text(encoding="utf-8"):
+    if p.is_file() and "*.exempt" not in shell_code(p):
         problems.append(
             "scripts/ops-adopt.sh: the PREV reject-set is missing *.exempt — "
             "PREV is echoed to stdout from the untrusted sentinel body, so a "

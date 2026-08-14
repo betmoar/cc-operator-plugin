@@ -40,16 +40,24 @@ GOOD_STATUSLINE = (
     "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
     "# deviation-gate mirror: counts DEVIATION|ESCALATION|GATE-EXCEPTION (HANDOFF-MARK)\n"
     "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
-    "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) owner=\"\" ;; esac\n")
+    "sentinel_owner() {\n"
+    "  case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) owner=\"\" ;; esac\n"
+    "}\n")
 
 # A json_get() whose python3 branch carries the bool coercion. The three hooks
 # must agree on it (F14 parity pin); fixtures embed this single source so the
 # four hook-stub sites cannot drift apart.
+# JSON null maps to "" here, exactly as the three real hooks do — the fixture
+# is only useful while it MEANS the same thing as the code it stands in for.
+# The F14 pin looks for `isinstance(v, bool)` alone, so a null-blind stub passes
+# today; the risk is the next pin, written against a fixture that quietly
+# diverged. (Copilot review of PR #56.)
 JSON_GET = (
     "# json_get python3 branch carries the bool coercion (F14 parity pin)\n"
     "json_get() { printf '%s' \"$input\" | python3 -c 'import sys,json; "
     "v=json.load(sys.stdin).get(sys.argv[1],\"\"); "
-    "print(\"true\" if isinstance(v, bool) and v else \"false\" if isinstance(v, bool) else v)' \"$1\"; }\n")
+    "print(\"true\" if isinstance(v, bool) and v else \"false\" if isinstance(v, bool) "
+    "else \"\" if v is None else v)' \"$1\"; }\n")
 
 GOOD_LOCK_BLOCK = (
     "# >>> LOCK BLOCK\n"
@@ -213,12 +221,16 @@ def make_good_tree(root):
           "#!/usr/bin/env bash\n" + nolink + bounded + JSON_GET +
           "# deviation gate: counts DEVIATION|ESCALATION|GATE-EXCEPTION (HANDOFF-MARK)\n"
           "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
-          "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) owner=\"\" ;; esac\n")
+          "sentinel_owner() {\n"
+    "  case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) owner=\"\" ;; esac\n"
+    "}\n")
     write(root / "scripts" / "ops-task.sh",
           "#!/usr/bin/env bash\n" + guards + nolink)
     write(root / "scripts" / "ops-verdict.sh",
           "#!/usr/bin/env bash\n" + guards + nolink + bounded +
-          "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) return 0 ;; esac\n" +
+          "sentinel_owner() {\n"
+          "  case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) return 0 ;; esac\n"
+          "}\n" +
           "# F2: refuse a symlink fragment before the write + skip on both reads\n"
           '[ -L "$FRAGDIR/$who.md" ] && exit 1\n'
           '[ -f "$frag" ] && [ ! -L "$frag" ] && :;\n'
@@ -916,14 +928,18 @@ class ValidatorTest(unittest.TestCase):
             "while IFS= read -r -n 512 line; do :; done < \"$1\"\n" + JSON_GET +
             "# deviation gate: second bounded read of DECISIONS.md (HANDOFF-MARK)\n"
             "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
-            "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) owner=\"\" ;; esac\n")
+            "sentinel_owner() {\n"
+    "  case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) owner=\"\" ;; esac\n"
+    "}\n")
         good_verdict = (
             "#!/usr/bin/env bash\n"
             "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
             "check_owner_name() { :; }\n"
             "[ ! -L \"$f\" ] || exit 0\n"
             "while IFS= read -r -n 512 line; do :; done < \"$f\"\n"
-            "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) return 0 ;; esac\n"
+            "sentinel_owner() {\n"
+          "  case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) return 0 ;; esac\n"
+          "}\n"
             "# F2: refuse a symlink fragment before the write + skip on both reads\n"
             '[ -L "$FRAGDIR/$who.md" ] && exit 1\n'
             '[ -f "$frag" ] && [ ! -L "$frag" ] && :;\n'
@@ -1018,7 +1034,9 @@ class ValidatorTest(unittest.TestCase):
         self._write_readers(hook_body=(
             "#!/usr/bin/env bash\n"
             "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
-            "case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]*) owner=\"\" ;; esac\n"
+            "sentinel_owner() {\n"
+            "  case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]*) owner=\"\" ;; esac\n"
+            "}\n"
             "# no -L rejection\n"))
         probs = self.bounds_problems()
         self.assertTrue(any("symlink" in p and "ops-stop-hook.sh" in p
@@ -1076,7 +1094,9 @@ class ValidatorTest(unittest.TestCase):
         self._write_readers(hook_body=(
             "#!/usr/bin/env bash\n"
             "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
-            "case \"$owner\" in */* | .* | *\"|\"*) owner=\"\" ;; esac\n"))
+            "sentinel_owner() {\n"
+            "  case \"$owner\" in */* | .* | *\"|\"*) owner=\"\" ;; esac\n"
+            "}\n"))
         probs = self.bounds_problems()
         self.assertTrue(any("whitespace owners" in p for p in probs), probs)
 
@@ -2125,6 +2145,104 @@ class GitignoreParityTest(unittest.TestCase):
               self._real_init.replace("!verdicts.d/*.md\n", "", 1))
         self.assertTrue(any("verdicts.d/*.md" in str(p) for p in self._probs()),
                         self._probs())
+
+
+class GuardParityVacuityTest(unittest.TestCase):
+    """Every check_guard_parity pin must survive the COMMENT-ONLY mutation.
+
+    The pins search a script for a guard's literal (`*.exempt`, `[[:space:]]`,
+    `check_bare_name()`, `.*)`). Searching `read_text()` makes the comment that
+    EXPLAINS the guard satisfy the pin, so deleting the guard while leaving its
+    comment keeps the validator green — and that is the realistic regression,
+    because a careless edit removes the code and keeps the prose.
+
+    Measured 2026-08-14, before `shell_code()` existed: `*.exempt` removed from
+    ops-stop-hook.sh's reject-set with its two comment lines intact left the
+    validator at "all contracts hold" AND the bash suite at 590/0. Both gates
+    blind, on the F1 guard. Two of the seven sites were flagged by the Copilot
+    review of PR #56; the other five had the same hole.
+
+    This class exists rather than a pin on `shell_code()`'s existence because a
+    helper nobody calls is the same vacuity one level up. Each case mutates a
+    REAL script the way a regression would and asserts the check fires. A new
+    guard pin added without a case here is not covered — add one.
+    """
+
+    # (script, the guard's code line, the comment-safe replacement that removes it)
+    CASES = (
+        ("ops-stop-hook.sh",
+         '*[[:space:]]* | *.exempt) owner="" ;;',
+         '*[[:space:]]*) owner="" ;;',
+         "*.exempt"),
+        ("ops-verdict.sh",
+         '*[[:space:]]* | *.exempt) return 0 ;;',
+         '*[[:space:]]*) return 0 ;;',
+         "*.exempt"),
+    )
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        make_good_tree(self.dir)
+        self.real = pathlib.Path(__file__).resolve().parent.parent / "scripts"
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _probs(self):
+        probs = []
+        vp.check_guard_parity(self.dir, probs)
+        return probs
+
+    def _install_real(self):
+        """Copy the real CLIs in — the pins must hold against shipped code."""
+        for n in ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh",
+                  "ops-stop-hook.sh", "statusline.sh"):
+            src = self.real / n
+            if src.is_file():
+                write(self.dir / "scripts" / n, src.read_text(encoding="utf-8"))
+
+    def test_the_real_tree_is_clean(self):
+        self._install_real()
+        self.assertEqual(self._probs(), [])
+
+    def test_guard_deleted_but_comment_kept_still_fires(self):
+        # The vacuity case: code out, prose in. Each guard, one at a time.
+        for script, guard, without, literal in self.CASES:
+            with self.subTest(script=script):
+                self._install_real()
+                p = self.dir / "scripts" / script
+                text = p.read_text(encoding="utf-8")
+                self.assertIn(guard, text,
+                              f"{script}: anchor moved — update CASES")
+                mutated = text.replace(guard, without, 1)
+                # The comment mentioning the literal MUST survive, or the test
+                # proves nothing about comment-blindness.
+                self.assertIn(literal, mutated,
+                              f"{script}: no comment left mentioning {literal}; "
+                              f"this case would pass for the wrong reason")
+                write(p, mutated)
+                self.assertTrue(
+                    any(script in str(x) and literal in str(x)
+                        for x in self._probs()),
+                    f"{script}: guard removed from CODE with its comment intact "
+                    f"and check_guard_parity stayed silent — the pin is reading "
+                    f"raw text again, not shell_code()")
+
+    def test_shell_code_ignores_a_comment_only_mention(self):
+        # The helper itself, directly: a file whose ONLY mention is a comment
+        # must read as absent.
+        f = self.dir / "scripts" / "probe.sh"
+        write(f, "#!/usr/bin/env bash\n# we reject *.exempt here\necho hi\n")
+        self.assertNotIn("*.exempt", vp.shell_code(f))
+        write(f, "#!/usr/bin/env bash\ncase $x in *.exempt) :;; esac\n")
+        self.assertIn("*.exempt", vp.shell_code(f))
+
+    def test_indented_comment_is_stripped_too(self):
+        # Guards live inside functions, so their comments are indented — a
+        # stripper anchored at column 0 would still read them as code.
+        f = self.dir / "scripts" / "probe.sh"
+        write(f, "#!/usr/bin/env bash\nf() {\n    # rejects *.exempt\n    :\n}\n")
+        self.assertNotIn("*.exempt", vp.shell_code(f))
 
 
 class ReleaseGateCoverageTest(unittest.TestCase):

@@ -548,8 +548,13 @@ sentinel_owner() { # sentinel_owner <id> → stamped session_id ("" if none/inva
   # task compare unequal to its id — a fail-OPEN in the central invariant.
   owner="${owner%$'\r'}"
   owner="${owner%"${owner##*[![:space:]]}"}"
+  # Unusable → unowned → fails closed. The `*.exempt` arm mirrors the writer's
+  # check_owner_name: G3 grant names are reserved (F1). Kept on its own line,
+  # NOT as a trailing comment — validate_plugin's shell_code() strips whole-line
+  # comments only, so a trailing one sits in the "code" it searches and would
+  # keep the F1 pin green after the arm itself was deleted (measured).
   case "$owner" in
-    "" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) return 0 ;;  # unusable → unowned → fails closed; *.exempt mirrors writer's check_owner_name (G3 grant names are reserved, F1)
+    "" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) return 0 ;;
   esac
   printf '%s' "$owner"
 }
