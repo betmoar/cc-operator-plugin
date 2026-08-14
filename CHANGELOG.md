@@ -74,12 +74,23 @@ is now linted like code.
   - R0 resolves `$PR` by hand and says why the repo's own `scripts/` is the
     wrong substitute (it silently audits the tree, not the installed plugin —
     the confusion R0's build-identity check exists to prevent) ([#62]).
-  - **R2 is split into R2a (executable) and R2b (human-verified)**. The live
-    block is not reachable by a replaying session: the Stop hook resolves the
-    nearest `.operator/` above *the session's* cwd, and a session that blocks its
-    own Stop cannot then report having done so. The first run recorded the pair
-    as one PASS on the script half. A phase that cannot execute must not be able
-    to read PASS on its own authority.
+  - **R2 is split into R2a and R2b**, because the first run recorded the pair as
+    one PASS on the script half alone. A phase that was never executed must not
+    read PASS on its own authority.
+
+    R2b was then declared unexecutable on two grounds, and **running it proved
+    one of them false the same day**. Right: the Stop hook resolves the nearest
+    `.operator/` above *the session's* cwd, so the probe sentinel must be opened
+    in the session's own project. Wrong: "a session that blocks its own Stop
+    cannot report having done so" — a blocked Stop **grants another turn** with
+    the hook's stderr as guidance, and that continuation is the observation.
+    R2b now ships as executable, with the three preconditions that make a block
+    attributable (baseline rc 0, loop guard confirmed, a probe id existing
+    nowhere else), and a human observer as corroboration rather than the only
+    channel. **Measured PASS, live.**
+  - **R8 gains the general rule**: before recording a phase as unexecutable, try
+    to execute it. "Cannot be tested" is a claim and owes evidence like any
+    other; this one sounded structural and survived a release.
   - **A negative control per phase is now rule 3**, alongside the meter check
     this charter has demanded since it was written. This repo's recurring failure
     is not a gate that answers wrongly — it is a gate that has stopped answering

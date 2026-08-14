@@ -155,22 +155,46 @@ equally reachable:
 
 - **R2a, the script half** — feeding the hook a payload — is executable by a
   replayer and is where the citable bytes come from.
-- **R2b, the live half** — the harness actually blocking a Stop — is **not
-  executable by a replaying session** and must never be recorded as a normal
-  PASS. The Stop hook resolves the nearest `.operator/` above *the session's*
-  cwd, not above the scratch project: a session running in this repo with a
-  scratch project at `/tmp/replay` gets blocked (or not) by **this repo's**
-  ledger, so a green R2b would be evidence about the wrong project. And a
-  session that genuinely blocks its own Stop cannot then report that it did —
-  the block is the thing preventing the turn from ending.
+- **R2b, the live half** — the harness actually blocking a Stop — **is
+  executable**, but only from the session's own project and only with the setup
+  below. It must never be recorded as a normal PASS on the script half's
+  evidence.
 
-  R2b is therefore **human-verified**: the operator opens a task, ends the turn,
-  and the *human* observes the block. Record it as `--defer "R2b live block is
-  human-verified; see <what the human saw>"`, or as a PASS whose evidence cell
-  cites the human's observation and says so. A phase that cannot execute must
-  not be able to read PASS on its own authority — that is how a replay reports a
-  gate it never exercised. (Found by the 2026-08-14 run, which recorded R2 green
-  on the script half alone.)
+  **One constraint, and one correction to an earlier revision of this file.**
+
+  The constraint is real: the Stop hook resolves the nearest `.operator/` above
+  *the session's* cwd, not above the scratch project. A session running in this
+  repo with a scratch project at `/tmp/replay` is blocked (or not) by **this
+  repo's** ledger, so a sentinel opened in the scratch project proves nothing —
+  a green R2b there is evidence about the wrong project. **Open the R2b probe
+  sentinel in the session's own cwd.**
+
+  The correction: the 0.8.1 revision also claimed "a session that genuinely
+  blocks its own Stop cannot then report that it did." **That is false**, and it
+  was disproved on 2026-08-14 by running it. A blocked Stop does not silence the
+  session — it **grants another turn** with the hook's stderr fed back as
+  guidance, and that continuation *is* the observation. The claim confused "the
+  turn cannot end" with "the session cannot speak."
+
+  **How to run it** (three preconditions, none optional):
+
+  1. **Baseline first.** Feed the hook the same payload with no sentinel open:
+     rc 0 and silent. Without this a block is unattributable — it could be any
+     of the other Stop hooks a real install carries (zclean, cc-reload,
+     cc-repete were all present on the 2026-08-14 machine).
+  2. **Verify the loop guard** — `stop_hook_active: true` must give rc 0 — so
+     the block costs exactly one turn and cannot wedge the session.
+  3. **Use a probe task id that exists nowhere else** (`r2b-live`). The
+     returned message names it, which is what makes the block attributable to
+     *this* hook rather than to a coincidence.
+
+  Then open the sentinel, end the turn, and record what comes back. **A human
+  observing from outside the session is still worth having** — it is what turns
+  "I report I was blocked" into two independent observers — but it is
+  corroboration now, not the only channel. Note in the evidence cell which one
+  you had. A phase that cannot execute must not read PASS on its own authority;
+  a phase that *can* execute should be executed. (The 2026-08-14 run recorded R2
+  green on the script half alone; the follow-up ran R2b properly and passed.)
 
 ### R2a — script half (executable)
 
@@ -185,10 +209,12 @@ Expected: rc 2 and the blocking line below on stderr. **Negative control:** clos
 or defer the task and re-feed the same payload — rc 0, no output. A hook that
 blocks unconditionally passes the positive half alone.
 
-### R2b — live half (human-verified, see above)
+### R2b — live half (executable from the session's own cwd; see above)
 
-With `replay-run` open, **attempt to end the session** (finish the turn).
-Expected: the Stop is blocked and the model receives, verbatim shape:
+Open the probe sentinel **in the session's own project** (`ops-task.sh r2b-live
+--owner <sid>`, after the baseline and loop-guard checks above), then **attempt
+to end the session** (finish the turn). Expected: the Stop is blocked and the
+model receives, verbatim shape:
 
 ```
 operator: pending verdict(s): replay-run — run .operator/bin/ops-verdict.sh
@@ -359,10 +385,17 @@ clean code cannot tell the two apart.
 IS the scorecard; a separate report is summary, and the charter's rule is
 record over summary.
 
-The scorecard must count **human-verified** and **deferred** as their own
-categories, not fold them into PASS. R2b is the standing case: a run that reports
-"8 PASS" when one of them was never executed has produced exactly the summary
-this charter exists to replace.
+The scorecard must count **human-verified**, **deferred**, and **not executed**
+as their own categories, not fold them into PASS. A run that reports "8 PASS"
+when one of them was never executed has produced exactly the summary this
+charter exists to replace — which is what the 2026-08-14 run did with R2b before
+anyone tried running it.
+
+The rule generalizes past R2b, and this is the lesson worth carrying: **before
+recording a phase as unexecutable, try to execute it.** R2b was declared
+human-verified on an argument that sounded structural and was simply wrong, and
+the argument went unchallenged for a release because nobody attempted the thing
+it forbade. A category is a claim like any other and owes the same evidence.
 
 **Negative control (R8):** before closing `replay-run`, confirm the Stop is
 still blocked with it open (R2a's payload, rc 2). A clean exit at R8 only means
@@ -424,11 +457,9 @@ look for first when this document is revised.
   resolves `$PR` by hand and says why the repo's own `scripts/` is the wrong
   substitute. Note the shape: the run WORKED AROUND this live and recorded the
   phases green, so the charter's own text stayed wrong while the run passed.
-- **R2's live half is not executable by a replaying session** — the Stop hook
-  resolves the nearest `.operator/` above the *session's* cwd, and a session that
-  blocks its own Stop cannot report having done so. Split into R2a (executable)
-  and R2b (human-verified); the first run recorded the pair as one PASS on the
-  script half alone.
+- **R2's live half was recorded without being run** — the first run reported the
+  pair as one PASS on the script half alone. Split into R2a and R2b. Half of the
+  reasoning given for the split was wrong and is corrected below.
 - **No phase required a negative control**, though the charter has demanded a
   meter check since it was written. Now rule 3, with a control named per phase —
   this repo's recurring failure is not a gate that answers wrongly, it is a gate
@@ -441,3 +472,34 @@ symlinked path, i.e. every `/tmp` scratch project on macOS), #63 (the claims
 green line counted the ledger paths it had just exempted), #64 (a mistyped
 `--owner` degraded the hard ownership refusal to a warning, letting one session
 close another's task at rc 0).
+
+## What running R2b changed (2026-08-14, same day, after 0.8.1 was written)
+
+The 0.8.1 revision above declared R2b unexecutable on two grounds. **One was
+right, one was false, and the false one was disproved by simply doing the thing
+it said could not be done** — which is the finding, more than the phase result.
+
+- **Right:** the hook resolves the nearest `.operator/` above the *session's*
+  cwd, so the probe sentinel must be opened in the session's own project. A
+  sentinel in the scratch project would have proved nothing.
+- **False:** "a session that blocks its own Stop cannot report having done so."
+  A blocked Stop grants the session **another turn**, carrying the hook's stderr
+  as guidance. The claim confused *the turn cannot end* with *the session cannot
+  speak*.
+
+Run properly — baseline rc 0 and silent, loop guard confirmed, a probe id
+(`r2b-live`) existing nowhere else so the returned message is attributable — the
+harness blocked and fed back
+`operator: pending verdict(s): r2b-live — run .operator/bin/ops-verdict.sh …`,
+with the user independently observing from outside the session. **R2b PASS,
+live.**
+
+An unplanned corroboration came with it: the feedback line shows the harness
+invoking the hook through `${CLAUDE_PLUGIN_ROOT}` and *resolving* it, in the same
+session where R0 measured that variable as unset in the Bash tool env — #62's
+asymmetry, proved from both sides in one run.
+
+The transferable lesson is now rule-shaped in R8: **before recording a phase as
+unexecutable, try to execute it.** "Cannot be tested" is a claim, and it owes
+evidence like any other. This one survived a release because it sounded
+structural.
