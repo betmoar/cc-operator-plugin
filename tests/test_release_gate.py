@@ -204,6 +204,21 @@ class ReleaseGateTest(unittest.TestCase):
                     f"## [0.1.0] - x\n\n- shipped\n")
                 self.assertTrue(body, f"{heading!r} read as empty")
 
+    def test_a_bracketed_SUBheading_does_not_end_the_section(self):
+        # The terminator's other half, and the defect the tolerant anchor
+        # introduced: loosening it to `#{1,6}` made a bracketed CHILD heading
+        # (`### [Breaking]`) end the section, so everything below read as empty
+        # and shipped silently — #39's shape, from the opposite side. The two
+        # halves want opposite tolerances: the anchor must find a heading a
+        # human mistyped; the terminator must not mistake a child for a sibling.
+        for sub in ("### [Breaking]", "### Added", "#### [Security]"):
+            with self.subTest(sub=sub):
+                body = rg.unreleased_body(
+                    f"# C\n\n## [Unreleased]\n\n{sub}\n\n- real pending\n\n"
+                    f"## [0.1.0] - x\n\n- shipped\n")
+                self.assertIn("real pending", body,
+                              f"{sub!r} ended the section")
+
     def test_tolerance_does_not_swallow_the_version_heading(self):
         # The looser terminator must still stop at a version heading, or the
         # Unreleased section absorbs the release notes and reads non-empty

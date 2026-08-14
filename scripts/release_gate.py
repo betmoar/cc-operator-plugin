@@ -120,13 +120,22 @@ def unreleased_body(changelog_text):
     asks "is there pending content?", where a false positive costs a maintainer
     one look; that one names the version being published, where guessing at a
     malformed heading would publish under the wrong number.
+
+    The TERMINATOR, unlike the anchor, is deliberately NOT depth-tolerant: it
+    matches `##` (a version heading's own level) and never `###`+. Loosening it
+    to `#{1,6}` reintroduced #39's shape from the other side — a bracketed
+    SUBheading directly under the section, e.g. `### [Breaking]`, ended it, so
+    everything below read as empty and shipped silently (measured, and caught
+    only because the loosened anchor prompted a re-probe of the pair). The two
+    halves want opposite tolerances: the anchor must find a heading a human
+    mistyped, the terminator must not mistake a child for a sibling.
     """
     start = re.search(r"^[ \t]*#{1,6}[ \t]*\[?[Uu]nreleased\]?[^\n]*\n",
                       changelog_text, re.MULTILINE)
     if not start:
         return ""
     rest = changelog_text[start.end():]
-    stop = re.search(r"^[ \t]*#{1,6}[ \t]*\[|^\[", rest, re.MULTILINE)
+    stop = re.search(r"^[ \t]*#{1,2}[ \t]*\[|^\[", rest, re.MULTILINE)
     return (rest[:stop.start()] if stop else rest).strip()
 
 
