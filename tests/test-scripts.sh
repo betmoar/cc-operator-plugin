@@ -4707,6 +4707,7 @@ echo "-- Case: #69 the derived corpus tree is a stamped artifact (ops-corpus.sh)
 #      MEASUREMENT, no vuln*/fixed* filename. A lens shown any of those is not
 #      being measured on detection, it is being asked to agree.
 CORPUS="$SCRIPTS/ops-corpus.sh"
+_MAPN=".ops-corpus-map"   # the map filename, as ops-corpus.sh defines it
 if [ ! -x "$CORPUS" ] && [ ! -f "$CORPUS" ]; then
   fail "#69 scripts/ops-corpus.sh is present"
 elif [ ! -d "$SECDIR" ]; then
@@ -4772,6 +4773,52 @@ else
     bash "$CORPUS" build --corpus "$_CSRC" --out "$_CTMP/derived3" >/dev/null 2>&1
     check "#69 a corpus dir the map does not name is REFUSED, not silently omitted" \
       "$([ "$?" -ne 0 ] && echo 0 || echo 1)"
+
+    # EVERY map field is parsed input reaching a path, and every one is guarded.
+    # The first shape guarded only the write side (`dest`) while `dir`/`src`
+    # flowed unchecked into the read — measured: a `../..` fixture path copies a
+    # file from OUTSIDE the corpus into the derived tree, and because
+    # corpus_hash walks the corpus, that content is in no stamp and `verify`
+    # reports ok. The staleness guarantee #69 exists for is only as strong as
+    # the guarantee that every byte in the tree came from the corpus, so these
+    # are #69 cases, not merely hardening.
+    _EVIL="$_CTMP/evil"; mkdir -p "$_EVIL/f1"
+    : > "$_EVIL/f1/src.sh"
+    printf 'outside-the-corpus\n' > "$_CTMP/OUTSIDE.txt"
+    # 1. traversal on the FIXTURE PATH (which legitimately may contain `/`, so
+    #    it is checked for `..`, not for being a bare name).
+    printf 'f1/../.. OUTSIDE.txt leaked.txt\n' > "$_EVIL/$_MAPN"
+    bash "$CORPUS" build --corpus "$_EVIL" --out "$_CTMP/evilout" >/dev/null 2>&1
+    _RC=$?
+    check "#69 a map fixture-path containing '..' is refused (reads outside the corpus)" \
+      "$([ "$_RC" -ne 0 ] && echo 0 || echo 1)"
+    check "#69 control: the refused traversal build left no leaked file behind" \
+      "$([ ! -f "$_CTMP/evilout/leaked.txt" ] && echo 0 || echo 1)"
+    # 2. traversal on the SOURCE name, which is a bare filename.
+    printf 'f1 ../../OUTSIDE.txt leaked.txt\n' > "$_EVIL/$_MAPN"
+    bash "$CORPUS" build --corpus "$_EVIL" --out "$_CTMP/evilout2" >/dev/null 2>&1
+    check "#69 a map source-name containing a path separator is refused" \
+      "$([ "$?" -ne 0 ] && echo 0 || echo 1)"
+    # 3. the same reach wearing a different hat: `-f` follows a symlink and `cp`
+    #    (no -P) copies the TARGET's content, so a link planted in the corpus
+    #    reaches the tree with bytes from anywhere on disk — equally invisible to
+    #    the stamp. Same non-symlink-regular-file contract as every other file
+    #    this repo's CLIs trust.
+    ln -sf "$_CTMP/OUTSIDE.txt" "$_EVIL/f1/link.sh"
+    printf 'f1 link.sh leaked.txt\n' > "$_EVIL/$_MAPN"
+    bash "$CORPUS" build --corpus "$_EVIL" --out "$_CTMP/evilout3" >/dev/null 2>&1
+    _RC=$?
+    check "#69 a map source that is a SYMLINK is refused (its target is in no stamp)" \
+      "$([ "$_RC" -ne 0 ] && echo 0 || echo 1)"
+    check "#69 control: the refused symlink build copied no outside content" \
+      "$([ ! -f "$_CTMP/evilout3/leaked.txt" ] && echo 0 || echo 1)"
+    # Positive control for all five above: the SAME corpus with a legitimate map
+    # line builds. Without it, a script that refused everything unconditionally
+    # would score five passes here.
+    printf 'f1 src.sh ok.sh\n' > "$_EVIL/$_MAPN"
+    bash "$CORPUS" build --corpus "$_EVIL" --out "$_CTMP/evilout4" >/dev/null 2>&1
+    check "#69 control: a legitimate map line on the same corpus still builds" \
+      "$([ "$?" -eq 0 ] && [ -f "$_CTMP/evilout4/ok.sh" ] && echo 0 || echo 1)"
   else
     fail "#69 ops-corpus.sh build succeeds against the shipped security corpus"
   fi

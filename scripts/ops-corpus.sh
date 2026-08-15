@@ -236,14 +236,44 @@ $name
   while IFS=' ' read -r dir src dest; do
     [ -n "$dir" ] || continue
     [ -n "$src" ] && [ -n "$dest" ] || die "$MAP_NAME line '$dir $src $dest' is malformed — want: <dir> <source-file> <production-name>"
-    # `dest` becomes a filename in the output tree and comes from a file in the
-    # corpus, so it is input: a `../` in it writes outside --out. Same posture
-    # as every other parsed-field-becomes-a-path-component guard in this repo
-    # (it is literally what the frag-traversal fixture models).
+    # ALL THREE fields are parsed input and all three become path components, so
+    # all three are guarded. The first shape guarded only `dest` — the write side
+    # — while `dir` and `src` flowed unchecked into the read. Measured: a map line
+    # `f1/../.. OUTSIDE.txt leaked.txt` copies a file from outside the corpus into
+    # the derived tree, and the comment here claimed parity with "every other
+    # parsed-field-becomes-a-path-component guard in this repo" while implementing
+    # half of it. Exactly the frag-traversal fixture's own shape, in the script
+    # that builds that fixture.
+    #
+    # The sharpest consequence is not the read itself but what it does to #69's
+    # promise: `corpus_hash` walks the CORPUS, so content pulled in from outside
+    # it is in no stamp, and `verify` reports ok on a tree carrying files the
+    # corpus never held. The staleness guarantee is only as good as the guarantee
+    # that every byte in the tree came from the corpus.
+    #
+    # `dir` may contain `/` (a drift fixture addresses `errno-claim/drifted`), so
+    # it is checked for TRAVERSAL rather than for being a bare name; `src` and
+    # `dest` are bare filenames.
+    case "/$dir/" in
+      *"/../"*|*"//"*) die "$MAP_NAME: fixture path '$dir' must not contain '..' or an empty segment" ;;
+    esac
+    case "$dir" in
+      /*) die "$MAP_NAME: fixture path '$dir' must be relative to the corpus, not absolute" ;;
+    esac
+    case "$src" in
+      */*|..|.|"") die "$MAP_NAME: source name '$src' must be a bare filename, not a path" ;;
+    esac
     case "$dest" in
       */*|..|.|"") die "$MAP_NAME: production name '$dest' must be a bare filename, not a path" ;;
     esac
     [ -f "$corpus/$dir/$src" ] || die "$MAP_NAME names '$dir/$src', which does not exist in '$corpus'"
+    # Regular, non-symlink — the same contract `read_map` applies to the map and
+    # `verify` to the stamp, and the repo-wide rule for any file a CLI trusts.
+    # `-f` FOLLOWS a symlink and `cp` (no -P) copies the target's CONTENT, so a
+    # link planted in the corpus reaches the derived tree with contents from
+    # anywhere on disk — the traversal above wearing a different hat, and equally
+    # invisible to the stamp.
+    [ ! -L "$corpus/$dir/$src" ] || die "$MAP_NAME names '$dir/$src', which is a symlink — refusing (its target is outside the corpus's content hash, so a tree built from it would verify green)"
     [ ! -e "$out/$dest" ] || die "$MAP_NAME maps two fixtures to the same production name '$dest' — the second would overwrite the first and the tree would be short one fixture"
     cp "$corpus/$dir/$src" "$out/$dest"
     # Strip marker lines from the copy. Header prose like "This is the
