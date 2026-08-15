@@ -11,11 +11,17 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [0.8.1] - 2026-08-14
 
-What a second live run of the replay charter found. Three code bugs, and four
-defects in the charter itself — three of the four the same class as the first
-run's: **the charter told the replayer to run something a replayer cannot run**,
-and the run worked around it live and recorded the phase green. So the charter
-is now linted like code.
+What a second live run of the replay charter found, and what reviewing those
+fixes found in turn. Five code bugs and four defects in the charter itself —
+three of the four the same class as the first run's: **the charter told the
+replayer to run something a replayer cannot run**, and the run worked around it
+live and recorded the phase green. So the charter is now linted like code.
+
+Then a review panel over the fixes found **seven more defects, in the fixes** —
+including the same bug reintroduced from the opposite side by its own repair.
+Two are recorded rather than smoothed over: one hardening ships **unexercised**
+(reverting it does not move the suite), and one lens marked a defective guard
+CLEAN on reasoning that was correct but aimed at the wrong input.
 
 ### Fixed
 
