@@ -105,6 +105,31 @@ single source of truth; bump it in the same commit as the changelog entry.
   than pass. Polarity is what decides whether this pattern is a defect.
 
 
+
+- **`ops-render.sh --model <seat>`** — the resolver made scriptable ([#55]).
+  `--show` is a table for a human: aligned columns, a header, a trailing note. A
+  caller wanting one id had to parse a display format, which is how a caller
+  ends up with a header row as a model id. `--model` prints the id alone on
+  stdout, so `M="$(ops-render.sh --model mechanic)"` is safe to substitute.
+
+  It resolves nothing new — the seat→tier map and `check_routable` already run
+  at load time, so this reads the state the renderer itself uses. A second
+  resolver is what the coupling table exists to prevent.
+
+  An unknown seat **refuses** and prints nothing, rather than emitting an empty
+  line at rc 0: a caller substituting `""` dispatches to the harness default,
+  which is the silent mis-route this guard family exists to stop. Measured that
+  the refusal is three-deep — strip it and `check_routable` catches the empty
+  id; strip that too and `set -u` does.
+
+  Ten assertions, including that stdout carries exactly one line (asserted by
+  counting lines, not by matching the id — a diagnostic leaking onto stdout
+  would still contain the id).
+
+  **The dispatch bridge is NOT shipped.** A workflow calling `agent()` with the
+  resolved id is the other half of #55, and it waits for an engagement that
+  needs it — a helper nobody calls is [#57]'s class. #55 stays open.
+
 ### Changed
 
 - **`/cc-operator:tiers` documents the un-rendered alias gap** ([#55]). Every
@@ -117,7 +142,6 @@ single source of truth; bump it in the same commit as the changelog entry.
   arbitrary id). Documentation only: the resolver→dispatch helper that would
   make the configured tier the default is not shipped, and #55 stays open.
 
-### Changed
 
 - **`correctness` moves to judgment tier, on measured evidence** ([#24] step 3).
   Step 2 concluded the panel's gap was tier, not coverage. Step 3 tested that
@@ -152,32 +176,6 @@ single source of truth; bump it in the same commit as the changelog entry.
   cheap tiers and two at judgment", which the promotion made false, and F40's
   cost-contract case failed until it was corrected to "two at cheap tiers and
   three at judgment".
-
-### Added
-
-- **`ops-render.sh --model <seat>`** — the resolver made scriptable ([#55]).
-  `--show` is a table for a human: aligned columns, a header, a trailing note. A
-  caller wanting one id had to parse a display format, which is how a caller
-  ends up with a header row as a model id. `--model` prints the id alone on
-  stdout, so `M="$(ops-render.sh --model mechanic)"` is safe to substitute.
-
-  It resolves nothing new — the seat→tier map and `check_routable` already run
-  at load time, so this reads the state the renderer itself uses. A second
-  resolver is what the coupling table exists to prevent.
-
-  An unknown seat **refuses** and prints nothing, rather than emitting an empty
-  line at rc 0: a caller substituting `""` dispatches to the harness default,
-  which is the silent mis-route this guard family exists to stop. Measured that
-  the refusal is three-deep — strip it and `check_routable` catches the empty
-  id; strip that too and `set -u` does.
-
-  Ten assertions, including that stdout carries exactly one line (asserted by
-  counting lines, not by matching the id — a diagnostic leaking onto stdout
-  would still contain the id).
-
-  **The dispatch bridge is NOT shipped.** A workflow calling `agent()` with the
-  resolved id is the other half of #55, and it waits for an engagement that
-  needs it — a helper nobody calls is [#57]'s class. #55 stays open.
 
 ### Fixed
 

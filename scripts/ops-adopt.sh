@@ -91,7 +91,7 @@ LOCK_DEFERS_MAX=2     # short waits to grant before treating the claim as dead
 # rather than for the causes we anticipated (#68). Both budgets above count
 # ITERATIONS and both `continue` past their own limit when the escape path
 # itself fails, so neither is a bound. Measured: 54 leaked processes, the oldest
-# ~17 days, each burning ~1 core and writing warnings into a closed stdout,
+# ~17 days, each burning ~1 core and writing 2.7 MB of warnings into /dev/null,
 # because `mkdir` was failing with ENOENT (the ledger directory removed under an
 # in-flight run) and every reclaim branch opened with another `mkdir` in the
 # same vanished parent. A ceiling that always exits turns any such state into
