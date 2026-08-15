@@ -512,6 +512,31 @@ class ValidatorTest(unittest.TestCase):
     _PACKET = ("TASK / TEXT / SCENE / INPUTS / FORBIDDEN / DONE / REACH (entry "
                "point + proof) / REPORT (status, SHA, CHANGED: <paths>|none)\n")
 
+    # The spine's fields, hardcoded — and the reason is that writing the warning
+    # above was NOT enough to avoid the trap it describes. The per-field cases
+    # below first shipped as `for field in vp.HANDOUT_PACKET_SPINE`, which reads
+    # the tuple out of the module under test: drop "REACH" from the spine and the
+    # loop drops the same field from its own expectation, so the cases stayed
+    # green while the guard lost the field they exist to protect. Measured
+    # exactly that way — 3 passed with REACH deleted from the spine.
+    #
+    # That is the vacuous-guard class (#21) reached from its least obvious side:
+    # not a check that cannot fail, but a check whose expectation is defined by
+    # the thing it checks. `_EXPECTED_SPINE` is the independent copy, and
+    # test_spine_matches_expected below is what makes adding a field to the
+    # product require adding it here — the coupling stated out loud instead of
+    # silently satisfied.
+    _EXPECTED_SPINE = ("TASK / TEXT / SCENE", "REACH", "CHANGED: <paths>|none")
+
+    def test_spine_matches_expected(self):
+        # The one place the two copies are compared. A field added to the product
+        # spine without being added here fails HERE, loudly, instead of silently
+        # widening every per-field loop below.
+        self.assertEqual(
+            tuple(vp.HANDOUT_PACKET_SPINE), self._EXPECTED_SPINE,
+            "HANDOUT_PACKET_SPINE changed — update _EXPECTED_SPINE too, and check "
+            "that templates/OPERATOR.md and docs/HANDOUT.md carry the new field")
+
     def test_handout_packet_pin(self):
         # No handout: the handout half must skip — prose is optional, and the
         # good tree has no HANDOUT.md. The CHARTER half is unconditional, so the
@@ -541,7 +566,7 @@ class ValidatorTest(unittest.TestCase):
         c = self.dir / "templates" / "OPERATOR.md"
         write(c, c.read_text() + "\n" + self._PACKET)
         h = self.dir / "docs" / "HANDOUT.md"
-        for field in vp.HANDOUT_PACKET_SPINE:
+        for field in self._EXPECTED_SPINE:
             write(h, "packet:\n" + self._PACKET.replace(field, "«removed»"))
             probs = []
             vp.check_handout_packet(self.dir, probs)
@@ -560,7 +585,7 @@ class ValidatorTest(unittest.TestCase):
         write(c, stripped)
         probs = []
         vp.check_handout_packet(self.dir, probs)
-        for field in vp.HANDOUT_PACKET_SPINE:
+        for field in self._EXPECTED_SPINE:
             self.assertTrue(
                 any("OPERATOR.md" in p and repr(field) in p for p in probs),
                 f"a charter with no dispatch packet did not fire on {field!r}: {probs}")
