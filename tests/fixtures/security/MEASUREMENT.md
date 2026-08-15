@@ -129,6 +129,63 @@ short-token leak in particular fires only at exactly length 4: below that the
 naive form prints nothing and looks safe. So a later reader should not infer
 that the suite would catch a regression in these two lines. It would not.
 
+## Step 3 — the tier arm, run 2026-08-15
+
+Step 2 said the gap was not lens *coverage* but lens *tier*. So step 3 tested
+that instead of building the security lens: the two cheap-tier lenses were
+re-run at JUDGMENT tier, same corpus, same neutralized tree, same prompts
+verbatim. Only the tier changed.
+
+| fixture | `correctness` MECH → JUDG | `spec` MECH → JUDG |
+| --- | --- | --- |
+| `frag-traversal` | 78 → **88** | — → — |
+| `sweep-rm` | 88 → **92** | — → — |
+| `guard-two-of-three` | 82 → **90** | — → **82** |
+| `ext-source` | **45 → 85** | 55 → 58 |
+| `secret-in-error` | — → **95** | 80 → 80 |
+
+**The 45 was the whole question, and it moved to 85.** At MECHANICAL,
+`ext-source`'s arbitrary-execution defect was scored below the 50 threshold —
+dropped from the panel's output entirely — and described as a missing
+exit-status check on `source`. At JUDGMENT the same lens names the mechanism:
+*"executes the project's `tiers.env` as shell — any `$(...)`, backtick, or plain
+command in a value runs with the caller's privileges"*.
+
+`correctness` also went 4/5 → **5/5**, picking up `secret-in-error` (95), which
+it had not reported at all. `spec` went 1/5 → 3/5, and on `guard-two-of-three`
+found something no lens had at either tier: that `adopt` is documented as
+re-stamping an *existing* sentinel yet creates one, so it *silently doubles as a
+second `open`*.
+
+### The control, and a methodology failure worth recording
+
+The first control run scored 62–78 on the corrected column — apparently a mass
+false-positive. It was not. That control tree had been built during step 2 and
+was **stale**: it predated the two fixes the step-2 control itself produced. The
+judgment-tier lens was correctly reporting the *old* defects, including the
+`len == 4` fingerprint leak, in code that no longer ships. Verified against the
+shipped `fixed.sh` across lengths 1–9: `*** (too short to fingerprint)` through
+7, `***aaaa` from 8. No bug.
+
+Rebuilt from the current fixtures and re-run: **zero of the five modeled defects
+re-flagged.** No traversal in `frag-traversal`, no `rm -rf` escape in
+`sweep-rm`, no missing call site in `guard-two-of-three`, no arbitrary execution
+in `ext-source`, no leaked secret in `secret-in-error`. So the 5/5 above is a
+rate, not a count.
+
+The clean control does report *other* defects in the corrected column — an
+ignored `rm -rf` status, an `open` that truncates a live sentinel, silent
+`continue` on a rejected config value. Those are real, they are not the modeled
+defects, and they are the judgment tier finding more than it was asked for. One
+of them (`open` clobbering) is the defect `guard-two-of-three/NOTES.md` records
+as deliberately unfixed.
+
+**The lesson is about the instrument, not the tier:** a control tree is an
+artifact with a version, and re-running an experiment against a stale one
+produces a confident wrong answer. This corpus's own README says a fixture whose
+exploit does not fire is a broken instrument; the same is true of a control that
+does not match the code it controls for.
+
 ## Consequence for step 3
 
 The planned step 3 was: add a conditional `security` lens plus a `supply-chain`
@@ -137,11 +194,30 @@ change to make** — there is no measured gap for it to close, and a lens added
 against numbers that do not show a gap is decoration that green-stamps every
 review. That is the vacuity class (#21) applied to a lens instead of a guard.
 
-What the numbers *do* support, if anything is changed at all:
+What the numbers *do* support is **tier**, not lens count — and the arm above
+tested exactly that. Both predictions held: the control ran first, and the
+cheap-tier `correctness` seat was the one dropping a real defect below
+threshold.
 
-- Run the false-positive control before any of it.
-- If a change is warranted, it is about **tier**, not about lens count: the
-  cheap-tier `correctness` seat is the one that dropped a real defect below
-  threshold.
+### What was decided, and what was not
 
-`workflows/review.js` is deliberately untouched by this work.
+`correctness` moves to JUDGMENT tier. The evidence is a 45 → 85 on the one
+finding the threshold had swallowed, 4/5 → 5/5 coverage, a mechanism-level
+description where there had been a wrong diagnosis, and a clean false-positive
+control. That is a measured gap with a measured fix.
+
+`spec` stays at MECHANICAL despite going 1/5 → 3/5. Its lens question ("what
+did the task text ask for that is missing") is not adversarial reasoning, its
+two new findings are both restatements of what `correctness` and `quality`
+already reported at judgment tier, and the panel pays for five seats per review.
+Promoting a lens because its numbers rose, without asking whether the findings
+are NEW, is how a panel becomes expensive without becoming better.
+
+The 50 threshold is **not** changed. 45 was a correct observation with the wrong
+severity, not a scoring-scale problem, and the tier change fixes it at the
+source. Lowering the threshold would admit every 45 in every future review on
+the strength of one data point.
+
+The `security` and `supply-chain` lenses are **not** built. That remains the
+step-2 conclusion and the tier arm does not disturb it: there is still no
+measured gap for them to close.

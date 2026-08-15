@@ -1,7 +1,7 @@
 export const meta = {
   name: "review",
   description:
-    "Operator review panel: parallel narrow lenses, most at cheap tiers and two at judgment tier, then an adversarial verifier at judgment tier. A REFUTED verdict is a hard stop and cannot be outvoted.",
+    "Operator review panel: parallel narrow lenses, two at cheap tiers and three at judgment tier, then an adversarial verifier at judgment tier. A REFUTED verdict is a hard stop and cannot be outvoted.",
   whenToUse:
     "After an implementation dispatch returns DONE on work that will be merged, published, or depended on by a later task. Pass the artifact path, or an array of paths, as args; pass args.doneMeans to give the spec and testability lenses the task text they ask about.",
   phases: [
@@ -193,7 +193,22 @@ const LENSES = [
     // feasibility only what is CLAIMED, quality only conventions. A logic
     // error outside all three escaped the panel by design.
     key: "correctness",
-    tier: MECHANICAL,
+    // JUDGMENT, not MECHANICAL, and the promotion is measured rather than
+    // assumed (#24 step 3 — the measurement is recorded with the fixtures it
+    // used; the CHANGELOG entry for 0.8.2 names them). Run over
+    // five known defects at each tier: at MECHANICAL this lens scored the
+    // arbitrary-execution fixture 45 — BELOW the 50 threshold, so it was
+    // dropped from the panel's output entirely — and described it as a missing
+    // exit-status check. At JUDGMENT the same lens scores it 85 and names the
+    // mechanism. Coverage went 4/5 to 5/5, with a clean false-positive control
+    // on the corrected column.
+    //
+    // `spec` was measured in the same run (1/5 to 3/5) and deliberately LEFT at
+    // MECHANICAL: its two extra findings restate what the judgment lenses
+    // already report, and a panel that promotes a lens because its numbers rose
+    // — without asking whether the findings are new — gets expensive without
+    // getting better.
+    tier: JUDGMENT,
     ask: `Correctness and error handling ONLY: logic errors, off-by-one, null/undefined, unhandled cases, races, silent failures (empty catch, swallowed error, ignored return code), missing validation. Cite path:line for each. Do not propose fixes; do not judge style or spec fit.`,
   },
 ];

@@ -4291,6 +4291,67 @@ os.utime('calc.py', (mt, mt))
 fi
 
 ########################################################################
+echo "-- Case: ops-render --model is the resolver made scriptable (#55)"
+# `--show` is a table for a human: aligned columns, a header, a trailing note.
+# A caller that wants ONE id has to parse it, and parsing a display format is
+# how a caller ends up with a header row as a model id. `--model <seat>` prints
+# the id alone so a dispatch site can substitute it directly.
+#
+# The properties that matter are about the CHANNEL as much as the value: a
+# warning captured into `M="$(... --model mechanic)"` becomes a model id nobody
+# configured, and an unknown seat printing an empty line dispatches to the
+# harness default — the silent mis-route the whole guard family exists to stop.
+P="$(newproj)"
+mkdir -p "$P/.operator"
+cat > "$P/.operator/tiers.env" <<'TIERSENV'
+JUDGMENT=claude-opus-5
+IMPLEMENT=deepseek:deepseek-v4-flash
+MECHANICAL=glm-5-turbo
+RECON=claude-haiku-4-5-20251001
+TIERSENV
+runmodel() { ( cd "$P" && "$BASH_ABS" "$SCRIPTS/ops-render.sh" --model "$1" ); }
+
+MDL="$(runmodel mechanic 2>/dev/null)"; MRC=$?
+check "#55 --model resolves a seat through its tier (mechanic → IMPLEMENT)" \
+  "$([ "$MRC" = 0 ] && [ "$MDL" = "deepseek:deepseek-v4-flash" ] && echo 0 || echo 1)"
+# Not a hardcoded map: a DIFFERENT seat on a DIFFERENT tier must follow its own
+# binding, or the case would pass against a script that always printed one id.
+check "#55 a second seat follows its own tier (crawler → MECHANICAL)" \
+  "$([ "$(runmodel crawler 2>/dev/null)" = "glm-5-turbo" ] && echo 0 || echo 1)"
+check "#55 the 'op-' prefix is optional, as everywhere else" \
+  "$([ "$(runmodel op-mechanic 2>/dev/null)" = "$(runmodel mechanic 2>/dev/null)" ] && echo 0 || echo 1)"
+# STDOUT IS THE CONTRACT: exactly one line, nothing else. Asserted by counting
+# lines rather than by matching the id, because a diagnostic leaking onto stdout
+# is the failure this guarantees against and it would still contain the id.
+check "#55 stdout carries exactly one line (safe to command-substitute)" \
+  "$([ "$(runmodel mechanic 2>/dev/null | wc -l | tr -d ' ')" = "1" ] && echo 0 || echo 1)"
+# An unknown seat REFUSES. An empty line at rc 0 is the dangerous shape: the
+# caller substitutes "" and the dispatch silently takes the harness default.
+UNK="$(runmodel nosuchseat 2>/dev/null)"; URC=$?
+check "#55 an unknown seat exits non-zero" "$([ "$URC" != 0 ] && echo 0 || echo 1)"
+check "#55 an unknown seat prints NOTHING on stdout (never an empty-string id)" \
+  "$([ -z "$UNK" ] && echo 0 || echo 1)"
+UNKERR="$( ( cd "$P" && "$BASH_ABS" "$SCRIPTS/ops-render.sh" --model nosuchseat ) 2>&1 >/dev/null )"
+# The likeliest cause is a typo, so the message names the seats that do exist.
+check "#55 the refusal names the known seats" \
+  "$(printf '%s' "$UNKERR" | grep -q 'known:.*mechanic' && echo 0 || echo 1)"
+# The seat name reaches a comparison and an eval; same allowlist as everywhere.
+( cd "$P" && "$BASH_ABS" "$SCRIPTS/ops-render.sh" --model '.*' >/dev/null 2>&1 ); DOTRC=$?
+check "#55 a charset-illegal seat name is refused (F18 allowlist)" \
+  "$([ "$DOTRC" != 0 ] && echo 0 || echo 1)"
+( cd "$P" && "$BASH_ABS" "$SCRIPTS/ops-render.sh" --model >/dev/null 2>&1 ); NOARGRC=$?
+check "#55 --model with no seat argument is refused" \
+  "$([ "$NOARGRC" != 0 ] && echo 0 || echo 1)"
+# It is the SAME resolver, not a second one: an unroutable binding must be
+# refused here exactly as --show refuses it, or --model becomes a bypass around
+# the guard that keeps a mis-routed id from reaching cc-proxy.
+printf 'IMPLEMENT=not-routable\n' > "$P/.operator/tiers.env"
+( cd "$P" && "$BASH_ABS" "$SCRIPTS/ops-render.sh" --model mechanic >/dev/null 2>&1 ); BADRC=$?
+check "#55 an unroutable binding is refused through the same check_routable" \
+  "$([ "$BADRC" != 0 ] && echo 0 || echo 1)"
+rm -rf "$P"
+
+########################################################################
 echo "-- Case: a vanishing holder file never prints a raw bash error"
 # `lock_holder_read` tests `[ -f "$LOCKDIR/holder" ]` and then reads the file.
 # Between those two the releasing writer can remove it — and `2>/dev/null` on

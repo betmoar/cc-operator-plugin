@@ -117,6 +117,68 @@ single source of truth; bump it in the same commit as the changelog entry.
   arbitrary id). Documentation only: the resolver→dispatch helper that would
   make the configured tier the default is not shipped, and #55 stays open.
 
+### Changed
+
+- **`correctness` moves to judgment tier, on measured evidence** ([#24] step 3).
+  Step 2 concluded the panel's gap was tier, not coverage. Step 3 tested that
+  instead of building the security lens the issue proposed: the two cheap-tier
+  lenses were re-run at JUDGMENT over the same corpus, same neutralized tree,
+  same prompts verbatim — only the tier changed.
+
+  `ext-source` went **45 → 85**. At MECHANICAL that arbitrary-execution defect
+  scored *below the 50 threshold*, so the panel dropped it entirely, and the
+  lens described it as a missing exit-status check. At JUDGMENT the same lens
+  names the mechanism: "executes the project's `tiers.env` as shell — any
+  `$(...)`, backtick, or plain command in a value runs with the caller's
+  privileges". Coverage 4/5 → 5/5, with a clean false-positive control.
+
+  `spec` was measured in the same run (1/5 → 3/5) and **deliberately left** at
+  MECHANICAL: its extra findings restate what the judgment lenses already
+  report, and promoting a lens because its numbers rose — without asking whether
+  the findings are new — makes a panel expensive rather than better. The 50
+  threshold is unchanged: 45 was a correct observation with the wrong severity,
+  fixed at the source. The `security` and `supply-chain` lenses remain unbuilt;
+  the tier arm does not disturb step 2's finding that there is no gap for them.
+
+  A methodology failure is recorded with it. The first control run scored 62–78
+  on the corrected column and looked like a mass false-positive. The control
+  tree was **stale** — built during step 2, predating the two fixes step 2's own
+  control produced — so the lens was correctly reporting defects that no longer
+  ship. Rebuilt and re-run: zero of the five re-flagged. A control tree is an
+  artifact with a version, and an experiment re-run against a stale one produces
+  a confident wrong answer.
+
+  A pre-existing guard caught the change: `meta.description` claimed "most at
+  cheap tiers and two at judgment", which the promotion made false, and F40's
+  cost-contract case failed until it was corrected to "two at cheap tiers and
+  three at judgment".
+
+### Added
+
+- **`ops-render.sh --model <seat>`** — the resolver made scriptable ([#55]).
+  `--show` is a table for a human: aligned columns, a header, a trailing note. A
+  caller wanting one id had to parse a display format, which is how a caller
+  ends up with a header row as a model id. `--model` prints the id alone on
+  stdout, so `M="$(ops-render.sh --model mechanic)"` is safe to substitute.
+
+  It resolves nothing new — the seat→tier map and `check_routable` already run
+  at load time, so this reads the state the renderer itself uses. A second
+  resolver is what the coupling table exists to prevent.
+
+  An unknown seat **refuses** and prints nothing, rather than emitting an empty
+  line at rc 0: a caller substituting `""` dispatches to the harness default,
+  which is the silent mis-route this guard family exists to stop. Measured that
+  the refusal is three-deep — strip it and `check_routable` catches the empty
+  id; strip that too and `set -u` does.
+
+  Ten assertions, including that stdout carries exactly one line (asserted by
+  counting lines, not by matching the id — a diagnostic leaking onto stdout
+  would still contain the id).
+
+  **The dispatch bridge is NOT shipped.** A workflow calling `agent()` with the
+  resolved id is the other half of #55, and it waits for an engagement that
+  needs it — a helper nobody calls is [#57]'s class. #55 stays open.
+
 ### Fixed
 
 - **The lock spin has an absolute ceiling** ([#68]). `lock_acquire` treated
@@ -523,6 +585,7 @@ BAR block lands, after decomposition.
 [#53]: https://github.com/betmoar/cc-operator-plugin/issues/53
 [#54]: https://github.com/betmoar/cc-operator-plugin/issues/54
 [#55]: https://github.com/betmoar/cc-operator-plugin/issues/55
+[#57]: https://github.com/betmoar/cc-operator-plugin/issues/57
 [#58]: https://github.com/betmoar/cc-operator-plugin/issues/58
 [#59]: https://github.com/betmoar/cc-operator-plugin/issues/59
 [#68]: https://github.com/betmoar/cc-operator-plugin/issues/68
