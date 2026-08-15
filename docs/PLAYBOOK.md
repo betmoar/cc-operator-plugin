@@ -218,7 +218,7 @@ the unknown-tier-key guard):
    `[A-Za-z0-9._:/@[]-]`). The shell is the canonical gate; the JS is its
    mirror. A divergence is audit F01 — a malformed id reaching dispatch through
    a hand-written `args.tiers` that bypassed the resolver.
-5. **Do NOT add an id-shape guard back.** 0.8.4 removed `ROUTABLE` — a
+5. **Do NOT add an id-shape guard back.** 0.8.3 removed `ROUTABLE` — a
    catalogue of id shapes plus a provider-lens allowlist — from every workflow
    and both shell scripts. It was operator asserting which model ids exist,
    which is the user's choice (tiers.env / `args.model`) and cc-proxy's routing

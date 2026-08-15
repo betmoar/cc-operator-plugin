@@ -9,7 +9,47 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
-## [0.8.4] - 2026-08-15
+## [0.8.3] - 2026-08-15
+
+### Added
+
+- **`workflows/dispatch.js` — one seat, one caller-supplied model id** ([#55]).
+  The plain `Agent` tool's `model` parameter is enum-locked to
+  `sonnet | opus | haiku | fable`, so a cc-proxy id is rejected *before*
+  dispatch and a seat cannot run on its configured tier without rendering. This
+  is the one route by which a resolved id reaches a seat at all.
+
+  **The honest shape, because it is not "the tier applies automatically":** the
+  workflow sandbox has no filesystem (measured), so this cannot read
+  `tiers.env`. `ops-render.sh --model <seat>` resolves the id outside and the
+  caller passes it in — the same division of labour `args.tiers` already uses.
+  `commands/tiers.md` documents both steps, and says plainly that **`render`
+  still beats this for repeated work**: `dispatch` resolves by hand per call,
+  `render` writes the binding once.
+
+  The seat table is a **literal map**, not `"cc-operator:op-" + seat`. A
+  computed agentType is invisible to `check_workflow_agent_types`, which matches
+  the string by regex against a shipped agent — so a typo'd or removed seat
+  would ship green and fail at dispatch (F22's class). It also bounds what
+  caller input can become an agentType.
+
+  `args.model` gets the **same** routability and charset guards a `tiers.env`
+  binding gets, or this workflow would be a bypass around `check_routable`: an
+  id the resolver refuses would reach cc-proxy as a literal string and land on
+  the default backend. Omitting it falls back to the JUDGMENT tier **and logs
+  that it did**, naming the `--model` command — a silent fallback is how a
+  caller never learns they dispatched on something else. A dead agent is
+  reported as `dead: true` with no `result` key, so "the seat never ran" cannot
+  be read as "the seat ran and said nothing".
+
+  14 assertions. Mutation-verified on the two that would make it decoration:
+  dropping `model` from the `agent()` call, and removing the `args.model`
+  guards — both turn their cases red.
+
+  **#55 closes with this.** The issue was the evidence that the gap reached
+  someone; waiting for a second engagement to prove it again was the wrong bar,
+  and #57's class is an artifact *claimed to work* while wired to nothing — not
+  one with a documented caller and a test proving the route.
 
 ### Changed
 
@@ -62,6 +102,18 @@ single source of truth; bump it in the same commit as the changelog entry.
   id guard the workflows carry, so a neutered `.test(id)` call site has no
   second line of defence behind it.
 
+### Fixed
+
+- **Three stale claims, found by reading rather than by a lens** — the [#70]
+  class, in this repo's own docs. `README.md` said "Four **workflows**" (now
+  five) and described the review panel as "most cheap, two judgment", which
+  0.8.2's own tier change had made false. `CLAUDE.md`'s coupling table said "The
+  FOUR workflows' `ROUTABLE` regex" — a hardcoded count beside a glob. It was
+  first corrected to "every workflow"; the guard-change above then removed
+  `ROUTABLE` outright, so that row now covers `BAD_CHARSET`. The lesson survives
+  the rewrite: `check_workflows` globs `workflows/*.js`, so a count in that
+  table rots the moment a file is added.
+
 ### Notes
 
 Test deltas are inversions, not deletions: the cases that asserted *refusal* of
@@ -70,59 +122,6 @@ Test deltas are inversions, not deletions: the cases that asserted *refusal* of
 Mutation-verified in all three directions — gutting the charset guard turns the
 bash suite red, re-declaring `ROUTABLE` turns the validator red, neutering
 `dispatch.js`'s `args.model` call site turns two node cases red.
-
-## [0.8.3] - 2026-08-15
-
-### Added
-
-- **`workflows/dispatch.js` — one seat, one caller-supplied model id** ([#55]).
-  The plain `Agent` tool's `model` parameter is enum-locked to
-  `sonnet | opus | haiku | fable`, so a cc-proxy id is rejected *before*
-  dispatch and a seat cannot run on its configured tier without rendering. This
-  is the one route by which a resolved id reaches a seat at all.
-
-  **The honest shape, because it is not "the tier applies automatically":** the
-  workflow sandbox has no filesystem (measured), so this cannot read
-  `tiers.env`. `ops-render.sh --model <seat>` resolves the id outside and the
-  caller passes it in — the same division of labour `args.tiers` already uses.
-  `commands/tiers.md` documents both steps, and says plainly that **`render`
-  still beats this for repeated work**: `dispatch` resolves by hand per call,
-  `render` writes the binding once.
-
-  The seat table is a **literal map**, not `"cc-operator:op-" + seat`. A
-  computed agentType is invisible to `check_workflow_agent_types`, which matches
-  the string by regex against a shipped agent — so a typo'd or removed seat
-  would ship green and fail at dispatch (F22's class). It also bounds what
-  caller input can become an agentType.
-
-  `args.model` gets the **same** routability and charset guards a `tiers.env`
-  binding gets, or this workflow would be a bypass around `check_routable`: an
-  id the resolver refuses would reach cc-proxy as a literal string and land on
-  the default backend. Omitting it falls back to the JUDGMENT tier **and logs
-  that it did**, naming the `--model` command — a silent fallback is how a
-  caller never learns they dispatched on something else. A dead agent is
-  reported as `dead: true` with no `result` key, so "the seat never ran" cannot
-  be read as "the seat ran and said nothing".
-
-  14 assertions. Mutation-verified on the two that would make it decoration:
-  dropping `model` from the `agent()` call, and removing the `args.model`
-  guards — both turn their cases red.
-
-  **#55 closes with this.** The issue was the evidence that the gap reached
-  someone; waiting for a second engagement to prove it again was the wrong bar,
-  and #57's class is an artifact *claimed to work* while wired to nothing — not
-  one with a documented caller and a test proving the route.
-
-### Fixed
-
-- **Three stale claims, found by reading rather than by a lens** — the [#70]
-  class, in this repo's own docs. `README.md` said "Four **workflows**" (now
-  five) and described the review panel as "most cheap, two judgment", which
-  0.8.2's own tier change had made false. `CLAUDE.md`'s coupling table said "The
-  FOUR workflows' `ROUTABLE` regex"; it now says *every* workflow and explains
-  why a count in that table rots — `check_workflows` globs `workflows/*.js`, so
-  a new file inherits the pin automatically.
-
 
 ## [0.8.2] - 2026-08-15
 

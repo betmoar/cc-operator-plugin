@@ -21,7 +21,7 @@ const DEFAULT_TIERS = {
 // exist. That is the user's choice (tiers.env / args.model) and cc-proxy's
 // routing decision — see ops-tiers.sh check_routable for the full reasoning
 // behind dropping the id-shape catalogue and the provider-lens allowlist in
-// 0.8.4. What remains tests the STRING, so it cannot go stale: whitespace or a
+// 0.8.3. What remains tests the STRING, so it cannot go stale: whitespace or a
 // quote means the tiers.env line is malformed, not that the model is unknown.
 const BAD_CHARSET = /[^\w./:@[\]-]/;
 const KNOWN_TIERS = ["JUDGMENT", "IMPLEMENT", "MECHANICAL", "RECON"];
@@ -127,7 +127,7 @@ if (model) {
   // The caller-supplied id gets the SAME guard as a tiers.env binding — no
   // more and no less. Less would make this workflow a bypass around
   // check_routable; more would make it the one place that second-guesses the
-  // caller's model choice, which is exactly what 0.8.4 removed everywhere else.
+  // caller's model choice, which is exactly what 0.8.3 removed everywhere else.
   if (BAD_CHARSET.test(model)) {
     throw new Error(`args.model=${JSON.stringify(model)} contains characters outside the model-id charset [A-Za-z0-9._:/@[]-]`);
   }

@@ -1534,7 +1534,7 @@ def check_resolver_renderer_parity(root, problems):
         # reachable here by commenting the body out in both files (comments are
         # stripped above). Pin the load-bearing reject to its content.
         #
-        # ONE fragment, not three, since 0.8.4. The id-shape reject and the
+        # ONE fragment, not three, since 0.8.3. The id-shape reject and the
         # provider-lens allowlist were both deleted from check_routable, so
         # pinning them would now pin their absence's opposite — see that
         # function's comment for why operator no longer decides which model ids
@@ -1549,7 +1549,7 @@ def check_resolver_renderer_parity(root, problems):
                     f"but agreeing on a guard that checks nothing is how a "
                     f"parity check passes while the guard is gone")
 
-    # The LENS_NAMESPACES pin lived here until 0.8.4 — an allowlist of five
+    # The LENS_NAMESPACES pin lived here until 0.8.3 — an allowlist of five
     # cc-proxy provider namespaces, pinned twice over (equal across the two
     # files AND equal to a canonical literal) because equality alone had proven
     # vacuous. All of that machinery existed to hold a list of facts about
@@ -1606,7 +1606,7 @@ def check_workflows(root, problems):
     files = sorted(wf_dir.glob("*.js")) if wf_dir.is_dir() else []
     if not files:
         return  # workflows/ is optional; the plugin ships review.js only at need
-    # CANONICAL_ROUTABLE lived here until 0.8.4, pinning an id-shape alternation
+    # CANONICAL_ROUTABLE lived here until 0.8.3, pinning an id-shape alternation
     # across every workflow copy. It is gone with the guard it pinned: the shape
     # catalogue was operator asserting which model ids exist, which is the
     # user's choice and cc-proxy's routing decision (see ops-tiers.sh
@@ -1666,7 +1666,7 @@ def check_workflows(root, problems):
         if re.search(r"const\s+ROUTABLE\s*=", text):
             problems.append(
                 f"{rel}: declares `const ROUTABLE = …` — an id-shape catalogue "
-                f"was REMOVED in 0.8.4 and must not come back. Operator does not "
+                f"was REMOVED in 0.8.3 and must not come back. Operator does not "
                 f"decide which model ids exist; the user chooses (tiers.env / "
                 f"args.model) and cc-proxy routes. A shape list in this repo "
                 f"cannot track cc-proxy's catalogue and refused 8 of 409 live "
@@ -1674,7 +1674,7 @@ def check_workflows(root, problems):
                 f"and let a bad id fail at dispatch, where the truth is")
 
         # (d) the charset guard — pinned to a canonical literal, and proven
-        # applied. Since 0.8.4 it is the ONLY id guard, so this pin carries what
+        # applied. Since 0.8.3 it is the ONLY id guard, so this pin carries what
         # two used to.
         #
         # check_workflow_parity compares the copies to EACH OTHER, which is
@@ -1682,7 +1682,7 @@ def check_workflows(root, problems):
         # in all four workflows at once and every gate stayed green (node 25/25,
         # validator rc 0), because four identically-broken files are trivially
         # "in parity". This closes that hole for the guard that rejects
-        # whitespace and quotes — and since 0.8.4 removed the id-shape guard
+        # whitespace and quotes — and since 0.8.3 removed the id-shape guard
         # that used to sit beside it, this is the last one standing.
         # Uniform drift is the realistic failure — a maintainer edits the block
         # once and copies it to the other three, exactly as the copy-paste
@@ -1723,7 +1723,7 @@ def check_workflows(root, problems):
 # parity invariant. The regexes ARE — they define what "routable" and
 # "valid charset" mean, and a divergence between two workflows' ROUTABLE is a
 # silent disagreement about which ids are well-formed.
-# ROUTABLE was dropped from this tuple in 0.8.4 along with the guard itself
+# ROUTABLE was dropped from this tuple in 0.8.3 along with the guard itself
 # (see check_workflows (c)); BAD_CHARSET is what remains to hold in parity.
 WORKFLOW_PARITY_CONSTS = ("BAD_CHARSET",)
 

@@ -66,7 +66,7 @@ die() { echo "ops-render: $*" >&2; exit 2; }
 
 # ── guards (mirror ops-tiers.sh check_routable + ledger check_bare_name)
 # Well-formedness only, no id catalogue and no provider allowlist — see the
-# resolver's copy for the full reasoning (0.8.4): the user picks the model,
+# resolver's copy for the full reasoning (0.8.3): the user picks the model,
 # cc-proxy decides what it routes, operator decides neither.
 check_routable() { # check_routable <label> <id>
   case "$2" in

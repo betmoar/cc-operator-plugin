@@ -24,7 +24,7 @@ const DEFAULT_TIERS = {
 // exist. That is the user's choice (tiers.env / args.model) and cc-proxy's
 // routing decision — see ops-tiers.sh check_routable for the full reasoning
 // behind dropping the id-shape catalogue and the provider-lens allowlist in
-// 0.8.4. What remains tests the STRING, so it cannot go stale: whitespace or a
+// 0.8.3. What remains tests the STRING, so it cannot go stale: whitespace or a
 // quote means the tiers.env line is malformed, not that the model is unknown.
 const BAD_CHARSET = /[^\w./:@[\]-]/;
 const KNOWN_TIERS = ["JUDGMENT", "IMPLEMENT", "MECHANICAL", "RECON"];

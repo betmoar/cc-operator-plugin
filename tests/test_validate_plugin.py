@@ -365,7 +365,7 @@ def make_good_tree(root):
     # carry a model: line or check_render_templates fires.
     write(root / "agents" / "_templates" / "default.tmpl",
           '---\nname: op-NAME\nmodel: MODEL\ntools: Read\n---\nbody\n')
-    # No ROUTABLE since 0.8.4: an id-shape catalogue is a validator FINDING
+    # No ROUTABLE since 0.8.3: an id-shape catalogue is a validator FINDING
     # now, not a requirement (check_workflows (c)). BAD_CHARSET is the guard.
     WF_SHARED = (
         'const BAD_CHARSET = /[^\\w./:@[\\]-]/;\n'
@@ -1221,7 +1221,7 @@ class ValidatorTest(unittest.TestCase):
         self.assertFires("does not begin with")
 
     def test_workflow_reintroduced_routable_fires(self):
-        # The inverse of the pre-0.8.4 case that lived here. An id-shape
+        # The inverse of the pre-0.8.3 case that lived here. An id-shape
         # catalogue used to be REQUIRED and pinned to a canonical literal; it is
         # now a finding. The realistic path back is a maintainer who sees an
         # unguarded id reach dispatch and writes the obvious-looking guard —
@@ -1239,7 +1239,7 @@ class ValidatorTest(unittest.TestCase):
         # the `const\s+ROUTABLE\s*=` anchor, documenting the decision would
         # break the build that enforces it.
         write(self.dir / "workflows" / "review.js",
-              self._wf("review", "// ROUTABLE was removed in 0.8.4; see check_workflows (c).\n"))
+              self._wf("review", "// ROUTABLE was removed in 0.8.3; see check_workflows (c).\n"))
         probs = []
         vp.check_workflows(self.dir, probs)
         self.assertEqual([p for p in probs if "must not come back" in p], [])
@@ -1285,7 +1285,7 @@ class ValidatorTest(unittest.TestCase):
         # declaration stays intact, so only the application check can catch it —
         # and only if it reads a comment-stripped view. `//` form; the sibling
         # below covers the block-comment syntax. Retargeted from ROUTABLE in
-        # 0.8.4 — same class, and now the ONLY guard it can be done to.
+        # 0.8.3 — same class, and now the ONLY guard it can be done to.
         write(self.dir / "workflows" / "review.js",
               self._wf("review").replace(
                   "  if (BAD_CHARSET.test(id)) throw new Error(\"x\");",
@@ -1611,7 +1611,7 @@ class ResolverRendererParityTest(unittest.TestCase):
     got a parity check after the same lesson.
     """
 
-    # A minimal but STRUCTURALLY CURRENT guard. It shrank in 0.8.4: the id-shape
+    # A minimal but STRUCTURALLY CURRENT guard. It shrank in 0.8.3: the id-shape
     # arms and the $LENS_NAMESPACES allowlist were deleted from check_routable
     # (operator does not decide which model ids exist), so a fixture still
     # carrying them would test a shape the tree no longer has. What the parity
@@ -1707,7 +1707,7 @@ class ResolverRendererParityTest(unittest.TestCase):
                             for p in self.problems()), self.problems())
 
     # The three LENS_NAMESPACES cases that lived here (renderer drift, uniformly
-    # wrong allowlist, missing assignment) went with the allowlist in 0.8.4.
+    # wrong allowlist, missing assignment) went with the allowlist in 0.8.3.
     # They were good tests of a bad idea: they held five copied provider names
     # in exact agreement across two files and a canonical literal, and the set
     # was measurably stale anyway. No replacement case is owed — the behaviour

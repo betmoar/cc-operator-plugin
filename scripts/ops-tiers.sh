@@ -53,7 +53,7 @@ is_tier_name() {
 
 # The model-id guard. It checks that the FIELD is well-formed, and nothing else.
 #
-# WHAT IT DELIBERATELY DOES NOT DO — this is the 0.8.4 correction, and the point
+# WHAT IT DELIBERATELY DOES NOT DO — this is the 0.8.3 correction, and the point
 # is worth more than the code: it does not decide which model ids exist. Until
 # 0.8.3 this function carried a catalogue of id SHAPES (`glm-*`, `claude-*`,
 # `vendor/model`) plus an allowlist of provider lenses mirroring cc-proxy's

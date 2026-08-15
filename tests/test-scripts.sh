@@ -1904,7 +1904,7 @@ check "ops-tiers --show prints the TIER/MODEL/SOURCE table" \
 SETOUT="$(TIERSENV --set MECHANICAL=glm-4.7 --show 2>/dev/null)"
 check "set NAME=id applies a one-off override (source shows --set)" \
   "$(printf '%s' "$SETOUT" | grep -q 'MECHANICAL.*glm-4.7.*--set' && echo 0 || echo 1)"
-# WHAT THE GUARD NO LONGER DOES (0.8.4). Until 0.8.3 this block asserted a
+# WHAT THE GUARD NO LONGER DOES (0.8.3). Until 0.8.2 this block asserted a
 # catalogue: three id SHAPES plus an allowlist of five provider lenses mirroring
 # cc-proxy's PROVIDER_IDS. Every one of those cases passed, and the catalogue
 # was wrong anyway — measured 2026-08-15 against a live cc-proxy serving 409
@@ -1939,7 +1939,7 @@ check "the charset refusal names the charset, not a catalogue of known ids" \
 for _id in qwen:deepseek-v4-pro openrouter:qwen/x openai/gpt-5 \
            deepseek/deepseek-r1:free qwen/qwen3-max:nitro qwen:a:b 'glm-5.2[1m]'; do
   TIERSENV --set "MECHANICAL=$_id" >/dev/null 2>&1; _rc=$?
-  check "a previously-legal id still resolves ($_id) — 0.8.4 only widens" \
+  check "a previously-legal id still resolves ($_id) — 0.8.3 only widens" \
     "$([ "$_rc" -eq 0 ] && echo 0 || echo 1)"
 done
 # tiers.env carries TWO line kinds (the renderer's seat bindings share the
@@ -2162,7 +2162,7 @@ printf 'op-scout=BOGUS\n' > "$RP/.operator/tiers.env"
 check "guard: seat bound to unknown tier is refused (non-zero exit)" "$([ "$G2" -ne 0 ] && echo 0 || echo 1)"
 # The renderer carries its own copy of check_routable (validate_plugin's
 # check_resolver_renderer_parity pins the two equal). Both halves are asserted
-# HERE too: parity proves they are the same, not that either works. Since 0.8.4
+# HERE too: parity proves they are the same, not that either works. Since 0.8.3
 # the guard judges WELL-FORMEDNESS only — an id it does not recognise is the
 # user's choice and cc-proxy's routing decision, so it renders.
 for _id in not-a-model deepseek-v4-flash qwen3.8-max bogus:some-model \
@@ -4312,7 +4312,7 @@ check "#55 --model with no seat argument is refused" \
   "$([ "$NOARGRC" != 0 ] && echo 0 || echo 1)"
 # It is the SAME resolver, not a second one: --model must apply exactly the
 # guard --show applies, or it becomes a bypass. Both halves are pinned, because
-# the guard's polarity changed in 0.8.4 and only the pair proves it moved as a
+# the guard's polarity changed in 0.8.3 and only the pair proves it moved as a
 # unit — a MALFORMED field is refused, an UNRECOGNISED one resolves.
 printf 'IMPLEMENT=claude sonnet\n' > "$P/.operator/tiers.env"
 ( cd "$P" && "$BASH_ABS" "$SCRIPTS/ops-render.sh" --model mechanic >/dev/null 2>&1 ); BADRC=$?
@@ -4320,7 +4320,7 @@ check "#55 a malformed binding is refused through the same check_routable" \
   "$([ "$BADRC" != 0 ] && echo 0 || echo 1)"
 printf 'IMPLEMENT=deepseek-v4-flash\n' > "$P/.operator/tiers.env"
 MODELOUT="$( cd "$P" && "$BASH_ABS" "$SCRIPTS/ops-render.sh" --model mechanic 2>/dev/null )"
-check "#55 --model resolves an id operator does not recognise (0.8.4)" \
+check "#55 --model resolves an id operator does not recognise (0.8.3)" \
   "$([ "$MODELOUT" = "deepseek-v4-flash" ] && echo 0 || echo 1)"
 rm -rf "$P"
 

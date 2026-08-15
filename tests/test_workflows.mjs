@@ -124,8 +124,8 @@ ok((await brainstormN(undefined)) === 4, "brainstorm N: undefined → default 4"
 // workflow aborts before any agent call.
 await throws(() => run(WF("brainstorm.js"), { tiers: { Mechanical: "glm-5" } }, {}),
   "brainstorm tier: typo 'Mechanical' rejected (F07 typo guard)", "unknown tier");
-// Every whitespace/quote shape now lands on the ONE guard (0.8.4 removed the
-// id-shape catalogue). The pre-0.8.4 suite split these across two guards and
+// Every whitespace/quote shape now lands on the ONE guard (0.8.3 removed the
+// id-shape catalogue). The pre-0.8.3 suite split these across two guards and
 // mislabelled which one fired — a review found the "glm 5" case claimed charset
 // coverage while actually throwing on ROUTABLE, and neutering BAD_CHARSET in
 // all four workflows left the suite green. With one guard the label cannot lie,
@@ -144,8 +144,8 @@ try {
     { blindspots: { findings: [] }, converge: { ranked: [], sharedConstraints: [], openQuestions: [] } });
 } catch { bracketOk = false; }
 ok(bracketOk, "brainstorm tier: bracket-marked id 'glm-5.2[1m]' accepted (charset allows ])");
-// 0.8.4: an id operator does not recognise is ACCEPTED, and that is the point.
-// The list below is the direct inverse of the pre-0.8.4 cases — `not-routable`
+// 0.8.3: an id operator does not recognise is ACCEPTED, and that is the point.
+// The list below is the direct inverse of the pre-0.8.3 cases — `not-routable`
 // and `bogus:vendor/model` used to be the two headline rejects, held in place
 // by a shape catalogue and a provider allowlist. Both were operator asserting
 // which model ids exist. The user picks the model; cc-proxy routes it or
@@ -162,7 +162,7 @@ for (const good of ["glm-5.2", "claude-opus-5", "deepseek/deepseek-r1:free",
     await run(WF("brainstorm.js"), { tiers: { MECHANICAL: good } },
       { blindspots: { findings: [] }, converge: { ranked: [], sharedConstraints: [], openQuestions: [] } });
   } catch { accepted = false; }
-  ok(accepted, `brainstorm tier: id ${JSON.stringify(good)} accepted — operator does not gate the catalogue (0.8.4)`);
+  ok(accepted, `brainstorm tier: id ${JSON.stringify(good)} accepted — operator does not gate the catalogue (0.8.3)`);
 }
 // IMPLEMENT is in KNOWN_TIERS → accepted (no throw); it's unused but routable.
 let implOk = true;
@@ -527,13 +527,13 @@ ok(!/\bmost at cheap tiers\b/.test(metaBlock) || mechanicalLenses > judgmentLens
 // The static pin (validate_plugin.check_workflows) compares the BAD_CHARSET
 // literal across the copies, so it sees any change to the regex TEXT — but it
 // cannot see a correct regex that is never applied (the F30 vacuity shape).
-// Measured on the pre-0.8.4 pair of guards: neutering a call site to
+// Measured on the pre-change pair of guards: neutering a call site to
 // `false && …` left the static pin at 0 findings, and the runtime caught it
 // ONLY where an assertion existed (brainstorm 77/2, review 79/0). Three of the
 // four workflows had nothing covering it — a workflow whose guard does nothing
 // shipped with every gate green.
 //
-// That matters more now, not less: 0.8.4 removed the id-shape catalogue, so
+// That matters more now, not less: 0.8.3 removed the id-shape catalogue, so
 // BAD_CHARSET is the ONLY id guard left. There is no second regex to catch what
 // a neutered call site lets through.
 //
@@ -587,7 +587,7 @@ await throws(() => run(WF("dispatch.js"),
 await throws(() => run(WF("dispatch.js"),
   { seat: "mechanic", prompt: "p", model: 'glm-5"q' }, DISPATCH_OK),
   "dispatch: a quote-bearing args.model is rejected", "outside the");
-// ...and the inverse, which is the 0.8.4 correction: an id operator does not
+// ...and the inverse, which is the 0.8.3 correction: an id operator does not
 // recognise DISPATCHES. `bogus:vendor/model` was the headline reject here until
 // the guard learned it was not operator's call; `deepseek-v4-flash` is a real
 // id the old shape catalogue refused. Both must reach agent() untouched.
@@ -595,7 +595,7 @@ for (const id of ["bogus:vendor/model", "deepseek-v4-flash", "qwen3.8-max"]) {
   const { rt } = await run(WF("dispatch.js"),
     { seat: "mechanic", prompt: "p", model: id }, DISPATCH_OK);
   ok(rt.calls.some((c) => c.model === id),
-    `dispatch: unrecognised-but-well-formed id ${JSON.stringify(id)} reaches agent() (0.8.4)`);
+    `dispatch: unrecognised-but-well-formed id ${JSON.stringify(id)} reaches agent() (0.8.3)`);
 }
 // An unknown seat must REFUSE, not fall through to some default agentType:
 // args.seat is caller input, and without the literal table it would become an
