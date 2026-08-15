@@ -125,7 +125,16 @@ single source of truth; bump it in the same commit as the changelog entry.
 
   The suite leaked them too: `kill -9 "$FHPID"` killed the subshell and
   **orphaned** the `bash` grandchild inside it. Measured — 1 orphan per run
-  before, 0 after. Both halves shipped, because a bounded leak is still a leak.
+  before, 0 after, and 0 of any kind after review found the ceiling case's own
+  watchdog orphaning its `sleep`. Both halves shipped, because a bounded leak is
+  still a leak.
+
+  Review of this fix added the sibling-side test: `ops-adopt.sh` carries a
+  byte-identical ceiling that **no test executed**. `check_lock_parity` pins the
+  two blocks, but parity proves sameness, not correctness-in-context — the F30
+  shape. It now runs, and asserts the message names `ops-adopt` rather than its
+  sibling (the parity normalizer strips exactly that prefix before comparing, so
+  a copy announcing the wrong tool would pass).
 
 - **A vanishing holder file no longer prints a raw bash error** — found while
   measuring #68's ceiling under 40 concurrent writers. `lock_holder_read` tests

@@ -1432,6 +1432,20 @@ check "foreign-host holder is not judged dead (no instant reclaim)" "$([ -e "$P/
 # lock ceiling added for #68 now bounds them at 120s, but a test must not leak
 # for 120s either, and a suite that reaps its own children would have contained
 # this even with the bug present.
+#
+# BOTH backgrounding shapes in this suite orphan, so the rule is about the KILL,
+# not about the shape. Measured directly, killing only the parent:
+#   ( cd "$P" && bash "$X" … ) &        -> child survives
+#   bash -c 'cd "$0" && bash "$1" …' &  -> child survives too
+# (A review round asserted the second form was orphan-proof. It is not: that
+# only holds when the inner command is the subshell's LAST simple command, so
+# bash execs instead of forking — which is never true here, because every site
+# redirects and chains.)
+#
+# The ABPID and LVWRITER sites are not leaking TODAY for a different reason:
+# they poll for a clean exit and only `kill -9` on a 20s timeout that does not
+# fire in practice. Their kill path would orphan if it ever did. So: any site
+# that can reach a bare `kill` on a backgrounded writer wants this reap.
 for _fhkid in $(pgrep -P "$FHPID" 2>/dev/null); do
   kill -9 "$_fhkid" 2>/dev/null || true
 done
@@ -4318,8 +4332,10 @@ echo "-- Case: the lock spin has an absolute ceiling (#68)"
 # is what bounds EVERY cause, including ones not yet met. Timing is used as an
 # assertion here (elapsed < the watchdog), which this suite otherwise avoids —
 # but the property under test IS "does it terminate", and there is no structural
-# proxy for that. It is made safe by a wide margin: a 2s ceiling against a 20s
-# watchdog, so only a genuinely unbounded loop fails it.
+# proxy for that. It is made safe by a wide margin: a 3s ceiling against a 20s
+# watchdog, so only a genuinely unbounded loop fails it. Measured under load:
+# loadavg 63 on 20 cores moved the elapsed time by 0.2s, because the loop is
+# dominated by `sleep 0.1`, not by CPU.
 P="$(newproj)"
 ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
 mkdir -p "$P/.operator/.lock"
@@ -4347,10 +4363,23 @@ rm -rf "$P/.operator"
 # distinguishes "terminated by the ceiling" from "terminated by us".
 ( sleep 20; kill -9 "$CEILPID" 2>/dev/null ) & CEILWD=$!
 wait "$CEILPID" 2>/dev/null; CEILRC=$?
+# The watchdog is a `( … ) &` subshell too, so `kill $CEILWD` alone orphans the
+# `sleep` inside it — the identical mechanism this case exists to prove fixed,
+# in the case's own scaffolding. Smaller blast radius (a bare sleep, no CPU,
+# gone in <=20s) but the standard is the same: reap the child first. Measured
+# before fixing: `after kill+wait, sleep survivors=[49573]`.
+for _wdkid in $(pgrep -P "$CEILWD" 2>/dev/null); do
+  kill -9 "$_wdkid" 2>/dev/null || true
+done
 kill "$CEILWD" 2>/dev/null || true; wait "$CEILWD" 2>/dev/null || true
 # Reap any orphaned grandchild before asserting, so a failure here cannot leave
-# the very process class this case exists to prevent.
-pkill -9 -f "$VERDICT T-CEIL" 2>/dev/null || true
+# the very process class this case exists to prevent. Descendant-scoped via
+# `pgrep -P`, NOT `pkill -f`: this project's lock exists to support concurrent
+# checkouts, and a machine-wide pattern kill reaches into another checkout's
+# suite run — which is exactly what a maintainer does during a review round.
+for _ckid in $(pgrep -P "$CEILPID" 2>/dev/null); do
+  kill -9 "$_ckid" 2>/dev/null || true
+done
 # rc 137 is the watchdog's SIGKILL — i.e. it was STILL SPINNING. Any other exit
 # means the loop ended on its own, which is the property under test.
 check "#68 the spin loop terminates on its own (not by the watchdog's kill)" \
@@ -4364,6 +4393,41 @@ check "#68 the ceiling message names the timeout" \
 check "#68 it names the vanished ledger directory as the cause" \
   "$(grep -q 'removed while this run was in flight' "$CEILERR" 2>/dev/null && echo 0 || echo 1)"
 rm -f "$CEILERR"; rm -rf "$P"
+
+# The SIBLING CLI's copy of the ceiling, executed rather than assumed.
+# check_lock_parity pins the two blocks byte-for-byte, and the bash suite has
+# its own parity case — but parity proves SAMENESS, not correctness-in-context.
+# Two identically-correct-looking copies in different surroundings is the F30
+# shape this repo has already been bitten by: ops-adopt.sh derives its own
+# LOCKDIR, has its own call site and its own argument handling, and none of that
+# is covered by comparing the block to its twin. Reported by the review panel on
+# this very commit, which found LOCK_MAX_SPINS executed at exactly one site.
+P="$(newproj)"
+( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+mkdir -p "$P/.operator/.lock"
+printf 'someoneelse.example 65534 999999\n' > "$P/.operator/.lock/holder"
+( cd "$P" && bash "$TASK" T-ADCEIL --owner SESS-A >/dev/null 2>&1 )
+ADERR="$P.aderr"
+(
+  cd "$P" && LOCK_SPINS=25 LOCK_LIVE_SPINS=25 RECLAIM_WAIT=5 LOCK_MAX_SPINS=30 \
+    bash "$ADOPT" --owner SESS-B T-ADCEIL >/dev/null 2>"$ADERR"
+) &
+ADPID=$!
+sleep 1 & wait $! 2>/dev/null || true
+rm -rf "$P/.operator"
+( sleep 20; kill -9 "$ADPID" 2>/dev/null ) & ADWD=$!
+wait "$ADPID" 2>/dev/null; ADRC=$?
+for _adkid in $(pgrep -P "$ADWD" 2>/dev/null); do kill -9 "$_adkid" 2>/dev/null || true; done
+kill "$ADWD" 2>/dev/null || true; wait "$ADWD" 2>/dev/null || true
+for _adkid in $(pgrep -P "$ADPID" 2>/dev/null); do kill -9 "$_adkid" 2>/dev/null || true; done
+check "#68 ops-adopt's copy of the ceiling also terminates (parity is not proof)" \
+  "$([ "$ADRC" != 137 ] && echo 0 || echo 1)"
+# The message must carry the SIBLING's tool name. check_lock_parity normalizes
+# `ops-tool:` prefixes away before comparing, so a copy that announced itself as
+# ops-verdict would pass parity and mislead every operator reading the output.
+check "#68 ops-adopt names ITSELF in the ceiling message, not its sibling" \
+  "$(grep -q '^ops-adopt: could not acquire' "$ADERR" 2>/dev/null && echo 0 || echo 1)"
+rm -f "$ADERR"; rm -rf "$P"
 
 ########################################################################
 echo "-- Case: the security fixture corpus is a working instrument (#24 step 1)"

@@ -96,6 +96,11 @@ LOCK_DEFERS_MAX=2     # short waits to grant before treating the claim as dead
 # in-flight run) and every reclaim branch opened with another `mkdir` in the
 # same vanished parent. A ceiling that always exits turns any such state into
 # LOCK_MAX_SPINS × 0.1s, whatever the cause — including causes not yet met.
+# Precisely: it bounds THIS loop. A run that degrades to the fallback pays
+# FALLBACK_SPINS on top, so the true worst case is their sum (125s at defaults).
+# The fallback loop is separately bounded — its budget check precedes every
+# branch and its reclaim `continue` does not rewind the counter — so it is not
+# a second #68, but the sum is the honest number.
 LOCK_MAX_SPINS=${LOCK_MAX_SPINS:-1200}   # × 0.1s = 120s hard ceiling, always exits
 
 # Validate the env-overridable budgets. ${VAR:-default} only guards EMPTY, not
