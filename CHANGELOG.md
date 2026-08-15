@@ -44,6 +44,16 @@ built, and the measurement says why.
   under the production name `MEASUREMENT.md` records, so a rebuild reproduces the
   tree a measurement was made on.
 
+  All three map fields are guarded, because all three become path components.
+  The first shape guarded only the write side (`dest`) and its comment claimed
+  parity with "every parsed-field-becomes-a-path-component guard in this repo" —
+  the frag-traversal fixture's own shape, asserted in the script that builds that
+  fixture. Measured: a `../..` fixture path, or a symlink in the corpus, pulls
+  content from outside into the derived tree. The sharp consequence is not the
+  read but what it does to this feature's promise — `corpus_hash` walks the
+  corpus, so those bytes are in no stamp and `verify` reports **ok** on a tree
+  the corpus never held.
+
   The map lives **in the corpus** (`<corpus>/.ops-corpus-map`), not in the
   script: this repo has two corpora that neutralize differently (a security
   fixture contributes one file, a drift fixture contributes a set), and a table
