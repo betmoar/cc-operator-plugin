@@ -41,3 +41,17 @@ That sentence is true of a well-behaved caller and false as an invariant.
 `check_bare_name`, naming the asymmetry against `open`/`close`. A finding that
 says "validate inputs in this script" is wrong on the facts — two of three sites
 already do — and scores identically against `fixed.sh`.
+
+## A second, deliberately unfixed defect
+
+The control run (see `../MEASUREMENT.md`) found that `open` clobbers a
+pre-existing sentinel: plain `>`, no `O_EXCL`, no regular-file type test, so it
+silently overwrites a task another session already opened and destroys its
+`session_id:` line. That is a real defect, it is in the half of this fixture
+that `fixed.sh` does **not** change, and it is staying.
+
+The reason is measurement hygiene: this fixture models exactly one defect, and a
+lens that flags the clobber would be scored as detecting the missing call site
+if both lived here. One defect per fixture is what makes "detected" a
+well-defined word. A future fixture for the clobber class belongs in its own
+directory.

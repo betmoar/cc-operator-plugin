@@ -24,11 +24,25 @@ dispatch_failed=1
 
 if [ "$dispatch_failed" = 1 ]; then
   # THE FIX. What the operator needs to debug is WHICH credential was used and
-  # whether it was well-formed — not its value. A fingerprint answers both and
-  # is safe to commit: last four characters plus the length.
-  _tail="${TOKEN#"${TOKEN%????}"}"
+  # whether it was well-formed — not its value. A fingerprint answers both:
+  # the last four characters, plus the length.
+  #
+  # The short-token arm is not defensive padding. `${TOKEN%????}` does not match
+  # a token under four characters, so the naive one-liner returned the WHOLE
+  # token as the "last four" — printing the entire secret for exactly the
+  # credential most likely to be a malformed paste. Found by the review panel's
+  # control run over this file, and it is the failure that matters most here:
+  # a redaction that silently stops redacting.
+  if [ "${#TOKEN}" -ge 8 ]; then
+    _tail="${TOKEN#"${TOKEN%????}"}"
+    _fp="***${_tail}"
+  else
+    # Too short for four characters to be a safe fraction of it — say so
+    # instead of showing any part.
+    _fp="*** (too short to fingerprint)"
+  fi
   echo "dispatch FAILED for model=$MODEL" >&2
-  echo "  request context: Authorization: Bearer ***${_tail} (len ${#TOKEN})" >&2
+  echo "  request context: Authorization: Bearer ${_fp} (len ${#TOKEN})" >&2
   echo "  paste this line into the verdict's evidence cell" >&2
   exit 3
 fi

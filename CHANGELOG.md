@@ -38,10 +38,39 @@ single source of truth; bump it in the same commit as the changelog entry.
   and read `EXPLOIT: blocked` against the vulnerable script — a probe that would
   have scored the panel's silence as correct.
 
-  **This measures nothing yet.** Step 2 (run the current panel over the corpus,
-  record per-lens detection) and step 3 (add a lens, re-run, report the delta)
-  are unrun. Until then no claim about the panel's security coverage, in either
-  direction, is supported.
+- **#24 step 2 — the panel measured, and the hypothesis refuted** ([#24]).
+  Recorded in `tests/fixtures/security/MEASUREMENT.md`. The five lenses were
+  dispatched as they ship, over fixtures neutralized first (scratch tree,
+  production-plausible names, every "DEFECTIVE variant" marker stripped, no
+  `fixed.sh` sibling) — a lens told which file is the defective one is being
+  asked to agree, not measured.
+
+  **Both judgment-tier lenses detected 5/5, at the mechanism level.** Feasibility
+  rejected `sweep-rm`'s containment comment on the right grounds ("quoting
+  prevents word-splitting only"), and on `guard-two-of-three` went further than
+  the fixture's own note — observing that `adopt` is itself an opener, so the
+  "already checked when opened" excuse fails even for a well-behaved caller.
+  The false-positive control was then run over the corrected column: **zero of
+  the five defects re-flagged**, which is what makes 5/5 a rate rather than a
+  count.
+
+  The issue's premise — that these classes fall systematically outside the panel
+  — is false for this corpus. The gap that IS measured is the cheap tier: `spec`
+  detected 1/5, and `correctness` scored the arbitrary-execution defect at 45,
+  below the threshold that would have surfaced it at all.
+
+  **Consequence: the planned security lens is not the change to make.** There is
+  no measured gap for it to close, and a lens added against numbers that show
+  none is decoration that green-stamps every review — the vacuity class (#21)
+  applied to a lens instead of a guard. `workflows/review.js` is deliberately
+  untouched. If anything changes it is about tier, not lens count.
+
+  The control run also found **three defects in the fixes themselves**, two of
+  which are now corrected: a config line with no `=` parsed as `key==value`, and
+  a redaction that returned the whole token for values under four characters —
+  a fix that silently stopped fixing. The third (`open` clobbering a live
+  sentinel) is left in place on purpose and documented, because one defect per
+  fixture is what makes "detected" a well-defined word.
 
 - **#59 — the F18 TOCTOU guard is now ENTERED by a test** ([#59]). The existing
   case deleted its "ghost" file *before* `spill()` ran its own `readdirSync`, so

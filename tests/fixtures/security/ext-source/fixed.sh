@@ -18,6 +18,12 @@ MECHANICAL=""
 while IFS= read -r line; do
   case "$line" in
     ''|'#'*) continue ;;
+    # A line with no `=` is not a binding. Without this arm both `${line%%=*}`
+    # and `${line#*=}` are the identity, so a stray `MECHANICAL` line sets
+    # MECHANICAL=MECHANICAL and that non-id is reported as a resolved binding
+    # (measured). Found by the review panel's own control run over this file.
+    *=*) ;;
+    *) continue ;;
   esac
   key="${line%%=*}"
   val="${line#*=}"
