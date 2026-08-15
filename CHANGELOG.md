@@ -127,6 +127,19 @@ single source of truth; bump it in the same commit as the changelog entry.
   **orphaned** the `bash` grandchild inside it. Measured — 1 orphan per run
   before, 0 after. Both halves shipped, because a bounded leak is still a leak.
 
+- **A vanishing holder file no longer prints a raw bash error** — found while
+  measuring #68's ceiling under 40 concurrent writers. `lock_holder_read` tests
+  `[ -f "$LOCKDIR/holder" ]` and then reads it; between those two the releasing
+  writer can remove it, and `2>/dev/null` on the `read` does **not** cover that,
+  because the shell reports a failed input redirection before the command's own
+  redirections apply. Measured at ~1 line per 3 runs, on this code **and on its
+  0.4.0 predecessor** — so it predates #68 and is not a regression from it.
+  Redirecting the whole compound silences it; the empty record that results is
+  already the documented "cannot judge this holder" input. Tested structurally
+  (an unreadable holder file) rather than by racing writers, with a control
+  asserting the read really failed, and skipped as root — where a 000 file is
+  still readable, so the property cannot be exhibited.
+
 ## [0.8.1] - 2026-08-14
 
 What a second live run of the replay charter found, and what reviewing those

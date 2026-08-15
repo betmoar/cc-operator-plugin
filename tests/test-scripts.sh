@@ -4254,6 +4254,53 @@ os.utime('calc.py', (mt, mt))
 fi
 
 ########################################################################
+echo "-- Case: a vanishing holder file never prints a raw bash error"
+# `lock_holder_read` tests `[ -f "$LOCKDIR/holder" ]` and then reads the file.
+# Between those two the releasing writer can remove it — and `2>/dev/null` on
+# the `read` does NOT cover that, because the shell reports a failed INPUT
+# redirection before the command's own redirections apply. The result was a raw
+# `No such file or directory` at the operator, which this project treats as a
+# defect class of its own ("raw bash error as operator guidance").
+#
+# Structural assertion, not a timing one: rather than racing real writers and
+# hoping, this drives lock_holder_read directly with the holder file replaced by
+# a path that cannot be opened. That reproduces the redirection failure on every
+# run, where the natural race needed ~40 concurrent writers to show up once in
+# three runs (measured, on this code and its 0.4.0 predecessor alike).
+P="$(newproj)"
+( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+mkdir -p "$P/.operator/.lock"
+cat > "$P/probe.sh" <<'HOLDPROBE'
+set -u
+LOCKDIR="$1"
+# Take lock_holder_read verbatim from the CLI under test, so this cannot drift
+# from the implementation: extract the function and eval it.
+eval "$(sed -n '/^lock_holder_read() {$/,/^}$/p' "$2")"
+# The file exists for the `[ -f ]` test and is unopenable for the read: a
+# directory named `holder` passes -f? No — so use a file whose read fails by
+# permission instead, which is the same redirection failure the race produces.
+printf 'someone 1 2\n' > "$LOCKDIR/holder"
+chmod 000 "$LOCKDIR/holder" 2>/dev/null || true
+lock_holder_read
+chmod 644 "$LOCKDIR/holder" 2>/dev/null || true
+HOLDPROBE
+HOLDERR="$( bash "$P/probe.sh" "$P/.operator/.lock" "$VERDICT" 2>&1 >/dev/null )"
+# root can read a 000 file, so the redirection never fails there — skip rather
+# than assert a property the environment cannot exhibit.
+if [ "$(id -u)" = "0" ]; then
+  echo "  skip holder-read case: running as root, a 000 file is still readable"
+else
+  check "a failed holder read prints no raw bash error to the operator" \
+    "$(printf '%s' "$HOLDERR" | grep -qE 'No such file|Permission denied' && echo 1 || echo 0)"
+  # The control: the guard is only meaningful if the probe REACHED the read.
+  # An empty record is what a failed read must leave behind — the documented
+  # "cannot judge this holder" input the caller already handles.
+  check "control: the probe's read actually failed (guard was exercised)" \
+    "$(bash -c 'set -u; LOCKDIR="'"$P/.operator/.lock"'"; eval "$(sed -n "/^lock_holder_read() {\$/,/^}\$/p" "'"$VERDICT"'")"; chmod 000 "$LOCKDIR/holder" 2>/dev/null; lock_holder_read; chmod 644 "$LOCKDIR/holder" 2>/dev/null; [ -z "$LOCK_HOLDER_REC" ]' && echo 0 || echo 1)"
+fi
+rm -rf "$P"
+
+########################################################################
 echo "-- Case: the lock spin has an absolute ceiling (#68)"
 # The bug: lock_acquire treated EVERY mkdir failure as contention. Only EEXIST
 # means contention; ENOENT — the ledger directory removed while a run is in
