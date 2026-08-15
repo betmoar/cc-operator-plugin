@@ -1424,6 +1424,17 @@ SEC0=$(date +%s)
 FHPID=$!
 sleep 3
 check "foreign-host holder is not judged dead (no instant reclaim)" "$([ -e "$P/.operator/pending/T-FH" ] && echo 0 || echo 1)"
+# Kill the GRANDCHILD too, not just the subshell (#68). `$!` names the subshell;
+# the `bash "$VERDICT"` inside it is its child, and killing the subshell alone
+# ORPHANS that child — it keeps spinning on a lock in a directory this suite is
+# about to delete. Measured on a dev machine: 54 such orphans, the oldest ~17
+# days, ~1 core burned continuously, warnings written into a closed stdout. The
+# lock ceiling added for #68 now bounds them at 120s, but a test must not leak
+# for 120s either, and a suite that reaps its own children would have contained
+# this even with the bug present.
+for _fhkid in $(pgrep -P "$FHPID" 2>/dev/null); do
+  kill -9 "$_fhkid" 2>/dev/null || true
+done
 kill -9 "$FHPID" 2>/dev/null || true; wait "$FHPID" 2>/dev/null || true
 rm -rf "$LK" "$LK.reclaim"
 # (e) The two lock implementations must not drift. They contend on the same
@@ -4241,6 +4252,71 @@ os.utime('calc.py', (mt, mt))
        && echo 0 || echo 1)"
   rm -rf "$I23" "$I23C"
 fi
+
+########################################################################
+echo "-- Case: the lock spin has an absolute ceiling (#68)"
+# The bug: lock_acquire treated EVERY mkdir failure as contention. Only EEXIST
+# means contention; ENOENT — the ledger directory removed while a run is in
+# flight — is permanent, and every escape hatch opened with another mkdir in the
+# same vanished parent, so none of them completed. Both existing budgets count
+# ITERATIONS and both `continue` past their own limit in that state, and the
+# deferral path actively REWINDS `i`, so neither bounds the loop.
+#
+# Measured on a dev machine before the fix: 54 leaked ops-verdict.sh processes,
+# the oldest ~17 days, ~1 core burned continuously, 2.7MB of warnings written
+# into a closed stdout. The load made an unrelated project's timing-sensitive
+# gates read 2.5x their baseline.
+#
+# The ceiling is tested rather than the ENOENT special-case because the ceiling
+# is what bounds EVERY cause, including ones not yet met. Timing is used as an
+# assertion here (elapsed < the watchdog), which this suite otherwise avoids —
+# but the property under test IS "does it terminate", and there is no structural
+# proxy for that. It is made safe by a wide margin: a 2s ceiling against a 20s
+# watchdog, so only a genuinely unbounded loop fails it.
+P="$(newproj)"
+( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+mkdir -p "$P/.operator/.lock"
+# A foreign host + foreign uid + a pid that is not ours: holder_state cannot
+# judge it, so lock_acquire takes the time-based path rather than reclaiming.
+printf 'someoneelse.example 65534 999999\n' > "$P/.operator/.lock/holder"
+( cd "$P" && bash "$TASK" T-CEIL --owner SESS-A >/dev/null 2>&1 )
+CEILERR="$P.ceil.err"
+# All four budgets scale together, and the spin budgets must outlast the 1s
+# delete below. Measured while writing this: with LOCK_SPINS=6 the reclaim path
+# SUCCEEDS inside that first second, the run records normally, and the case
+# proves nothing — a green assertion against a state never entered. The ceiling
+# must also exceed both spin budgets or the script refuses at budget validation
+# (its own guard), which is a different rc 2 than the one under test.
+(
+  cd "$P" && LOCK_SPINS=25 LOCK_LIVE_SPINS=25 RECLAIM_WAIT=5 LOCK_MAX_SPINS=30 \
+    bash "$VERDICT" T-CEIL c e PASS --owner SESS-A >/dev/null 2>"$CEILERR"
+) &
+CEILPID=$!
+# Remove the ledger AFTER the run is past its own "no .operator/ in cwd" check
+# and inside the spin loop. Deleting it beforehand tests a different guard.
+sleep 1 & wait $! 2>/dev/null || true
+rm -rf "$P/.operator"
+# Watchdog: a still-spinning build must not hang the suite. Its own kill is what
+# distinguishes "terminated by the ceiling" from "terminated by us".
+( sleep 20; kill -9 "$CEILPID" 2>/dev/null ) & CEILWD=$!
+wait "$CEILPID" 2>/dev/null; CEILRC=$?
+kill "$CEILWD" 2>/dev/null || true; wait "$CEILWD" 2>/dev/null || true
+# Reap any orphaned grandchild before asserting, so a failure here cannot leave
+# the very process class this case exists to prevent.
+pkill -9 -f "$VERDICT T-CEIL" 2>/dev/null || true
+# rc 137 is the watchdog's SIGKILL — i.e. it was STILL SPINNING. Any other exit
+# means the loop ended on its own, which is the property under test.
+check "#68 the spin loop terminates on its own (not by the watchdog's kill)" \
+  "$([ "$CEILRC" != 137 ] && echo 0 || echo 1)"
+check "#68 it refuses rather than proceeding unlocked (rc 2)" \
+  "$([ "$CEILRC" = 2 ] && echo 0 || echo 1)"
+check "#68 the ceiling message names the timeout" \
+  "$(grep -q 'refusing to spin further' "$CEILERR" 2>/dev/null && echo 0 || echo 1)"
+# The diagnosis half: a generic timeout sends a maintainer hunting a contention
+# problem that does not exist. When the cause is knowable, it must be named.
+check "#68 it names the vanished ledger directory as the cause" \
+  "$(grep -q 'removed while this run was in flight' "$CEILERR" 2>/dev/null && echo 0 || echo 1)"
+rm -f "$CEILERR"; rm -rf "$P"
 
 ########################################################################
 echo "-- Case: the security fixture corpus is a working instrument (#24 step 1)"

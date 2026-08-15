@@ -229,6 +229,16 @@ LOCK_SPINS=${LOCK_SPINS:-300}        # × 0.1s = 30s before an UNJUDGEABLE holde
 LOCK_LIVE_SPINS=${LOCK_LIVE_SPINS:-600}   # × 0.1s = 60s to wait on a CONFIRMED-LIVE holder, then go unlocked
 RECLAIM_WAIT=${RECLAIM_WAIT:-50}       # × 0.1s = 5s to let a LIVE reclaimer finish (it needs ms)
 LOCK_DEFERS_MAX=2     # short waits to grant before treating the claim as dead
+# The absolute ceiling — the only budget that bounds the loop for EVERY cause
+# rather than for the causes we anticipated (#68). Both budgets above count
+# ITERATIONS and both `continue` past their own limit when the escape path
+# itself fails, so neither is a bound. Measured: 54 leaked processes, the oldest
+# ~17 days, each burning ~1 core and writing warnings into a closed stdout,
+# because `mkdir` was failing with ENOENT (the ledger directory removed under an
+# in-flight run) and every reclaim branch opened with another `mkdir` in the
+# same vanished parent. A ceiling that always exits turns any such state into
+# LOCK_MAX_SPINS × 0.1s, whatever the cause — including causes not yet met.
+LOCK_MAX_SPINS=${LOCK_MAX_SPINS:-1200}   # × 0.1s = 120s hard ceiling, always exits
 
 # Validate the env-overridable budgets. ${VAR:-default} only guards EMPTY, not
 # non-numeric — `[ "$i" -ge "$LOCK_SPINS" ]` with LOCK_SPINS=abc errors inside
@@ -247,6 +257,16 @@ _lock_check_budget LOCK_LIVE_SPINS "$LOCK_LIVE_SPINS" "$LOCK_LIVE_SPINS"
 # goes non-positive and each defer pays the full RECLAIM_WAIT (review F-C).
 _lock_check_budget RECLAIM_WAIT "$RECLAIM_WAIT" "$RECLAIM_WAIT"
 [ "$RECLAIM_WAIT" -lt "$LOCK_SPINS" ] || _lock_budget_die "RECLAIM_WAIT (must be < LOCK_SPINS)" "$RECLAIM_WAIT"
+# The ceiling is validated like the others, and must exceed BOTH iteration
+# budgets — a ceiling below them would fire during ordinary contention and turn
+# a working wait into a refusal, which is how a safety limit gets removed.
+_lock_check_budget LOCK_MAX_SPINS "$LOCK_MAX_SPINS" "$LOCK_MAX_SPINS"
+# An explicit `if`, not `A && B || C`: with the short-circuit form, C also runs
+# when A is true and B is false, which is a real branch here — and shellcheck
+# refuses it (SC2015), so the build catches the shape before the logic bites.
+if [ "$LOCK_MAX_SPINS" -le "$LOCK_SPINS" ] || [ "$LOCK_MAX_SPINS" -le "$LOCK_LIVE_SPINS" ]; then
+  _lock_budget_die "LOCK_MAX_SPINS (must exceed LOCK_SPINS and LOCK_LIVE_SPINS)" "$LOCK_MAX_SPINS"
+fi
 
 # The two "proceed unlocked" exits below (a confirmed-LIVE holder outlasting
 # LOCK_LIVE_SPINS, and a reclaim we could not win) serialized NOTHING: every
@@ -396,8 +416,29 @@ fallback_release() {
 }
 
 lock_acquire() {
-  local i=0 defers=0 state=2 rec0=""
+  local i=0 defers=0 state=2 rec0="" total=0
   while ! mkdir "$LOCKDIR" 2>/dev/null; do
+    # THE CEILING, first thing in the body and counted on a variable nothing
+    # else resets. `i` is deliberately rewound by the deferral backoff below
+    # (`i=$((LOCK_SPINS - RECLAIM_WAIT))`), so `i` can never bound the loop —
+    # that rewind is exactly how a repeating failure spins forever (#68).
+    # `total` only ever increases, so this exit is reachable from every state.
+    total=$((total+1))
+    if [ "$total" -ge "$LOCK_MAX_SPINS" ]; then
+      # Refuse rather than proceed unlocked. The two "proceed unlocked" exits
+      # elsewhere are reached from a JUDGED state — we know who holds it and
+      # why. Here we know nothing except that acquiring has been impossible for
+      # two minutes, and the likeliest cause is that the ledger directory is
+      # gone underneath us, in which case writing a row is meaningless anyway.
+      echo "ops-verdict: could not acquire $LOCKDIR after $((LOCK_MAX_SPINS / 10))s — refusing to spin further." >&2
+      if [ ! -d "${LOCKDIR%/*}" ]; then
+        # Name the cause when it is knowable: this is the #68 shape exactly,
+        # and the generic message above sent a maintainer hunting a contention
+        # problem that does not exist.
+        echo "ops-verdict: ${LOCKDIR%/*} does not exist — the ledger directory was removed while this run was in flight." >&2
+      fi
+      exit 2
+    fi
     i=$((i+1))
     lock_holder_read
     # `holder_state` reports through its EXIT STATUS, and a nonzero status from a

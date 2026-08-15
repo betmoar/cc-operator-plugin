@@ -86,6 +86,7 @@ single source of truth; bump it in the same commit as the changelog entry.
   of the five assertions are preconditions, so a future Node that stops listing
   dangling symlinks fails loudly instead of silently testing nothing.
 
+
 ### Changed
 
 - **`/cc-operator:tiers` documents the un-rendered alias gap** ([#55]). Every
@@ -97,6 +98,34 @@ single source of truth; bump it in the same commit as the changelog entry.
   gap and both routes that close it (render, or Workflow `agent()` with an
   arbitrary id). Documentation only: the resolver→dispatch helper that would
   make the configured tier the default is not shipped, and #55 stays open.
+
+### Fixed
+
+- **The lock spin has an absolute ceiling** ([#68]). `lock_acquire` treated
+  every `mkdir` failure as contention, but only `EEXIST` means contention.
+  `ENOENT` — the ledger directory removed while a run is in flight — is
+  permanent, and every escape hatch opened with another `mkdir` in the same
+  vanished parent, so none of them completed. Both existing budgets count
+  ITERATIONS and both `continue` past their own limit in that state; the
+  deferral path actively REWINDS the counter, so neither was ever a bound.
+
+  Found in the field, not by a test: **54 leaked `ops-verdict.sh` processes**,
+  the oldest ~17 days, each burning ~1 core and writing 2.7 MB of warnings into
+  a closed stdout. The accumulated load made an unrelated project's
+  timing-sensitive gates read 2.5× their baseline.
+
+  Fixed with `LOCK_MAX_SPINS` (120s default) counted on a variable nothing
+  resets, checked first in the loop body so it is reachable from every state.
+  It bounds **every** cause rather than the one anticipated — and when the cause
+  is knowable it is named, because a bare timeout sends a maintainer hunting
+  contention that does not exist. It refuses (rc 2) rather than proceeding
+  unlocked: the other two unlocked exits are reached from a judged state, this
+  one from no information at all. Ported to `ops-adopt.sh` under
+  `check_lock_parity`.
+
+  The suite leaked them too: `kill -9 "$FHPID"` killed the subshell and
+  **orphaned** the `bash` grandchild inside it. Measured — 1 orphan per run
+  before, 0 after. Both halves shipped, because a bounded leak is still a leak.
 
 ## [0.8.1] - 2026-08-14
 
@@ -442,6 +471,7 @@ BAR block lands, after decomposition.
 [#55]: https://github.com/betmoar/cc-operator-plugin/issues/55
 [#58]: https://github.com/betmoar/cc-operator-plugin/issues/58
 [#59]: https://github.com/betmoar/cc-operator-plugin/issues/59
+[#68]: https://github.com/betmoar/cc-operator-plugin/issues/68
 [#60]: https://github.com/betmoar/cc-operator-plugin/issues/60
 
 ## [0.7.1] - 2026-08-12
