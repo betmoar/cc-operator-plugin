@@ -9,6 +9,40 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-08-15
+
+### Added
+
+- **A security fixture corpus** at `tests/fixtures/security/` — step 1 of the
+  [#24] experiment, which asks which security-relevant defects fall outside the
+  review panel's five lenses. Five defects drawn from this codebase's own shape
+  rather than generic OWASP examples: a parsed field becoming a path component,
+  a parsed field reaching `rm -rf`, a correct guard applied at two of three call
+  sites, a config file sourced instead of parsed, and a credential in an error
+  message this project routes into a committed ledger.
+
+  Every fixture ships as a `vuln.sh`/`fixed.sh` pair that is **functionally
+  correct on both sides** — that is the design constraint, not a nicety. A
+  fixture failing its own tests would be caught by machinery this repo already
+  has, and would measure the test runner rather than the panel. The corrected
+  variant is the false-positive control: a lens flagging both columns equally
+  has pattern-matched on the topic, not detected anything.
+
+  `tests/test-scripts.sh` pins all four cells per fixture (28 assertions), plus
+  that the corpus stays inert — no shipped script or hook references it, and no
+  fixture carries an execute bit. The suite tests the **ruler**, so that a later
+  detection-rate claim drawn from it means something.
+
+  One defect in the instrument was caught by that pinning during construction:
+  `guard-two-of-three`'s traversal assertion was one directory level too high
+  and read `EXPLOIT: blocked` against the vulnerable script — a probe that would
+  have scored the panel's silence as correct.
+
+  **This measures nothing yet.** Step 2 (run the current panel over the corpus,
+  record per-lens detection) and step 3 (add a lens, re-run, report the delta)
+  are unrun. Until then no claim about the panel's security coverage, in either
+  direction, is supported.
+
 ## [0.8.1] - 2026-08-14
 
 What a second live run of the replay charter found, and what reviewing those

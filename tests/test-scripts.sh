@@ -4243,5 +4243,84 @@ os.utime('calc.py', (mt, mt))
 fi
 
 ########################################################################
+echo "-- Case: the security fixture corpus is a working instrument (#24 step 1)"
+# The corpus under tests/fixtures/security/ exists to measure the review panel:
+# each fixture is a functionally-correct file with a real security defect, paired
+# with a corrected variant. That pairing is the whole design, and it is only a
+# measurement instrument if all four cells hold:
+#
+#   vuln  FUNCTIONAL: ok  — else the defect is caught by machinery that already
+#                           exists (a failing test), and the panel is not what
+#                           is being measured
+#   vuln  EXPLOIT: fired  — else the "vulnerable" file is not vulnerable and a
+#                           lens that stays silent is CORRECT to. This is the
+#                           cell that caught a miscalibrated probe during the
+#                           corpus's own construction: guard-two-of-three's
+#                           traversal assertion was one directory level too high
+#                           and read "blocked" against the defective script.
+#   fixed FUNCTIONAL: ok  — else the fix traded the feature away, and "the panel
+#                           flags vuln but not fixed" measures nothing
+#   fixed EXPLOIT: blocked— the false-positive control. A lens that flags both
+#                           columns has pattern-matched on the topic, not
+#                           detected a defect.
+#
+# So this case does NOT test the plugin. It tests the ruler, and it fails the
+# build when the ruler bends — which is the only reason a later detection-rate
+# claim drawn from this corpus means anything.
+SECDIR="$REPO/tests/fixtures/security"
+if [ -d "$SECDIR" ]; then
+  SEC_FIXTURES="frag-traversal sweep-rm guard-two-of-three ext-source secret-in-error"
+  # Pinned by name rather than globbed: a fixture directory that silently
+  # disappears would otherwise shrink the corpus with the suite still green,
+  # and "the panel detected 3/3" reads identically to "3 of 5 fixtures were
+  # deleted". The count is asserted for the same reason.
+  SEC_FOUND=0
+  for _f in $SEC_FIXTURES; do
+    [ -d "$SECDIR/$_f" ] && SEC_FOUND=$((SEC_FOUND + 1))
+  done
+  check "#24 all 5 named security fixtures are present" \
+    "$([ "$SEC_FOUND" = 5 ] && echo 0 || echo 1)"
+
+  for _f in $SEC_FIXTURES; do
+    if [ ! -f "$SECDIR/$_f/probe.sh" ]; then
+      fail "#24 $_f: probe.sh missing"
+      continue
+    fi
+    _V="$(bash "$SECDIR/$_f/probe.sh" "$SECDIR/$_f/vuln.sh" 2>/dev/null)"
+    _X="$(bash "$SECDIR/$_f/probe.sh" "$SECDIR/$_f/fixed.sh" 2>/dev/null)"
+    check "#24 $_f: vuln is FUNCTIONALLY CORRECT (no existing gate catches it)" \
+      "$(printf '%s' "$_V" | grep -q '^FUNCTIONAL: ok$' && echo 0 || echo 1)"
+    check "#24 $_f: vuln's EXPLOIT FIRES (the defect is real, not described)" \
+      "$(printf '%s' "$_V" | grep -q '^EXPLOIT: fired$' && echo 0 || echo 1)"
+    check "#24 $_f: fixed keeps the feature working (the fix is not a deletion)" \
+      "$(printf '%s' "$_X" | grep -q '^FUNCTIONAL: ok$' && echo 0 || echo 1)"
+    check "#24 $_f: fixed BLOCKS the exploit (the false-positive control)" \
+      "$(printf '%s' "$_X" | grep -q '^EXPLOIT: blocked$' && echo 0 || echo 1)"
+    # Every fixture must carry the analysis that says what a DETECTION is. A
+    # corpus of vulnerable files without it invites "the lens mentioned input
+    # validation" to be scored as a hit — the vacuity class (#21) applied to a
+    # measurement rather than a guard.
+    check "#24 $_f: NOTES.md states what a detection must say" \
+      "$([ -f "$SECDIR/$_f/NOTES.md" ] \
+         && grep -q 'A detection must say' "$SECDIR/$_f/NOTES.md" && echo 0 || echo 1)"
+  done
+
+  # The corpus must stay INERT. It is vulnerable code living in the repo, and
+  # the one thing that must never happen is a shipped script sourcing or
+  # executing it. Checked against scripts/ and hooks/ rather than assumed from
+  # the directory it sits in.
+  SEC_REF="$(grep -rl 'fixtures/security' "$REPO/scripts" "$REPO/hooks" 2>/dev/null | head -1)"
+  check "#24 no shipped script or hook references the fixture corpus (inert)" \
+    "$([ -z "$SEC_REF" ] && echo 0 || echo 1)"
+  # No mode bits: fixtures are invoked as `bash <path>`, and a vulnerable file
+  # that is directly executable is one PATH mistake away from being run.
+  SEC_EXEC="$(find "$SECDIR" -name '*.sh' -perm -u+x 2>/dev/null | head -1)"
+  check "#24 no fixture carries an execute bit" \
+    "$([ -z "$SEC_EXEC" ] && echo 0 || echo 1)"
+else
+  fail "#24 the security fixture corpus is present at tests/fixtures/security"
+fi
+
+########################################################################
 echo "== summary: $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]
