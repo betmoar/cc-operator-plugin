@@ -560,5 +560,83 @@ await throws(() => run(WF("plan.js"), { tiers: { JUDGMENT: "bogus:vendor/model" 
 await throws(() => run(WF("plan.js"), { tiers: { MECHANICAL: "not routable" }, spec: "s" }, {}),
   "plan tier: unroutable id rejected — the guard is applied, not merely present (#60)", "not cc-proxy-routable");
 
+// ── dispatch: one seat, one model (#55) ─────────────────────────────────────
+console.log("-- Case: dispatch.js routes a seat to a caller-supplied model (#55)");
+// The gap this closes: the plain Agent tool's `model` parameter is enum-locked
+// to sonnet|opus|haiku|fable, so a cc-proxy id is rejected BEFORE dispatch and
+// a seat cannot run on its configured tier without rendering. This workflow is
+// the one route by which a resolved id reaches a seat at all.
+const DISPATCH_OK = { "dispatch:mechanic": { ok: true } };
+
+// The two things that must BOTH be right, asserted on the actual call opts
+// rather than on the return value: the seat picks the agentType, and the
+// caller's id survives to `model`. Either alone is not the feature.
+const { rt: dRt } = await run(WF("dispatch.js"),
+  { seat: "mechanic", prompt: "do the thing", model: "deepseek:deepseek-v4-flash" },
+  DISPATCH_OK);
+const dCall = dRt.calls.find((c) => c.label === "dispatch:mechanic");
+ok(dCall?.model === "deepseek:deepseek-v4-flash",
+  "dispatch: the caller's model id reaches the agent call (the whole point of #55)");
+ok(dCall?.prompt === "do the thing",
+  "dispatch: the prompt reaches the seat unmodified");
+// A second seat, so the case cannot pass against a hardcoded agentType.
+const { rt: dRt2 } = await run(WF("dispatch.js"),
+  { seat: "scout", prompt: "find it", model: "glm-5-turbo" },
+  { "dispatch:scout": { ok: true } });
+ok(dRt2.calls.find((c) => c.label === "dispatch:scout")?.model === "glm-5-turbo",
+  "dispatch: a second seat routes independently (not a hardcoded pair)");
+// The `op-` prefix is optional everywhere else in this project; a caller
+// copying a name out of an agent filename must not be refused.
+const { rt: dRt3 } = await run(WF("dispatch.js"),
+  { seat: "op-mechanic", prompt: "p", model: "glm-5-turbo" }, DISPATCH_OK);
+ok(dRt3.calls.some((c) => c.label === "dispatch:mechanic"),
+  "dispatch: the 'op-' prefix is optional, as in tiers.env and --model");
+
+// The caller-supplied id gets the SAME guards as a tiers.env binding, or this
+// workflow is a bypass around check_routable: an id ops-tiers.sh would refuse
+// reaches cc-proxy as a literal string and lands on the default backend.
+await throws(() => run(WF("dispatch.js"),
+  { seat: "mechanic", prompt: "p", model: "bogus:vendor/model" }, DISPATCH_OK),
+  "dispatch: args.model provider-lens bypass rejected (#35's shape, at a new call site)",
+  "not cc-proxy-routable");
+await throws(() => run(WF("dispatch.js"),
+  { seat: "mechanic", prompt: "p", model: "not routable" }, DISPATCH_OK),
+  "dispatch: an unroutable args.model is rejected", "not cc-proxy-routable");
+await throws(() => run(WF("dispatch.js"),
+  { seat: "mechanic", prompt: "p", model: 'glm-5"q' }, DISPATCH_OK),
+  "dispatch: a charset-illegal args.model is rejected", "outside the");
+// An unknown seat must REFUSE, not fall through to some default agentType:
+// args.seat is caller input, and without the literal table it would become an
+// arbitrary agentType string.
+await throws(() => run(WF("dispatch.js"),
+  { seat: "nosuchseat", prompt: "p", model: "glm-5-turbo" }, {}),
+  "dispatch: an unknown seat is refused, never coerced into an agentType",
+  "unknown seat");
+await throws(() => run(WF("dispatch.js"), { prompt: "p", model: "glm-5-turbo" }, {}),
+  "dispatch: a missing seat is refused", "must be a seat name");
+await throws(() => run(WF("dispatch.js"), { seat: "mechanic", model: "glm-5-turbo" }, {}),
+  "dispatch: an empty prompt is refused (a paid seat with no task)",
+  "must be a non-empty string");
+
+// No args.model: falls back to a tier default rather than throwing, and SAYS
+// SO. A silent fallback is how a caller who meant to pass a binding never finds
+// out they dispatched on something else.
+const { result: dFall, rt: dFallRt } = await run(WF("dispatch.js"),
+  { seat: "mechanic", prompt: "p" }, DISPATCH_OK);
+ok(dFall?.model === "claude-opus-5",
+  "dispatch: no args.model falls back to the JUDGMENT tier default");
+ok(dFallRt.logs.some((m) => /no args\.model given/.test(m) && /--model mechanic/.test(m)),
+  "dispatch: the fallback is LOGGED and names the command that resolves the real id");
+
+// A dead agent returns null. Reporting that as a result would let a caller read
+// "the seat ran and said nothing" from "the seat never ran" — the fail-open
+// shape review.js's dead-lens accounting exists to close.
+const { result: dDead } = await run(WF("dispatch.js"),
+  { seat: "mechanic", prompt: "p", model: "glm-5-turbo" }, {});
+ok(dDead?.dead === true && /agent died/.test(dDead?.error ?? ""),
+  "dispatch: a dead agent is reported as dead, not as an empty result");
+ok(dDead?.result === undefined,
+  "dispatch: a dead agent carries no `result` key a caller could read as output");
+
 console.log(`\n== summary: ${pass} passed, ${fail} failed ==`);
 if (fail > 0) process.exit(1);

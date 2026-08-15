@@ -60,14 +60,35 @@ it. Edit `.operator/tiers.env` to set the bindings first.
 > Two routes actually apply the configured tier:
 > 1. **`render`** (below) — writes the binding into the project-layer agent
 >    files. Requires a session restart.
-> 2. **Workflow `agent()`** — takes an arbitrary model id and routes it through
->    cc-proxy, unbound by that enum, with no render prerequisite:
->    `agent(prompt, { model: 'deepseek-v4-flash', agentType: 'cc-operator:op-mechanic' })`.
->    `agentType` selects the seat; `model` overrides its frontmatter alias.
+> 2. **The `dispatch` workflow** — no render, no restart. Two steps, because the
+>    workflow sandbox has no filesystem and cannot read `tiers.env` itself:
 >
-> This is documentation of the gap, not a fix for it. Making the configured tier
-> the default for a plain dispatch needs a resolver→dispatch helper; that is
-> tracked in #55 and is not shipped.
+>    ```
+>    bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-render.sh --model mechanic
+>    # → deepseek:deepseek-v4-flash
+>    ```
+>
+>    then pass that id to the workflow:
+>
+>    ```
+>    Workflow({ name: "dispatch", args: {
+>      seat: "mechanic", model: "deepseek:deepseek-v4-flash", prompt: "<the task>" } })
+>    ```
+>
+>    `seat` picks the agent (`author`, `mechanic`, `scout`, `verifier`, `crawler`,
+>    `brainstorm`; the `op-` prefix is optional), and `model` is applied to the
+>    call — which the plain `Agent` tool cannot do. The id gets the same
+>    routability and charset guards a `tiers.env` binding gets, so this is not a
+>    way around `check_routable`.
+>
+>    Omitting `model` is legal and falls back to the JUDGMENT tier, with a log
+>    line saying so and naming the `--model` command — a silent fallback is how a
+>    caller never learns they dispatched on something else.
+>
+> **Render still beats this for repeated work.** `dispatch` is per-call and the
+> id is resolved by hand each time; `render` writes the binding into the agent
+> files once and every later plain dispatch picks it up. Use `dispatch` when you
+> want one seat on its configured model now, or cannot restart the session.
 
 3. **`render`** — render `.claude/agents/op-*.md` from the templates + the
    resolved tier config:
