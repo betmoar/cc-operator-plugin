@@ -111,7 +111,12 @@ single source of truth; bump it in the same commit as the changelog entry.
 
   Found in the field, not by a test: **54 leaked `ops-verdict.sh` processes**,
   the oldest ~17 days, each burning ~1 core and writing 2.7 MB of warnings into
-  a closed stdout. The accumulated load made an unrelated project's
+  `/dev/null`. (The issue reads that 2.7 MB off fd 1, which invited the reading
+  that the lock warns on stdout. It does not — every lock warning is `>&2`. The
+  suite redirects `>/dev/null 2>&1`, which makes fd 2 a dup of fd 1: one file
+  description, one shared offset, so stderr traffic is what advanced it.
+  Measured; corrected here because a reader otherwise hunts a stdout write path
+  that does not exist.) The accumulated load made an unrelated project's
   timing-sensitive gates read 2.5× their baseline.
 
   Fixed with `LOCK_MAX_SPINS` (120s default) counted on a variable nothing
@@ -128,6 +133,15 @@ single source of truth; bump it in the same commit as the changelog entry.
   before, 0 after, and 0 of any kind after review found the ceiling case's own
   watchdog orphaning its `sleep`. Both halves shipped, because a bounded leak is
   still a leak.
+
+  Reaping is one `reap_kids` helper rather than five copies, and it CHECKS
+  pgrep's status instead of swallowing it: rc 1 is "no children", rc >= 2 is
+  "pgrep itself failed" (measured: 2 for a bad invocation, 127 for a missing
+  binary). Blanket `2>/dev/null` made those indistinguishable, and the failure it
+  hid was a silently unreaped grandchild — this exact leak class reappearing
+  inside the suite that proves it fixed. A tool failure is reported, not failed:
+  the reap is cleanup, and turning a platform quirk into a red suite is how a
+  maintainer learns to ignore the suite.
 
   Review of this fix added the sibling-side test: `ops-adopt.sh` carries a
   byte-identical ceiling that **no test executed**. `check_lock_parity` pins the

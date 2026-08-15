@@ -67,6 +67,31 @@ check() { # check <desc> <0|1 condition-result>
 # Fresh temp project; return its path.
 newproj() { mktemp -d "${TMPDIR:-/tmp}/opstest.XXXXXX"; }
 
+# Kill a backgrounded job's CHILDREN, then the job itself (#68).
+#
+# `$!` names the subshell in `( cd … && bash "$X" … ) &`; the bash inside it is a
+# grandchild that SURVIVES a kill on `$!`. That is how this suite leaked 54
+# ops-verdict.sh processes, the oldest ~17 days, each burning ~1 core.
+#
+# pgrep's status is CHECKED rather than swallowed, and the distinction is real:
+# rc 1 is "no children" (nothing to do), rc >= 2 is "pgrep itself failed" —
+# measured as 2 for a bad invocation and 127 for a missing binary. Blanket
+# `2>/dev/null` makes those indistinguishable from success, and the failure they
+# hide is a silently unreaped grandchild: the exact leak class this helper
+# exists to end, reappearing inside the suite that proves it fixed. So a tool
+# failure is REPORTED. It is not a `fail` — the reap is cleanup, not an
+# assertion, and turning a platform quirk into a red suite is how a maintainer
+# learns to ignore the suite.
+reap_kids() { # reap_kids <pid>
+  local _pid="$1" _kids _rc _k
+  _kids="$(pgrep -P "$_pid" 2>&1)"; _rc=$?
+  if [ "$_rc" -gt 1 ]; then
+    echo "  warning: pgrep -P $_pid failed (rc=$_rc: $_kids) — grandchild reap incomplete on this platform" >&2
+    return 0
+  fi
+  for _k in $_kids; do kill -9 "$_k" 2>/dev/null || true; done
+}
+
 # Feed the hook a Stop payload built from a fixture, with cwd substituted and
 # an optional restricted PATH. Captures exit code (global HRC) and stderr (HERR).
 run_hook() { # run_hook <fixture> <cwd> [restricted-PATH]
@@ -1446,9 +1471,7 @@ check "foreign-host holder is not judged dead (no instant reclaim)" "$([ -e "$P/
 # they poll for a clean exit and only `kill -9` on a 20s timeout that does not
 # fire in practice. Their kill path would orphan if it ever did. So: any site
 # that can reach a bare `kill` on a backgrounded writer wants this reap.
-for _fhkid in $(pgrep -P "$FHPID" 2>/dev/null); do
-  kill -9 "$_fhkid" 2>/dev/null || true
-done
+reap_kids "$FHPID"
 kill -9 "$FHPID" 2>/dev/null || true; wait "$FHPID" 2>/dev/null || true
 rm -rf "$LK" "$LK.reclaim"
 # (e) The two lock implementations must not drift. They contend on the same
@@ -4368,18 +4391,14 @@ wait "$CEILPID" 2>/dev/null; CEILRC=$?
 # in the case's own scaffolding. Smaller blast radius (a bare sleep, no CPU,
 # gone in <=20s) but the standard is the same: reap the child first. Measured
 # before fixing: `after kill+wait, sleep survivors=[49573]`.
-for _wdkid in $(pgrep -P "$CEILWD" 2>/dev/null); do
-  kill -9 "$_wdkid" 2>/dev/null || true
-done
+reap_kids "$CEILWD"
 kill "$CEILWD" 2>/dev/null || true; wait "$CEILWD" 2>/dev/null || true
 # Reap any orphaned grandchild before asserting, so a failure here cannot leave
 # the very process class this case exists to prevent. Descendant-scoped via
 # `pgrep -P`, NOT `pkill -f`: this project's lock exists to support concurrent
 # checkouts, and a machine-wide pattern kill reaches into another checkout's
 # suite run — which is exactly what a maintainer does during a review round.
-for _ckid in $(pgrep -P "$CEILPID" 2>/dev/null); do
-  kill -9 "$_ckid" 2>/dev/null || true
-done
+reap_kids "$CEILPID"
 # rc 137 is the watchdog's SIGKILL — i.e. it was STILL SPINNING. Any other exit
 # means the loop ended on its own, which is the property under test.
 check "#68 the spin loop terminates on its own (not by the watchdog's kill)" \
@@ -4417,9 +4436,9 @@ sleep 1 & wait $! 2>/dev/null || true
 rm -rf "$P/.operator"
 ( sleep 20; kill -9 "$ADPID" 2>/dev/null ) & ADWD=$!
 wait "$ADPID" 2>/dev/null; ADRC=$?
-for _adkid in $(pgrep -P "$ADWD" 2>/dev/null); do kill -9 "$_adkid" 2>/dev/null || true; done
+reap_kids "$ADWD"
 kill "$ADWD" 2>/dev/null || true; wait "$ADWD" 2>/dev/null || true
-for _adkid in $(pgrep -P "$ADPID" 2>/dev/null); do kill -9 "$_adkid" 2>/dev/null || true; done
+reap_kids "$ADPID"
 check "#68 ops-adopt's copy of the ceiling also terminates (parity is not proof)" \
   "$([ "$ADRC" != 137 ] && echo 0 || echo 1)"
 # The message must carry the SIBLING's tool name. check_lock_parity normalizes
