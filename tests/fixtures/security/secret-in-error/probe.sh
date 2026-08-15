@@ -13,8 +13,13 @@ trap 'rm -rf "$SANDBOX"' EXIT
 SECRET="sk-live-4f9a2c7e1b8d3a60"
 printf 'OPERATOR_API_KEY=%s\n' "$SECRET" > "$SANDBOX/env"
 
-ERR="$SANDBOX/err.txt"
-bash "$TARGET" "$SANDBOX/env" "claude-opus-5" >/dev/null 2>"$ERR"
+# BOTH streams, into one file. Capturing stderr alone certified a script that
+# printed the token on stdout as safe (measured) — and the fixture's own premise
+# is that this output reaches VERDICTS.md and a CI log, neither of which
+# distinguishes the two streams. A leak probe that watches one pipe is not a
+# leak probe.
+ERR="$SANDBOX/out.txt"
+bash "$TARGET" "$SANDBOX/env" "claude-opus-5" >"$ERR" 2>&1
 RC=$?
 
 # ── functional: the failure is reported, debuggable, at rc 3 ────────────────

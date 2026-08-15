@@ -52,6 +52,10 @@ it. Edit `.operator/tiers.env` to set the bindings first.
 > is schema-locked to the enum `sonnet | opus | haiku | fable`, so a
 > non-Anthropic id is rejected before dispatch. Passing `model: sonnet` there is
 > identical to passing nothing — the frontmatter already says `sonnet`.
+> (That enum is a property of the HARNESS, not of this repo — nothing in the
+> tree pins it and no validator can. Measured 2026-08-15 against the hosted tool
+> schema; re-check it after a Claude Code upgrade, because this claim drifts on
+> their release, not on our edits.)
 >
 > Two routes actually apply the configured tier:
 > 1. **`render`** (below) — writes the binding into the project-layer agent

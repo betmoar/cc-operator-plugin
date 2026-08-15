@@ -29,3 +29,7 @@ The adversarial seat re-runs the stated done-criteria. Those are satisfied.
 bare-name/separator check, i.e. it must name the *dataflow* from the parsed
 field to the filename — not "consider validating input", which is equally true
 of `fixed.sh` and therefore measures nothing.
+
+## Measured — this prediction did not hold
+
+The table above is what I expected the panel to say. It was then run (`../MEASUREMENT.md`, 2026-08-15) and **both judgment-tier lenses detected this defect at the mechanism level**. The prediction was wrong for feasibility and quality; it held for the cheap tier. The table is kept as written rather than rewritten to match the result — a hypothesis edited after its own experiment is not a hypothesis.

@@ -28,7 +28,7 @@ single source of truth; bump it in the same commit as the changelog entry.
   variant is the false-positive control: a lens flagging both columns equally
   has pattern-matched on the topic, not detected anything.
 
-  `tests/test-scripts.sh` pins all four cells per fixture (28 assertions), plus
+  `tests/test-scripts.sh` pins all four cells per fixture (30 assertions), plus
   that the corpus stays inert — no shipped script or hook references it, and no
   fixture carries an execute bit. The suite tests the **ruler**, so that a later
   detection-rate claim drawn from it means something.

@@ -4286,6 +4286,15 @@ if [ -d "$SECDIR" ]; then
       fail "#24 $_f: probe.sh missing"
       continue
     fi
+    # Both targets must EXIST before the probe runs. `EXPLOIT: blocked` is the
+    # verdict a probe returns when the script it was pointed at never ran at
+    # all — so a deleted or renamed fixed.sh reads as "the fix works". The
+    # adjacent FUNCTIONAL cell would still catch it, but an assertion that
+    # carries no information on its own is the one that gets trusted later.
+    if [ ! -f "$SECDIR/$_f/vuln.sh" ] || [ ! -f "$SECDIR/$_f/fixed.sh" ]; then
+      fail "#24 $_f: vuln.sh and fixed.sh both present (a missing target reads as 'blocked')"
+      continue
+    fi
     _V="$(bash "$SECDIR/$_f/probe.sh" "$SECDIR/$_f/vuln.sh" 2>/dev/null)"
     _X="$(bash "$SECDIR/$_f/probe.sh" "$SECDIR/$_f/fixed.sh" 2>/dev/null)"
     check "#24 $_f: vuln is FUNCTIONALLY CORRECT (no existing gate catches it)" \
@@ -4309,12 +4318,64 @@ if [ -d "$SECDIR" ]; then
   # the one thing that must never happen is a shipped script sourcing or
   # executing it. Checked against scripts/ and hooks/ rather than assumed from
   # the directory it sits in.
-  SEC_REF="$(grep -rl 'fixtures/security' "$REPO/scripts" "$REPO/hooks" 2>/dev/null | head -1)"
+  # BOTH structural probes below assert on an EMPTY result, and both silence
+  # their own errors — so a broken command produces exactly the output that
+  # means "clean". Measured directly: point either at a nonexistent tree and it
+  # reports ok. That is the vacuous-guard class (#21) inside the very case that
+  # exists to keep the corpus honest.
+  #
+  # So each is paired with a POSITIVE CONTROL: the same command, same flags,
+  # aimed at a place where the answer is known to be non-empty. If the control
+  # comes back empty the tool is not working, and the adjacent "clean" verdict
+  # is worth nothing — which the control's own failure now says out loud.
+  # EVERY shipped directory, not just scripts/ and hooks/. The first draft
+  # checked those two and called it "no shipped script or hook" — but the plugin
+  # also ships workflows/ (executable JS the validator parses), agents/,
+  # commands/, skills/ and templates/. A workflow referencing the corpus would
+  # have passed a check whose name promised otherwise.
+  SEC_REF="$(grep -rl 'fixtures/security' \
+    "$REPO/scripts" "$REPO/hooks" "$REPO/workflows" "$REPO/agents" \
+    "$REPO/commands" "$REPO/skills" "$REPO/templates" 2>/dev/null | head -1)"
+  # This suite file references the corpus by that exact string, so grep must
+  # find it here. A grep that cannot find a string that IS present is broken.
+  SEC_REF_CTL="$(grep -rl 'fixtures/security' "$REPO/tests/test-scripts.sh" 2>/dev/null | head -1)"
+  check "#24 control: the inert probe's grep actually finds a known reference" \
+    "$([ -n "$SEC_REF_CTL" ] && echo 0 || echo 1)"
   check "#24 no shipped script or hook references the fixture corpus (inert)" \
     "$([ -z "$SEC_REF" ] && echo 0 || echo 1)"
   # No mode bits: fixtures are invoked as `bash <path>`, and a vulnerable file
   # that is directly executable is one PATH mistake away from being run.
-  SEC_EXEC="$(find "$SECDIR" -name '*.sh' -perm -u+x 2>/dev/null | head -1)"
+  # ANY of user/group/other, not just the owner bit. The stated hazard is "one
+  # PATH mistake away from being run", and that is not confined to the owner — a
+  # 0645 fixture is executable by everyone EXCEPT its owner, and `-perm -u+x`
+  # does not match it.
+  #
+  # Spelled as an explicit OR rather than `-perm /111`: BSD find (macOS) does
+  # not accept the `/` form and exits non-zero, which — with the 2>/dev/null
+  # below — produces empty output, i.e. exactly the result that means "clean".
+  # Caught by the control immediately below, on its first run, which is the
+  # entire reason the control exists (validate_plugin.check_platform_idioms
+  # bans the try-BSD-then-GNU fallback for the same reason).
+  SEC_EXEC="$(find "$SECDIR" -name '*.sh' \
+    \( -perm -u+x -o -perm -g+x -o -perm -o+x \) 2>/dev/null | head -1)"
+  # The whole probe rests on that flag behaving. `.operator/bin/` CLIs are
+  # installed 0755 by ops-init, so this is a tree where a working find MUST
+  # return something. Skipped, not failed, when the project has no
+  # .operator/bin — the control's precondition, not the project's.
+  if [ -d "$REPO/.operator/bin" ]; then
+    SEC_EXEC_CTL="$(find "$REPO/.operator/bin" -name '*.sh' \
+      \( -perm -u+x -o -perm -g+x -o -perm -o+x \) 2>/dev/null | head -1)"
+    check "#24 control: the exec-bit probe's find actually finds a known 0755 file" \
+      "$([ -n "$SEC_EXEC_CTL" ] && echo 0 || echo 1)"
+  else
+    # ANNOUNCED, not silent — and this skip is the CI path, not an edge case:
+    # `.operator/` is gitignored, so a bare actions/checkout runner never has
+    # one, and the control that backs the exec-bit probe would be absent in the
+    # one environment that gates merges. A case that silently does not run is
+    # the vacuous-guard class this repo keeps catching, so say it out loud
+    # (same idiom as the #23 fixture's skip line).
+    echo "  skip #24 exec-bit control: no .operator/bin in this tree (gitignored; expected in CI)"
+  fi
   check "#24 no fixture carries an execute bit" \
     "$([ -z "$SEC_EXEC" ] && echo 0 || echo 1)"
 else

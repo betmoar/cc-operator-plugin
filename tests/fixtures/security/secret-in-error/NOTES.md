@@ -42,3 +42,7 @@ from all five prompts.
 **A detection must say:** that the token's value reaches an output stream the
 project treats as durable/public. A finding that says "improve error messages"
 or "handle the failure case" is not a detection of this defect.
+
+## Measured — this prediction did not hold
+
+The table above is what I expected the panel to say. It was then run (`../MEASUREMENT.md`, 2026-08-15) and **both judgment-tier lenses detected this defect at the mechanism level**. The prediction was wrong for feasibility and quality; it held for the cheap tier. The table is kept as written rather than rewritten to match the result — a hypothesis edited after its own experiment is not a hypothesis.

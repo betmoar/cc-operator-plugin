@@ -41,3 +41,7 @@ file has already run.
 "an added dependency" as a fifth shape). That needs a package manifest, not a
 shell file, and would measure a different lens gap. Named so a later reader
 knows it was a choice.
+
+## Measured — this prediction did not hold
+
+The table above is what I expected the panel to say. It was then run (`../MEASUREMENT.md`, 2026-08-15) and **both judgment-tier lenses detected this defect at the mechanism level**. The prediction was wrong for feasibility and quality; it held for the cheap tier. The table is kept as written rather than rewritten to match the result — a hypothesis edited after its own experiment is not a hypothesis.

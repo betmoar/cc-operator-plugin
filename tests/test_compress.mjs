@@ -481,6 +481,56 @@ console.log("-- Case: #59 the F18 guard is ENTERED — an entry listed but unsta
     "#59 the cited spill path exists on disk (the write completed past the guard)");
 }
 
+// ── #59, second half: the guarded VALUE, not just the absence of a throw ────
+// The case above proves the guard does not throw. It does not reach the code
+// that USES what the guard returned, because the eviction loop only runs past
+// SPILL_KEEP entries and that directory holds two.
+//
+// So the `-Infinity` at the catch site was untested, and its polarity is a
+// stated behaviour: "Sort it oldest-first so it is preferred for deletion
+// rather than kept." Measured — flip it to `Infinity` and BOTH suites stay
+// green (95/0, 638/0) while an unstattable entry becomes permanently
+// un-evictable AND displaces a real spill file from the bound on every pass.
+// That is the #59 class exactly: a line whose purpose no test observes,
+// surviving inside the fix for a line whose purpose no test observed.
+console.log("-- Case: #59b the unstattable entry sorts OLDEST — evicted, not kept");
+{
+  const evSession = `SESS-EVICT${++sessN}`;
+  const spillRoot = path.join(TMP, ".operator", ".compress-spill");
+  const dir = path.join(spillRoot, evSession);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // Fill to the bound so the eviction loop actually runs: SPILL_KEEP existing
+  // files plus the dangling symlink, and spill() then adds one more.
+  const KEEP = DEFAULTS.SPILL_KEEP;
+  for (let i = 0; i < KEEP; i++) {
+    fs.writeFileSync(path.join(dir, `f${String(i).padStart(3, "0")}`), "x", { mode: 0o600 });
+  }
+  fs.symlinkSync(path.join(dir, "no-such-target"), path.join(dir, "dangling"));
+  const before = fs.readdirSync(dir).length;
+  ok(before > KEEP,
+    "#59b precondition: the directory is over SPILL_KEEP, so eviction runs");
+
+  run({
+    tool_name: "Bash",
+    tool_use_id: "toolu_evict",
+    session_id: evSession,
+    tool_input: { command: "npm test" },
+    tool_response: { stdout: big, stderr: "" },
+  });
+
+  const after = fs.readdirSync(dir);
+  // The whole point: -Infinity sorts the unstattable entry FIRST, so it is the
+  // one deleted. With `Infinity` it sorts last, survives every pass forever,
+  // and a real spill file is evicted in its place.
+  ok(!after.includes("dangling"),
+    "#59b the unstattable entry is EVICTED (it sorted oldest, as -Infinity intends)");
+  // The complement, and the half that shows the cost of getting it wrong: the
+  // newest real file must still be there. Asserting only the deletion would
+  // pass a bound that evicted everything.
+  ok(after.includes(`f${String(KEEP - 1).padStart(3, "0")}`),
+    "#59b a real spill file was NOT evicted in the ghost's place");
+}
+
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log(`\n== summary: ${pass} passed, ${fail} failed ==`);
 if (fail > 0) process.exit(1);

@@ -121,6 +121,14 @@ written under review pressure needing the same scrutiny as the code it
 replaces. The control run existed to validate the instrument and ended up
 auditing the repairs.
 
+**Neither of those two is pinned by `probe.sh`, and that is worth stating.**
+Revert either fix and the probe still reads `FUNCTIONAL: ok` / `EXPLOIT:
+blocked` — measured. The probes test the *modeled* defect (does the traversal
+escape, does the secret leak), not every property of the corrected variant. The
+short-token leak in particular fires only at exactly length 4: below that the
+naive form prints nothing and looks safe. So a later reader should not infer
+that the suite would catch a regression in these two lines. It would not.
+
 ## Consequence for step 3
 
 The planned step 3 was: add a conditional `security` lens plus a `supply-chain`

@@ -34,3 +34,7 @@ after resolution.
 **A detection must say:** that `$sid` reaches `rm -rf` without a bare-name check,
 and — the discriminating half — that quoting does not scope it. A finding that
 only says "validate the session id" scores the same against `fixed.sh`.
+
+## Measured — this prediction did not hold
+
+The table above is what I expected the panel to say. It was then run (`../MEASUREMENT.md`, 2026-08-15) and **both judgment-tier lenses detected this defect at the mechanism level**. The prediction was wrong for feasibility and quality; it held for the cheap tier. The table is kept as written rather than rewritten to match the result — a hypothesis edited after its own experiment is not a hypothesis.
