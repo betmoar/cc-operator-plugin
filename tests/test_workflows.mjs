@@ -53,7 +53,11 @@ function makeRuntime(agentReturns = {}) {
   const calls = [];
   const agent = async (prompt, opts = {}) => {
     const label = opts.label ?? "_";
-    calls.push({ label, model: opts.model, prompt });
+    // `isolation` is captured because #23's whole deliverable is WHERE the seat
+    // runs, and that lives in the opts the workflow passes — not in its return
+    // value. A case asserting only on the prompt would pass on a workflow that
+    // describes an isolated run and dispatches a builder-tree one.
+    calls.push({ label, model: opts.model, prompt, isolation: opts.isolation });
     return agentReturns[label] ?? null;
   };
   const parallel = async (thunks) => {
@@ -396,6 +400,66 @@ ok(deadBlind?.error && /blindspots agent died/.test(deadBlind.error),
 ok(Array.isArray(deadBlind?.directions) && deadBlind.directions.length === 4,
   "brainstorm: the dead-blindspots error return carries the computed directions " +
   "(the message says 'directions below are intact' — they must actually be below)");
+
+// ── #23 (U11): the adversarial seat's execution environment ─────────────────
+console.log("-- Case: review.js adversarial isolation (#23)");
+// MEASURED: a stale gitignored artifact makes a broken assertion pass in the
+// builder's tree and fail in a worktree of the same commit, while F-A1's
+// `git status --porcelain` reports CLEAN — porcelain describes the TRACKED tree
+// and the contaminant is ignored. These cases pin the three properties that
+// distinguish a real fix from a flag that reads like one.
+const liveAdvReturn = { adversarial: { verdict: "CONFIRMED", evidence: "ran x, saw y" } };
+const isoAdvCall = (rt) => rt.calls.find((c) => c.label === "adversarial");
+
+// 1. Default OFF. Cost is per-dispatch, so every existing caller keeps today's
+//    behaviour and today's (weaker, correctly-labelled) claim.
+const { result: plainRes, rt: plainIso } = await run(WF("review.js"), "docs/x.md",
+  { ...everyLens, ...liveAdvReturn });
+ok(isoAdvCall(plainIso).isolation === undefined,
+  "review/#23: no args.isolate → the adversarial seat runs in the builder's tree (opt-in, not default)");
+ok(plainRes.isolation?.mode === "builder-tree" && plainRes.isolation.commit === null,
+  "review/#23: an un-isolated result SAYS builder-tree — the weaker claim is labelled as such");
+ok(/BUILDER'S ENVIRONMENT/.test(plainRes.isolation.bound),
+  "review/#23: the un-isolated bound names what the verdict actually describes");
+ok(isoAdvCall(plainIso).prompt.includes("F-A1 tree check"),
+  "review/#23: un-isolated, F-A1 porcelain check still ships");
+
+// 2. With a sha: the flag reaches agent(), and F-A1 is REPLACED rather than
+//    joined. In a fresh worktree porcelain is empty by construction, so keeping
+//    F-A1 there would ship a control that cannot fail (#21's vacuous class).
+const SHA = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0";
+const { result: isoRes, rt: isoRt } = await run(WF("review.js"),
+  { target: "docs/x.md", isolate: SHA }, { ...everyLens, ...liveAdvReturn });
+ok(isoAdvCall(isoRt).isolation === "worktree",
+  "review/#23: args.isolate=<sha> passes isolation:'worktree' to the adversarial agent() call");
+ok(isoAdvCall(isoRt).prompt.includes(SHA) && isoAdvCall(isoRt).prompt.includes("git rev-parse HEAD"),
+  "review/#23: the seat is told to re-derive HEAD in its own tree and compare to the named sha");
+ok(!isoAdvCall(isoRt).prompt.includes("F-A1 tree check"),
+  "review/#23: under isolation F-A1 is REPLACED, not joined — porcelain cannot fail in a fresh worktree");
+ok(/NOT full isolation/.test(isoAdvCall(isoRt).prompt),
+  "review/#23: the prompt states the bound (same $HOME, caches, PATH) rather than overclaiming");
+ok(isoRes.isolation?.mode === "worktree" && isoRes.isolation.commit === SHA,
+  "review/#23: the result names WHICH tree produced the verdict, and at which commit");
+// The lenses are NOT isolated: they read the artifact under review, which is
+// the working tree the operator asked about. Isolation is the verifier's
+// property alone, and a blanket flag would silently change what the panel sees.
+ok(isoRt.calls.filter((c) => c.label.startsWith("lens:")).every((c) => c.isolation === undefined),
+  "review/#23: the panel lenses stay un-isolated — only the adversarial seat moves");
+
+// 3. Guards. `true` is the silent-wrong case the issue named: an isolated run
+//    with no named commit verifies whatever HEAD happens to be and reports
+//    CONFIRMED about a tree nobody chose.
+await throws(() => run(WF("review.js"), { target: "docs/x.md", isolate: true }, everyLens),
+  "review/#23: args.isolate=true is refused — isolation without a named commit is silent-wrong",
+  "not `true`");
+await throws(() => run(WF("review.js"), { target: "docs/x.md", isolate: "HEAD" }, everyLens),
+  "review/#23: a ref name is not a sha — refused", "is not a commit sha");
+await throws(() => run(WF("review.js"), { target: "docs/x.md", isolate: 42 }, everyLens),
+  "review/#23: a non-string isolate is refused", "must be a commit sha string");
+const { rt: offRt } = await run(WF("review.js"), { target: "docs/x.md", isolate: false },
+  { ...everyLens, ...liveAdvReturn });
+ok(isoAdvCall(offRt).isolation === undefined,
+  "review/#23: isolate:false is an explicit opt-out, not a validation error");
 
 // ── F37: an array target must review what was passed, or fail loud ──────────
 console.log("-- Case: review.js multi-path target (F37)");

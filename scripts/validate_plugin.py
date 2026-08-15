@@ -325,10 +325,34 @@ def check_ledger_schema(root, problems):
 # user taught from the handout runs the worker-boundary layer unchecked. The pin
 # is against teaching a WRONG packet, so it applies only when the file exists:
 # deleting the handout is a visible act; drifting it is not.
-HANDOUT_PACKET_SPINE = ("TASK / TEXT / SCENE", "CHANGED: <paths>|none")
+#
+# `REACH` (#57, 0.8.4) is in the spine for a reason the two originals illustrate:
+# they are the packet's FIRST and LAST fragments, so a field inserted in the
+# middle is invisible to this check — which is exactly where REACH went. The
+# handout kept teaching a packet with no reachability clause and the pin stayed
+# green, the F69 drift repeating inside the guard written against it. Any field
+# added to the charter's packet must be added here too; a spine that only pins
+# the ends is a guard against reordering, not against drift.
+HANDOUT_PACKET_SPINE = ("TASK / TEXT / SCENE", "REACH", "CHANGED: <paths>|none")
 
 
 def check_handout_packet(root, problems):
+    # The CHARTER is checked first, and unconditionally. The handout half of this
+    # pin only ever asked "does the copy match the original?" — which passes
+    # perfectly when the original is the thing that lost a field. Uniform drift
+    # is invisible to a parity check (F30), and here the parity is between a doc
+    # and the charter it teaches, so the charter needs its own assertion or the
+    # pin is one deletion away from vacuous.
+    charter = root / "templates" / "OPERATOR.md"
+    if charter.is_file():
+        ctext = charter.read_text(encoding="utf-8")
+        for token in HANDOUT_PACKET_SPINE:
+            if token not in ctext:
+                problems.append(
+                    f"templates/OPERATOR.md: the dispatch packet is missing "
+                    f"{token!r} — the packet is the worker-boundary contract and "
+                    f"every field in it is load-bearing (REACH: #57; CHANGED: "
+                    f"the input ops-claims.sh verifies)")
     h = root / "docs" / "HANDOUT.md"
     if not h.is_file():
         return

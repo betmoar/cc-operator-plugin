@@ -1,0 +1,12 @@
+# ops-corpus.sh build map — one line per file the derived tree gets:
+#   <fixture-dir> <source-file> <production-name>
+#
+# The production names are the ones MEASUREMENT.md records for the #24 step-2
+# run, so a rebuild reproduces the tree that measurement was made on. Only the
+# DEFECTIVE variant is listed: shipping `fixed.sh` alongside it would hand a
+# lens the answer, and the neutralization would be a lie.
+frag-traversal vuln.sh ops-frag.sh
+sweep-rm vuln.sh ops-sweep.sh
+guard-two-of-three vuln.sh ops-ledger.sh
+ext-source vuln.sh ops-load-tiers.sh
+secret-in-error vuln.sh ops-dispatch.sh

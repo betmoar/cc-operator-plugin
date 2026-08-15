@@ -3214,13 +3214,14 @@ check "G1.7 long-evidence duplicate is duplicate, not never-armed (no spurious G
 # amendment would make the deviation gate cry wolf, and the operator would learn
 # to wave it through — the failure mode issue #9 already taught this repo once.
 #
-# NOT asserted here, and deliberately so: recovering the exception when a crash
-# lands between the fragment-row append and the exception append. That guard was
-# built and reverted — an ARMED first verdict also leaves a row with no
-# exception, so "row without exception" cannot distinguish crash-interrupted
-# from ordinary-amended, and the guard fired spuriously on every armed amendment
-# (G1.7 catches exactly that). The residual is recorded in ops-verdict.sh's
-# retro_gate; closing it needs an atomic pair, which is its own slice.
+#
+# The crash-window residual this case used to disclaim is CLOSED (#14, 0.8.4) —
+# by write ORDER, not by a guard: the exception is appended before the row, so
+# the crash-interrupted state is an exception with no row (a retry completes it)
+# instead of a row with no exception (a retry misreads it as an amendment). The
+# reverted guard stays reverted for the reason G1.7 pins: "row without exception"
+# cannot distinguish crash-interrupted from ordinary-amended. G1.10 below pins
+# the order itself.
 P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
 S8="SESS-G18"
 ( cd "$P" && bash "$VERDICT" g1t8 crit ev PASS --owner "$S8" >/dev/null 2>&1 )
@@ -3230,6 +3231,45 @@ G18_FIRST="$(grep -cE '^[0-9]{4}.*GATE-EXCEPTION' "$P/.operator/DECISIONS.md" ||
 G18_AFTER="$(grep -cE '^[0-9]{4}.*GATE-EXCEPTION' "$P/.operator/DECISIONS.md" || true)"
 check "G1.8 never-armed verdict writes exactly one GATE-EXCEPTION across amendments" \
   "$([ "${G18_FIRST:-0}" = "1" ] && [ "${G18_AFTER:-0}" = "1" ] && echo 0 || echo 1)"
+
+# G1.10 (#14 / U2) — the GATE-EXCEPTION is written BEFORE the row, and this case
+# pins the ORDER rather than the presence. Presence was already covered by G1.2;
+# what U2 measured is that the order decides which half survives a crash landing
+# between the two appends:
+#
+#   row first  → a row with no exception. The retry sees a prior row for an id
+#                with no sentinel, calls it `duplicate`, and the bypass keeps its
+#                PASS row while LOSING its audit line. Exactly what G1 exists to
+#                prevent, via a crash instead of a swallowed error.
+#   exception first → an exception with no row. The retry appends the row; worst
+#                case the exception is duplicated, which is legible.
+#
+# Both appends sit under one lock, so this is a crash window, not a race — which
+# is why the assertion is on relative POSITION in the on-disk record and not on
+# any concurrency behaviour. DECISIONS.md and VERDICTS.md are separate files, so
+# "before" is asserted via mtime ordering, which is what a crash between them
+# would actually expose.
+#
+# Mutation-checked: swap the two writes in ops-verdict.sh and this case goes red.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+S10="SESS-G110"
+( cd "$P" && bash "$VERDICT" g1t10 crit ev PASS --owner "$S10" >/dev/null 2>&1 )
+# The exception must exist AND the ledger row must exist — asserting order alone
+# would pass on a run that wrote neither.
+G110_X="$(grep -cE 'GATE-EXCEPTION.*g1t10' "$P/.operator/DECISIONS.md" 2>/dev/null || true)"
+G110_R="$(grep -cE '^\| g1t10 \|' "$P/.operator/VERDICTS.md" 2>/dev/null || true)"
+check "G1.10 a never-armed verdict writes both the exception and the row" \
+  "$([ "${G110_X:-0}" = "1" ] && [ "${G110_R:-0}" = "1" ] && echo 0 || echo 1)"
+# The order, read off the source rather than the filesystem: mtime granularity on
+# some filesystems is coarse enough that two appends microseconds apart compare
+# equal, which would make an mtime assertion pass on BOTH orders — a vacuous
+# guard (#21). The write block is the artifact; assert on it.
+G110_XL="$(grep -nF 'sid:%s] verdict %s recorded without an open sentinel' "$SCRIPTS/ops-verdict.sh" | tail -1 | cut -d: -f1)"
+G110_RL="$(grep -nF '"$ROW" >> "$VERDICTS"' "$SCRIPTS/ops-verdict.sh" | tail -1 | cut -d: -f1)"
+check "G1.10 control: both write sites are locatable in ops-verdict.sh" \
+  "$([ -n "$G110_XL" ] && [ -n "$G110_RL" ] && echo 0 || echo 1)"
+check "G1.10 the GATE-EXCEPTION append precedes the ledger-row append (#14)" \
+  "$([ -n "$G110_XL" ] && [ -n "$G110_RL" ] && [ "$G110_XL" -lt "$G110_RL" ] && echo 0 || echo 1)"
 
 # G1.9 — the retro-gate covers BOTH closing paths. --defer retires a task exactly
 # as a verdict does, so deferring an id that was never opened is an unarmed close
@@ -4573,9 +4613,25 @@ if [ -d "$SECDIR" ]; then
   # also ships workflows/ (executable JS the validator parses), agents/,
   # commands/, skills/ and templates/. A workflow referencing the corpus would
   # have passed a check whose name promised otherwise.
+  #
+  # ONE EXEMPTION, and it is narrow enough to name rather than describe:
+  # scripts/ops-corpus.sh (#69). It is the maintainer's corpus builder — its
+  # entire job is to take a corpus path as an ARGUMENT and produce a stamped,
+  # neutralized tree from it, and its header explains which measurement failure
+  # made it necessary. That header is where the string appears. What this case
+  # actually protects is that no shipped code READS the corpus at runtime: a
+  # hook sourcing a fixture, a workflow pointing a lens at one, a CLI with a
+  # hardcoded fixture path it opens. So the exemption is by FILENAME, not by a
+  # loosened pattern — a second file gaining the string still fails, and if
+  # ops-corpus.sh ever grows a default that opens the corpus without being told
+  # to, the #69 cases below are where that shows up.
+  #
+  # The alternative was rewording the header to dodge the grep. That trades a
+  # true sentence for a green check, which is the drift class #70 measures.
   SEC_REF="$(grep -rl 'fixtures/security' \
     "$REPO/scripts" "$REPO/hooks" "$REPO/workflows" "$REPO/agents" \
-    "$REPO/commands" "$REPO/skills" "$REPO/templates" 2>/dev/null | head -1)"
+    "$REPO/commands" "$REPO/skills" "$REPO/templates" 2>/dev/null \
+    | grep -v '/scripts/ops-corpus\.sh$' | head -1)"
   # This suite file references the corpus by that exact string, so grep must
   # find it here. A grep that cannot find a string that IS present is broken.
   SEC_REF_CTL="$(grep -rl 'fixtures/security' "$REPO/tests/test-scripts.sh" 2>/dev/null | head -1)"
@@ -4583,6 +4639,15 @@ if [ -d "$SECDIR" ]; then
     "$([ -n "$SEC_REF_CTL" ] && echo 0 || echo 1)"
   check "#24 no shipped script or hook references the fixture corpus (inert)" \
     "$([ -z "$SEC_REF" ] && echo 0 || echo 1)"
+  # The exemption's own control: an exemption nobody tests is a hole nobody
+  # sees. Re-run the identical grep WITHOUT the filter — it must find exactly
+  # ops-corpus.sh and nothing else. If the header is ever reworded away, this
+  # goes red and the filter above becomes dead weight the next reader can drop.
+  SEC_REF_ALL="$(grep -rl 'fixtures/security' \
+    "$REPO/scripts" "$REPO/hooks" "$REPO/workflows" "$REPO/agents" \
+    "$REPO/commands" "$REPO/skills" "$REPO/templates" 2>/dev/null | LC_ALL=C sort)"
+  check "#24 the ops-corpus.sh exemption is exactly one file, and it is that file" \
+    "$([ "$SEC_REF_ALL" = "$REPO/scripts/ops-corpus.sh" ] && echo 0 || echo 1)"
   # No mode bits: fixtures are invoked as `bash <path>`, and a vulnerable file
   # that is directly executable is one PATH mistake away from being run.
   # ANY of user/group/other, not just the owner bit. The stated hazard is "one
@@ -4620,6 +4685,146 @@ if [ -d "$SECDIR" ]; then
     "$([ -z "$SEC_EXEC" ] && echo 0 || echo 1)"
 else
   fail "#24 the security fixture corpus is present at tests/fixtures/security"
+fi
+
+########################################################################
+echo "-- Case: #69 the derived corpus tree is a stamped artifact (ops-corpus.sh)"
+# MEASURED (#69): during #24 step 3 a scratch tree built in step 2 was reused
+# after the source fixtures had been fixed. The panel correctly reported defects
+# in code that no longer shipped, and the number read as a mass false-positive
+# — which would have invalidated the tier result had it been believed. Nothing
+# noticed, because every assertion above is about tests/fixtures/security/ and
+# none is about the DERIVED copy that is the panel's actual input.
+#
+# What is pinned here is the property that makes staleness an ERROR rather than
+# a plausible number, plus the two neutralization properties whose absence would
+# make a measurement built with this tool worthless:
+#   1. a fresh tree verifies; a corpus that moved under it does NOT
+#   2. an unstamped tree is refused with its OWN exit code (3, not 2) — a
+#      partial tree from an aborted build is exactly this shape, so the two are
+#      reachable in one session and a caller must tell them apart without
+#      parsing English
+#   3. the derived tree carries NO corpus vocabulary — no README/NOTES/
+#      MEASUREMENT, no vuln*/fixed* filename. A lens shown any of those is not
+#      being measured on detection, it is being asked to agree.
+CORPUS="$SCRIPTS/ops-corpus.sh"
+if [ ! -x "$CORPUS" ] && [ ! -f "$CORPUS" ]; then
+  fail "#69 scripts/ops-corpus.sh is present"
+elif [ ! -d "$SECDIR" ]; then
+  fail "#69 the security corpus is present (ops-corpus cases need a corpus to build from)"
+else
+  _CTMP="$(newproj)"
+  _COUT="$_CTMP/derived"
+  # --out lives OUTSIDE the repo by construction here (mktemp -d), which is also
+  # what ops-corpus itself refuses to violate.
+  if bash "$CORPUS" build --corpus "$SECDIR" --out "$_COUT" >/dev/null 2>&1; then
+    check "#69 build produces a tree" "$([ -d "$_COUT" ] && echo 0 || echo 1)"
+    bash "$CORPUS" verify --corpus "$SECDIR" --tree "$_COUT" >/dev/null 2>&1
+    check "#69 a freshly built tree verifies against its corpus" "$?"
+
+    # STALE: the corpus moves, the tree does not. Simulated on a COPY of the
+    # corpus, never on the repo's own fixtures — a suite that mutates tracked
+    # files and restores them is one interrupted run away from a dirty tree.
+    _CSRC="$_CTMP/corpus"
+    cp -R "$SECDIR" "$_CSRC"
+    _COUT2="$_CTMP/derived2"
+    bash "$CORPUS" build --corpus "$_CSRC" --out "$_COUT2" >/dev/null 2>&1
+    printf '\n# drift\n' >> "$_CSRC/README.md"
+    bash "$CORPUS" verify --corpus "$_CSRC" --tree "$_COUT2" >/dev/null 2>&1
+    _RC=$?
+    check "#69 a corpus that changed under the tree is REFUSED (stale, exit 2)" \
+      "$([ "$_RC" -eq 2 ] && echo 0 || echo 1)"
+
+    # UNSTAMPED: distinct exit code, because an aborted build leaves precisely
+    # this and "rebuild me" is a different instruction from "I don't know what
+    # this directory is".
+    rm -f "$_COUT2/.ops-corpus-stamp"
+    bash "$CORPUS" verify --corpus "$_CSRC" --tree "$_COUT2" >/dev/null 2>&1
+    _RC=$?
+    check "#69 an unstamped tree is refused with its OWN code (3, not the stale 2)" \
+      "$([ "$_RC" -eq 3 ] && echo 0 || echo 1)"
+
+    # NEUTRALIZATION. The `head -1` output is quoted in the failure the same way
+    # the #24 probes do it — an assertion that just says "leaked" sends the next
+    # reader hunting.
+    _LEAK="$(find "$_COUT" -type f \( -name 'NOTES.md' -o -name 'README.md' \
+      -o -name 'MEASUREMENT.md' -o -name 'vuln*' -o -name 'fixed*' \) 2>/dev/null | head -1)"
+    check "#69 the derived tree carries no corpus-vocabulary file (${_LEAK:-none})" \
+      "$([ -z "$_LEAK" ] && echo 0 || echo 1)"
+    # Positive control, the #24 idiom: the same find, aimed where the answer is
+    # known non-empty. A find that cannot locate a file that IS there makes the
+    # clean verdict above worthless — and says so itself.
+    _LEAK_CTL="$(find "$SECDIR" -type f -name 'README.md' 2>/dev/null | head -1)"
+    check "#69 control: the leak probe's find actually finds a known README.md" \
+      "$([ -n "$_LEAK_CTL" ] && echo 0 || echo 1)"
+
+    # A rebuild must not leave a previous build's files behind: a fixture
+    # renamed or dropped upstream would otherwise haunt every later measurement,
+    # which is #69's own failure with extra steps.
+    : > "$_COUT/ORPHAN-from-a-previous-build.md"
+    bash "$CORPUS" build --corpus "$SECDIR" --out "$_COUT" --force >/dev/null 2>&1
+    check "#69 --force rebuild EMPTIES the tree (no orphan from a prior build)" \
+      "$([ ! -f "$_COUT/ORPHAN-from-a-previous-build.md" ] && echo 0 || echo 1)"
+
+    # An unmapped fixture directory must be refused, not silently omitted:
+    # building 5 of 6 and printing "built" is the #69 shape exactly.
+    mkdir -p "$_CSRC/an-unmapped-fixture"
+    : > "$_CSRC/an-unmapped-fixture/vuln.sh"
+    bash "$CORPUS" build --corpus "$_CSRC" --out "$_CTMP/derived3" >/dev/null 2>&1
+    check "#69 a corpus dir the map does not name is REFUSED, not silently omitted" \
+      "$([ "$?" -ne 0 ] && echo 0 || echo 1)"
+  else
+    fail "#69 ops-corpus.sh build succeeds against the shipped security corpus"
+  fi
+  rm -rf "$_CTMP"
+fi
+
+echo "-- Case: #70 the drift fixture corpus is present and inert"
+# The measurement instrument for #70's sixth-lens question. Same inertness
+# discipline as the #24 corpus, same reason: a fixture that is reachable from
+# shipped code is not a fixture, and an executable one is a script the plugin
+# could run. Both probes carry the #24 positive control.
+DRIFTDIR="$REPO/tests/fixtures/drift"
+if [ -d "$DRIFTDIR" ]; then
+  _DRIFT_FOUND=0
+  for _d in errno-claim lock-ceiling stdout-copies tier-split-meta agenttype-anchor doc-regex-table; do
+    # Each fixture is a 2x2 like the security corpus, restated for prose:
+    # drifted/ and true/ are functionally identical and only the claim differs.
+    # A fixture missing either column is not a measurement, it is an example.
+    if [ -d "$DRIFTDIR/$_d/drifted" ] && [ -d "$DRIFTDIR/$_d/true" ] && [ -f "$DRIFTDIR/$_d/NOTES.md" ]; then
+      _DRIFT_FOUND=$((_DRIFT_FOUND+1))
+    else
+      fail "#70 $_d: needs drifted/, true/ and NOTES.md (a one-column fixture measures nothing)"
+    fi
+  done
+  check "#70 all 6 named drift fixtures are present with both columns" \
+    "$([ "$_DRIFT_FOUND" = 6 ] && echo 0 || echo 1)"
+
+  # Same single exemption as #24's probe, for the same reason and with the same
+  # control: ops-corpus.sh's header names both corpora because explaining why a
+  # per-corpus map exists requires naming the two corpora whose shapes differ.
+  # It still opens neither on its own — it is handed a path.
+  DRIFT_REF="$(grep -rl 'fixtures/drift' \
+    "$REPO/scripts" "$REPO/hooks" "$REPO/workflows" "$REPO/agents" \
+    "$REPO/commands" "$REPO/skills" "$REPO/templates" 2>/dev/null \
+    | grep -v '/scripts/ops-corpus\.sh$' | head -1)"
+  DRIFT_REF_CTL="$(grep -rl 'fixtures/drift' "$REPO/tests/test-scripts.sh" 2>/dev/null | head -1)"
+  check "#70 control: the inert probe's grep actually finds a known reference" \
+    "$([ -n "$DRIFT_REF_CTL" ] && echo 0 || echo 1)"
+  check "#70 no shipped script or hook references the drift corpus (inert)" \
+    "$([ -z "$DRIFT_REF" ] && echo 0 || echo 1)"
+  DRIFT_REF_ALL="$(grep -rl 'fixtures/drift' \
+    "$REPO/scripts" "$REPO/hooks" "$REPO/workflows" "$REPO/agents" \
+    "$REPO/commands" "$REPO/skills" "$REPO/templates" 2>/dev/null | LC_ALL=C sort)"
+  check "#70 the ops-corpus.sh exemption is exactly one file, and it is that file" \
+    "$([ "$DRIFT_REF_ALL" = "$REPO/scripts/ops-corpus.sh" ] && echo 0 || echo 1)"
+
+  DRIFT_EXEC="$(find "$DRIFTDIR" -type f \
+    \( -perm -u+x -o -perm -g+x -o -perm -o+x \) 2>/dev/null | head -1)"
+  check "#70 no drift fixture carries an execute bit (${DRIFT_EXEC:-none})" \
+    "$([ -z "$DRIFT_EXEC" ] && echo 0 || echo 1)"
+else
+  fail "#70 the drift fixture corpus is present at tests/fixtures/drift"
 fi
 
 ########################################################################
