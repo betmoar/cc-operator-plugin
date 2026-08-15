@@ -91,6 +91,19 @@ single source of truth; bump it in the same commit as the changelog entry.
   stopped modelling the race. Mutation-verified with a self-referential
   symlink: `got ELOOP`, red.
 
+  The same class was then swept for, rather than fixed once: `test_workflows.mjs`'s
+  `throws()` helper accepted ANY throw across **14 call sites**. Measured — a
+  `TypeError: undefined is not a function` from a broken harness scored as
+  "tier: typo 'Mechanical' rejected". The expected message fragment is now a
+  REQUIRED parameter (an optional tightening is one nobody applies to the next
+  case), and all 20 sites name the guard they expect. Mutation-verified: a guard
+  that still throws but with a different message now fails, reporting both what
+  it threw and what was expected.
+
+  The other bare-catch sites were checked and deliberately left: they assert
+  `!threw` or set a flag to `false`, so a spurious throw makes them FAIL rather
+  than pass. Polarity is what decides whether this pattern is a defect.
+
 
 ### Changed
 
