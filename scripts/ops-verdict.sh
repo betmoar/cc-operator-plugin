@@ -1135,6 +1135,15 @@ if [ "${2:-}" = "--defer" ]; then
   # never armed and leave no trace, while the identical act through the PASS/FAIL
   # path is recorded — an asymmetry a bypass would find (PR review 2026-08-07).
   retro_gate
+  # NOT reordered like the verdict path was for #14, and the asymmetry is
+  # deliberate. U2's loss needs a reader that misclassifies the surviving half:
+  # there, a row with no exception is read as an amendment by retro_gate's
+  # prior-row scan. That scan reads the session FRAGMENT, and --defer writes no
+  # fragment row at all — so a crash between these two appends leaves a
+  # DEFERRED-VERDICT with no exception, the retry classifies never-armed again
+  # (unchanged, since nothing it reads has moved), and the exception lands.
+  # The audit line is recoverable here; reordering would only trade that for a
+  # duplicate exception. Re-check this if --defer ever starts writing a fragment.
   printf '%s | %s | DEFERRED-VERDICT | %s | deferred via ops-verdict.sh --defer\n' \
     "$(date +%F)" "$ID" "$REASON" >> "$DECISIONS"
   if [ "$RETRO_STATE" = "never-armed" ]; then

@@ -3245,10 +3245,9 @@ check "G1.8 never-armed verdict writes exactly one GATE-EXCEPTION across amendme
 #                case the exception is duplicated, which is legible.
 #
 # Both appends sit under one lock, so this is a crash window, not a race — which
-# is why the assertion is on relative POSITION in the on-disk record and not on
-# any concurrency behaviour. DECISIONS.md and VERDICTS.md are separate files, so
-# "before" is asserted via mtime ordering, which is what a crash between them
-# would actually expose.
+# is why the assertion is about ORDER and not about any concurrency behaviour.
+# How that order is asserted is decided below; the short version is that it is
+# read off the source, because the two files carry no usable ordering evidence.
 #
 # Mutation-checked: swap the two writes in ops-verdict.sh and this case goes red.
 P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
