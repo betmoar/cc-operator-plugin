@@ -104,6 +104,40 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ### Fixed
 
+- **`check_workflow_agent_types` did not cover the one file that most needed
+  it** — found by two independent review lenses. The checker anchored on the
+  literal `agentType: "cc-operator:X"`, but `dispatch.js` resolves its
+  agentType from the `SEATS` table and passes the shorthand `agentType,`. The
+  regex found **zero** matches in that file: every one of its six seat values
+  retyped to a nonexistent agent shipped fully green (validator rc 0, node,
+  pytest). Both `dispatch.js`'s own comment and `CLAUDE.md`'s coupling row
+  cited this check as the reason the map is a literal — the F22 class they
+  claimed to prevent was not prevented. The regex now matches the **value**,
+  which covers a call site and a lookup table alike, over a comment-stripped
+  view (F57's rule) because `dispatch.js`'s prose quotes the concatenated form
+  it argues against. Both false claims corrected. Two validator cases added.
+
+- **`SEATS[seat]` inherited from `Object.prototype`** — `constructor`,
+  `toString`, `valueOf`, `hasOwnProperty` and `__proto__` all returned
+  something truthy, sailing past the `!agentType` guard and reaching `agent()`
+  as a native function instead of a string. `args.seat` is caller input and the
+  literal table is documented as the thing that *bounds* it, so the bound has
+  to hold for every string a caller can send. Now `Object.hasOwn`, the guard
+  cc-proxy's own lookup tables carry against the same trap. Five node cases,
+  one per name — `__proto__` yields an object rather than a function and would
+  survive a `typeof`-based fix.
+
+- **`check_workflows`' docstring described the inverted rule.** It still said a
+  `ROUTABLE` constant was REQUIRED and pinned; the body three lines below now
+  fires on its presence. Stale documentation on the exact function this repo's
+  procedures tell a maintainer to read before editing a guard.
+
+- **Two smaller comment defects**: `ops-tiers.sh`'s "Until 0.8.3 this function
+  carried…" was self-referential (0.8.3 is the release doing the removing) —
+  the renumbering search-and-replace missed it because the sentence is
+  line-wrapped, so the literal never matched; and `dispatch.js` cited
+  `ops-render.sh:53` for a claim that lives on `:54`.
+
 - **Three stale claims, found by reading rather than by a lens** — the [#70]
   class, in this repo's own docs. `README.md` said "Four **workflows**" (now
   five) and described the review panel as "most cheap, two judgment", which

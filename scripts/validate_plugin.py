@@ -1581,26 +1581,28 @@ def check_resolver_renderer_parity(root, problems):
 
 def check_workflows(root, problems):
     """Every workflows/*.js must (a) be syntactically valid JS, (b) begin with a
-    `export const meta = {...}` first statement, (c) carry the tier guard —
-    a ROUTABLE constant matching the canonical cc-proxy id shape AND a loop that
-    applies ROUTABLE.test to every resolved tier before dispatch — and (d) carry
-    BAD_CHARSET under the same canonical pin, since ROUTABLE checks shape only.
+    `export const meta = {...}` first statement, (c) NOT re-declare a ROUTABLE
+    id-shape guard, and (d) carry BAD_CHARSET pinned to its canonical literal
+    AND applied at a `.test(id)` call site.
+
+    (c) IS INVERTED FROM WHAT IT USED TO BE, and the inversion is the point.
+    Until 0.8.2 a ROUTABLE constant was REQUIRED here and pinned to a canonical
+    id-shape regex. 0.8.3 deleted it: a shape catalogue is operator asserting
+    which model ids exist, which is the user's choice (tiers.env / args.model)
+    and cc-proxy's routing decision. So the check now fires on ROUTABLE's
+    PRESENCE — the only presence-check in this file — because the re-add is the
+    reflex fix when an unguarded id reaches dispatch and every other gate stays
+    green. See the inline comment at the call site for the failure it prevents.
 
     The model values an agent() call receives are tier *constants* (JUDGMENT,
-    MECHANICAL, …), resolved through DEFAULT_TIERS and validated at runtime by
-    ROUTABLE.test. So this check does NOT regex-extract model strings from
-    agent() call sites — that would be brittle (they are variables, not
-    literals) and redundant with the runtime throw. Instead it validates the
-    GUARD INFRASTRUCTURE: the regex that the runtime uses to refuse an
-    unroutable id, and that it is actually applied. This mirrors
-    check_guard_parity (validate the guard exists, not the guarded data).
-
-    An unroutable id — a typo, a retired version — falls through to cc-proxy's
-    default backend at dispatch time, a silent mis-route deep inside a run with
-    no build-time signal. The runtime ROUTABLE.test catches it; this check
-    ensures a maintainer cannot silently remove or drift that guard while
-    editing a workflow. The canonical regex is the same shape check_routable
-    enforces in ops-tiers.sh and the same one every workflow shipped with.
+    MECHANICAL, …), resolved through DEFAULT_TIERS. So this check does NOT
+    regex-extract model strings from agent() call sites — that would be brittle
+    (they are variables, not literals) and redundant with the runtime throw.
+    Instead it validates the GUARD INFRASTRUCTURE, mirroring check_guard_parity
+    (validate the guard exists, not the guarded data). With ROUTABLE gone,
+    BAD_CHARSET is the only id guard a workflow carries, so (d) now bears alone
+    what two pins used to share: a neutered `.test(id)` call site has nothing
+    behind it.
     """
     wf_dir = root / "workflows"
     files = sorted(wf_dir.glob("*.js")) if wf_dir.is_dir() else []
@@ -1857,8 +1859,25 @@ def check_workflow_agent_types(root, problems):
     files = sorted(wf_dir.glob("*.js")) if wf_dir.is_dir() else []
     for f in files:
         text = f.read_text(encoding="utf-8")
-        for m in re.finditer(
-                rf'agentType:\s*"{re.escape(PLUGIN_NAME)}:([\w-]+)"', text):
+        # Comments stripped, exactly as check_workflows does (F57): the VALUE
+        # pattern below is loose enough to match prose, and dispatch.js's own
+        # comments quote `"cc-operator:op-" + seat` while explaining why it does
+        # NOT concatenate. A checker that reads its own documentation as code is
+        # worse than one that misses — it fires on the file that got it right.
+        code = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+        code = "\n".join(ln for ln in code.split("\n")
+                         if not ln.lstrip().startswith("//"))
+        # Match the VALUE, not the `agentType:` key. The key form was blind to
+        # the one file that most needed checking: dispatch.js resolves its
+        # agentType from a SEATS lookup and passes it as the shorthand property
+        # `agentType,`, so the old regex found ZERO matches there — while
+        # dispatch.js's own comment and CLAUDE.md's coupling row both claimed
+        # this check was the reason its SEATS map is a literal. Measured: every
+        # one of the six SEATS values retyped to a nonexistent agent shipped
+        # green (validator rc 0, node 100/0, pytest 213/0). The value form
+        # covers both spellings — a literal at the call site AND a literal in a
+        # lookup table — which is what "names no shipped agent" always meant.
+        for m in re.finditer(rf'"{re.escape(PLUGIN_NAME)}:(op-[\w-]+)"', code):
             agent_name = m.group(1)
             if not (root / "agents" / f"{agent_name}.md").is_file():
                 problems.append(

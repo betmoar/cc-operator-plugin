@@ -55,7 +55,7 @@ is_tier_name() {
 #
 # WHAT IT DELIBERATELY DOES NOT DO — this is the 0.8.3 correction, and the point
 # is worth more than the code: it does not decide which model ids exist. Until
-# 0.8.3 this function carried a catalogue of id SHAPES (`glm-*`, `claude-*`,
+# 0.8.2 this function carried a catalogue of id SHAPES (`glm-*`, `claude-*`,
 # `vendor/model`) plus an allowlist of provider lenses mirroring cc-proxy's
 # PROVIDER_IDS. Both were lists of facts about ANOTHER system, pinned here and
 # in the validator, and both rotted the moment that system moved: measured

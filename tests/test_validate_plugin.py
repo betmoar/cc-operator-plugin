@@ -1349,6 +1349,41 @@ class ValidatorTest(unittest.TestCase):
         vp.check_workflow_agent_types(self.dir, probs)
         self.assertEqual(probs, [])
 
+    def test_workflow_agent_type_in_lookup_table_fires(self):
+        # The gap a review found after 0.8.3: the checker anchored on the
+        # `agentType:` KEY, and dispatch.js resolves its agentType from a SEATS
+        # table and passes the shorthand `agentType,`. The regex matched NOTHING
+        # in that file — measured, every one of its six seat values retyped to a
+        # nonexistent agent shipped green (validator rc 0, node 100/0, pytest
+        # 213/0). Both the file's own comment and CLAUDE.md's coupling row cited
+        # this check as the reason the map is a literal. Matching the VALUE
+        # covers a table entry and a call site alike.
+        write(self.dir / "workflows" / "review.js",
+              'export const meta = { name: "review", description: "d" };\n'
+              'const KNOWN_TIERS = ["JUDGMENT","IMPLEMENT","MECHANICAL","RECON"];\n'
+              'const SEATS = { scout: "cc-operator:op-ghost" };\n'
+              'agent("x", { agentType: SEATS[s] });\n')
+        probs = []
+        vp.check_workflow_agent_types(self.dir, probs)
+        self.assertTrue(any("op-ghost" in p and "names no shipped agent" in p
+                            for p in probs), probs)
+
+    def test_workflow_agent_type_in_a_comment_is_not_a_finding(self):
+        # The boundary the value-form regex has to respect, and the reason it
+        # reads a comment-stripped view: dispatch.js's own comment quotes
+        # `"cc-operator:op-" + seat` while arguing AGAINST concatenating. A
+        # checker that reads its own documentation as code fires on the file
+        # that got it right.
+        write(self.dir / "workflows" / "review.js",
+              'export const meta = { name: "review", description: "d" };\n'
+              'const KNOWN_TIERS = ["JUDGMENT","IMPLEMENT","MECHANICAL","RECON"];\n'
+              '// never write "cc-operator:op-ghost" as a computed string\n'
+              '/* nor "cc-operator:op-phantom" in a block comment */\n'
+              'agent("x", { agentType: "cc-operator:op-author" });\n')
+        probs = []
+        vp.check_workflow_agent_types(self.dir, probs)
+        self.assertEqual(probs, [])
+
     # --- charter byte bounds (F19) ---
     # The 150-line cap bounds ALWAYS-ON tokens; a line-count-only gate is
     # gameable by packing prose into one long line (a 286-char line shipped

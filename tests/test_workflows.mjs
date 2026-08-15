@@ -604,6 +604,21 @@ await throws(() => run(WF("dispatch.js"),
   { seat: "nosuchseat", prompt: "p", model: "glm-5-turbo" }, {}),
   "dispatch: an unknown seat is refused, never coerced into an agentType",
   "unknown seat");
+// A prototype-chain name must be refused like any other unknown seat. SEATS is
+// a plain object literal, so a bare `SEATS[seat]` returns a truthy native
+// function for `constructor`/`toString`/`valueOf`/`hasOwnProperty`/`__proto__`
+// — sailing past the `!agentType` guard and reaching agent() as a function
+// instead of a string. Found by review after 0.8.3; the file's own comment
+// claims the table BOUNDS what a caller can dispatch, so the bound has to hold
+// for every string a caller can send, not just for the ones that look like
+// seats. Each name is asserted separately: `__proto__` resolves to an object
+// rather than a function and would survive a typeof-based fix.
+for (const evil of ["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__"]) {
+  await throws(() => run(WF("dispatch.js"),
+    { seat: evil, prompt: "p", model: "glm-5-turbo" }, {}),
+    `dispatch: prototype-chain seat ${JSON.stringify(evil)} is refused, not dispatched`,
+    "unknown seat");
+}
 await throws(() => run(WF("dispatch.js"), { prompt: "p", model: "glm-5-turbo" }, {}),
   "dispatch: a missing seat is refused", "must be a seat name");
 await throws(() => run(WF("dispatch.js"), { seat: "mechanic", model: "glm-5-turbo" }, {}),

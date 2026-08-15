@@ -69,15 +69,22 @@ const JUDGMENT = TIERS.JUDGMENT;
 // the load-bearing one:
 //
 // 1. A computed agentType is invisible to check_workflow_agent_types, which
-//    matches `agentType: "cc-operator:<name>"` by regex against a shipped
+//    matches a literal `"cc-operator:<name>"` by regex against a shipped
 //    agents/<name>.md. Concatenation would let a typo'd or removed seat ship
 //    green and fail at dispatch (F22's class: a name that cannot exist).
+//    The literal map is necessary but was not, on its own, sufficient: until
+//    the review round after 0.8.3 that checker anchored on the `agentType:`
+//    KEY, and this file passes the shorthand `agentType,` with the string in
+//    the table — so it matched nothing here and every SEATS value retyped to a
+//    nonexistent agent shipped green (measured). The checker now matches the
+//    VALUE, which covers both spellings. Keep the strings literal: a computed
+//    one goes invisible again, and this time the comment would be right.
 // 2. It bounds what this workflow can dispatch. `args.seat` is caller input,
 //    and without a table it becomes an arbitrary agentType string.
 //
 // Keys match ops-render.sh's seat_add names, so `--model <seat>` and
 // `args.seat` take the same word. op-reviewer is deliberately ABSENT: it is a
-// shipped agent but not a default seat (ops-render.sh:53 says so), and the
+// shipped agent but not a default seat (ops-render.sh:54 says so), and the
 // review workflow owns that fan-out.
 const SEATS = {
   author: "cc-operator:op-author",
@@ -96,7 +103,15 @@ if (typeof rawSeat !== "string" || !rawSeat.trim()) {
   throw new Error(`args.seat must be a seat name (one of: ${Object.keys(SEATS).join(", ")})`);
 }
 const seat = rawSeat.trim().replace(/^op-/, "");
-const agentType = SEATS[seat];
+// Object.hasOwn, not a bare `SEATS[seat]`: the table is a plain object literal,
+// so a bare lookup inherits from Object.prototype and `constructor`,
+// `toString`, `valueOf`, `hasOwnProperty` and `__proto__` all return something
+// TRUTHY — sailing past the `!agentType` guard below and reaching agent() as a
+// native function instead of a string. args.seat is caller input, and bounding
+// it is the stated reason SEATS is a literal table at all (see above), so the
+// bound has to hold for every string a caller can send. cc-proxy's routes.js
+// carries the same guard against the same trap on its own lookup tables.
+const agentType = Object.hasOwn(SEATS, seat) ? SEATS[seat] : undefined;
 if (!agentType) {
   throw new Error(`unknown seat ${JSON.stringify(rawSeat)} (known: ${Object.keys(SEATS).join(", ")})`);
 }
@@ -155,7 +170,7 @@ if (result == null) {
     seat,
     model: resolved,
     dead: true,
-    error: `the ${seat} seat returned nothing (agent died: schema mismatch, timeout, or rate limit) — this is NOT an empty result`,
+    error: `the ${seat} seat returned nothing (agent died: the model id was refused, or a schema mismatch, timeout, or rate limit) — this is NOT an empty result. The harness's own failure line, logged above, names which`,
   };
 }
 return { seat, model: resolved, dead: false, result };
