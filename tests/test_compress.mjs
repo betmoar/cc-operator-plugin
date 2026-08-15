@@ -422,6 +422,65 @@ console.log("-- Case: F18 a vanished spill-dir entry does not fail the spill");
     "the vanished entry does not throw spill() into the outer FAILED-spill branch");
 }
 
+// ── #59: the case above never ENTERS the guarded window ─────────────────────
+// Measured: strip the try/catch from spill()'s map entirely and the whole suite
+// stays green. The reason is that the "ghost" is unlinked BEFORE spill() runs,
+// so its own readdirSync never lists it — the map never visits it, and the
+// statSync that would throw is never reached. The case proves the
+// already-a-ghost path, which needs no guard.
+//
+// The guarded window is the gap BETWEEN readdirSync and the statSync that
+// follows: an entry present at enumeration and unstattable a moment later.
+// Racing a real deletion into that gap would be timing-dependent, and this
+// project's standing rule is structural over timing (the #23 fixture's mtime
+// stamp exists for the same reason — a 1-in-3 test looks fixed and is a coin
+// flip). So the window is entered structurally instead: a DANGLING SYMLINK is
+// listed by readdirSync and makes statSync throw ENOENT, which is the identical
+// throw a vanished entry produces, on the identical line, deterministically and
+// on every run. Verified directly before writing this: readdirSync returns the
+// name, statSync throws ENOENT, lstatSync succeeds.
+console.log("-- Case: #59 the F18 guard is ENTERED — an entry listed but unstattable");
+{
+  const winSession = `SESS-WINDOW${++sessN}`;
+  const spillRoot = path.join(TMP, ".operator", ".compress-spill");
+  const dir = path.join(spillRoot, winSession);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // Points at a name that does not exist, and never will. Present to readdir,
+  // absent to stat — the two halves of the window, held open permanently.
+  fs.symlinkSync(path.join(dir, "no-such-target"), path.join(dir, "dangling"));
+  // The precondition is the assertion that makes the rest mean anything: if a
+  // future Node stops listing dangling symlinks, or starts resolving them in
+  // statSync, this case silently stops testing the guard — the exact failure
+  // the case exists to end.
+  ok(fs.readdirSync(dir).includes("dangling"),
+    "#59 precondition: the entry IS listed by readdirSync (it enters the map)");
+  let threw = false;
+  try { fs.statSync(path.join(dir, "dangling")); } catch { threw = true; }
+  ok(threw,
+    "#59 precondition: statSync on that same entry THROWS (the window is open)");
+
+  const winRes = run({
+    tool_name: "Bash",
+    tool_use_id: "toolu_window",
+    session_id: winSession,
+    tool_input: { command: "npm test" },
+    tool_response: { stdout: big, stderr: "" },
+  });
+  const wText = winRes?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
+  // WITHOUT the guard these two fail: the statSync throws out of the map, into
+  // spill()'s outer catch, which returns null — so the spill cite is replaced by
+  // the FAILED marker even though the write itself succeeded.
+  ok(/full output spilled to/.test(wText),
+    "#59 spill still cites a real path when an entry is listed but unstattable");
+  ok(!/TRUNCATED and the spill to disk FAILED/.test(wText),
+    "#59 the unstattable entry does not collapse the spill into the FAILED branch");
+  // And the spill file is really on disk — a cite pointing at nothing would
+  // satisfy the regex above while the guard was doing nothing useful.
+  const cited = /full output spilled to ([^\s]+)/.exec(wText);
+  ok(!!cited && fs.existsSync(path.resolve(TMP, cited[1])),
+    "#59 the cited spill path exists on disk (the write completed past the guard)");
+}
+
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log(`\n== summary: ${pass} passed, ${fail} failed ==`);
 if (fail > 0) process.exit(1);

@@ -43,6 +43,32 @@ single source of truth; bump it in the same commit as the changelog entry.
   are unrun. Until then no claim about the panel's security coverage, in either
   direction, is supported.
 
+- **#59 — the F18 TOCTOU guard is now ENTERED by a test** ([#59]). The existing
+  case deleted its "ghost" file *before* `spill()` ran its own `readdirSync`, so
+  the entry was never listed, the map never visited it, and the `statSync` the
+  guard wraps was never reached — strip the guard entirely and the suite stayed
+  green. The window is the gap *between* `readdirSync` and the stat that
+  follows. Racing a real deletion into it would be timing-dependent, and this
+  project's standing rule is structural over timing (the #23 fixture's mtime
+  stamp exists for the same reason). So the window is now held open
+  structurally: a **dangling symlink** is listed by `readdirSync` and makes
+  `statSync` throw `ENOENT` — the identical throw, on the identical line, every
+  run. Both directions recorded: guard stripped → 3 FAIL, restored → 95/0. Two
+  of the five assertions are preconditions, so a future Node that stops listing
+  dangling symlinks fails loudly instead of silently testing nothing.
+
+### Changed
+
+- **`/cc-operator:tiers` documents the un-rendered alias gap** ([#55]). Every
+  shipped `agents/op-<seat>.md` carries a hardcoded Anthropic alias, that alias
+  wins at dispatch, and the plain `Agent` tool's `model` parameter is
+  schema-locked to `sonnet | opus | haiku | fable` — so an operator who set
+  `mechanic → IMPLEMENT → deepseek-v4-flash` and has not rendered runs every
+  dispatch on `sonnet`, with nothing warning them. The command now states the
+  gap and both routes that close it (render, or Workflow `agent()` with an
+  arbitrary id). Documentation only: the resolver→dispatch helper that would
+  make the configured tier the default is not shipped, and #55 stays open.
+
 ## [0.8.1] - 2026-08-14
 
 What a second live run of the replay charter found, and what reviewing those
@@ -384,6 +410,7 @@ BAR block lands, after decomposition.
 [#52]: https://github.com/betmoar/cc-operator-plugin/issues/52
 [#53]: https://github.com/betmoar/cc-operator-plugin/issues/53
 [#54]: https://github.com/betmoar/cc-operator-plugin/issues/54
+[#55]: https://github.com/betmoar/cc-operator-plugin/issues/55
 [#58]: https://github.com/betmoar/cc-operator-plugin/issues/58
 [#59]: https://github.com/betmoar/cc-operator-plugin/issues/59
 [#60]: https://github.com/betmoar/cc-operator-plugin/issues/60
