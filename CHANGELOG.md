@@ -84,7 +84,12 @@ single source of truth; bump it in the same commit as the changelog entry.
   `statSync` throw `ENOENT` — the identical throw, on the identical line, every
   run. Both directions recorded: guard stripped → 3 FAIL, restored → 95/0. Two
   of the five assertions are preconditions, so a future Node that stops listing
-  dangling symlinks fails loudly instead of silently testing nothing.
+  dangling symlinks fails loudly instead of silently testing nothing. The
+  errno is pinned to `ENOENT` rather than to "any throw" (Copilot, PR review):
+  only ENOENT is the vanished-entry failure the symlink stands in for, and an
+  EACCES or ELOOP would have satisfied a bare `threw` while the case quietly
+  stopped modelling the race. Mutation-verified with a self-referential
+  symlink: `got ELOOP`, red.
 
 
 ### Changed

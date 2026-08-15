@@ -454,10 +454,16 @@ console.log("-- Case: #59 the F18 guard is ENTERED — an entry listed but unsta
   // the case exists to end.
   ok(fs.readdirSync(dir).includes("dangling"),
     "#59 precondition: the entry IS listed by readdirSync (it enters the map)");
-  let threw = false;
-  try { fs.statSync(path.join(dir, "dangling")); } catch { threw = true; }
-  ok(threw,
-    "#59 precondition: statSync on that same entry THROWS (the window is open)");
+  // ENOENT specifically, not "any throw" (Copilot, PR review). The comment
+  // above claims the symlink reproduces the vanished-entry failure, and only
+  // ENOENT is that failure — an EACCES from a mode change, or an ELOOP from a
+  // symlink cycle, would satisfy a bare `threw` while the case silently stopped
+  // standing in for the race it was built to model. Pinning the code keeps the
+  // precondition as strong as the sentence that justifies it.
+  let statErr = null;
+  try { fs.statSync(path.join(dir, "dangling")); } catch (e) { statErr = e; }
+  ok(statErr?.code === "ENOENT",
+    `#59 precondition: statSync on that same entry throws ENOENT (got ${statErr?.code ?? "no throw"})`);
 
   const winRes = run({
     tool_name: "Bash",
