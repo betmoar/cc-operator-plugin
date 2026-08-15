@@ -202,34 +202,43 @@ block is **copy-pasted** across review.js, brainstorm.js, plan.js. There is no
 shared module. `check_workflow_parity` is the only thing holding the copies
 together — the same lesson `check_lock_parity` enforces for the bash lock block.
 
-When you change the tier-validation logic (ROUTABLE, BAD_CHARSET, the args
-normalizer, the unknown-tier-key guard):
+When you change the tier-validation logic (BAD_CHARSET, the args normalizer,
+the unknown-tier-key guard):
 
-1. **Change all three files.** `check_workflow_parity` fails the build if
-   ROUTABLE or BAD_CHARSET diverge. DEFAULT_TIERS is NOT a parity invariant —
-   each workflow declares only the tiers it uses, so do not "align" them.
+1. **Change every workflow.** `check_workflow_parity` fails the build if
+   BAD_CHARSET diverges. DEFAULT_TIERS is NOT a parity invariant — each
+   workflow declares only the tiers it uses, so do not "align" them.
 2. **A new shared regex constant must be added to `WORKFLOW_PARITY_CONSTS`** in
    validate_plugin.py, or it can drift undetected.
 3. **`args` arrives as a JSON string, not an object** (the Workflow tool
    stringifies it in transit). Every workflow normalizes with the `A` IIFE;
    review.js additionally accepts a bare-string target. If you change the
    normalizer, decide deliberately whether the bare-string branch applies.
-4. **The JS ROUTABLE + BAD_CHARSET must agree with `ops-tiers.sh`'s
-   `check_routable`** (charset `[A-Za-z0-9._:/@[]-]`). The shell is the
-   canonical gate; the JS is its mirror. A divergence is audit F01 — silent
-   mis-route on a hand-written `args.tiers` bypassing the resolver.
-5. **No `node --check`** in the validator — it is too lenient (returns exit 0
+4. **BAD_CHARSET must agree with `ops-tiers.sh`'s `check_routable`** (charset
+   `[A-Za-z0-9._:/@[]-]`). The shell is the canonical gate; the JS is its
+   mirror. A divergence is audit F01 — a malformed id reaching dispatch through
+   a hand-written `args.tiers` that bypassed the resolver.
+5. **Do NOT add an id-shape guard back.** 0.8.4 removed `ROUTABLE` — a
+   catalogue of id shapes plus a provider-lens allowlist — from every workflow
+   and both shell scripts. It was operator asserting which model ids exist,
+   which is the user's choice (tiers.env / `args.model`) and cc-proxy's routing
+   decision. Measured against a live 409-id catalogue it refused 8 that route
+   fine. `check_workflows` now FIRES on a re-declared `const ROUTABLE`; that
+   check is the only presence-check in the validator, and it is deliberate —
+   the re-add is the reflex fix for a symptom whose real cause is elsewhere.
+6. **No `node --check`** in the validator — it is too lenient (returns exit 0
    on redeclared consts, unclosed parens). A real syntax error surfaces at
-   launch; the structural checks (meta-first, ROUTABLE canonical+applied) are
-   what the build can enforce.
+   launch; the structural checks (meta-first, BAD_CHARSET canonical+applied)
+   are what the build can enforce.
 
 ### Adding a workflow
 
 Drop a `.js` in `workflows/`. It must: begin with `export const meta = {…}`,
-declare `const ROUTABLE` and `const BAD_CHARSET` byte-identical to the others,
-declare `const KNOWN_TIERS = [...]` equal to the resolver's `TIER_NAMES`, and
-apply `ROUTABLE.test` + `BAD_CHARSET.test` in a tier-validation loop whose
-unknown-key check is `if (!KNOWN_TIERS.includes(name))`.
+declare `const BAD_CHARSET` byte-identical to the others, declare
+`const KNOWN_TIERS = [...]` equal to the resolver's `TIER_NAMES`, and apply
+`BAD_CHARSET.test` in a tier-validation loop whose unknown-key check is
+`if (!KNOWN_TIERS.includes(name))`. It must NOT declare `const ROUTABLE`
+(see point 5 above — the validator fires on it).
 `check_workflows` + `check_workflow_parity` + `check_workflow_tier_namespace`
 enforce all three at build time.
 

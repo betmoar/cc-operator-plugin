@@ -1532,19 +1532,16 @@ def check_resolver_renderer_parity(root, problems):
         # Equality alone is satisfied by two IDENTICALLY gutted copies — the
         # same hole CANONICAL_BAD_CHARSET closed for the workflow regexes,
         # reachable here by commenting the body out in both files (comments are
-        # stripped above). Pin the two load-bearing rejects to their content.
-        # NOT "LENS_NAMESPACES" here: this loop searches the FUNCTION BODY, and
-        # the assignment is a file-scope variable outside the braces, so the
-        # fragment could never be found and the check would fire on every tree
-        # (re-measured on this tree: 11 pytest failures, the good-tree fixtures
-        # among them — an earlier draft of this comment and 679e9af's commit
-        # message both said 12, which no mutation reproduces). Its
-        # USE inside the body is what belongs here; the assignment's VALUE is
-        # pinned separately below, where the two files are compared.
+        # stripped above). Pin the load-bearing reject to its content.
+        #
+        # ONE fragment, not three, since 0.8.4. The id-shape reject and the
+        # provider-lens allowlist were both deleted from check_routable, so
+        # pinning them would now pin their absence's opposite — see that
+        # function's comment for why operator no longer decides which model ids
+        # exist. The charset reject is the whole guard, which makes this pin
+        # more load-bearing than before, not less.
         for frag, why in (
-                (r"[!A-Za-z0-9._:/@[\]-]", "the charset reject"),
-                ("not cc-proxy-routable", "the id-shape reject"),
-                ("$LENS_NAMESPACES", "the provider-lens allowlist lookup")):
+                (r"[!A-Za-z0-9._:/@[\]-]", "the charset reject"),):
             if frag not in bodies["ops-tiers.sh"]:
                 problems.append(
                     f"scripts/ops-tiers.sh + ops-render.sh: check_routable no "
@@ -1552,43 +1549,15 @@ def check_resolver_renderer_parity(root, problems):
                     f"but agreeing on a guard that checks nothing is how a "
                     f"parity check passes while the guard is gone")
 
-    # LENS_NAMESPACES lives OUTSIDE check_routable's braces, so routable_body()
-    # above never sees it and two copies carrying DIFFERENT allowlists would
-    # compare equal. Pinned separately, and TWICE: equal across the two files,
-    # AND equal to the canonical set below. Equality alone was the vacuous shape
-    # — editing BOTH copies to `LENS_NAMESPACES="bogus"` passed the whole
-    # validator (measured), because the tuples still matched and the in-body
-    # `$LENS_NAMESPACES` lookup was still present. That is the same hole
-    # CANONICAL_BAD_CHARSET closes for the workflow regexes, and CLAUDE.md
-    # claimed this check already closed it. Now it does.
-    #
-    # The set mirrors PROVIDER_IDS in cc-proxy's src/providers.js. Adding a
-    # provider there means updating this literal AND both scripts — deliberately
-    # three edits, because a namespace cc-proxy does not know is not stripped and
-    # reaches the default backend as a literal model id.
-    canonical_lens = ("glm", "openrouter", "deepseek", "qwen", "claude")
-    lens = {}
-    for name, text in src.items():
-        m = re.search(r"^LENS_NAMESPACES=([\"'])(.*?)\1", text, re.MULTILINE)
-        if not m:
-            problems.append(
-                f"scripts/{name}: no `LENS_NAMESPACES=\"…\"` assignment found — "
-                f"check_routable gates the `<provider>:<model>` lens on it; a "
-                f"rename or retype must update this regex, not silence it")
-            return
-        lens[name] = tuple(m.group(2).split())
-    if lens["ops-tiers.sh"] != lens["ops-render.sh"]:
-        problems.append(
-            f"scripts/ops-render.sh: LENS_NAMESPACES={list(lens['ops-render.sh'])} "
-            f"does not match the resolver's {list(lens['ops-tiers.sh'])} in "
-            f"ops-tiers.sh — one of them would accept a lens the other refuses")
-    elif lens["ops-tiers.sh"] != canonical_lens:
-        problems.append(
-            f"scripts/ops-tiers.sh + ops-render.sh: LENS_NAMESPACES="
-            f"{list(lens['ops-tiers.sh'])} does not match cc-proxy's PROVIDER_IDS "
-            f"{list(canonical_lens)} — the two copies agree, which is what makes "
-            f"this worth checking: a uniformly wrong allowlist refuses ids "
-            f"cc-proxy routes, or admits a namespace it does not strip")
+    # The LENS_NAMESPACES pin lived here until 0.8.4 — an allowlist of five
+    # cc-proxy provider namespaces, pinned twice over (equal across the two
+    # files AND equal to a canonical literal) because equality alone had proven
+    # vacuous. All of that machinery existed to hold a list of facts about
+    # ANOTHER system in sync by hand, and the list was already wrong: measured
+    # against a live catalogue of 409 ids, the guard it fed refused 8 that
+    # cc-proxy routes. Deleted with the allowlist itself. If a future guard
+    # needs to know something about cc-proxy's namespaces, ASK cc-proxy — do not
+    # re-copy its table into this repo, where nothing can keep it honest.
 
     names = {}
     for name, text in src.items():
@@ -1637,17 +1606,17 @@ def check_workflows(root, problems):
     files = sorted(wf_dir.glob("*.js")) if wf_dir.is_dir() else []
     if not files:
         return  # workflows/ is optional; the plugin ships review.js only at need
-    # Carries the `<provider>:<model>` lens alternation as of 0.7.1: the shell
-    # guard learned a fourth id shape and this mirror had to move with it, or an
-    # operator who legally binds `MECHANICAL=qwen:deepseek-v4-pro` in tiers.env
-    # gets a hard throw the moment that map reaches a workflow. Divergence here
-    # fails LOUD rather than silently mis-routing (the F01 polarity), but it is
-    # still the coupling docs/PLAYBOOK.md names — and check_workflows could not
-    # have caught it, because all four copies drifted uniformly (the F30 shape).
-    # The alternation is spelled out rather than built from LENS_NAMESPACES:
-    # these are four literal source files, and a generated regex would be one
-    # more thing to keep in sync.
-    CANONICAL_ROUTABLE = r"/^(?:glm-|claude-)[^:]*$|^(?:glm|openrouter|deepseek|qwen|claude):.+|^(?=[^:]*\/[^:]*:).+$|^[^:]*\/[^:]*$/"
+    # CANONICAL_ROUTABLE lived here until 0.8.4, pinning an id-shape alternation
+    # across every workflow copy. It is gone with the guard it pinned: the shape
+    # catalogue was operator asserting which model ids exist, which is the
+    # user's choice and cc-proxy's routing decision (see ops-tiers.sh
+    # check_routable). The pin was doing its job perfectly — it held four copies
+    # of a wrong list in exact agreement, which is why the wrongness survived
+    # three releases. A pin is only as good as the thing it pins.
+    #
+    # BAD_CHARSET keeps its pin and inherits the full weight: it is now the only
+    # id guard the workflows carry, so a mutation to /(?!)/ has no second line
+    # of defence behind it.
     CANONICAL_BAD_CHARSET = r"/[^\w./:@[\]-]/"
     for f in files:
         rel = f"workflows/{f.name}"
@@ -1685,53 +1654,47 @@ def check_workflows(root, problems):
                 f"first statement (the harness requires a pure-literal meta block "
                 f"first, or it refuses to launch the workflow)")
 
-        # (c) the tier guard. Two requirements, both structural:
-        #   - ROUTABLE is declared with the canonical cc-proxy id shape
-        #   - a loop applies ROUTABLE.test to every resolved tier (Object.entries
-        #     over TIERS, the resolved table). The loop is what makes an
-        #     unroutable id fail at resolve time, not dispatch time.
-        routable_decl = re.search(r"const\s+ROUTABLE\s*=\s*(/\S.*?)\s*;", text)
-        if not routable_decl:
+        # (c) a re-introduced id-shape guard is a REGRESSION, not an upgrade.
+        # This is the only check in this file that fires on a guard's PRESENCE.
+        # It exists because the deletion above is easy to undo by reflex — a
+        # future maintainer sees an unguarded id reach dispatch, writes
+        # `const ROUTABLE = /^(?:glm-|claude-)…/`, and every test still passes,
+        # because the tests never asked whether operator SHOULD judge model ids.
+        # It should not: the user picks the model, cc-proxy routes it. Whatever
+        # symptom prompted the re-add, a hardcoded id catalogue in this repo is
+        # not the fix — it is the bug that shipped for three releases.
+        if re.search(r"const\s+ROUTABLE\s*=", text):
             problems.append(
-                f"{rel}: no `const ROUTABLE = …` declaration found — every "
-                f"workflow must validate tiers against the cc-proxy id shape "
-                f"before dispatch (an unroutable id otherwise silently falls "
-                f"through to the default backend)")
-        else:
-            # Direct equality on the matched regex literal against the canonical.
-            got = routable_decl.group(1).strip()
-            if got != CANONICAL_ROUTABLE.strip():
-                problems.append(
-                    f"{rel}: ROUTABLE regex is {got!r}, expected "
-                    f"{CANONICAL_ROUTABLE.strip()!r} — cc-proxy routes by id "
-                    f"shape; a divergent regex either over-accepts (silent "
-                    f"mis-route) or under-accepts (rejects valid ids)")
+                f"{rel}: declares `const ROUTABLE = …` — an id-shape catalogue "
+                f"was REMOVED in 0.8.4 and must not come back. Operator does not "
+                f"decide which model ids exist; the user chooses (tiers.env / "
+                f"args.model) and cc-proxy routes. A shape list in this repo "
+                f"cannot track cc-proxy's catalogue and refused 8 of 409 live "
+                f"ids when it was measured. Keep BAD_CHARSET (well-formedness) "
+                f"and let a bad id fail at dispatch, where the truth is")
 
-        if not re.search(r"ROUTABLE\.test\s*\(", code):
-            problems.append(
-                f"{rel}: ROUTABLE is declared but never applied — a tier must be "
-                f"checked with `ROUTABLE.test(id)` inside the tier-resolution loop "
-                f"or an unroutable id reaches dispatch unchecked")
-
-        # (d) the charset guard, held to the SAME standard as ROUTABLE — pinned
-        # to a canonical literal, and proven applied.
+        # (d) the charset guard — pinned to a canonical literal, and proven
+        # applied. Since 0.8.4 it is the ONLY id guard, so this pin carries what
+        # two used to.
         #
         # check_workflow_parity compares the copies to EACH OTHER, which is
         # necessary but not sufficient: a review mutated BAD_CHARSET to /(?!)/
         # in all four workflows at once and every gate stayed green (node 25/25,
         # validator rc 0), because four identically-broken files are trivially
-        # "in parity". ROUTABLE was already immune via CANONICAL_ROUTABLE; this
-        # closes the same hole for the guard that rejects whitespace and quotes.
+        # "in parity". This closes that hole for the guard that rejects
+        # whitespace and quotes — and since 0.8.4 removed the id-shape guard
+        # that used to sit beside it, this is the last one standing.
         # Uniform drift is the realistic failure — a maintainer edits the block
         # once and copies it to the other three, exactly as the copy-paste
         # convention instructs.
         badcharset_decl = re.search(r"const\s+BAD_CHARSET\s*=\s*(/\S.*?)\s*;", text)
         if not badcharset_decl:
             problems.append(
-                f"{rel}: no `const BAD_CHARSET = …` declaration found — ROUTABLE "
-                f"checks id SHAPE only and accepts `claude opus/x`; without the "
-                f"charset guard an id carrying whitespace or quotes reaches "
-                f"dispatch (audit F01)")
+                f"{rel}: no `const BAD_CHARSET = …` declaration found — it is "
+                f"the only id guard a workflow carries; without it an id "
+                f"carrying whitespace or quotes (a malformed tiers.env line, "
+                f"e.g. an unquoted `MECHANICAL=claude opus`) reaches dispatch "
+                f"(audit F01)")
         else:
             got = badcharset_decl.group(1).strip()
             if got != CANONICAL_BAD_CHARSET.strip():
@@ -1759,19 +1722,21 @@ def check_workflows(root, problems):
 # only the tiers it uses (review has 2, brainstorm 3, plan 3), so it is NOT a
 # parity invariant. The regexes ARE — they define what "routable" and
 # "valid charset" mean, and a divergence between two workflows' ROUTABLE is a
-# silent disagreement about which ids dispatch.
-WORKFLOW_PARITY_CONSTS = ("ROUTABLE", "BAD_CHARSET")
+# silent disagreement about which ids are well-formed.
+# ROUTABLE was dropped from this tuple in 0.8.4 along with the guard itself
+# (see check_workflows (c)); BAD_CHARSET is what remains to hold in parity.
+WORKFLOW_PARITY_CONSTS = ("BAD_CHARSET",)
 
 
 def check_workflow_parity(root, problems):
-    """Every workflow's shared regex constants (ROUTABLE, BAD_CHARSET) must be
+    """Every workflow's shared regex constant (BAD_CHARSET) must be
     byte-identical across all workflows/*.js.
 
     The tier-resolution block is duplicated because the sandbox forbids imports
     (measured 2026-07-30). Prose ("keep them in sync") does not hold that
     coupling — check_lock_parity was written for the identical lesson in bash.
-    This is its JS analogue: a divergence between two workflows' ROUTABLE is a
-    silent disagreement about which model ids are routable, with no crash.
+    This is its JS analogue: a divergence between two workflows' BAD_CHARSET is
+    a silent disagreement about which ids are well-formed, with no crash.
     """
     wf_dir = root / "workflows"
     files = sorted(wf_dir.glob("*.js")) if wf_dir.is_dir() else []

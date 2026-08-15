@@ -365,12 +365,13 @@ def make_good_tree(root):
     # carry a model: line or check_render_templates fires.
     write(root / "agents" / "_templates" / "default.tmpl",
           '---\nname: op-NAME\nmodel: MODEL\ntools: Read\n---\nbody\n')
+    # No ROUTABLE since 0.8.4: an id-shape catalogue is a validator FINDING
+    # now, not a requirement (check_workflows (c)). BAD_CHARSET is the guard.
     WF_SHARED = (
-        'const ROUTABLE = /^(?:glm-|claude-)[^:]*$|^(?:glm|openrouter|deepseek|qwen|claude):.+|^(?=[^:]*\\/[^:]*:).+$|^[^:]*\\/[^:]*$/;\n'
         'const BAD_CHARSET = /[^\\w./:@[\\]-]/;\n'
         'const KNOWN_TIERS = ["JUDGMENT","IMPLEMENT","MECHANICAL","RECON"];\n'
         'for (const [n, id] of Object.entries({JUDGMENT:"claude-opus-5"})) {\n'
-        '  if (!ROUTABLE.test(id) || BAD_CHARSET.test(id)) throw new Error("bad");\n'
+        '  if (BAD_CHARSET.test(id)) throw new Error("bad");\n'
         '}\n'
     )
     for wname in ("review", "brainstorm"):
@@ -1208,10 +1209,9 @@ class ValidatorTest(unittest.TestCase):
         """A conforming workflow with the shared invariants."""
         return (
             f'export const meta = {{ name: "{name}", description: "d" }};\n'
-            'const ROUTABLE = /^(?:glm-|claude-)[^:]*$|^(?:glm|openrouter|deepseek|qwen|claude):.+|^(?=[^:]*\\/[^:]*:).+$|^[^:]*\\/[^:]*$/;\n'
             'const BAD_CHARSET = /[^\\w./:@[\\]-]/;\n'
             'for (const [n, id] of Object.entries({JUDGMENT:"claude-opus-5"})) {\n'
-            '  if (!ROUTABLE.test(id) || BAD_CHARSET.test(id)) throw new Error("x");\n'
+            '  if (BAD_CHARSET.test(id)) throw new Error("x");\n'
             '}\n' + body_extra
         )
 
@@ -1220,16 +1220,29 @@ class ValidatorTest(unittest.TestCase):
               '// stray comment\n' + self._wf("review"))
         self.assertFires("does not begin with")
 
-    def test_workflow_divergent_routable_fires(self):
+    def test_workflow_reintroduced_routable_fires(self):
+        # The inverse of the pre-0.8.4 case that lived here. An id-shape
+        # catalogue used to be REQUIRED and pinned to a canonical literal; it is
+        # now a finding. The realistic path back is a maintainer who sees an
+        # unguarded id reach dispatch and writes the obvious-looking guard —
+        # every other test would still pass, because none of them ask whether
+        # operator should be judging model ids at all. This one does.
         write(self.dir / "workflows" / "review.js",
-              self._wf("review").replace("const ROUTABLE = /^(?:glm-|claude-)[^:]*$|^(?:glm|openrouter|deepseek|qwen|claude):.+|^(?=[^:]*\\/[^:]*:).+$|^[^:]*\\/[^:]*$/;",
-                                         "const ROUTABLE = /^glm-5|^claude-5/;"))
-        self.assertFires("ROUTABLE regex is")
+              self._wf("review", 'const ROUTABLE = /^glm-|^claude-/;\n'))
+        self.assertFires("must not come back")
 
-    def test_workflow_routable_never_applied_fires(self):
+    def test_workflow_routable_in_a_comment_is_not_a_reintroduction(self):
+        # The declaration check reads RAW text (a commented-out `const X = …`
+        # should trip its own not-found branch elsewhere), so this case pins the
+        # boundary: prose ABOUT the removed guard — which the shipped workflows
+        # all carry, and this file's own comments do — must not fire. Without
+        # the `const\s+ROUTABLE\s*=` anchor, documenting the decision would
+        # break the build that enforces it.
         write(self.dir / "workflows" / "review.js",
-              self._wf("review").replace("ROUTABLE.test(id)", "true"))
-        self.assertFires("ROUTABLE is declared but never applied")
+              self._wf("review", "// ROUTABLE was removed in 0.8.4; see check_workflows (c).\n"))
+        probs = []
+        vp.check_workflows(self.dir, probs)
+        self.assertEqual([p for p in probs if "must not come back" in p], [])
 
     def test_workflow_uniform_bad_charset_drift_fires(self):
         # The gap a review found: check_workflow_parity compares the copies to
@@ -1254,7 +1267,8 @@ class ValidatorTest(unittest.TestCase):
         # check and the canonical pin still pass — this is the third way the
         # guard can be silently removed.
         write(self.dir / "workflows" / "review.js",
-              self._wf("review").replace("|| BAD_CHARSET.test(id)", ""))
+              self._wf("review").replace(
+                  "  if (BAD_CHARSET.test(id)) throw new Error(\"x\");\n", ""))
         self.assertFires("BAD_CHARSET is declared but never applied")
 
     def test_workflow_missing_bad_charset_fires(self):
@@ -1264,29 +1278,31 @@ class ValidatorTest(unittest.TestCase):
               .replace(" || BAD_CHARSET.test(id)", ""))
         self.assertFires("no `const BAD_CHARSET")
 
-    def test_workflow_line_comment_neuters_routable_fires(self):
+    def test_workflow_line_comment_neuters_bad_charset_fires(self):
         # F48/F57 class, demonstrated live against check_workflows by the
         # full-PR panel: a `.test(` call site moved into a comment satisfied the
         # raw-text application regex while the real guard was gone. The
         # declaration stays intact, so only the application check can catch it —
-        # and only if it reads a comment-stripped view. `//` form.
+        # and only if it reads a comment-stripped view. `//` form; the sibling
+        # below covers the block-comment syntax. Retargeted from ROUTABLE in
+        # 0.8.4 — same class, and now the ONLY guard it can be done to.
         write(self.dir / "workflows" / "review.js",
               self._wf("review").replace(
-                  "!ROUTABLE.test(id) || ",
-                  "/* !ROUTABLE.test(id) || */ false || "))
-        self.assertFires("ROUTABLE is declared but never applied")
+                  "  if (BAD_CHARSET.test(id)) throw new Error(\"x\");",
+                  "  // if (BAD_CHARSET.test(id)) throw new Error(\"x\");"))
+        self.assertFires("BAD_CHARSET is declared but never applied")
 
     def test_workflow_block_comment_neuters_bad_charset_fires(self):
         # Same class through the OTHER comment syntax — block comments are an
         # idiom in the workflows, so the strip must handle /* */ too (F57).
         write(self.dir / "workflows" / "review.js",
               self._wf("review").replace(
-                  "|| BAD_CHARSET.test(id)",
-                  "/* || BAD_CHARSET.test(id) */"))
+                  "if (BAD_CHARSET.test(id))",
+                  "if (/* BAD_CHARSET.test(id) */ false)"))
         self.assertFires("BAD_CHARSET is declared but never applied")
 
     def test_workflow_parity_holds_on_good_tree(self):
-        # make_good_tree writes two workflows with identical ROUTABLE/BAD_CHARSET.
+        # make_good_tree writes two workflows with an identical BAD_CHARSET.
         probs = []
         vp.check_workflow_parity(self.dir, probs)
         self.assertEqual(probs, [])
@@ -1369,10 +1385,9 @@ class ValidatorTest(unittest.TestCase):
         # A conforming workflow that omits KNOWN_TIERS entirely.
         write(self.dir / "workflows" / "review.js",
               'export const meta = { name: "review", description: "d" };\n'
-              'const ROUTABLE = /^(?:glm-|claude-)[^:]*$|^(?:glm|openrouter|deepseek|qwen|claude):.+|^(?=[^:]*\\/[^:]*:).+$|^[^:]*\\/[^:]*$/;\n'
               'const BAD_CHARSET = /[^\\w./:@[\\]-]/;\n'
               'for (const [n, id] of Object.entries({JUDGMENT:"claude-opus-5"})) {\n'
-              '  if (!ROUTABLE.test(id)) throw new Error("x");\n'
+              '  if (BAD_CHARSET.test(id)) throw new Error("x");\n'
               '}\n')
         probs = []
         vp.check_workflow_tier_namespace(self.dir, probs)
@@ -1596,11 +1611,11 @@ class ResolverRendererParityTest(unittest.TestCase):
     got a parity check after the same lesson.
     """
 
-    # A minimal but STRUCTURALLY CURRENT guard: the shipped one gates the
-    # `<provider>:<model>` lens on $LENS_NAMESPACES (#35), and the parity check
-    # pins both that lookup (inside the body) and the assignment's value
-    # (outside it). A fixture stuck at the pre-#35 shape fails every case here
-    # including the good-tree ones, which says nothing about the tree.
+    # A minimal but STRUCTURALLY CURRENT guard. It shrank in 0.8.4: the id-shape
+    # arms and the $LENS_NAMESPACES allowlist were deleted from check_routable
+    # (operator does not decide which model ids exist), so a fixture still
+    # carrying them would test a shape the tree no longer has. What the parity
+    # check pins now is the charset reject — the whole guard.
     ROUTABLE = (
         "check_routable() {\n"
         '  case "$2" in\n'
@@ -1608,20 +1623,13 @@ class ResolverRendererParityTest(unittest.TestCase):
         '    *[!A-Za-z0-9._:/@[\\]-]*)\n'
         '      die "$1=\'$2\' outside charset" ;;\n'
         "  esac\n"
-        '  case "$2" in\n'
-        '    *:*)\n'
-        '      _lens_head="${2%%:*}"\n'
-        '      case "$_lens_head" in */*) ;;\n'
-        '        *) case " $LENS_NAMESPACES " in\n'
-        '             *" $_lens_head "*) return 0 ;;\n'
-        '             *) die "unknown lens" ;; esac ;;\n'
-        '      esac ;;\n'
-        "  esac\n"
-        '  case "$2" in glm-*|claude-*) return 0 ;; */*) return 0 ;; esac\n'
-        '  die "$1=\'$2\' is not cc-proxy-routable"\n'
+        "  return 0\n"
         "}\n"
     )
-    LENS = 'LENS_NAMESPACES="glm openrouter deepseek qwen claude"\n'
+    # Kept as an empty string rather than deleted: every `self.ROUTABLE +
+    # self.LENS + self.TIERS` call site below stays readable, and a future
+    # file-scope constant this fixture needs has an obvious slot.
+    LENS = ''
     TIERS = 'TIER_NAMES="JUDGMENT IMPLEMENT MECHANICAL RECON"\n'
 
     def setUp(self):
@@ -1654,14 +1662,7 @@ class ResolverRendererParityTest(unittest.TestCase):
                     '  case "$2" in "") die "$1 is empty" ;;\n'
                     '    *[!A-Za-z0-9._:/@[\\]-]*)\n'
                     '      die "$1=\'$2\' outside charset" ;; esac\n'
-                    '  case "$2" in *:*) _lens_head="${2%%:*}"\n'
-                    '    case "$_lens_head" in */*) ;;\n'
-                    '      *) case " $LENS_NAMESPACES " in *" $_lens_head "*) return 0 ;;\n'
-                    '        *) die "unknown lens" ;; esac ;;\n'
-                    '    esac ;; esac\n'
-                    '  case "$2" in glm-*|claude-*) return 0 ;;\n'
-                    '    */*) return 0 ;; esac\n'
-                    '  die "$1=\'$2\' is not cc-proxy-routable"\n}\n')
+                    "  return 0\n}\n")
         self._write(render=reflowed + self.LENS + self.TIERS)
         self.assertEqual(self.problems(), [])
 
@@ -1705,36 +1706,12 @@ class ResolverRendererParityTest(unittest.TestCase):
         self.assertTrue(any("no `TIER_NAMES" in p
                             for p in self.problems()), self.problems())
 
-    def test_renderer_lens_drift_fires(self):
-        # #35: LENS_NAMESPACES lives OUTSIDE check_routable's braces, so the
-        # body comparison above cannot see it — two copies carrying different
-        # allowlists would compare equal. One accepting a lens the other
-        # refuses is the same class as a charset drift.
-        self._write(render=self.ROUTABLE +
-                    'LENS_NAMESPACES="glm qwen claude"\n' + self.TIERS)
-        probs = self.problems()
-        self.assertTrue(any("does not match the resolver's" in p
-                            for p in probs), probs)
-
-    def test_uniformly_wrong_lens_fires(self):
-        # Equality across the two copies is satisfied by two IDENTICALLY wrong
-        # allowlists — measured: editing BOTH shipped scripts to
-        # `LENS_NAMESPACES="bogus"` passed the entire validator. The canonical
-        # pin is what closes it, the same way CANONICAL_BAD_CHARSET does for the
-        # workflow regexes. Uniform drift is the realistic failure when two
-        # files are copy-pasted by design.
-        gutted = 'LENS_NAMESPACES="bogus"\n'
-        self._write(tiers=self.ROUTABLE + gutted + self.TIERS,
-                    render=self.ROUTABLE + gutted + self.TIERS)
-        probs = self.problems()
-        self.assertTrue(any("PROVIDER_IDS" in p for p in probs), probs)
-
-    def test_missing_lens_namespaces_fires(self):
-        # A rename or retype must update the validator's regex, not silence it
-        # — the same reporting rule TIER_NAMES follows.
-        self._write(render=self.ROUTABLE + self.TIERS)
-        self.assertTrue(any("no `LENS_NAMESPACES" in p
-                            for p in self.problems()), self.problems())
+    # The three LENS_NAMESPACES cases that lived here (renderer drift, uniformly
+    # wrong allowlist, missing assignment) went with the allowlist in 0.8.4.
+    # They were good tests of a bad idea: they held five copied provider names
+    # in exact agreement across two files and a canonical literal, and the set
+    # was measurably stale anyway. No replacement case is owed — the behaviour
+    # they guarded is gone, not relocated.
 
     def test_real_scripts_are_in_parity(self):
         probs = []

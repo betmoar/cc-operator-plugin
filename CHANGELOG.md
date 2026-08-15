@@ -9,6 +9,68 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-08-15
+
+### Changed
+
+- **The model-id guard no longer decides which models exist** — it checks that
+  the field is well-formed, and nothing else. `check_routable` (in both
+  `ops-tiers.sh` and `ops-render.sh`) and every workflow's `ROUTABLE` regex
+  carried a catalogue of id **shapes** (`glm-*`, `claude-*`, `vendor/model`)
+  plus an allowlist of five cc-proxy provider lenses. Both are gone. What
+  remains: non-empty, and inside `[A-Za-z0-9._:/@[]-]`.
+
+  **Why, and it is not a simplification.** Those were lists of facts about
+  *another system*, maintained by hand in this one. The machinery around them
+  worked perfectly — pinned in `validate_plugin.py`, held byte-identical across
+  seven copies, the lens allowlist pinned *twice* after equality alone proved
+  vacuous. And the list was wrong anyway: measured against a live cc-proxy
+  serving **409 ids, this guard refused 8 that cc-proxy routes fine** —
+  `deepseek-v4-flash`, `deepseek-v4-pro`, `qwen3.7-max`, `qwen3.8-max` and
+  siblings, bare vendor ids carrying neither a known prefix nor a slash. A user
+  binding one in `tiers.env` got `not cc-proxy-routable`, a refusal citing a
+  catalogue they never asked about, for a model that works.
+
+  The division of labour that replaces it: **the user picks the model**
+  (`tiers.env` is their file, and a manual override is theirs), **cc-proxy
+  decides what it routes** and what an unknown id does, **operator decides
+  neither**. A wrong id surfaces at dispatch, from the system that actually
+  knows. The surviving check is about the string — whitespace or a quote means
+  the `tiers.env` line is malformed (an unquoted `MECHANICAL=claude opus`
+  splits, audit F01) — so it cannot go stale.
+
+  Asked the other way round: the old guard answered "which ids are valid?",
+  which operator cannot know, so every answer was a list that rots. The right
+  question is "is this field malformed?", which is a fact about the string.
+
+- **`check_workflows` now FIRES on a re-declared `const ROUTABLE`** — the only
+  presence-check in the validator, and deliberate. The realistic path back is a
+  maintainer who sees an unguarded id reach dispatch and writes the
+  obvious-looking guard; every other gate would stay green, because none of them
+  ask whether operator *should* be judging model ids. A companion case pins the
+  boundary: prose *about* the removed guard (which the shipped workflows all
+  carry) must not fire.
+
+### Removed
+
+- `LENS_NAMESPACES` from both shell scripts, and its `canonical_lens` pin plus
+  three test cases from the validator suite. They were good tests of a bad
+  idea — the last of them ([#35]'s vacuous-parity fix) was written four
+  releases ago to hold five copied provider names in exact agreement.
+- `CANONICAL_ROUTABLE` and `ROUTABLE` from `WORKFLOW_PARITY_CONSTS`.
+  `BAD_CHARSET` keeps its pin and inherits the full weight: it is now the only
+  id guard the workflows carry, so a neutered `.test(id)` call site has no
+  second line of defence behind it.
+
+### Notes
+
+Test deltas are inversions, not deletions: the cases that asserted *refusal* of
+`deepseek-v4-flash` / `bogus:vendor/model` now assert *acceptance*, alongside a
+"previously-legal ids still resolve" sweep proving the change only widens.
+Mutation-verified in all three directions — gutting the charset guard turns the
+bash suite red, re-declaring `ROUTABLE` turns the validator red, neutering
+`dispatch.js`'s `args.model` call site turns two node cases red.
+
 ## [0.8.3] - 2026-08-15
 
 ### Added
