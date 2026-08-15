@@ -186,6 +186,14 @@ produces a confident wrong answer. This corpus's own README says a fixture whose
 exploit does not fire is a broken instrument; the same is true of a control that
 does not match the code it controls for.
 
+Filed as #69, because nothing here catches it: the suite pins all four cells
+of every fixture, and not one of those assertions is about the DERIVED trees a
+measurement builds from them — which are the panel's actual input. It is #23's
+class one layer up (a result produced by stale tree state rather than by the
+thing under test), and arguably worse, because a verdict gets re-derived on the
+next run while a measurement gets written down. **If you re-run this experiment,
+rebuild both trees first.**
+
 ## Consequence for step 3
 
 The planned step 3 was: add a conditional `security` lens plus a `supply-chain`
