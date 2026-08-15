@@ -37,6 +37,7 @@
 # Usage (from the project root):
 #   ops-render.sh            render .claude/agents/op-*.md
 #   ops-render.sh --show     print the resolved seat→model table
+#   ops-render.sh --model <seat>   print ONE model id on stdout (scriptable)
 #   ops-render.sh --revert   remove the project layer (fall back to plugin-root)
 #   ops-render.sh --check    render to a temp dir + probe, write nothing
 # Tier values (TRES_*) and provenance twins (TSRC_*) are set and read through
@@ -216,11 +217,24 @@ load_file "$USER_FILE" user
 load_file "$PROJ_FILE" project
 
 MODE=render
+MODEL_SEAT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --show) MODE=show; shift ;; --revert) MODE=revert; shift ;;
     --check) MODE=check; shift ;;
-    *) die "unknown argument '$1' (want --show|--revert|--check)" ;; esac
+    # --model <seat>: the resolver made SCRIPTABLE (#55). --show is a table for
+    # a human — aligned columns, a header, a trailing note — and a caller that
+    # wants one id has to parse it. This prints the id alone on stdout so a
+    # dispatch site can substitute it directly.
+    #
+    # It resolves nothing new: the seat→tier map and check_routable already ran
+    # at load time above, so this reads state the renderer itself uses. A second
+    # resolver is what the coupling table exists to prevent.
+    --model)
+      MODE=model; shift
+      [ $# -gt 0 ] || die "--model requires a seat name (see --show for the list)"
+      MODEL_SEAT="$1"; shift ;;
+    *) die "unknown argument '$1' (want --show|--model <seat>|--revert|--check)" ;; esac
 done
 
 # M7 guard: CLAUDE_CODE_SUBAGENT_MODEL overrides frontmatter AND opts.model. If
@@ -230,6 +244,39 @@ warn_subagent_env() {
   if [ -n "${CLAUDE_CODE_SUBAGENT_MODEL:-}" ]; then
     echo "ops-render: WARNING — \$CLAUDE_CODE_SUBAGENT_MODEL is set to '$CLAUDE_CODE_SUBAGENT_MODEL'; it OVERRIDES the rendered model: frontmatter at dispatch (spec M7). Unset it for the bindings below to take effect." >&2
   fi
+}
+
+# --model: exactly one id on stdout, nothing else. Every diagnostic goes to
+# stderr so `M="$(ops-render.sh --model mechanic)"` is safe to substitute — a
+# warning captured into the variable becomes a model id nobody configured.
+[ "$MODE" = model ] && {
+  # Same charset allowlist the renderer applies to a seat name from tiers.env:
+  # this value reaches a grep pattern and an eval below, and a seat named `.*`
+  # would match every record (F18, the reason check_seat_name is an allowlist).
+  check_seat_name "$MODEL_SEAT"
+  _mseat="${MODEL_SEAT#op-}"      # 'op-' prefix optional, as everywhere else
+  _mtier=""
+  # Field-exact match, never a pattern: the seat name is compared with string
+  # equality inside the read loop for the same reason seat_add does it.
+  while IFS='|' read -r -n 256 sn st ss; do
+    [ -n "$sn" ] || continue
+    [ "$sn" = "$_mseat" ] && { _mtier="$st"; break; }
+  done <<EOF
+$SEATS
+EOF
+  # An unknown seat is a REFUSAL, not an empty line: a caller substituting the
+  # output would otherwise dispatch with an empty model and silently get the
+  # harness default — the silent mis-route this whole guard family exists to
+  # prevent. The known seats are named, because the likeliest cause is a typo.
+  [ -n "$_mtier" ] || die "unknown seat '$MODEL_SEAT' (known: $(printf '%s\n' "$SEATS" | while IFS='|' read -r -n 256 sn _ _; do [ -n "$sn" ] && printf '%s ' "$sn"; done))"
+  eval "_mid=\$TRES_$_mtier"
+  # Defence in depth: check_routable already ran on every binding at load time,
+  # so this cannot fire from tiers.env. It catches a DEFAULT that a future edit
+  # breaks — the one path into TRES_* that never passes through the loader.
+  check_routable "$_mseat" "$_mid"
+  printf '%s\n' "$_mid"
+  warn_subagent_env      # to stderr; the id on stdout stays clean
+  exit 0
 }
 
 [ "$MODE" = show ] && {

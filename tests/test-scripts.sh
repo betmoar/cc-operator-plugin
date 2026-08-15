@@ -67,6 +67,31 @@ check() { # check <desc> <0|1 condition-result>
 # Fresh temp project; return its path.
 newproj() { mktemp -d "${TMPDIR:-/tmp}/opstest.XXXXXX"; }
 
+# Kill a backgrounded job's CHILDREN, then the job itself (#68).
+#
+# `$!` names the subshell in `( cd … && bash "$X" … ) &`; the bash inside it is a
+# grandchild that SURVIVES a kill on `$!`. That is how this suite leaked 54
+# ops-verdict.sh processes, the oldest ~17 days, each burning ~1 core.
+#
+# pgrep's status is CHECKED rather than swallowed, and the distinction is real:
+# rc 1 is "no children" (nothing to do), rc >= 2 is "pgrep itself failed" —
+# measured as 2 for a bad invocation and 127 for a missing binary. Blanket
+# `2>/dev/null` makes those indistinguishable from success, and the failure they
+# hide is a silently unreaped grandchild: the exact leak class this helper
+# exists to end, reappearing inside the suite that proves it fixed. So a tool
+# failure is REPORTED. It is not a `fail` — the reap is cleanup, not an
+# assertion, and turning a platform quirk into a red suite is how a maintainer
+# learns to ignore the suite.
+reap_kids() { # reap_kids <pid>
+  local _pid="$1" _kids _rc _k
+  _kids="$(pgrep -P "$_pid" 2>&1)"; _rc=$?
+  if [ "$_rc" -gt 1 ]; then
+    echo "  warning: pgrep -P $_pid failed (rc=$_rc: $_kids) — grandchild reap incomplete on this platform" >&2
+    return 0
+  fi
+  for _k in $_kids; do kill -9 "$_k" 2>/dev/null || true; done
+}
+
 # Feed the hook a Stop payload built from a fixture, with cwd substituted and
 # an optional restricted PATH. Captures exit code (global HRC) and stderr (HERR).
 run_hook() { # run_hook <fixture> <cwd> [restricted-PATH]
@@ -1424,6 +1449,29 @@ SEC0=$(date +%s)
 FHPID=$!
 sleep 3
 check "foreign-host holder is not judged dead (no instant reclaim)" "$([ -e "$P/.operator/pending/T-FH" ] && echo 0 || echo 1)"
+# Kill the GRANDCHILD too, not just the subshell (#68). `$!` names the subshell;
+# the `bash "$VERDICT"` inside it is its child, and killing the subshell alone
+# ORPHANS that child — it keeps spinning on a lock in a directory this suite is
+# about to delete. Measured on a dev machine: 54 such orphans, the oldest ~17
+# days, ~1 core burned continuously, warnings written into a closed stdout. The
+# lock ceiling added for #68 now bounds them at 120s, but a test must not leak
+# for 120s either, and a suite that reaps its own children would have contained
+# this even with the bug present.
+#
+# BOTH backgrounding shapes in this suite orphan, so the rule is about the KILL,
+# not about the shape. Measured directly, killing only the parent:
+#   ( cd "$P" && bash "$X" … ) &        -> child survives
+#   bash -c 'cd "$0" && bash "$1" …' &  -> child survives too
+# (A review round asserted the second form was orphan-proof. It is not: that
+# only holds when the inner command is the subshell's LAST simple command, so
+# bash execs instead of forking — which is never true here, because every site
+# redirects and chains.)
+#
+# The ABPID and LVWRITER sites are not leaking TODAY for a different reason:
+# they poll for a clean exit and only `kill -9` on a 20s timeout that does not
+# fire in practice. Their kill path would orphan if it ever did. So: any site
+# that can reach a bare `kill` on a backgrounded writer wants this reap.
+reap_kids "$FHPID"
 kill -9 "$FHPID" 2>/dev/null || true; wait "$FHPID" 2>/dev/null || true
 rm -rf "$LK" "$LK.reclaim"
 # (e) The two lock implementations must not drift. They contend on the same
@@ -4240,6 +4288,365 @@ os.utime('calc.py', (mt, mt))
        && printf '%s' "$I23OUT" | grep -q '{item ignored-state} report: 1 ' \
        && echo 0 || echo 1)"
   rm -rf "$I23" "$I23C"
+fi
+
+########################################################################
+echo "-- Case: ops-render --model is the resolver made scriptable (#55)"
+# `--show` is a table for a human: aligned columns, a header, a trailing note.
+# A caller that wants ONE id has to parse it, and parsing a display format is
+# how a caller ends up with a header row as a model id. `--model <seat>` prints
+# the id alone so a dispatch site can substitute it directly.
+#
+# The properties that matter are about the CHANNEL as much as the value: a
+# warning captured into `M="$(... --model mechanic)"` becomes a model id nobody
+# configured, and an unknown seat printing an empty line dispatches to the
+# harness default — the silent mis-route the whole guard family exists to stop.
+P="$(newproj)"
+mkdir -p "$P/.operator"
+cat > "$P/.operator/tiers.env" <<'TIERSENV'
+JUDGMENT=claude-opus-5
+IMPLEMENT=deepseek:deepseek-v4-flash
+MECHANICAL=glm-5-turbo
+RECON=claude-haiku-4-5-20251001
+TIERSENV
+runmodel() { ( cd "$P" && "$BASH_ABS" "$SCRIPTS/ops-render.sh" --model "$1" ); }
+
+MDL="$(runmodel mechanic 2>/dev/null)"; MRC=$?
+check "#55 --model resolves a seat through its tier (mechanic → IMPLEMENT)" \
+  "$([ "$MRC" = 0 ] && [ "$MDL" = "deepseek:deepseek-v4-flash" ] && echo 0 || echo 1)"
+# Not a hardcoded map: a DIFFERENT seat on a DIFFERENT tier must follow its own
+# binding, or the case would pass against a script that always printed one id.
+check "#55 a second seat follows its own tier (crawler → MECHANICAL)" \
+  "$([ "$(runmodel crawler 2>/dev/null)" = "glm-5-turbo" ] && echo 0 || echo 1)"
+check "#55 the 'op-' prefix is optional, as everywhere else" \
+  "$([ "$(runmodel op-mechanic 2>/dev/null)" = "$(runmodel mechanic 2>/dev/null)" ] && echo 0 || echo 1)"
+# STDOUT IS THE CONTRACT: exactly one line, nothing else. Asserted by counting
+# lines rather than by matching the id, because a diagnostic leaking onto stdout
+# is the failure this guarantees against and it would still contain the id.
+check "#55 stdout carries exactly one line (safe to command-substitute)" \
+  "$([ "$(runmodel mechanic 2>/dev/null | wc -l | tr -d ' ')" = "1" ] && echo 0 || echo 1)"
+# An unknown seat REFUSES. An empty line at rc 0 is the dangerous shape: the
+# caller substitutes "" and the dispatch silently takes the harness default.
+UNK="$(runmodel nosuchseat 2>/dev/null)"; URC=$?
+check "#55 an unknown seat exits non-zero" "$([ "$URC" != 0 ] && echo 0 || echo 1)"
+check "#55 an unknown seat prints NOTHING on stdout (never an empty-string id)" \
+  "$([ -z "$UNK" ] && echo 0 || echo 1)"
+UNKERR="$( ( cd "$P" && "$BASH_ABS" "$SCRIPTS/ops-render.sh" --model nosuchseat ) 2>&1 >/dev/null )"
+# The likeliest cause is a typo, so the message names the seats that do exist.
+check "#55 the refusal names the known seats" \
+  "$(printf '%s' "$UNKERR" | grep -q 'known:.*mechanic' && echo 0 || echo 1)"
+# The seat name reaches a comparison and an eval; same allowlist as everywhere.
+( cd "$P" && "$BASH_ABS" "$SCRIPTS/ops-render.sh" --model '.*' >/dev/null 2>&1 ); DOTRC=$?
+check "#55 a charset-illegal seat name is refused (F18 allowlist)" \
+  "$([ "$DOTRC" != 0 ] && echo 0 || echo 1)"
+( cd "$P" && "$BASH_ABS" "$SCRIPTS/ops-render.sh" --model >/dev/null 2>&1 ); NOARGRC=$?
+check "#55 --model with no seat argument is refused" \
+  "$([ "$NOARGRC" != 0 ] && echo 0 || echo 1)"
+# It is the SAME resolver, not a second one: an unroutable binding must be
+# refused here exactly as --show refuses it, or --model becomes a bypass around
+# the guard that keeps a mis-routed id from reaching cc-proxy.
+printf 'IMPLEMENT=not-routable\n' > "$P/.operator/tiers.env"
+( cd "$P" && "$BASH_ABS" "$SCRIPTS/ops-render.sh" --model mechanic >/dev/null 2>&1 ); BADRC=$?
+check "#55 an unroutable binding is refused through the same check_routable" \
+  "$([ "$BADRC" != 0 ] && echo 0 || echo 1)"
+rm -rf "$P"
+
+########################################################################
+echo "-- Case: a vanishing holder file never prints a raw bash error"
+# `lock_holder_read` tests `[ -f "$LOCKDIR/holder" ]` and then reads the file.
+# Between those two the releasing writer can remove it — and `2>/dev/null` on
+# the `read` does NOT cover that, because the shell reports a failed INPUT
+# redirection before the command's own redirections apply. The result was a raw
+# `No such file or directory` at the operator, which this project treats as a
+# defect class of its own ("raw bash error as operator guidance").
+#
+# Structural assertion, not a timing one: rather than racing real writers and
+# hoping, this drives lock_holder_read directly with the holder file replaced by
+# a path that cannot be opened. That reproduces the redirection failure on every
+# run, where the natural race needed ~40 concurrent writers to show up once in
+# three runs (measured, on this code and its 0.4.0 predecessor alike).
+P="$(newproj)"
+( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+mkdir -p "$P/.operator/.lock"
+cat > "$P/probe.sh" <<'HOLDPROBE'
+set -u
+LOCKDIR="$1"
+# Take lock_holder_read verbatim from the CLI under test, so this cannot drift
+# from the implementation: extract the function and eval it.
+eval "$(sed -n '/^lock_holder_read() {$/,/^}$/p' "$2")"
+# The file exists for the `[ -f ]` test and is unopenable for the read: a
+# directory named `holder` passes -f? No — so use a file whose read fails by
+# permission instead, which is the same redirection failure the race produces.
+printf 'someone 1 2\n' > "$LOCKDIR/holder"
+chmod 000 "$LOCKDIR/holder" 2>/dev/null || true
+lock_holder_read
+chmod 644 "$LOCKDIR/holder" 2>/dev/null || true
+HOLDPROBE
+HOLDERR="$( bash "$P/probe.sh" "$P/.operator/.lock" "$VERDICT" 2>&1 >/dev/null )"
+# root can read a 000 file, so the redirection never fails there — skip rather
+# than assert a property the environment cannot exhibit.
+if [ "$(id -u)" = "0" ]; then
+  echo "  skip holder-read case: running as root, a 000 file is still readable"
+else
+  check "a failed holder read prints no raw bash error to the operator" \
+    "$(printf '%s' "$HOLDERR" | grep -qE 'No such file|Permission denied' && echo 1 || echo 0)"
+  # The control: the guard is only meaningful if the probe REACHED the read.
+  # An empty record is what a failed read must leave behind — the documented
+  # "cannot judge this holder" input the caller already handles.
+  check "control: the probe's read actually failed (guard was exercised)" \
+    "$(bash -c 'set -u; LOCKDIR="'"$P/.operator/.lock"'"; eval "$(sed -n "/^lock_holder_read() {\$/,/^}\$/p" "'"$VERDICT"'")"; chmod 000 "$LOCKDIR/holder" 2>/dev/null; lock_holder_read; chmod 644 "$LOCKDIR/holder" 2>/dev/null; [ -z "$LOCK_HOLDER_REC" ]' && echo 0 || echo 1)"
+fi
+rm -rf "$P"
+
+########################################################################
+echo "-- Case: the lock spin has an absolute ceiling (#68)"
+# The bug: lock_acquire treated EVERY mkdir failure as contention. Only EEXIST
+# means contention; ENOENT — the ledger directory removed while a run is in
+# flight — is permanent, and every escape hatch opened with another mkdir in the
+# same vanished parent, so none of them completed. Both existing budgets count
+# ITERATIONS and both `continue` past their own limit in that state, and the
+# deferral path actively REWINDS `i`, so neither bounds the loop.
+#
+# Measured on a dev machine before the fix: 54 leaked ops-verdict.sh processes,
+# the oldest ~17 days, ~1 core burned continuously, 2.7MB of warnings written
+# into a closed stdout. The load made an unrelated project's timing-sensitive
+# gates read 2.5x their baseline.
+#
+# The ceiling is tested rather than the ENOENT special-case because the ceiling
+# is what bounds EVERY cause, including ones not yet met. Timing is used as an
+# assertion here (elapsed < the watchdog), which this suite otherwise avoids —
+# but the property under test IS "does it terminate", and there is no structural
+# proxy for that. It is made safe by a wide margin: a 3s ceiling against a 20s
+# watchdog, so only a genuinely unbounded loop fails it. Measured under load:
+# loadavg 63 on 20 cores moved the elapsed time by 0.2s, because the loop is
+# dominated by `sleep 0.1`, not by CPU.
+P="$(newproj)"
+( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+mkdir -p "$P/.operator/.lock"
+# A foreign host + foreign uid + a pid that is not ours: holder_state cannot
+# judge it, so lock_acquire takes the time-based path rather than reclaiming.
+printf 'someoneelse.example 65534 999999\n' > "$P/.operator/.lock/holder"
+( cd "$P" && bash "$TASK" T-CEIL --owner SESS-A >/dev/null 2>&1 )
+CEILERR="$P.ceil.err"
+# All four budgets scale together, and the spin budgets must outlast the 1s
+# delete below. Measured while writing this: with LOCK_SPINS=6 the reclaim path
+# SUCCEEDS inside that first second, the run records normally, and the case
+# proves nothing — a green assertion against a state never entered. The ceiling
+# must also exceed both spin budgets or the script refuses at budget validation
+# (its own guard), which is a different rc 2 than the one under test.
+(
+  cd "$P" && LOCK_SPINS=25 LOCK_LIVE_SPINS=25 RECLAIM_WAIT=5 LOCK_MAX_SPINS=30 \
+    bash "$VERDICT" T-CEIL c e PASS --owner SESS-A >/dev/null 2>"$CEILERR"
+) &
+CEILPID=$!
+# Remove the ledger AFTER the run is past its own "no .operator/ in cwd" check
+# and inside the spin loop. Deleting it beforehand tests a different guard.
+sleep 1 & wait $! 2>/dev/null || true
+rm -rf "$P/.operator"
+# Watchdog: a still-spinning build must not hang the suite. Its own kill is what
+# distinguishes "terminated by the ceiling" from "terminated by us".
+( sleep 20; kill -9 "$CEILPID" 2>/dev/null ) & CEILWD=$!
+wait "$CEILPID" 2>/dev/null; CEILRC=$?
+# The watchdog is a `( … ) &` subshell too, so `kill $CEILWD` alone orphans the
+# `sleep` inside it — the identical mechanism this case exists to prove fixed,
+# in the case's own scaffolding. Smaller blast radius (a bare sleep, no CPU,
+# gone in <=20s) but the standard is the same: reap the child first. Measured
+# before fixing: `after kill+wait, sleep survivors=[49573]`.
+reap_kids "$CEILWD"
+kill "$CEILWD" 2>/dev/null || true; wait "$CEILWD" 2>/dev/null || true
+# Reap any orphaned grandchild before asserting, so a failure here cannot leave
+# the very process class this case exists to prevent. Descendant-scoped via
+# `pgrep -P`, NOT `pkill -f`: this project's lock exists to support concurrent
+# checkouts, and a machine-wide pattern kill reaches into another checkout's
+# suite run — which is exactly what a maintainer does during a review round.
+reap_kids "$CEILPID"
+# rc 137 is the watchdog's SIGKILL — i.e. it was STILL SPINNING. Any other exit
+# means the loop ended on its own, which is the property under test.
+check "#68 the spin loop terminates on its own (not by the watchdog's kill)" \
+  "$([ "$CEILRC" != 137 ] && echo 0 || echo 1)"
+check "#68 it refuses rather than proceeding unlocked (rc 2)" \
+  "$([ "$CEILRC" = 2 ] && echo 0 || echo 1)"
+check "#68 the ceiling message names the timeout" \
+  "$(grep -q 'refusing to spin further' "$CEILERR" 2>/dev/null && echo 0 || echo 1)"
+# The diagnosis half: a generic timeout sends a maintainer hunting a contention
+# problem that does not exist. When the cause is knowable, it must be named.
+check "#68 it names the vanished ledger directory as the cause" \
+  "$(grep -q 'removed while this run was in flight' "$CEILERR" 2>/dev/null && echo 0 || echo 1)"
+rm -f "$CEILERR"; rm -rf "$P"
+
+# The SIBLING CLI's copy of the ceiling, executed rather than assumed.
+# check_lock_parity pins the two blocks byte-for-byte, and the bash suite has
+# its own parity case — but parity proves SAMENESS, not correctness-in-context.
+# Two identically-correct-looking copies in different surroundings is the F30
+# shape this repo has already been bitten by: ops-adopt.sh derives its own
+# LOCKDIR, has its own call site and its own argument handling, and none of that
+# is covered by comparing the block to its twin. Reported by the review panel on
+# this very commit, which found LOCK_MAX_SPINS executed at exactly one site.
+P="$(newproj)"
+( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+mkdir -p "$P/.operator/.lock"
+printf 'someoneelse.example 65534 999999\n' > "$P/.operator/.lock/holder"
+( cd "$P" && bash "$TASK" T-ADCEIL --owner SESS-A >/dev/null 2>&1 )
+ADERR="$P.aderr"
+(
+  cd "$P" && LOCK_SPINS=25 LOCK_LIVE_SPINS=25 RECLAIM_WAIT=5 LOCK_MAX_SPINS=30 \
+    bash "$ADOPT" --owner SESS-B T-ADCEIL >/dev/null 2>"$ADERR"
+) &
+ADPID=$!
+sleep 1 & wait $! 2>/dev/null || true
+rm -rf "$P/.operator"
+( sleep 20; kill -9 "$ADPID" 2>/dev/null ) & ADWD=$!
+wait "$ADPID" 2>/dev/null; ADRC=$?
+reap_kids "$ADWD"
+kill "$ADWD" 2>/dev/null || true; wait "$ADWD" 2>/dev/null || true
+reap_kids "$ADPID"
+check "#68 ops-adopt's copy of the ceiling also terminates (parity is not proof)" \
+  "$([ "$ADRC" != 137 ] && echo 0 || echo 1)"
+# The message must carry the SIBLING's tool name. check_lock_parity normalizes
+# `ops-tool:` prefixes away before comparing, so a copy that announced itself as
+# ops-verdict would pass parity and mislead every operator reading the output.
+check "#68 ops-adopt names ITSELF in the ceiling message, not its sibling" \
+  "$(grep -q '^ops-adopt: could not acquire' "$ADERR" 2>/dev/null && echo 0 || echo 1)"
+rm -f "$ADERR"; rm -rf "$P"
+
+########################################################################
+echo "-- Case: the security fixture corpus is a working instrument (#24 step 1)"
+# The corpus under tests/fixtures/security/ exists to measure the review panel:
+# each fixture is a functionally-correct file with a real security defect, paired
+# with a corrected variant. That pairing is the whole design, and it is only a
+# measurement instrument if all four cells hold:
+#
+#   vuln  FUNCTIONAL: ok  — else the defect is caught by machinery that already
+#                           exists (a failing test), and the panel is not what
+#                           is being measured
+#   vuln  EXPLOIT: fired  — else the "vulnerable" file is not vulnerable and a
+#                           lens that stays silent is CORRECT to. This is the
+#                           cell that caught a miscalibrated probe during the
+#                           corpus's own construction: guard-two-of-three's
+#                           traversal assertion was one directory level too high
+#                           and read "blocked" against the defective script.
+#   fixed FUNCTIONAL: ok  — else the fix traded the feature away, and "the panel
+#                           flags vuln but not fixed" measures nothing
+#   fixed EXPLOIT: blocked— the false-positive control. A lens that flags both
+#                           columns has pattern-matched on the topic, not
+#                           detected a defect.
+#
+# So this case does NOT test the plugin. It tests the ruler, and it fails the
+# build when the ruler bends — which is the only reason a later detection-rate
+# claim drawn from this corpus means anything.
+SECDIR="$REPO/tests/fixtures/security"
+if [ -d "$SECDIR" ]; then
+  SEC_FIXTURES="frag-traversal sweep-rm guard-two-of-three ext-source secret-in-error"
+  # Pinned by name rather than globbed: a fixture directory that silently
+  # disappears would otherwise shrink the corpus with the suite still green,
+  # and "the panel detected 3/3" reads identically to "3 of 5 fixtures were
+  # deleted". The count is asserted for the same reason.
+  SEC_FOUND=0
+  for _f in $SEC_FIXTURES; do
+    [ -d "$SECDIR/$_f" ] && SEC_FOUND=$((SEC_FOUND + 1))
+  done
+  check "#24 all 5 named security fixtures are present" \
+    "$([ "$SEC_FOUND" = 5 ] && echo 0 || echo 1)"
+
+  for _f in $SEC_FIXTURES; do
+    if [ ! -f "$SECDIR/$_f/probe.sh" ]; then
+      fail "#24 $_f: probe.sh missing"
+      continue
+    fi
+    # Both targets must EXIST before the probe runs. `EXPLOIT: blocked` is the
+    # verdict a probe returns when the script it was pointed at never ran at
+    # all — so a deleted or renamed fixed.sh reads as "the fix works". The
+    # adjacent FUNCTIONAL cell would still catch it, but an assertion that
+    # carries no information on its own is the one that gets trusted later.
+    if [ ! -f "$SECDIR/$_f/vuln.sh" ] || [ ! -f "$SECDIR/$_f/fixed.sh" ]; then
+      fail "#24 $_f: vuln.sh and fixed.sh both present (a missing target reads as 'blocked')"
+      continue
+    fi
+    _V="$(bash "$SECDIR/$_f/probe.sh" "$SECDIR/$_f/vuln.sh" 2>/dev/null)"
+    _X="$(bash "$SECDIR/$_f/probe.sh" "$SECDIR/$_f/fixed.sh" 2>/dev/null)"
+    check "#24 $_f: vuln is FUNCTIONALLY CORRECT (no existing gate catches it)" \
+      "$(printf '%s' "$_V" | grep -q '^FUNCTIONAL: ok$' && echo 0 || echo 1)"
+    check "#24 $_f: vuln's EXPLOIT FIRES (the defect is real, not described)" \
+      "$(printf '%s' "$_V" | grep -q '^EXPLOIT: fired$' && echo 0 || echo 1)"
+    check "#24 $_f: fixed keeps the feature working (the fix is not a deletion)" \
+      "$(printf '%s' "$_X" | grep -q '^FUNCTIONAL: ok$' && echo 0 || echo 1)"
+    check "#24 $_f: fixed BLOCKS the exploit (the false-positive control)" \
+      "$(printf '%s' "$_X" | grep -q '^EXPLOIT: blocked$' && echo 0 || echo 1)"
+    # Every fixture must carry the analysis that says what a DETECTION is. A
+    # corpus of vulnerable files without it invites "the lens mentioned input
+    # validation" to be scored as a hit — the vacuity class (#21) applied to a
+    # measurement rather than a guard.
+    check "#24 $_f: NOTES.md states what a detection must say" \
+      "$([ -f "$SECDIR/$_f/NOTES.md" ] \
+         && grep -q 'A detection must say' "$SECDIR/$_f/NOTES.md" && echo 0 || echo 1)"
+  done
+
+  # The corpus must stay INERT. It is vulnerable code living in the repo, and
+  # the one thing that must never happen is a shipped script sourcing or
+  # executing it. Checked against scripts/ and hooks/ rather than assumed from
+  # the directory it sits in.
+  # BOTH structural probes below assert on an EMPTY result, and both silence
+  # their own errors — so a broken command produces exactly the output that
+  # means "clean". Measured directly: point either at a nonexistent tree and it
+  # reports ok. That is the vacuous-guard class (#21) inside the very case that
+  # exists to keep the corpus honest.
+  #
+  # So each is paired with a POSITIVE CONTROL: the same command, same flags,
+  # aimed at a place where the answer is known to be non-empty. If the control
+  # comes back empty the tool is not working, and the adjacent "clean" verdict
+  # is worth nothing — which the control's own failure now says out loud.
+  # EVERY shipped directory, not just scripts/ and hooks/. The first draft
+  # checked those two and called it "no shipped script or hook" — but the plugin
+  # also ships workflows/ (executable JS the validator parses), agents/,
+  # commands/, skills/ and templates/. A workflow referencing the corpus would
+  # have passed a check whose name promised otherwise.
+  SEC_REF="$(grep -rl 'fixtures/security' \
+    "$REPO/scripts" "$REPO/hooks" "$REPO/workflows" "$REPO/agents" \
+    "$REPO/commands" "$REPO/skills" "$REPO/templates" 2>/dev/null | head -1)"
+  # This suite file references the corpus by that exact string, so grep must
+  # find it here. A grep that cannot find a string that IS present is broken.
+  SEC_REF_CTL="$(grep -rl 'fixtures/security' "$REPO/tests/test-scripts.sh" 2>/dev/null | head -1)"
+  check "#24 control: the inert probe's grep actually finds a known reference" \
+    "$([ -n "$SEC_REF_CTL" ] && echo 0 || echo 1)"
+  check "#24 no shipped script or hook references the fixture corpus (inert)" \
+    "$([ -z "$SEC_REF" ] && echo 0 || echo 1)"
+  # No mode bits: fixtures are invoked as `bash <path>`, and a vulnerable file
+  # that is directly executable is one PATH mistake away from being run.
+  # ANY of user/group/other, not just the owner bit. The stated hazard is "one
+  # PATH mistake away from being run", and that is not confined to the owner — a
+  # 0645 fixture is executable by everyone EXCEPT its owner, and `-perm -u+x`
+  # does not match it.
+  #
+  # Spelled as an explicit OR rather than `-perm /111`: BSD find (macOS) does
+  # not accept the `/` form and exits non-zero, which — with the 2>/dev/null
+  # below — produces empty output, i.e. exactly the result that means "clean".
+  # Caught by the control immediately below, on its first run, which is the
+  # entire reason the control exists (validate_plugin.check_platform_idioms
+  # bans the try-BSD-then-GNU fallback for the same reason).
+  SEC_EXEC="$(find "$SECDIR" -name '*.sh' \
+    \( -perm -u+x -o -perm -g+x -o -perm -o+x \) 2>/dev/null | head -1)"
+  # The whole probe rests on that flag behaving. `.operator/bin/` CLIs are
+  # installed 0755 by ops-init, so this is a tree where a working find MUST
+  # return something. Skipped, not failed, when the project has no
+  # .operator/bin — the control's precondition, not the project's.
+  if [ -d "$REPO/.operator/bin" ]; then
+    SEC_EXEC_CTL="$(find "$REPO/.operator/bin" -name '*.sh' \
+      \( -perm -u+x -o -perm -g+x -o -perm -o+x \) 2>/dev/null | head -1)"
+    check "#24 control: the exec-bit probe's find actually finds a known 0755 file" \
+      "$([ -n "$SEC_EXEC_CTL" ] && echo 0 || echo 1)"
+  else
+    # ANNOUNCED, not silent — and this skip is the CI path, not an edge case:
+    # `.operator/` is gitignored, so a bare actions/checkout runner never has
+    # one, and the control that backs the exec-bit probe would be absent in the
+    # one environment that gates merges. A case that silently does not run is
+    # the vacuous-guard class this repo keeps catching, so say it out loud
+    # (same idiom as the #23 fixture's skip line).
+    echo "  skip #24 exec-bit control: no .operator/bin in this tree (gitignored; expected in CI)"
+  fi
+  check "#24 no fixture carries an execute bit" \
+    "$([ -z "$SEC_EXEC" ] && echo 0 || echo 1)"
+else
+  fail "#24 the security fixture corpus is present at tests/fixtures/security"
 fi
 
 ########################################################################

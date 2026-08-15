@@ -285,7 +285,8 @@ launders into the passing shape:
 
 ### The env-overridable lock budgets (audit F08, 2026-07-31)
 
-`LOCK_SPINS`, `LOCK_LIVE_SPINS`, `RECLAIM_WAIT` in the LOCK BLOCK are
+`LOCK_SPINS`, `LOCK_LIVE_SPINS`, `RECLAIM_WAIT`, `LOCK_MAX_SPINS` (and
+`FALLBACK_SPINS`, which predates this list) in the LOCK BLOCK are
 `${VAR:-default}` — a test seam (the slow concurrency cases run on a tiny
 budget). They are validated as positive integers at resolve time in BOTH
 ops-verdict.sh and ops-adopt.sh (byte-identical block). If you change the lock:
@@ -296,6 +297,19 @@ ops-verdict.sh and ops-adopt.sh (byte-identical block). If you change the lock:
 - **`RECLAIM_WAIT` must stay `< LOCK_SPINS`.** The backoff `i=$((LOCK_SPINS -
   RECLAIM_WAIT))` goes non-positive otherwise and each defer pays the full
   RECLAIM_WAIT — review F-C.
+- **`LOCK_MAX_SPINS` must stay `>` BOTH spin budgets.** It is the absolute
+  ceiling (issue #68) and it is the ONLY budget that bounds the loop for every
+  cause: the other two count iterations and both `continue` past their own
+  limit when the escape path itself fails, and the deferral backoff actively
+  REWINDS `i`. A ceiling below the spin budgets would fire during ordinary
+  contention and refuse a working writer — the way a safety limit gets removed.
+  Count it on a variable nothing resets, and check it FIRST in the loop body so
+  the exit is reachable from every state.
+- **Silencing a read is not silencing its redirection.** `read … < "$f"
+  2>/dev/null` does NOT suppress a failure to OPEN `$f` — the shell reports the
+  redirection before the command's own redirections apply, so a file that
+  vanishes between `[ -f ]` and the read prints a raw bash error at the
+  operator. Wrap the compound: `{ read … < "$f"; } 2>/dev/null`.
 - The whole validation block is inside `# >>> LOCK BLOCK … # <<< LOCK BLOCK`,
   so `check_lock_parity` enforces it stays byte-identical in both files. A
   comment that names the sibling file by name will break parity (the normalizer

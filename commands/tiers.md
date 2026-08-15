@@ -41,6 +41,34 @@ start, NOT per-call. These branches render project-layer agent files
 dispatched seat runs on a configured cc-proxy model without a workflow wrapping
 it. Edit `.operator/tiers.env` to set the bindings first.
 
+> **Until you render, `tiers.env` does not reach a plain `Agent` dispatch** —
+> and nothing warns you (#55). Every shipped `agents/op-<seat>.md` carries a
+> hardcoded Anthropic alias in its frontmatter (`op-mechanic: sonnet`,
+> `op-verifier: opus`, `op-reviewer: opus`), and that alias wins at dispatch
+> time. So an operator who has set `mechanic → IMPLEMENT → deepseek-v4-flash`
+> and has not rendered runs every `op-mechanic` dispatch on `sonnet`.
+>
+> The call site cannot fix it either: the plain `Agent` tool's `model` parameter
+> is schema-locked to the enum `sonnet | opus | haiku | fable`, so a
+> non-Anthropic id is rejected before dispatch. Passing `model: sonnet` there is
+> identical to passing nothing — the frontmatter already says `sonnet`.
+> (That enum is a property of the HARNESS, not of this repo — nothing in the
+> tree pins it and no validator can. Measured 2026-08-15 against the hosted tool
+> schema; re-check it after a Claude Code upgrade, because this claim drifts on
+> their release, not on our edits.)
+>
+> Two routes actually apply the configured tier:
+> 1. **`render`** (below) — writes the binding into the project-layer agent
+>    files. Requires a session restart.
+> 2. **Workflow `agent()`** — takes an arbitrary model id and routes it through
+>    cc-proxy, unbound by that enum, with no render prerequisite:
+>    `agent(prompt, { model: 'deepseek-v4-flash', agentType: 'cc-operator:op-mechanic' })`.
+>    `agentType` selects the seat; `model` overrides its frontmatter alias.
+>
+> This is documentation of the gap, not a fix for it. Making the configured tier
+> the default for a plain dispatch needs a resolver→dispatch helper; that is
+> tracked in #55 and is not shipped.
+
 3. **`render`** — render `.claude/agents/op-*.md` from the templates + the
    resolved tier config:
 

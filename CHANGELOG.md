@@ -9,6 +9,238 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-08-15
+
+### Added
+
+- **A security fixture corpus** at `tests/fixtures/security/` — step 1 of the
+  [#24] experiment, which asks which security-relevant defects fall outside the
+  review panel's five lenses. Five defects drawn from this codebase's own shape
+  rather than generic OWASP examples: a parsed field becoming a path component,
+  a parsed field reaching `rm -rf`, a correct guard applied at two of three call
+  sites, a config file sourced instead of parsed, and a credential in an error
+  message this project routes into a committed ledger.
+
+  Every fixture ships as a `vuln.sh`/`fixed.sh` pair that is **functionally
+  correct on both sides** — that is the design constraint, not a nicety. A
+  fixture failing its own tests would be caught by machinery this repo already
+  has, and would measure the test runner rather than the panel. The corrected
+  variant is the false-positive control: a lens flagging both columns equally
+  has pattern-matched on the topic, not detected anything.
+
+  `tests/test-scripts.sh` pins all four cells per fixture (30 assertions), plus
+  that the corpus stays inert — no shipped script or hook references it, and no
+  fixture carries an execute bit. The suite tests the **ruler**, so that a later
+  detection-rate claim drawn from it means something.
+
+  One defect in the instrument was caught by that pinning during construction:
+  `guard-two-of-three`'s traversal assertion was one directory level too high
+  and read `EXPLOIT: blocked` against the vulnerable script — a probe that would
+  have scored the panel's silence as correct.
+
+- **#24 step 2 — the panel measured, and the hypothesis refuted** ([#24]).
+  Recorded in `tests/fixtures/security/MEASUREMENT.md`. The five lenses were
+  dispatched as they ship, over fixtures neutralized first (scratch tree,
+  production-plausible names, every "DEFECTIVE variant" marker stripped, no
+  `fixed.sh` sibling) — a lens told which file is the defective one is being
+  asked to agree, not measured.
+
+  **Both judgment-tier lenses detected 5/5, at the mechanism level.** Feasibility
+  rejected `sweep-rm`'s containment comment on the right grounds ("quoting
+  prevents word-splitting only"), and on `guard-two-of-three` went further than
+  the fixture's own note — observing that `adopt` is itself an opener, so the
+  "already checked when opened" excuse fails even for a well-behaved caller.
+  The false-positive control was then run over the corrected column: **zero of
+  the five defects re-flagged**, which is what makes 5/5 a rate rather than a
+  count.
+
+  The issue's premise — that these classes fall systematically outside the panel
+  — is false for this corpus. The gap that IS measured is the cheap tier: `spec`
+  detected 1/5, and `correctness` scored the arbitrary-execution defect at 45,
+  below the threshold that would have surfaced it at all.
+
+  **Consequence: the planned security lens is not the change to make.** There is
+  no measured gap for it to close, and a lens added against numbers that show
+  none is decoration that green-stamps every review — the vacuity class (#21)
+  applied to a lens instead of a guard. `workflows/review.js` is deliberately
+  untouched. If anything changes it is about tier, not lens count.
+
+  The control run also found **three defects in the fixes themselves**, two of
+  which are now corrected: a config line with no `=` parsed as `key==value`, and
+  a redaction that returned the whole token for values under four characters —
+  a fix that silently stopped fixing. The third (`open` clobbering a live
+  sentinel) is left in place on purpose and documented, because one defect per
+  fixture is what makes "detected" a well-defined word.
+
+- **#59 — the F18 TOCTOU guard is now ENTERED by a test** ([#59]). The existing
+  case deleted its "ghost" file *before* `spill()` ran its own `readdirSync`, so
+  the entry was never listed, the map never visited it, and the `statSync` the
+  guard wraps was never reached — strip the guard entirely and the suite stayed
+  green. The window is the gap *between* `readdirSync` and the stat that
+  follows. Racing a real deletion into it would be timing-dependent, and this
+  project's standing rule is structural over timing (the #23 fixture's mtime
+  stamp exists for the same reason). So the window is now held open
+  structurally: a **dangling symlink** is listed by `readdirSync` and makes
+  `statSync` throw `ENOENT` — the identical throw, on the identical line, every
+  run. Both directions recorded: guard stripped → 3 FAIL, restored → 95/0. Two
+  of the five assertions are preconditions, so a future Node that stops listing
+  dangling symlinks fails loudly instead of silently testing nothing. The
+  errno is pinned to `ENOENT` rather than to "any throw" (Copilot, PR review):
+  only ENOENT is the vanished-entry failure the symlink stands in for, and an
+  EACCES or ELOOP would have satisfied a bare `threw` while the case quietly
+  stopped modelling the race. Mutation-verified with a self-referential
+  symlink: `got ELOOP`, red.
+
+  The same class was then swept for, rather than fixed once: `test_workflows.mjs`'s
+  `throws()` helper accepted ANY throw across **14 call sites**. Measured — a
+  `TypeError: undefined is not a function` from a broken harness scored as
+  "tier: typo 'Mechanical' rejected". The expected message fragment is now a
+  REQUIRED parameter (an optional tightening is one nobody applies to the next
+  case), and all 20 sites name the guard they expect. Mutation-verified: a guard
+  that still throws but with a different message now fails, reporting both what
+  it threw and what was expected.
+
+  The other bare-catch sites were checked and deliberately left: they assert
+  `!threw` or set a flag to `false`, so a spurious throw makes them FAIL rather
+  than pass. Polarity is what decides whether this pattern is a defect.
+
+
+
+- **`ops-render.sh --model <seat>`** — the resolver made scriptable ([#55]).
+  `--show` is a table for a human: aligned columns, a header, a trailing note. A
+  caller wanting one id had to parse a display format, which is how a caller
+  ends up with a header row as a model id. `--model` prints the id alone on
+  stdout, so `M="$(ops-render.sh --model mechanic)"` is safe to substitute.
+
+  It resolves nothing new — the seat→tier map and `check_routable` already run
+  at load time, so this reads the state the renderer itself uses. A second
+  resolver is what the coupling table exists to prevent.
+
+  An unknown seat **refuses** and prints nothing, rather than emitting an empty
+  line at rc 0: a caller substituting `""` dispatches to the harness default,
+  which is the silent mis-route this guard family exists to stop. Measured that
+  the refusal is three-deep — strip it and `check_routable` catches the empty
+  id; strip that too and `set -u` does.
+
+  Ten assertions, including that stdout carries exactly one line (asserted by
+  counting lines, not by matching the id — a diagnostic leaking onto stdout
+  would still contain the id).
+
+  **The dispatch bridge is NOT shipped.** A workflow calling `agent()` with the
+  resolved id is the other half of #55, and it waits for an engagement that
+  needs it — a helper nobody calls is [#57]'s class. #55 stays open.
+
+### Changed
+
+- **`/cc-operator:tiers` documents the un-rendered alias gap** ([#55]). Every
+  shipped `agents/op-<seat>.md` carries a hardcoded Anthropic alias, that alias
+  wins at dispatch, and the plain `Agent` tool's `model` parameter is
+  schema-locked to `sonnet | opus | haiku | fable` — so an operator who set
+  `mechanic → IMPLEMENT → deepseek-v4-flash` and has not rendered runs every
+  dispatch on `sonnet`, with nothing warning them. The command now states the
+  gap and both routes that close it (render, or Workflow `agent()` with an
+  arbitrary id). Documentation only: the resolver→dispatch helper that would
+  make the configured tier the default is not shipped, and #55 stays open.
+
+
+- **`correctness` moves to judgment tier, on measured evidence** ([#24] step 3).
+  Step 2 concluded the panel's gap was tier, not coverage. Step 3 tested that
+  instead of building the security lens the issue proposed: the two cheap-tier
+  lenses were re-run at JUDGMENT over the same corpus, same neutralized tree,
+  same prompts verbatim — only the tier changed.
+
+  `ext-source` went **45 → 85**. At MECHANICAL that arbitrary-execution defect
+  scored *below the 50 threshold*, so the panel dropped it entirely, and the
+  lens described it as a missing exit-status check. At JUDGMENT the same lens
+  names the mechanism: "executes the project's `tiers.env` as shell — any
+  `$(...)`, backtick, or plain command in a value runs with the caller's
+  privileges". Coverage 4/5 → 5/5, with a clean false-positive control.
+
+  `spec` was measured in the same run (1/5 → 3/5) and **deliberately left** at
+  MECHANICAL: its extra findings restate what the judgment lenses already
+  report, and promoting a lens because its numbers rose — without asking whether
+  the findings are new — makes a panel expensive rather than better. The 50
+  threshold is unchanged: 45 was a correct observation with the wrong severity,
+  fixed at the source. The `security` and `supply-chain` lenses remain unbuilt;
+  the tier arm does not disturb step 2's finding that there is no gap for them.
+
+  A methodology failure is recorded with it. The first control run scored 62–78
+  on the corrected column and looked like a mass false-positive. The control
+  tree was **stale** — built during step 2, predating the two fixes step 2's own
+  control produced — so the lens was correctly reporting defects that no longer
+  ship. Rebuilt and re-run: zero of the five re-flagged. A control tree is an
+  artifact with a version, and an experiment re-run against a stale one produces
+  a confident wrong answer.
+
+  A pre-existing guard caught the change: `meta.description` claimed "most at
+  cheap tiers and two at judgment", which the promotion made false, and F40's
+  cost-contract case failed until it was corrected to "two at cheap tiers and
+  three at judgment".
+
+### Fixed
+
+- **The lock spin has an absolute ceiling** ([#68]). `lock_acquire` treated
+  every `mkdir` failure as contention, but only `EEXIST` means contention.
+  `ENOENT` — the ledger directory removed while a run is in flight — is
+  permanent, and every escape hatch opened with another `mkdir` in the same
+  vanished parent, so none of them completed. Both existing budgets count
+  ITERATIONS and both `continue` past their own limit in that state; the
+  deferral path actively REWINDS the counter, so neither was ever a bound.
+
+  Found in the field, not by a test: **54 leaked `ops-verdict.sh` processes**,
+  the oldest ~17 days, each burning ~1 core and writing 2.7 MB of warnings into
+  `/dev/null`. (The issue reads that 2.7 MB off fd 1, which invited the reading
+  that the lock warns on stdout. It does not — every lock warning is `>&2`. The
+  suite redirects `>/dev/null 2>&1`, which makes fd 2 a dup of fd 1: one file
+  description, one shared offset, so stderr traffic is what advanced it.
+  Measured; corrected here because a reader otherwise hunts a stdout write path
+  that does not exist.) The accumulated load made an unrelated project's
+  timing-sensitive gates read 2.5× their baseline.
+
+  Fixed with `LOCK_MAX_SPINS` (120s default) counted on a variable nothing
+  resets, checked first in the loop body so it is reachable from every state.
+  It bounds **every** cause rather than the one anticipated — and when the cause
+  is knowable it is named, because a bare timeout sends a maintainer hunting
+  contention that does not exist. It refuses (rc 2) rather than proceeding
+  unlocked: the other two unlocked exits are reached from a judged state, this
+  one from no information at all. Ported to `ops-adopt.sh` under
+  `check_lock_parity`.
+
+  The suite leaked them too: `kill -9 "$FHPID"` killed the subshell and
+  **orphaned** the `bash` grandchild inside it. Measured — 1 orphan per run
+  before, 0 after, and 0 of any kind after review found the ceiling case's own
+  watchdog orphaning its `sleep`. Both halves shipped, because a bounded leak is
+  still a leak.
+
+  Reaping is one `reap_kids` helper rather than five copies, and it CHECKS
+  pgrep's status instead of swallowing it: rc 1 is "no children", rc >= 2 is
+  "pgrep itself failed" (measured: 2 for a bad invocation, 127 for a missing
+  binary). Blanket `2>/dev/null` made those indistinguishable, and the failure it
+  hid was a silently unreaped grandchild — this exact leak class reappearing
+  inside the suite that proves it fixed. A tool failure is reported, not failed:
+  the reap is cleanup, and turning a platform quirk into a red suite is how a
+  maintainer learns to ignore the suite.
+
+  Review of this fix added the sibling-side test: `ops-adopt.sh` carries a
+  byte-identical ceiling that **no test executed**. `check_lock_parity` pins the
+  two blocks, but parity proves sameness, not correctness-in-context — the F30
+  shape. It now runs, and asserts the message names `ops-adopt` rather than its
+  sibling (the parity normalizer strips exactly that prefix before comparing, so
+  a copy announcing the wrong tool would pass).
+
+- **A vanishing holder file no longer prints a raw bash error** — found while
+  measuring #68's ceiling under 40 concurrent writers. `lock_holder_read` tests
+  `[ -f "$LOCKDIR/holder" ]` and then reads it; between those two the releasing
+  writer can remove it, and `2>/dev/null` on the `read` does **not** cover that,
+  because the shell reports a failed input redirection before the command's own
+  redirections apply. Measured at ~1 line per 3 runs, on this code **and on its
+  0.4.0 predecessor** — so it predates #68 and is not a regression from it.
+  Redirecting the whole compound silences it; the empty record that results is
+  already the documented "cannot judge this holder" input. Tested structurally
+  (an unreadable holder file) rather than by racing writers, with a control
+  asserting the read really failed, and skipped as root — where a 000 file is
+  still readable, so the property cannot be exhibited.
+
 ## [0.8.1] - 2026-08-14
 
 What a second live run of the replay charter found, and what reviewing those
@@ -350,8 +582,11 @@ BAR block lands, after decomposition.
 [#52]: https://github.com/betmoar/cc-operator-plugin/issues/52
 [#53]: https://github.com/betmoar/cc-operator-plugin/issues/53
 [#54]: https://github.com/betmoar/cc-operator-plugin/issues/54
+[#55]: https://github.com/betmoar/cc-operator-plugin/issues/55
+[#57]: https://github.com/betmoar/cc-operator-plugin/issues/57
 [#58]: https://github.com/betmoar/cc-operator-plugin/issues/58
 [#59]: https://github.com/betmoar/cc-operator-plugin/issues/59
+[#68]: https://github.com/betmoar/cc-operator-plugin/issues/68
 [#60]: https://github.com/betmoar/cc-operator-plugin/issues/60
 
 ## [0.7.1] - 2026-08-12

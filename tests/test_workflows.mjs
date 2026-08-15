@@ -23,9 +23,25 @@ const ok = (cond, msg) => {
   if (cond) { pass++; console.log(`  ok   ${msg}`); }
   else { fail++; console.log(`  FAIL ${msg}`); }
 };
-const throws = async (fn, msg) => {
+// `expect` is REQUIRED: a substring the thrown message must contain.
+//
+// The generalized form of the #59-precondition finding (Copilot, PR #67): an
+// assertion that accepts ANY throw is satisfied by a throw that has nothing to
+// do with the property under test. Measured directly — a `TypeError: undefined
+// is not a function` from a broken harness scored as "tier: typo 'Mechanical'
+// rejected". Every workflow guard here throws with a specific message, so
+// naming a fragment of it costs nothing and is what makes the case discriminate
+// between "the guard fired" and "something, somewhere, threw".
+//
+// It is a required parameter rather than an optional one on purpose: an
+// optional tightening is a tightening nobody applies to the next case.
+const throws = async (fn, msg, expect) => {
+  if (!expect) { ok(false, `${msg} (test bug: throws() needs an expected message fragment)`); return; }
   try { await fn(); ok(false, `${msg} (expected throw, got none)`); }
-  catch { ok(true, msg); }
+  catch (e) {
+    const m = String(e?.message ?? e);
+    ok(m.includes(expect), m.includes(expect) ? msg : `${msg} (threw ${JSON.stringify(m.slice(0, 70))}, expected to contain ${JSON.stringify(expect)})`);
+  }
 };
 
 // ── stub the workflow runtime globals ───────────────────────────────────────
@@ -107,9 +123,9 @@ ok((await brainstormN(undefined)) === 4, "brainstorm N: undefined → default 4"
 // charset rejected; unroutable rejected. Each is a top-level throw, so the
 // workflow aborts before any agent call.
 await throws(() => run(WF("brainstorm.js"), { tiers: { Mechanical: "glm-5" } }, {}),
-  "brainstorm tier: typo 'Mechanical' rejected (F07 typo guard)");
+  "brainstorm tier: typo 'Mechanical' rejected (F07 typo guard)", "unknown tier");
 await throws(() => run(WF("brainstorm.js"), { tiers: { MECHANICAL: "glm 5" } }, {}),
-  "brainstorm tier: whitespace in id rejected (via ROUTABLE — no glm- prefix)");
+  "brainstorm tier: whitespace in id rejected (via ROUTABLE — no glm- prefix)", "not cc-proxy-routable");
 // The above throws on ROUTABLE, NOT on the charset guard: "glm 5" has no
 // `glm-` prefix, no `/`, no `claude-` prefix, so it never reaches
 // BAD_CHARSET.test. Verified — a review found this test's old "(F01 charset)"
@@ -119,7 +135,8 @@ await throws(() => run(WF("brainstorm.js"), { tiers: { MECHANICAL: "glm 5" } }, 
 // "glm-5 turbo" via the glm- prefix, "vendor/model x" via the slash.
 for (const bad of ["glm-5 turbo", "vendor/model x", 'glm-5"q', "claude-opus 5"]) {
   await throws(() => run(WF("brainstorm.js"), { tiers: { MECHANICAL: bad } }, {}),
-    `brainstorm tier: ROUTABLE-shaped but charset-bad ${JSON.stringify(bad)} rejected (F01)`);
+    `brainstorm tier: ROUTABLE-shaped but charset-bad ${JSON.stringify(bad)} rejected (F01)`,
+    "outside the");
 }
 // The converse: a bracket-marked id is charset-LEGAL and must NOT be rejected
 // (a Copilot review asserted `]` was excluded from the allowed set; it is not —
@@ -131,13 +148,13 @@ try {
 } catch { bracketOk = false; }
 ok(bracketOk, "brainstorm tier: bracket-marked id 'glm-5.2[1m]' accepted (charset allows ])");
 await throws(() => run(WF("brainstorm.js"), { tiers: { MECHANICAL: "not-routable" } }, {}),
-  "brainstorm tier: unroutable id rejected");
+  "brainstorm tier: unroutable id rejected", "not cc-proxy-routable");
 // F8 (issue #35): the provider-lens allowlist must be consulted BEFORE the bare
 // slash fallback. A flat alternation whose bare `\/` arm precedes the lens lets
 // `bogus:vendor/model` route on the slash, while the shell check_routable
 // (lens-first) dies on it. Mirror that ordering here: reject the bypass...
 await throws(() => run(WF("brainstorm.js"), { tiers: { JUDGMENT: "bogus:vendor/model" } }, {}),
-  "brainstorm tier: provider-lens bypass 'bogus:vendor/model' rejected (F8)");
+  "brainstorm tier: provider-lens bypass 'bogus:vendor/model' rejected (F8)", "not cc-proxy-routable");
 // ...and accept every legal shape the lens-first rule keeps routable: bare
 // glm-/claude-, a slash-headed variant (`vendor/model:free`), and a known lens.
 for (const good of ["glm-5.2", "claude-opus-5", "deepseek/deepseek-r1:free",
@@ -400,9 +417,9 @@ ok(oneRt.calls.find((c) => c.label.startsWith("lens:")).prompt.includes("ARTIFAC
 // A malformed array is a caller error: reject it rather than review the wrong
 // thing. Loud-wrong beats silent-wrong.
 await throws(() => run(WF("review.js"), JSON.stringify([]), everyLens),
-  "review: an empty array target is rejected, not defaulted");
+  "review: an empty array target is rejected, not defaulted", "is an empty array");
 await throws(() => run(WF("review.js"), JSON.stringify(["docs/a.md", 42]), everyLens),
-  "review: a non-string array element is rejected");
+  "review: a non-string array element is rejected", "must be a path or an array");
 // The object form may carry an array too — same contract.
 const objArrRt = (await run(WF("review.js"), { target: ["docs/x.md", "docs/y.md"] }, everyLens)).rt;
 ok(objArrRt.calls.find((c) => c.label.startsWith("lens:")).prompt.includes("docs/y.md"),
@@ -438,7 +455,8 @@ ok(!noDmRt.calls.some((c) => /TASK TEXT:\s*\n/.test(c.prompt)),
 // ask about it — silent-wrong, the class F37 fixed one field over.
 for (const badDm of [{ x: 1 }, ["a"], 42, true]) {
   await throws(() => run(WF("review.js"), { target: "docs/x.md", doneMeans: badDm }, everyLens),
-    `review: doneMeans=${JSON.stringify(badDm)} throws rather than stringifying into the prompt`);
+    `review: doneMeans=${JSON.stringify(badDm)} throws rather than stringifying into the prompt`,
+    "must be a string");
 }
 // Whitespace-only is absence, not a header: an empty TASK TEXT starves the
 // same two lenses it was meant to feed.
@@ -530,17 +548,17 @@ ok(!/\bmost at cheap tiers\b/.test(metaBlock) || mechanicalLenses > judgmentLens
 // One assertion per file, each exercising that file's own call site: a shared
 // helper looping over the four would pass with three of them deleted.
 await throws(() => run(WF("review.js"), { tiers: { JUDGMENT: "bogus:vendor/model" } }, {}),
-  "review tier: provider-lens bypass 'bogus:vendor/model' rejected (#60)");
+  "review tier: provider-lens bypass 'bogus:vendor/model' rejected (#60)", "not cc-proxy-routable");
 await throws(() => run(WF("review.js"), { tiers: { MECHANICAL: "not routable" } }, {}),
-  "review tier: unroutable id rejected — the guard is applied, not merely present (#60)");
+  "review tier: unroutable id rejected — the guard is applied, not merely present (#60)", "not cc-proxy-routable");
 await throws(() => run(WF("crawl.js"), { tiers: { JUDGMENT: "bogus:vendor/model" }, shards: ["x"] }, {}),
-  "crawl tier: provider-lens bypass 'bogus:vendor/model' rejected (#60)");
+  "crawl tier: provider-lens bypass 'bogus:vendor/model' rejected (#60)", "not cc-proxy-routable");
 await throws(() => run(WF("crawl.js"), { tiers: { MECHANICAL: "not routable" }, shards: ["x"] }, {}),
-  "crawl tier: unroutable id rejected — the guard is applied, not merely present (#60)");
+  "crawl tier: unroutable id rejected — the guard is applied, not merely present (#60)", "not cc-proxy-routable");
 await throws(() => run(WF("plan.js"), { tiers: { JUDGMENT: "bogus:vendor/model" }, spec: "s" }, {}),
-  "plan tier: provider-lens bypass 'bogus:vendor/model' rejected (#60)");
+  "plan tier: provider-lens bypass 'bogus:vendor/model' rejected (#60)", "not cc-proxy-routable");
 await throws(() => run(WF("plan.js"), { tiers: { MECHANICAL: "not routable" }, spec: "s" }, {}),
-  "plan tier: unroutable id rejected — the guard is applied, not merely present (#60)");
+  "plan tier: unroutable id rejected — the guard is applied, not merely present (#60)", "not cc-proxy-routable");
 
 console.log(`\n== summary: ${pass} passed, ${fail} failed ==`);
 if (fail > 0) process.exit(1);
