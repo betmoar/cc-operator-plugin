@@ -1631,8 +1631,11 @@ def check_workflows(root, problems):
         # call sites in review.js left the validator green while an unroutable,
         # quote-bearing id reached agent()). Strip block then line comments,
         # exactly as check_compressor does (F57). The DECLARATION checks below
-        # still run on raw `text`: a commented-out `const ROUTABLE = …` should
-        # trip its own "not found" branch, which is already correct.
+        # still run on raw `text`: BAD_CHARSET's not-found branch reads the
+        # raw view deliberately, so commenting the declaration out is reported
+        # rather than read as absence. (The ROUTABLE check below is the mirror
+        # image — it reads raw text so that PROSE about the removed guard, which
+        # every workflow now carries, cannot be mistaken for a re-declaration.)
         code = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
         code = "\n".join(ln for ln in code.split("\n")
                          if not ln.lstrip().startswith("//"))
@@ -1722,9 +1725,9 @@ def check_workflows(root, problems):
 # them together — the same lesson check_lock_parity enforces for the bash
 # lock block. DEFAULT_TIERS is excluded: each workflow deliberately declares
 # only the tiers it uses (review has 2, brainstorm 3, plan 3), so it is NOT a
-# parity invariant. The regexes ARE — they define what "routable" and
-# "valid charset" mean, and a divergence between two workflows' ROUTABLE is a
-# silent disagreement about which ids are well-formed.
+# parity invariant. BAD_CHARSET IS — it defines what "valid charset" means, and
+# a divergence between two workflows' copies is a silent disagreement about
+# which ids are well-formed.
 # ROUTABLE was dropped from this tuple in 0.8.3 along with the guard itself
 # (see check_workflows (c)); BAD_CHARSET is what remains to hold in parity.
 WORKFLOW_PARITY_CONSTS = ("BAD_CHARSET",)

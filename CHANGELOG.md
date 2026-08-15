@@ -33,18 +33,19 @@ single source of truth; bump it in the same commit as the changelog entry.
   would ship green and fail at dispatch (F22's class). It also bounds what
   caller input can become an agentType.
 
-  `args.model` gets the **same** routability and charset guards a `tiers.env`
-  binding gets, or this workflow would be a bypass around `check_routable`: an
-  id the resolver refuses would reach cc-proxy as a literal string and land on
-  the default backend. Omitting it falls back to the JUDGMENT tier **and logs
+  `args.model` gets the **same** charset guard a `tiers.env` binding gets — no
+  more and no less. Less would make this workflow a bypass around
+  `check_routable`; more would make it the one place that second-guesses the
+  caller's model choice, which is what the guard change below removes
+  everywhere else. Omitting it falls back to the JUDGMENT tier **and logs
   that it did**, naming the `--model` command — a silent fallback is how a
   caller never learns they dispatched on something else. A dead agent is
   reported as `dead: true` with no `result` key, so "the seat never ran" cannot
   be read as "the seat ran and said nothing".
 
-  14 assertions. Mutation-verified on the two that would make it decoration:
-  dropping `model` from the `agent()` call, and removing the `args.model`
-  guards — both turn their cases red.
+  15 assertions after the review round below. Mutation-verified on the two that
+  would make it decoration: dropping `model` from the `agent()` call, and
+  removing the `args.model` guard — both turn their cases red.
 
   **#55 closes with this.** The issue was the evidence that the gap reached
   someone; waiting for a second engagement to prove it again was the wrong bar,

@@ -1,13 +1,15 @@
 ---
-description: Resolve tier→model bindings, apply one-off overrides, or render project-layer agents so plain Agent dispatch can run on a configured cc-proxy model. Wraps the resolver (ops-tiers.sh) and renderer (ops-render.sh) — the command adds no logic; those scripts' charset and cc-proxy routability guards are the validation.
+description: Resolve tier→model bindings, apply one-off overrides, or render project-layer agents so plain Agent dispatch can run on a configured cc-proxy model. Wraps the resolver (ops-tiers.sh) and renderer (ops-render.sh) — the command adds no logic; those scripts' charset guard is the validation.
 argument-hint: "[set NAME=model-id | render | revert | check]"
 allowed-tools: Bash(bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-tiers.sh:*), Bash(bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-render.sh:*)
 ---
 
 A thin wrapper over `ops-tiers.sh` (resolve) and `ops-render.sh` (render). It
-adds no logic and validates nothing itself — those scripts' charset guard and
-cc-proxy routability check (`^glm-|/|^claude-`) are the validation, applied
-before any id reaches a dispatch. Relay their output verbatim — never summarize,
+adds no logic and validates nothing itself — those scripts' charset guard is
+the validation, applied before any id reaches a dispatch. It is a
+WELL-FORMEDNESS check and nothing more: since 0.8.3 operator does not decide
+which model ids exist, so an id it has never heard of resolves and cc-proxy
+routes it or refuses it. Relay their output verbatim — never summarize,
 reformat, or edit it. Pass every non-zero exit code through unchanged and stop.
 
 ## Resolve branches (ops-tiers.sh — the tier→model table)
@@ -77,9 +79,9 @@ it. Edit `.operator/tiers.env` to set the bindings first.
 >
 >    `seat` picks the agent (`author`, `mechanic`, `scout`, `verifier`, `crawler`,
 >    `brainstorm`; the `op-` prefix is optional), and `model` is applied to the
->    call — which the plain `Agent` tool cannot do. The id gets the same
->    routability and charset guards a `tiers.env` binding gets, so this is not a
->    way around `check_routable`.
+>    call — which the plain `Agent` tool cannot do. The id gets the same charset
+>    guard a `tiers.env` binding gets — no more and no less, so this is neither a
+>    way around `check_routable` nor a second opinion about your model choice.
 >
 >    Omitting `model` is legal and falls back to the JUDGMENT tier, with a log
 >    line saying so and naming the `--model` command — a silent fallback is how a

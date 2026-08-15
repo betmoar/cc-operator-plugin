@@ -56,8 +56,8 @@ scripts that fan agent seats across model tiers and converge on judgment:
 **Tier system.** Seats are pinned to tiers (`JUDGMENT`, `IMPLEMENT`,
 `MECHANICAL`, `RECON`) in each workflow; what a tier *resolves to* is layered
 config: built-ins → `~/.claude/cc-operator/tiers.env` → `.operator/tiers.env`
-→ `--set` one-offs. `ops-tiers.sh` resolves (charset + cc-proxy-routability
-guarded) and the operator passes the result as `args.tiers`; `ops-render.sh`
+→ `--set` one-offs. `ops-tiers.sh` resolves (charset-guarded; it does not
+judge which ids exist — that is cc-proxy's call) and the operator passes the result as `args.tiers`; `ops-render.sh`
 renders project-layer agents so plain Agent dispatch can run on configured
 models. `/cc-operator:tiers` wraps both.
 

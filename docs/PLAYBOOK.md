@@ -198,7 +198,9 @@ Keep this list honest; add to it when you find a new gap.
 
 The workflow sandbox forbids `import()` (measured 2026-07-30 — "import() is
 not available in workflow scripts"), so the tier-resolution + args-normalization
-block is **copy-pasted** across review.js, brainstorm.js, plan.js. There is no
+block is **copy-pasted** across every `workflows/*.js` (review, brainstorm,
+plan, crawl, dispatch as of 0.8.3 — `check_workflow_parity` globs the directory,
+so a new file joins automatically and a count here would rot). There is no
 shared module. `check_workflow_parity` is the only thing holding the copies
 together — the same lesson `check_lock_parity` enforces for the bash lock block.
 

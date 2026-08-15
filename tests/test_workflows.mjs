@@ -120,8 +120,9 @@ ok((await brainstormN(3)) === 3, "brainstorm N: 3 → 3 (in range)");
 ok((await brainstormN(undefined)) === 4, "brainstorm N: undefined → default 4");
 
 // Tier validation: IMPLEMENT (valid-but-unused) accepted; typo rejected; bad
-// charset rejected; unroutable rejected. Each is a top-level throw, so the
-// workflow aborts before any agent call.
+// charset rejected. An id operator does not recognise is ACCEPTED (0.8.3).
+// Each rejection is a top-level throw, so the workflow aborts before any
+// agent call.
 await throws(() => run(WF("brainstorm.js"), { tiers: { Mechanical: "glm-5" } }, {}),
   "brainstorm tier: typo 'Mechanical' rejected (F07 typo guard)", "unknown tier");
 // Every whitespace/quote shape now lands on the ONE guard (0.8.3 removed the

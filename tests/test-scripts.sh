@@ -1882,7 +1882,7 @@ rm -rf "$P" "$SLPY" "$SLNONE"
 ########################################################################
 echo "-- Case: /cc-operator:tiers command wraps the tier resolver"
 # commands/tiers.md is a thin wrapper over ops-tiers.sh — it adds no logic, so
-# the resolver's own guards (charset, cc-proxy routability) are the validation.
+# the resolver's own charset guard is the validation.
 # What the command MUST guarantee: it exists, its allowed-tools grants the
 # ops-tiers.sh invocation, and it uses ${CLAUDE_PLUGIN_ROOT} (a bare scripts/
 # path resolves only inside this repo — the v0.2.0 blocked-start bug).

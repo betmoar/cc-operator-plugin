@@ -1232,8 +1232,7 @@ class ValidatorTest(unittest.TestCase):
         self.assertFires("must not come back")
 
     def test_workflow_routable_in_a_comment_is_not_a_reintroduction(self):
-        # The declaration check reads RAW text (a commented-out `const X = …`
-        # should trip its own not-found branch elsewhere), so this case pins the
+        # The ROUTABLE check reads RAW text on purpose, so this case pins the
         # boundary: prose ABOUT the removed guard — which the shipped workflows
         # all carry, and this file's own comments do — must not fire. Without
         # the `const\s+ROUTABLE\s*=` anchor, documenting the decision would
