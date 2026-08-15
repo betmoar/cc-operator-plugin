@@ -633,8 +633,16 @@ const { result: dFall, rt: dFallRt } = await run(WF("dispatch.js"),
   { seat: "mechanic", prompt: "p" }, DISPATCH_OK);
 ok(dFall?.model === "claude-opus-5",
   "dispatch: no args.model falls back to the JUDGMENT tier default");
-ok(dFallRt.logs.some((m) => /no args\.model given/.test(m) && /--model mechanic/.test(m)),
-  "dispatch: the fallback is LOGGED and names the command that resolves the real id");
+// The command it names must be one a user can actually TYPE. It used to say
+// `ops-render.sh --model <seat>`, which is neither installed into
+// .operator/bin/ (only the five gate CLIs are) nor reachable via
+// ${CLAUDE_PLUGIN_ROOT} in the Bash tool env (#62) — a Copilot review of this
+// PR caught the fallback pointing at a command that does not exist in a
+// project shell. Pin the seat name too: naming the wrong seat is as useless as
+// naming no command.
+ok(dFallRt.logs.some((m) => /no args\.model given/.test(m)
+    && /\/cc-operator:tiers/.test(m) && /mechanic/.test(m)),
+  "dispatch: the fallback is LOGGED and names a command a user can actually run");
 
 // A dead agent returns null. Reporting that as a result would let a caller read
 // "the seat ran and said nothing" from "the seat never ran" — the fail-open

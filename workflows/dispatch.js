@@ -3,7 +3,7 @@ export const meta = {
   description:
     "Run ONE agent seat on a caller-supplied model id. The plain Agent tool's model parameter is enum-locked to Anthropic aliases, so a seat cannot be dispatched on a configured cc-proxy model without a workflow; this is that workflow, and nothing more.",
   whenToUse:
-    "When you need a single seat (author, mechanic, scout, verifier, crawler, brainstorm) to run on the model its tier is bound to, and you have not rendered project-layer agent files. Resolve the id first with `ops-render.sh --model <seat>` and pass it as args.model; args.seat picks the seat and args.prompt is the task.",
+    "When you need a single seat (author, mechanic, scout, verifier, crawler, brainstorm) to run on the model its tier is bound to, and you have not rendered project-layer agent files. Resolve the id first with `/cc-operator:tiers` (its render branch prints one id per seat) and pass it as args.model; args.seat picks the seat and args.prompt is the task.",
   phases: [{ title: "Dispatch", detail: "one seat, one model, one call" }],
 };
 
@@ -126,7 +126,13 @@ if (!prompt) {
 // id. The sandbox has no filesystem (review.js:14, measured), so this workflow
 // CANNOT read .operator/tiers.env and resolve the seat itself. `ops-render.sh
 // --model <seat>` does that resolution outside, and its output goes in here —
-// the same division of labour args.tiers already uses.
+// the same division of labour args.tiers already uses. That script name is
+// correct HERE, in a maintainer comment about the implementation, and wrong in
+// anything a user reads: ops-render.sh is not installed into .operator/bin/
+// (only the five gate CLIs are, ops-init.sh:218) and ${CLAUDE_PLUGIN_ROOT} is
+// unset in the Bash tool env (#62), so neither spelling is typeable in a
+// project shell. meta.whenToUse and the fallback log say `/cc-operator:tiers`,
+// the command that wraps it — found by a Copilot review of this PR.
 //
 // So this is not "the tier applies automatically". It is: the one route by
 // which a resolved id can reach a seat at all, because the plain Agent tool's
@@ -150,7 +156,7 @@ if (model) {
 const resolved = model || JUDGMENT;
 log(model
   ? `dispatch: ${seat} on ${resolved} (caller-supplied)`
-  : `dispatch: ${seat} on ${resolved} — no args.model given, fell back to the JUDGMENT tier; pass \`ops-render.sh --model ${seat}\` to run its configured binding`);
+  : `dispatch: ${seat} on ${resolved} — no args.model given, fell back to the JUDGMENT tier; run \`/cc-operator:tiers\` to resolve ${seat}'s configured binding and pass it as args.model`);
 
 // --- dispatch ----------------------------------------------------------------
 phase("Dispatch");
@@ -170,7 +176,7 @@ if (result == null) {
     seat,
     model: resolved,
     dead: true,
-    error: `the ${seat} seat returned nothing (agent died: the model id was refused, or a schema mismatch, timeout, or rate limit) — this is NOT an empty result. The harness's own failure line, logged above, names which`,
+    error: `the ${seat} seat returned nothing — this is NOT an empty result. The agent died: the model id was refused, or a schema mismatch, timeout, or rate limit. The harness logs its own failure line above, which names the cause.`,
   };
 }
 return { seat, model: resolved, dead: false, result };

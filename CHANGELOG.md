@@ -105,6 +105,22 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ### Fixed
 
+- **The workflow pointed users at a command they cannot type** — found by a
+  Copilot review. `meta.whenToUse` and the JUDGMENT-fallback log line both said
+  `ops-render.sh --model <seat>`, but `ops-init.sh` installs only the five gate
+  CLIs into `.operator/bin/` — the renderer is not among them — and
+  `${CLAUDE_PLUGIN_ROOT}` is unset in the Bash tool env ([#62]), so neither
+  spelling resolves in a project shell. Copilot's suggested fix was the
+  `${CLAUDE_PLUGIN_ROOT}` form, which is the spelling #62 measured as broken;
+  both now name `/cc-operator:tiers`, the command that wraps the renderer and is
+  the only user-facing route to it. The maintainer comment beside the resolution
+  keeps the script name — it describes the implementation — and now says why the
+  two spellings differ. The node case pins the seat name as well as the command:
+  naming the wrong seat is as useless as naming no command.
+
+- **The dead-agent error read as truncated.** It ended "…names which", which
+  parses as a cut-off sentence rather than a clause. Reworded; same information.
+
 - **`check_workflow_agent_types` did not cover the one file that most needed
   it** — found by two independent review lenses. The checker anchored on the
   literal `agentType: "cc-operator:X"`, but `dispatch.js` resolves its
