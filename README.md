@@ -42,21 +42,22 @@ safe default, and what pre-0.4 sentinels degrade to.
 
 ## Orchestration layer (0.5.0)
 
-Four **workflows** are the operator's dispatch primitives — deterministic
+Five **workflows** are the operator's dispatch primitives — deterministic
 scripts that fan agent seats across model tiers and converge on judgment:
 
 | Workflow | Shape | Use |
 |---|---|---|
-| `cc-operator:review` | parallel narrow lenses (most cheap, two judgment) → adversarial verifier; a REFUTED is a hard stop | after a DONE on work that will be merged or depended on |
+| `cc-operator:review` | parallel narrow lenses (two cheap, three judgment) → adversarial verifier; a REFUTED is a hard stop | after a DONE on work that will be merged or depended on |
 | `cc-operator:brainstorm` | N divergent directions + blindspot scan + reference search → converge | before a spec exists |
 | `cc-operator:plan` | decompose an approved spec into TDD tasks → parallel feasibility/testability vetting | after a spec is approved |
 | `cc-operator:crawl` | one cheap crawler per shard → judgment-tier merge | digesting a large corpus fast |
+| `cc-operator:dispatch` | one seat, one caller-supplied model id | running a seat on its configured tier without rendering (#55) |
 
 **Tier system.** Seats are pinned to tiers (`JUDGMENT`, `IMPLEMENT`,
 `MECHANICAL`, `RECON`) in each workflow; what a tier *resolves to* is layered
 config: built-ins → `~/.claude/cc-operator/tiers.env` → `.operator/tiers.env`
-→ `--set` one-offs. `ops-tiers.sh` resolves (charset + cc-proxy-routability
-guarded) and the operator passes the result as `args.tiers`; `ops-render.sh`
+→ `--set` one-offs. `ops-tiers.sh` resolves (charset-guarded; it does not
+judge which ids exist — that is cc-proxy's call) and the operator passes the result as `args.tiers`; `ops-render.sh`
 renders project-layer agents so plain Agent dispatch can run on configured
 models. `/cc-operator:tiers` wraps both.
 
@@ -181,7 +182,7 @@ directly:
 templates/OPERATOR.md             # the charter (materialized by /cc-operator:start)
 templates/{VERDICTS,DECISIONS}-header.md   # ledger schemas (byte-identical to the proven originals)
 commands/{start,handoff,tiers}.md # the three slash commands
-workflows/{review,brainstorm,plan,crawl}.js    # the orchestration primitives
+workflows/{review,brainstorm,plan,crawl,dispatch}.js  # the orchestration primitives
 agents/op-*.md                    # tier-aliased seats: author, mechanic, reviewer, scout, verifier, brainstorm, crawler
 skills/chief-operator/SKILL.md    # thin router (front door only)
 scripts/ops-{init,task,verdict,adopt}.sh       # the evidence-gate mechanism

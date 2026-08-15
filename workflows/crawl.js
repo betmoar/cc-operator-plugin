@@ -13,20 +13,19 @@ export const meta = {
 // --- tier resolution (shared block; see workflows/review.js) ----------------
 // The workflow sandbox forbids import() (measured 2026-07-30), so this block is
 // copy-pasted across every workflow. check_workflow_parity + check_workflow_
-// tier_namespace hold it together — keep ROUTABLE/BAD_CHARSET byte-identical
+// tier_namespace hold it together — keep BAD_CHARSET byte-identical
 // and KNOWN_TIERS == ops-tiers.sh TIER_NAMES.
 const DEFAULT_TIERS = {
   JUDGMENT: "claude-opus-5",
   MECHANICAL: "glm-5-turbo",
 };
-// Lens-first mirror of ops-tiers.sh check_routable (F8, issue #35): a colon
-// names a LENS only when the head before it is a known provider and has no
-// slash (`vendor/model:free` is a variant suffix, not a lens — the slash means
-// fall through to the bare shapes). The bare `*/*` arm must not pre-empt the
-// allowlist or `bogus:vendor/model` routes through the slash. Bare shapes
-// (^glm-, ^claude-, slash-containing) never carry a colon, so they are
-// anchored colon-free here.
-const ROUTABLE = /^(?:glm-|claude-)[^:]*$|^(?:glm|openrouter|deepseek|qwen|claude):.+|^(?=[^:]*\/[^:]*:).+$|^[^:]*\/[^:]*$/;
+// Charset mirror of ops-tiers.sh's check_routable (audit F01, 2026-07-30).
+// It is the ONLY id guard, by design: operator does not decide which models
+// exist. That is the user's choice (tiers.env / args.model) and cc-proxy's
+// routing decision — see ops-tiers.sh check_routable for the full reasoning
+// behind dropping the id-shape catalogue and the provider-lens allowlist in
+// 0.8.3. What remains tests the STRING, so it cannot go stale: whitespace or a
+// quote means the tiers.env line is malformed, not that the model is unknown.
 const BAD_CHARSET = /[^\w./:@[\]-]/;
 const KNOWN_TIERS = ["JUDGMENT", "IMPLEMENT", "MECHANICAL", "RECON"];
 
@@ -59,8 +58,8 @@ if (overrides != null) {
 }
 const TIERS = { ...DEFAULT_TIERS, ...(overrides ?? {}) };
 for (const [name, id] of Object.entries(TIERS)) {
-  if (typeof id !== "string" || !ROUTABLE.test(id)) {
-    throw new Error(`tier ${name}=${JSON.stringify(id)} is not cc-proxy-routable (need glm-*, vendor/model, or claude-*)`);
+  if (typeof id !== "string" || !id.trim()) {
+    throw new Error(`tier ${name}=${JSON.stringify(id)} is not a model id string`);
   }
   if (BAD_CHARSET.test(id)) {
     throw new Error(`tier ${name}=${JSON.stringify(id)} contains characters outside the model-id charset [A-Za-z0-9._:/@[]-]`);

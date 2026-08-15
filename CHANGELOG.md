@@ -9,6 +9,171 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-08-15
+
+### Added
+
+- **`workflows/dispatch.js` — one seat, one caller-supplied model id** ([#55]).
+  The plain `Agent` tool's `model` parameter is enum-locked to
+  `sonnet | opus | haiku | fable`, so a cc-proxy id is rejected *before*
+  dispatch and a seat cannot run on its configured tier without rendering. This
+  is the one route by which a resolved id reaches a seat at all.
+
+  **The honest shape, because it is not "the tier applies automatically":** the
+  workflow sandbox has no filesystem (measured), so this cannot read
+  `tiers.env`. `ops-render.sh --model <seat>` resolves the id outside and the
+  caller passes it in — the same division of labour `args.tiers` already uses.
+  `commands/tiers.md` documents both steps, and says plainly that **`render`
+  still beats this for repeated work**: `dispatch` resolves by hand per call,
+  `render` writes the binding once.
+
+  The seat table is a **literal map**, not `"cc-operator:op-" + seat`. A
+  computed agentType is invisible to `check_workflow_agent_types`, which matches
+  the string by regex against a shipped agent — so a typo'd or removed seat
+  would ship green and fail at dispatch (F22's class). It also bounds what
+  caller input can become an agentType.
+
+  `args.model` gets the **same** charset guard a `tiers.env` binding gets — no
+  more and no less. Less would make this workflow a bypass around
+  `check_routable`; more would make it the one place that second-guesses the
+  caller's model choice, which is what the guard change below removes
+  everywhere else. Omitting it falls back to the JUDGMENT tier **and logs
+  that it did**, naming the `--model` command — a silent fallback is how a
+  caller never learns they dispatched on something else. A dead agent is
+  reported as `dead: true` with no `result` key, so "the seat never ran" cannot
+  be read as "the seat ran and said nothing".
+
+  15 assertions after the review round below. Mutation-verified on the two that
+  would make it decoration: dropping `model` from the `agent()` call, and
+  removing the `args.model` guard — both turn their cases red.
+
+  **#55 closes with this.** The issue was the evidence that the gap reached
+  someone; waiting for a second engagement to prove it again was the wrong bar,
+  and #57's class is an artifact *claimed to work* while wired to nothing — not
+  one with a documented caller and a test proving the route.
+
+### Changed
+
+- **The model-id guard no longer decides which models exist** — it checks that
+  the field is well-formed, and nothing else. `check_routable` (in both
+  `ops-tiers.sh` and `ops-render.sh`) and every workflow's `ROUTABLE` regex
+  carried a catalogue of id **shapes** (`glm-*`, `claude-*`, `vendor/model`)
+  plus an allowlist of five cc-proxy provider lenses. Both are gone. What
+  remains: non-empty, and inside `[A-Za-z0-9._:/@[]-]`.
+
+  **Why, and it is not a simplification.** Those were lists of facts about
+  *another system*, maintained by hand in this one. The machinery around them
+  worked perfectly — pinned in `validate_plugin.py`, held byte-identical across
+  seven copies, the lens allowlist pinned *twice* after equality alone proved
+  vacuous. And the list was wrong anyway: measured against a live cc-proxy
+  serving **409 ids, this guard refused 8 that cc-proxy routes fine** —
+  `deepseek-v4-flash`, `deepseek-v4-pro`, `qwen3.7-max`, `qwen3.8-max` and
+  siblings, bare vendor ids carrying neither a known prefix nor a slash. A user
+  binding one in `tiers.env` got `not cc-proxy-routable`, a refusal citing a
+  catalogue they never asked about, for a model that works.
+
+  The division of labour that replaces it: **the user picks the model**
+  (`tiers.env` is their file, and a manual override is theirs), **cc-proxy
+  decides what it routes** and what an unknown id does, **operator decides
+  neither**. A wrong id surfaces at dispatch, from the system that actually
+  knows. The surviving check is about the string — whitespace or a quote means
+  the `tiers.env` line is malformed (an unquoted `MECHANICAL=claude opus`
+  splits, audit F01) — so it cannot go stale.
+
+  Asked the other way round: the old guard answered "which ids are valid?",
+  which operator cannot know, so every answer was a list that rots. The right
+  question is "is this field malformed?", which is a fact about the string.
+
+- **`check_workflows` now FIRES on a re-declared `const ROUTABLE`** — the only
+  presence-check in the validator, and deliberate. The realistic path back is a
+  maintainer who sees an unguarded id reach dispatch and writes the
+  obvious-looking guard; every other gate would stay green, because none of them
+  ask whether operator *should* be judging model ids. A companion case pins the
+  boundary: prose *about* the removed guard (which the shipped workflows all
+  carry) must not fire.
+
+### Removed
+
+- `LENS_NAMESPACES` from both shell scripts, and its `canonical_lens` pin plus
+  three test cases from the validator suite. They were good tests of a bad
+  idea — the last of them ([#35]'s vacuous-parity fix) was written four
+  releases ago to hold five copied provider names in exact agreement.
+- `CANONICAL_ROUTABLE` and `ROUTABLE` from `WORKFLOW_PARITY_CONSTS`.
+  `BAD_CHARSET` keeps its pin and inherits the full weight: it is now the only
+  id guard the workflows carry, so a neutered `.test(id)` call site has no
+  second line of defence behind it.
+
+### Fixed
+
+- **The workflow pointed users at a command they cannot type** — found by a
+  Copilot review. `meta.whenToUse` and the JUDGMENT-fallback log line both said
+  `ops-render.sh --model <seat>`, but `ops-init.sh` installs only the five gate
+  CLIs into `.operator/bin/` — the renderer is not among them — and
+  `${CLAUDE_PLUGIN_ROOT}` is unset in the Bash tool env ([#62]), so neither
+  spelling resolves in a project shell. Copilot's suggested fix was the
+  `${CLAUDE_PLUGIN_ROOT}` form, which is the spelling #62 measured as broken;
+  both now name `/cc-operator:tiers`, the command that wraps the renderer and is
+  the only user-facing route to it. The maintainer comment beside the resolution
+  keeps the script name — it describes the implementation — and now says why the
+  two spellings differ. The node case pins the seat name as well as the command:
+  naming the wrong seat is as useless as naming no command.
+
+- **The dead-agent error read as truncated.** It ended "…names which", which
+  parses as a cut-off sentence rather than a clause. Reworded; same information.
+
+- **`check_workflow_agent_types` did not cover the one file that most needed
+  it** — found by two independent review lenses. The checker anchored on the
+  literal `agentType: "cc-operator:X"`, but `dispatch.js` resolves its
+  agentType from the `SEATS` table and passes the shorthand `agentType,`. The
+  regex found **zero** matches in that file: every one of its six seat values
+  retyped to a nonexistent agent shipped fully green (validator rc 0, node,
+  pytest). Both `dispatch.js`'s own comment and `CLAUDE.md`'s coupling row
+  cited this check as the reason the map is a literal — the F22 class they
+  claimed to prevent was not prevented. The regex now matches the **value**,
+  which covers a call site and a lookup table alike, over a comment-stripped
+  view (F57's rule) because `dispatch.js`'s prose quotes the concatenated form
+  it argues against. Both false claims corrected. Two validator cases added.
+
+- **`SEATS[seat]` inherited from `Object.prototype`** — `constructor`,
+  `toString`, `valueOf`, `hasOwnProperty` and `__proto__` all returned
+  something truthy, sailing past the `!agentType` guard and reaching `agent()`
+  as a native function instead of a string. `args.seat` is caller input and the
+  literal table is documented as the thing that *bounds* it, so the bound has
+  to hold for every string a caller can send. Now `Object.hasOwn`, the guard
+  cc-proxy's own lookup tables carry against the same trap. Five node cases,
+  one per name — `__proto__` yields an object rather than a function and would
+  survive a `typeof`-based fix.
+
+- **`check_workflows`' docstring described the inverted rule.** It still said a
+  `ROUTABLE` constant was REQUIRED and pinned; the body three lines below now
+  fires on its presence. Stale documentation on the exact function this repo's
+  procedures tell a maintainer to read before editing a guard.
+
+- **Two smaller comment defects**: `ops-tiers.sh`'s "Until 0.8.3 this function
+  carried…" was self-referential (0.8.3 is the release doing the removing) —
+  the renumbering search-and-replace missed it because the sentence is
+  line-wrapped, so the literal never matched; and `dispatch.js` cited
+  `ops-render.sh:53` for a claim that lives on `:54`.
+
+- **Three stale claims, found by reading rather than by a lens** — the [#70]
+  class, in this repo's own docs. `README.md` said "Four **workflows**" (now
+  five) and described the review panel as "most cheap, two judgment", which
+  0.8.2's own tier change had made false. `CLAUDE.md`'s coupling table said "The
+  FOUR workflows' `ROUTABLE` regex" — a hardcoded count beside a glob. It was
+  first corrected to "every workflow"; the guard-change above then removed
+  `ROUTABLE` outright, so that row now covers `BAD_CHARSET`. The lesson survives
+  the rewrite: `check_workflows` globs `workflows/*.js`, so a count in that
+  table rots the moment a file is added.
+
+### Notes
+
+Test deltas are inversions, not deletions: the cases that asserted *refusal* of
+`deepseek-v4-flash` / `bogus:vendor/model` now assert *acceptance*, alongside a
+"previously-legal ids still resolve" sweep proving the change only widens.
+Mutation-verified in all three directions — gutting the charset guard turns the
+bash suite red, re-declaring `ROUTABLE` turns the validator red, neutering
+`dispatch.js`'s `args.model` call site turns two node cases red.
+
 ## [0.8.2] - 2026-08-15
 
 ### Added
@@ -587,6 +752,7 @@ BAR block lands, after decomposition.
 [#58]: https://github.com/betmoar/cc-operator-plugin/issues/58
 [#59]: https://github.com/betmoar/cc-operator-plugin/issues/59
 [#68]: https://github.com/betmoar/cc-operator-plugin/issues/68
+[#70]: https://github.com/betmoar/cc-operator-plugin/issues/70
 [#60]: https://github.com/betmoar/cc-operator-plugin/issues/60
 
 ## [0.7.1] - 2026-08-12

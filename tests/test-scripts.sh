@@ -1882,7 +1882,7 @@ rm -rf "$P" "$SLPY" "$SLNONE"
 ########################################################################
 echo "-- Case: /cc-operator:tiers command wraps the tier resolver"
 # commands/tiers.md is a thin wrapper over ops-tiers.sh — it adds no logic, so
-# the resolver's own guards (charset, cc-proxy routability) are the validation.
+# the resolver's own charset guard is the validation.
 # What the command MUST guarantee: it exists, its allowed-tools grants the
 # ops-tiers.sh invocation, and it uses ${CLAUDE_PLUGIN_ROOT} (a bare scripts/
 # path resolves only inside this repo — the v0.2.0 blocked-start bug).
@@ -1904,75 +1904,44 @@ check "ops-tiers --show prints the TIER/MODEL/SOURCE table" \
 SETOUT="$(TIERSENV --set MECHANICAL=glm-4.7 --show 2>/dev/null)"
 check "set NAME=id applies a one-off override (source shows --set)" \
   "$(printf '%s' "$SETOUT" | grep -q 'MECHANICAL.*glm-4.7.*--set' && echo 0 || echo 1)"
-TIERSENV --set MECHANICAL=bogus-id >/dev/null 2>&1; BADRC=$?
-check "an unroutable --set id is refused (non-zero exit)" \
-  "$([ "$BADRC" -ne 0 ] && echo 0 || echo 1)"
-# THE PROVIDER LENS (#35). cc-proxy's canonical spelling since 0.6.0 is
-# `<provider>:<model>`, and check_routable knew three shapes, none of them this
-# one — so tiers.env could not name a provider model at all. The accepted set
-# is an ALLOWLIST mirroring cc-proxy's PROVIDER_IDS, not `*:*`, because that
-# distinction IS the guard: measured against cc-proxy's own parseModelSelector,
-# `qwen:deepseek-v4-pro` is stripped to `deepseek-v4-pro` while
-# `bogus:some-model` is NOT stripped and reaches the default backend as a
-# literal model id — the silent mis-route check_routable exists to prevent.
-TIERSENV --set MECHANICAL=qwen:deepseek-v4-pro >/dev/null 2>&1; LENSRC=$?
-check "a known provider lens is routable (qwen:deepseek-v4-pro)" \
-  "$([ "$LENSRC" -eq 0 ] && echo 0 || echo 1)"
-TIERSENV --set MECHANICAL=bogus:some-model >/dev/null 2>&1; LENSBAD=$?
-check "an UNKNOWN provider lens is refused (it would not be stripped)" \
-  "$([ "$LENSBAD" -ne 0 ] && echo 0 || echo 1)"
-LENSMSG="$(TIERSENV --set MECHANICAL=typo:glm-5.2 2>&1)"
-check "the unknown-lens refusal names the offending namespace and the known set" \
-  "$(printf '%s' "$LENSMSG" | grep -q "unknown provider lens 'typo:'" \
-     && printf '%s' "$LENSMSG" | grep -q 'known: glm openrouter deepseek qwen claude' \
-     && echo 0 || echo 1)"
-TIERSENV --set MECHANICAL=qwen: >/dev/null 2>&1; LENSEMPTY=$?
-check "a lens with an empty model is refused (qwen:)" \
-  "$([ "$LENSEMPTY" -ne 0 ] && echo 0 || echo 1)"
-# FIRST colon, matching cc-proxy's indexOf: `qwen:a:b` sends tail `a:b`
-# upstream, so the guard must accept rather than second-guess the split.
-TIERSENV --set MECHANICAL=qwen:a:b >/dev/null 2>&1; LENSMULTI=$?
-check "the lens splits at the FIRST colon, as cc-proxy does (qwen:a:b)" \
-  "$([ "$LENSMULTI" -eq 0 ] && echo 0 || echo 1)"
-# THE SLASH BYPASS. The lens test must run BEFORE the bare-shape cases: with
-# `*/*` first, `bogus:vendor/model` returned on the slash arm and the allowlist
-# was never consulted — while cc-proxy answers providerId=null for it and sends
-# the literal string upstream, the exact silent mis-route the allowlist exists
-# to prevent. Found by the review panel's feasibility lens on PR #36; the
-# guard's own comment claimed the opposite was true.
-TIERSENV --set MECHANICAL=bogus:vendor/model >/dev/null 2>&1; LENSSLASH=$?
-check "an unknown lens is refused even when the model half holds a slash" \
-  "$([ "$LENSSLASH" -ne 0 ] && echo 0 || echo 1)"
-# The negative control that keeps the fix honest: a KNOWN lens whose model half
-# is a vendor/model id must still pass. Refusing it would trade one bug for
-# another — openrouter:qwen/x is a legal cc-proxy id (providerId=openrouter,
-# upstream `qwen/x`).
-TIERSENV --set MECHANICAL=openrouter:qwen/x >/dev/null 2>&1; LENSOKSLASH=$?
-check "a KNOWN lens with a slashed model half is still routable" \
-  "$([ "$LENSOKSLASH" -eq 0 ] && echo 0 || echo 1)"
-# And a bare vendor/model, which carries no lens at all, is untouched.
-TIERSENV --set MECHANICAL=openai/gpt-5 >/dev/null 2>&1; LENSBARE=$?
-check "a bare vendor/model id is unaffected by the lens ordering" \
-  "$([ "$LENSBARE" -eq 0 ] && echo 0 || echo 1)"
-# A SLASH BEFORE THE COLON IS A VARIANT SUFFIX, NOT A LENS. OpenRouter spells
-# `vendor/model:free`, `:nitro`, `:online` (cc-proxy's models.js matches a
-# `:batch` suffix), and cc-proxy routes the WHOLE string via rankRoutes because
-# parseModelSelector returns providerId=null for them. Ordering the lens first
-# made the guard refuse ids that were routable before this PR — measured
-# against origin/main: pre-PR rc 0, post-PR rc 2 — with a message calling
-# `deepseek/deepseek-r1:` a provider namespace. Both spellings are pinned
-# because one is not evidence for the other.
-TIERSENV --set MECHANICAL=deepseek/deepseek-r1:free >/dev/null 2>&1; LENSVAR1=$?
-check "an OpenRouter variant suffix stays routable (vendor/model:free)" \
-  "$([ "$LENSVAR1" -eq 0 ] && echo 0 || echo 1)"
-TIERSENV --set MECHANICAL=qwen/qwen3-max:nitro >/dev/null 2>&1; LENSVAR2=$?
-check "a variant whose vendor half NAMES a known lens is still routable" \
-  "$([ "$LENSVAR2" -eq 0 ] && echo 0 || echo 1)"
-# The bypass stays closed: here the slash is AFTER the colon, so `bogus` is
-# still the head and still unknown.
-TIERSENV --set MECHANICAL=bogus:vendor/model >/dev/null 2>&1; LENSVAR3=$?
-check "the variant carve-out does not reopen the slash bypass" \
-  "$([ "$LENSVAR3" -ne 0 ] && echo 0 || echo 1)"
+# WHAT THE GUARD NO LONGER DOES (0.8.3). Until 0.8.2 this block asserted a
+# catalogue: three id SHAPES plus an allowlist of five provider lenses mirroring
+# cc-proxy's PROVIDER_IDS. Every one of those cases passed, and the catalogue
+# was wrong anyway — measured 2026-08-15 against a live cc-proxy serving 409
+# ids, check_routable refused 8 that route fine (`deepseek-v4-flash`,
+# `qwen3.8-max`, the bare vendor ids carrying neither a known prefix nor a
+# slash). A user who binds one in tiers.env got a refusal naming a shape list
+# they never asked about.
+#
+# The division of labour now: the USER picks the model (tiers.env is their
+# file), cc-proxy decides what it routes and what an unknown id does, and
+# operator decides neither. A wrong id surfaces at dispatch, from the system
+# that actually knows. So these cases assert ACCEPTANCE — each id below is one
+# the old guard refused.
+for _id in bogus-id deepseek-v4-flash qwen3.8-max bogus:some-model \
+           bogus:vendor/model x-ai/grok-4.6 glm-5.3 qwen:; do
+  TIERSENV --set "MECHANICAL=$_id" >/dev/null 2>&1; _rc=$?
+  check "an id operator does not recognise is accepted ($_id) — the user chooses, cc-proxy routes" \
+    "$([ "$_rc" -eq 0 ] && echo 0 || echo 1)"
+done
+# The negative control, and the whole remaining guard: a MALFORMED field is
+# still refused. Whitespace or a quote means the tiers.env line does not parse
+# as a model id (an unquoted `MECHANICAL=claude opus` splits) — that is about
+# the string, not about which models exist, so it cannot go stale.
+TIERSENV --set 'MECHANICAL=claude opus' >/dev/null 2>&1; BADCHAR=$?
+check "a whitespace-bearing id is still refused (the field is malformed, F01)" \
+  "$([ "$BADCHAR" -ne 0 ] && echo 0 || echo 1)"
+BADCHARMSG="$(TIERSENV --set 'MECHANICAL=glm-5"q' 2>&1)"
+check "the charset refusal names the charset, not a catalogue of known ids" \
+  "$(printf '%s' "$BADCHARMSG" | grep -q 'outside \[A-Za-z0-9._:/@\[\]-\]' && echo 0 || echo 1)"
+# Ids that were legal before AND after: the change is one-directional (it only
+# widens), so nothing that used to route may have stopped.
+for _id in qwen:deepseek-v4-pro openrouter:qwen/x openai/gpt-5 \
+           deepseek/deepseek-r1:free qwen/qwen3-max:nitro qwen:a:b 'glm-5.2[1m]'; do
+  TIERSENV --set "MECHANICAL=$_id" >/dev/null 2>&1; _rc=$?
+  check "a previously-legal id still resolves ($_id) — 0.8.3 only widens" \
+    "$([ "$_rc" -eq 0 ] && echo 0 || echo 1)"
+done
 # tiers.env carries TWO line kinds (the renderer's seat bindings share the
 # file). The resolver must SKIP a seat line, not die on it — the scaffold's own
 # documented example ('#op-scout=MECHANICAL', ops-init.sh) used to kill every
@@ -2188,22 +2157,21 @@ check "revert removes the rendered op-mechanic.md" \
 
 # guard chain: each rejection changes no file and exits non-zero.
 gmkdir() { mkdir -p "$RP/.claude/agents"; }
-printf 'MECHANICAL=not-a-model\n' > "$RP/.operator/tiers.env"
-( cd "$RP" && RENDERENV --show >/dev/null 2>&1 ); G1=$?
-check "guard: unroutable model id is refused (non-zero exit)" "$([ "$G1" -ne 0 ] && echo 0 || echo 1)"
 printf 'op-scout=BOGUS\n' > "$RP/.operator/tiers.env"
 ( cd "$RP" && RENDERENV --show >/dev/null 2>&1 ); G2=$?
 check "guard: seat bound to unknown tier is refused (non-zero exit)" "$([ "$G2" -ne 0 ] && echo 0 || echo 1)"
 # The renderer carries its own copy of check_routable (validate_plugin's
-# check_resolver_renderer_parity pins the two equal, and LENS_NAMESPACES
-# separately since it lives outside the function braces). Both halves are
-# asserted HERE too: parity proves they are the same, not that either works.
-printf 'MECHANICAL=qwen:deepseek-v4-pro\n' > "$RP/.operator/tiers.env"
-( cd "$RP" && RENDERENV --show >/dev/null 2>&1 ); G3=$?
-check "guard: the renderer accepts a known provider lens too" "$([ "$G3" -eq 0 ] && echo 0 || echo 1)"
-printf 'MECHANICAL=bogus:some-model\n' > "$RP/.operator/tiers.env"
-( cd "$RP" && RENDERENV --show >/dev/null 2>&1 ); G4=$?
-check "guard: the renderer refuses an unknown provider lens too" "$([ "$G4" -ne 0 ] && echo 0 || echo 1)"
+# check_resolver_renderer_parity pins the two equal). Both halves are asserted
+# HERE too: parity proves they are the same, not that either works. Since 0.8.3
+# the guard judges WELL-FORMEDNESS only — an id it does not recognise is the
+# user's choice and cc-proxy's routing decision, so it renders.
+for _id in not-a-model deepseek-v4-flash qwen3.8-max bogus:some-model \
+           qwen:deepseek-v4-pro; do
+  printf 'MECHANICAL=%s\n' "$_id" > "$RP/.operator/tiers.env"
+  ( cd "$RP" && RENDERENV --show >/dev/null 2>&1 ); _rc=$?
+  check "guard: the renderer accepts an id it does not recognise ($_id)" \
+    "$([ "$_rc" -eq 0 ] && echo 0 || echo 1)"
+done
 printf 'MECHANICAL=glm 5\n' > "$RP/.operator/tiers.env"
 ( cd "$RP" && RENDERENV --show >/dev/null 2>&1 ); G3=$?
 check "guard: whitespace in model id is refused (non-zero exit)" "$([ "$G3" -ne 0 ] && echo 0 || echo 1)"
@@ -4342,13 +4310,18 @@ check "#55 a charset-illegal seat name is refused (F18 allowlist)" \
 ( cd "$P" && "$BASH_ABS" "$SCRIPTS/ops-render.sh" --model >/dev/null 2>&1 ); NOARGRC=$?
 check "#55 --model with no seat argument is refused" \
   "$([ "$NOARGRC" != 0 ] && echo 0 || echo 1)"
-# It is the SAME resolver, not a second one: an unroutable binding must be
-# refused here exactly as --show refuses it, or --model becomes a bypass around
-# the guard that keeps a mis-routed id from reaching cc-proxy.
-printf 'IMPLEMENT=not-routable\n' > "$P/.operator/tiers.env"
+# It is the SAME resolver, not a second one: --model must apply exactly the
+# guard --show applies, or it becomes a bypass. Both halves are pinned, because
+# the guard's polarity changed in 0.8.3 and only the pair proves it moved as a
+# unit — a MALFORMED field is refused, an UNRECOGNISED one resolves.
+printf 'IMPLEMENT=claude sonnet\n' > "$P/.operator/tiers.env"
 ( cd "$P" && "$BASH_ABS" "$SCRIPTS/ops-render.sh" --model mechanic >/dev/null 2>&1 ); BADRC=$?
-check "#55 an unroutable binding is refused through the same check_routable" \
+check "#55 a malformed binding is refused through the same check_routable" \
   "$([ "$BADRC" != 0 ] && echo 0 || echo 1)"
+printf 'IMPLEMENT=deepseek-v4-flash\n' > "$P/.operator/tiers.env"
+MODELOUT="$( cd "$P" && "$BASH_ABS" "$SCRIPTS/ops-render.sh" --model mechanic 2>/dev/null )"
+check "#55 --model resolves an id operator does not recognise (0.8.3)" \
+  "$([ "$MODELOUT" = "deepseek-v4-flash" ] && echo 0 || echo 1)"
 rm -rf "$P"
 
 ########################################################################

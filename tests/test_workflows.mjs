@@ -120,22 +120,20 @@ ok((await brainstormN(3)) === 3, "brainstorm N: 3 → 3 (in range)");
 ok((await brainstormN(undefined)) === 4, "brainstorm N: undefined → default 4");
 
 // Tier validation: IMPLEMENT (valid-but-unused) accepted; typo rejected; bad
-// charset rejected; unroutable rejected. Each is a top-level throw, so the
-// workflow aborts before any agent call.
+// charset rejected. An id operator does not recognise is ACCEPTED (0.8.3).
+// Each rejection is a top-level throw, so the workflow aborts before any
+// agent call.
 await throws(() => run(WF("brainstorm.js"), { tiers: { Mechanical: "glm-5" } }, {}),
   "brainstorm tier: typo 'Mechanical' rejected (F07 typo guard)", "unknown tier");
-await throws(() => run(WF("brainstorm.js"), { tiers: { MECHANICAL: "glm 5" } }, {}),
-  "brainstorm tier: whitespace in id rejected (via ROUTABLE — no glm- prefix)", "not cc-proxy-routable");
-// The above throws on ROUTABLE, NOT on the charset guard: "glm 5" has no
-// `glm-` prefix, no `/`, no `claude-` prefix, so it never reaches
-// BAD_CHARSET.test. Verified — a review found this test's old "(F01 charset)"
-// label claimed coverage it did not provide, and neutering BAD_CHARSET in all
-// four workflows left the whole suite green. The charset guard needs an id
-// that PASSES ROUTABLE and fails only on charset. Both shapes below do:
-// "glm-5 turbo" via the glm- prefix, "vendor/model x" via the slash.
-for (const bad of ["glm-5 turbo", "vendor/model x", 'glm-5"q', "claude-opus 5"]) {
+// Every whitespace/quote shape now lands on the ONE guard (0.8.3 removed the
+// id-shape catalogue). The pre-0.8.3 suite split these across two guards and
+// mislabelled which one fired — a review found the "glm 5" case claimed charset
+// coverage while actually throwing on ROUTABLE, and neutering BAD_CHARSET in
+// all four workflows left the suite green. With one guard the label cannot lie,
+// but the list still spans the shapes that used to route differently.
+for (const bad of ["glm 5", "glm-5 turbo", "vendor/model x", 'glm-5"q', "claude-opus 5"]) {
   await throws(() => run(WF("brainstorm.js"), { tiers: { MECHANICAL: bad } }, {}),
-    `brainstorm tier: ROUTABLE-shaped but charset-bad ${JSON.stringify(bad)} rejected (F01)`,
+    `brainstorm tier: charset-bad ${JSON.stringify(bad)} rejected (F01)`,
     "outside the");
 }
 // The converse: a bracket-marked id is charset-LEGAL and must NOT be rejected
@@ -147,24 +145,25 @@ try {
     { blindspots: { findings: [] }, converge: { ranked: [], sharedConstraints: [], openQuestions: [] } });
 } catch { bracketOk = false; }
 ok(bracketOk, "brainstorm tier: bracket-marked id 'glm-5.2[1m]' accepted (charset allows ])");
-await throws(() => run(WF("brainstorm.js"), { tiers: { MECHANICAL: "not-routable" } }, {}),
-  "brainstorm tier: unroutable id rejected", "not cc-proxy-routable");
-// F8 (issue #35): the provider-lens allowlist must be consulted BEFORE the bare
-// slash fallback. A flat alternation whose bare `\/` arm precedes the lens lets
-// `bogus:vendor/model` route on the slash, while the shell check_routable
-// (lens-first) dies on it. Mirror that ordering here: reject the bypass...
-await throws(() => run(WF("brainstorm.js"), { tiers: { JUDGMENT: "bogus:vendor/model" } }, {}),
-  "brainstorm tier: provider-lens bypass 'bogus:vendor/model' rejected (F8)", "not cc-proxy-routable");
-// ...and accept every legal shape the lens-first rule keeps routable: bare
-// glm-/claude-, a slash-headed variant (`vendor/model:free`), and a known lens.
+// 0.8.3: an id operator does not recognise is ACCEPTED, and that is the point.
+// The list below is the direct inverse of the pre-0.8.3 cases — `not-routable`
+// and `bogus:vendor/model` used to be the two headline rejects, held in place
+// by a shape catalogue and a provider allowlist. Both were operator asserting
+// which model ids exist. The user picks the model; cc-proxy routes it or
+// errors. `deepseek-v4-flash` and `qwen3.8-max` are here because they are real
+// ids the old guard refused (measured against a live 409-id catalogue), and
+// `bogus:vendor/model` because a namespace this repo has never heard of is
+// cc-proxy's business, not ours.
 for (const good of ["glm-5.2", "claude-opus-5", "deepseek/deepseek-r1:free",
-                    "openrouter:anthropic/claude-3-opus", "vendor/model:free"]) {
+                    "openrouter:anthropic/claude-3-opus", "vendor/model:free",
+                    "deepseek-v4-flash", "qwen3.8-max", "not-routable",
+                    "bogus:vendor/model"]) {
   let accepted = true;
   try {
     await run(WF("brainstorm.js"), { tiers: { MECHANICAL: good } },
       { blindspots: { findings: [] }, converge: { ranked: [], sharedConstraints: [], openQuestions: [] } });
   } catch { accepted = false; }
-  ok(accepted, `brainstorm tier: legal id ${JSON.stringify(good)} accepted (F8)`);
+  ok(accepted, `brainstorm tier: id ${JSON.stringify(good)} accepted — operator does not gate the catalogue (0.8.3)`);
 }
 // IMPLEMENT is in KNOWN_TIERS → accepted (no throw); it's unused but routable.
 let implOk = true;
@@ -525,40 +524,135 @@ ok(claimedJudgment != null && NUMBER_WORD[claimedJudgment[1].toLowerCase()] === 
 ok(!/\bmost at cheap tiers\b/.test(metaBlock) || mechanicalLenses > judgmentLenses,
   `review: meta's "most at cheap tiers" holds against the table (F40; ${mechanicalLenses} cheap vs ${judgmentLenses} judgment)`);
 
-// ── the routability guard is APPLIED in all four workflows (#60) ────────────
-// The static pin (validate_plugin.check_workflows) compares the ROUTABLE
-// literal across the four copies, so it sees any change to the regex TEXT.
-// Measured, both halves:
+// ── the id guard is APPLIED in every workflow (#60) ─────────────────────────
+// The static pin (validate_plugin.check_workflows) compares the BAD_CHARSET
+// literal across the copies, so it sees any change to the regex TEXT — but it
+// cannot see a correct regex that is never applied (the F30 vacuity shape).
+// Measured on the pre-change pair of guards: neutering a call site to
+// `false && …` left the static pin at 0 findings, and the runtime caught it
+// ONLY where an assertion existed (brainstorm 77/2, review 79/0). Three of the
+// four workflows had nothing covering it — a workflow whose guard does nothing
+// shipped with every gate green.
 //
-//   regex reverted to the pre-F8 shape  → static pin 2 findings, in all four
-//                                         files; runtime silent for three
-//   regex intact, `!ROUTABLE.test(id)`  → static pin 0 findings; runtime
-//     neutered to `false && …`            catches it ONLY where an assertion
-//                                         exists (brainstorm 77/2, review 79/0
-//                                         — measured against the PRE-#60 suite
-//                                         of 79; against the 85 below the same
-//                                         mutations read 84/1, per-file)
-//
-// So this is not defence in depth, which is what the issue assumed. The pin
-// cannot see a correct regex that is never applied — the F30 vacuity shape —
-// and until now three of the four workflows had nothing covering it. A
-// workflow whose routability guard does nothing would ship with every gate
-// green.
+// That matters more now, not less: 0.8.3 removed the id-shape catalogue, so
+// BAD_CHARSET is the ONLY id guard left. There is no second regex to catch what
+// a neutered call site lets through.
 //
 // One assertion per file, each exercising that file's own call site: a shared
-// helper looping over the four would pass with three of them deleted.
-await throws(() => run(WF("review.js"), { tiers: { JUDGMENT: "bogus:vendor/model" } }, {}),
-  "review tier: provider-lens bypass 'bogus:vendor/model' rejected (#60)", "not cc-proxy-routable");
+// helper looping over them would pass with all but one deleted.
 await throws(() => run(WF("review.js"), { tiers: { MECHANICAL: "not routable" } }, {}),
-  "review tier: unroutable id rejected — the guard is applied, not merely present (#60)", "not cc-proxy-routable");
-await throws(() => run(WF("crawl.js"), { tiers: { JUDGMENT: "bogus:vendor/model" }, shards: ["x"] }, {}),
-  "crawl tier: provider-lens bypass 'bogus:vendor/model' rejected (#60)", "not cc-proxy-routable");
+  "review tier: charset-bad id rejected — the guard is applied, not merely present (#60)", "outside the");
 await throws(() => run(WF("crawl.js"), { tiers: { MECHANICAL: "not routable" }, shards: ["x"] }, {}),
-  "crawl tier: unroutable id rejected — the guard is applied, not merely present (#60)", "not cc-proxy-routable");
-await throws(() => run(WF("plan.js"), { tiers: { JUDGMENT: "bogus:vendor/model" }, spec: "s" }, {}),
-  "plan tier: provider-lens bypass 'bogus:vendor/model' rejected (#60)", "not cc-proxy-routable");
+  "crawl tier: charset-bad id rejected — the guard is applied, not merely present (#60)", "outside the");
 await throws(() => run(WF("plan.js"), { tiers: { MECHANICAL: "not routable" }, spec: "s" }, {}),
-  "plan tier: unroutable id rejected — the guard is applied, not merely present (#60)", "not cc-proxy-routable");
+  "plan tier: charset-bad id rejected — the guard is applied, not merely present (#60)", "outside the");
+
+// ── dispatch: one seat, one model (#55) ─────────────────────────────────────
+console.log("-- Case: dispatch.js routes a seat to a caller-supplied model (#55)");
+// The gap this closes: the plain Agent tool's `model` parameter is enum-locked
+// to sonnet|opus|haiku|fable, so a cc-proxy id is rejected BEFORE dispatch and
+// a seat cannot run on its configured tier without rendering. This workflow is
+// the one route by which a resolved id reaches a seat at all.
+const DISPATCH_OK = { "dispatch:mechanic": { ok: true } };
+
+// The two things that must BOTH be right, asserted on the actual call opts
+// rather than on the return value: the seat picks the agentType, and the
+// caller's id survives to `model`. Either alone is not the feature.
+const { rt: dRt } = await run(WF("dispatch.js"),
+  { seat: "mechanic", prompt: "do the thing", model: "deepseek:deepseek-v4-flash" },
+  DISPATCH_OK);
+const dCall = dRt.calls.find((c) => c.label === "dispatch:mechanic");
+ok(dCall?.model === "deepseek:deepseek-v4-flash",
+  "dispatch: the caller's model id reaches the agent call (the whole point of #55)");
+ok(dCall?.prompt === "do the thing",
+  "dispatch: the prompt reaches the seat unmodified");
+// A second seat, so the case cannot pass against a hardcoded agentType.
+const { rt: dRt2 } = await run(WF("dispatch.js"),
+  { seat: "scout", prompt: "find it", model: "glm-5-turbo" },
+  { "dispatch:scout": { ok: true } });
+ok(dRt2.calls.find((c) => c.label === "dispatch:scout")?.model === "glm-5-turbo",
+  "dispatch: a second seat routes independently (not a hardcoded pair)");
+// The `op-` prefix is optional everywhere else in this project; a caller
+// copying a name out of an agent filename must not be refused.
+const { rt: dRt3 } = await run(WF("dispatch.js"),
+  { seat: "op-mechanic", prompt: "p", model: "glm-5-turbo" }, DISPATCH_OK);
+ok(dRt3.calls.some((c) => c.label === "dispatch:mechanic"),
+  "dispatch: the 'op-' prefix is optional, as in tiers.env and --model");
+
+// The caller-supplied id gets the SAME guard as a tiers.env binding — no more
+// and no less. Less makes this workflow a bypass around check_routable; more
+// makes it the one place that second-guesses the caller's model choice.
+await throws(() => run(WF("dispatch.js"),
+  { seat: "mechanic", prompt: "p", model: "not routable" }, DISPATCH_OK),
+  "dispatch: a charset-bad args.model is rejected", "outside the");
+await throws(() => run(WF("dispatch.js"),
+  { seat: "mechanic", prompt: "p", model: 'glm-5"q' }, DISPATCH_OK),
+  "dispatch: a quote-bearing args.model is rejected", "outside the");
+// ...and the inverse, which is the 0.8.3 correction: an id operator does not
+// recognise DISPATCHES. `bogus:vendor/model` was the headline reject here until
+// the guard learned it was not operator's call; `deepseek-v4-flash` is a real
+// id the old shape catalogue refused. Both must reach agent() untouched.
+for (const id of ["bogus:vendor/model", "deepseek-v4-flash", "qwen3.8-max"]) {
+  const { rt } = await run(WF("dispatch.js"),
+    { seat: "mechanic", prompt: "p", model: id }, DISPATCH_OK);
+  ok(rt.calls.some((c) => c.model === id),
+    `dispatch: unrecognised-but-well-formed id ${JSON.stringify(id)} reaches agent() (0.8.3)`);
+}
+// An unknown seat must REFUSE, not fall through to some default agentType:
+// args.seat is caller input, and without the literal table it would become an
+// arbitrary agentType string.
+await throws(() => run(WF("dispatch.js"),
+  { seat: "nosuchseat", prompt: "p", model: "glm-5-turbo" }, {}),
+  "dispatch: an unknown seat is refused, never coerced into an agentType",
+  "unknown seat");
+// A prototype-chain name must be refused like any other unknown seat. SEATS is
+// a plain object literal, so a bare `SEATS[seat]` returns a truthy native
+// function for `constructor`/`toString`/`valueOf`/`hasOwnProperty`/`__proto__`
+// — sailing past the `!agentType` guard and reaching agent() as a function
+// instead of a string. Found by review after 0.8.3; the file's own comment
+// claims the table BOUNDS what a caller can dispatch, so the bound has to hold
+// for every string a caller can send, not just for the ones that look like
+// seats. Each name is asserted separately: `__proto__` resolves to an object
+// rather than a function and would survive a typeof-based fix.
+for (const evil of ["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__"]) {
+  await throws(() => run(WF("dispatch.js"),
+    { seat: evil, prompt: "p", model: "glm-5-turbo" }, {}),
+    `dispatch: prototype-chain seat ${JSON.stringify(evil)} is refused, not dispatched`,
+    "unknown seat");
+}
+await throws(() => run(WF("dispatch.js"), { prompt: "p", model: "glm-5-turbo" }, {}),
+  "dispatch: a missing seat is refused", "must be a seat name");
+await throws(() => run(WF("dispatch.js"), { seat: "mechanic", model: "glm-5-turbo" }, {}),
+  "dispatch: an empty prompt is refused (a paid seat with no task)",
+  "must be a non-empty string");
+
+// No args.model: falls back to a tier default rather than throwing, and SAYS
+// SO. A silent fallback is how a caller who meant to pass a binding never finds
+// out they dispatched on something else.
+const { result: dFall, rt: dFallRt } = await run(WF("dispatch.js"),
+  { seat: "mechanic", prompt: "p" }, DISPATCH_OK);
+ok(dFall?.model === "claude-opus-5",
+  "dispatch: no args.model falls back to the JUDGMENT tier default");
+// The command it names must be one a user can actually TYPE. It used to say
+// `ops-render.sh --model <seat>`, which is neither installed into
+// .operator/bin/ (only the five gate CLIs are) nor reachable via
+// ${CLAUDE_PLUGIN_ROOT} in the Bash tool env (#62) — a Copilot review of this
+// PR caught the fallback pointing at a command that does not exist in a
+// project shell. Pin the seat name too: naming the wrong seat is as useless as
+// naming no command.
+ok(dFallRt.logs.some((m) => /no args\.model given/.test(m)
+    && /\/cc-operator:tiers/.test(m) && /mechanic/.test(m)),
+  "dispatch: the fallback is LOGGED and names a command a user can actually run");
+
+// A dead agent returns null. Reporting that as a result would let a caller read
+// "the seat ran and said nothing" from "the seat never ran" — the fail-open
+// shape review.js's dead-lens accounting exists to close.
+const { result: dDead } = await run(WF("dispatch.js"),
+  { seat: "mechanic", prompt: "p", model: "glm-5-turbo" }, {});
+ok(dDead?.dead === true && /agent died/.test(dDead?.error ?? ""),
+  "dispatch: a dead agent is reported as dead, not as an empty result");
+ok(dDead?.result === undefined,
+  "dispatch: a dead agent carries no `result` key a caller could read as output");
 
 console.log(`\n== summary: ${pass} passed, ${fail} failed ==`);
 if (fail > 0) process.exit(1);
