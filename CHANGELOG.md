@@ -11,7 +11,7 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [0.8.4] - 2026-08-16
 
-Four measured unknowns closed, and the one that mattered most closed by
+Six issues closed, and the one that mattered most closed by
 **declining to build what its issue proposed**. #70 asked for a sixth review
 lens; the corpus it demanded got built, the panel got measured against it, and
 the panel detected 6/6 and the control column produced no false positive — so
@@ -132,7 +132,8 @@ off-by-one of its own. Found by a lens, confirmed, and fixed under review.)
   lenses ran verbatim over the neutralized drift corpus at their shipped tiers:
   `feasibility` and `quality` detected **6/6** and named the mechanism each time,
   `correctness` 6/6 at lower confidence, `testability` 4/6, `spec` 0/6. The
-  corrected column produced **zero** drift false-positives. Option 2 (sharpen
+  corrected column produced **no false positive**: its one drift finding was a
+  TRUE positive against a fixture claim that was itself wrong (see below). Option 2 (sharpen
   `feasibility`) is also declined: it ran *unmodified* and caught all three
   fixtures whose claim and code live in different files — the shape #70 predicted
   it would miss — scoring its two highest results of the run on exactly those.
@@ -157,11 +158,29 @@ off-by-one of its own. Found by a lens, confirmed, and fixed under review.)
   undescendable subdirectory produced a green build *and* a green verify over a
   short corpus; and the newline-in-filename guard was vacuous, both sides
   counting the same `find -print` output. Fixed with `-print0` (redirect outside
-  the pipe, `sort -z`, NUL-count vs line-count), four new cases,
-  mutation-verified, and hash-preserving — the security corpus still stamps
+  the pipe, `sort -z`, NUL-count vs line-count), four cases added for that round
+  alone (`ops-corpus.sh` carries 36 `#69` cases in total once the later rounds
+  are counted), mutation-verified, and hash-preserving — the security corpus still stamps
   `2cf86bf4…`. The run also found that `drift/lock-ceiling`'s *corrected* column
-  was itself off (29 sleeps, not 30) and three defects in the charter's own text,
-  all recorded in `docs/REPLAY-CHARTER.md`.
+  was itself off (29 sleeps, not 30) and three defects in the charter's own text.
+  Those three are now fixed **in the R1/R4 instructions themselves**, not only
+  recorded in the retrospective — a replayer following the charter as written
+  would otherwise have hit them again.
+
+- **Two further review rounds, eight more defects**, five of them in fixes the
+  earlier rounds had just written. Recorded because a release whose notes stop at
+  the first review round describes a tree that no longer exists:
+
+  | Found by | Defect |
+  |---|---|
+  | Copilot | A map may name `.ops-corpus-stamp` as its production name: the copy succeeds, the stamp write overwrites it. Build announced `2 file(s)`, the tree held one, `verify` said ok. |
+  | Copilot | `isolation.commit` reported the caller's *request*, so a REFUTED — the verdict an identity mismatch produces — stamped a sha the run may never have been at. Renamed `requestedCommit`; `observedCommit` added and documented as unwired. |
+  | Copilot | `check_handout_packet` searched the whole document, and prose around the packet contains `REACH` — so deleting the field from the fenced packet left the pin green. It now extracts the fenced block. |
+  | Copilot | The drift 2×2 scan was one-way: a file present only in `true/` was never visited. Reverse pass added. |
+  | Copilot | `lock-ceiling/true/lock.sh` was not clean, which makes a zero-false-positive claim unsound. The evidence was already in the measurement's own control column, read as an adjacent observation. |
+  | silent-failure lens | `corpus_hash` leaked **three** temp files per failure — it runs in a command substitution, so `die` ends that subshell and no cleanup placed after it can run. 83 files measured in one afternoon. Fixed with a trap in the same subshell. |
+  | silent-failure lens | The reserved-stamp guard compared bytes; APFS does not. `.OPS-CORPUS-STAMP` walked past it onto the same directory entry — the guard's own target, through case. |
+  | comment lens | The `lock-ceiling` timing claim was wrong a **third** time: `~2.9s` is the sum of the sleeps, measured wall clock is ~3.7s. The fixture now states the mechanism and both numbers, because three precise figures in a row missed.
 
 ## [0.8.3] - 2026-08-15
 
