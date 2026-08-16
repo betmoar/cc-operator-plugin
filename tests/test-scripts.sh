@@ -3264,6 +3264,10 @@ check "G1.10 a never-armed verdict writes both the exception and the row" \
 # equal, which would make an mtime assertion pass on BOTH orders — a vacuous
 # guard (#21). The write block is the artifact; assert on it.
 G110_XL="$(grep -nF 'sid:%s] verdict %s recorded without an open sentinel' "$SCRIPTS/ops-verdict.sh" | tail -1 | cut -d: -f1)"
+# shellcheck disable=SC2016  # the single quotes are the point: grep -F searches
+# for the LITERAL text `"$ROW" >> "$VERDICTS"` in ops-verdict.sh's source. Expanding
+# it here would search for this suite's own (empty) $ROW and find nothing, and the
+# `-n` presence guard below would then fail the case rather than the file.
 G110_RL="$(grep -nF '"$ROW" >> "$VERDICTS"' "$SCRIPTS/ops-verdict.sh" | tail -1 | cut -d: -f1)"
 check "G1.10 control: both write sites are locatable in ops-verdict.sh" \
   "$([ -n "$G110_XL" ] && [ -n "$G110_RL" ] && echo 0 || echo 1)"
@@ -4771,8 +4775,9 @@ else
     mkdir -p "$_CSRC/an-unmapped-fixture"
     : > "$_CSRC/an-unmapped-fixture/vuln.sh"
     bash "$CORPUS" build --corpus "$_CSRC" --out "$_CTMP/derived3" >/dev/null 2>&1
+    _RC=$?
     check "#69 a corpus dir the map does not name is REFUSED, not silently omitted" \
-      "$([ "$?" -ne 0 ] && echo 0 || echo 1)"
+      "$([ "$_RC" -ne 0 ] && echo 0 || echo 1)"
 
     # EVERY map field is parsed input reaching a path, and every one is guarded.
     # The first shape guarded only the write side (`dest`) while `dir`/`src`
@@ -4797,8 +4802,9 @@ else
     # 2. traversal on the SOURCE name, which is a bare filename.
     printf 'f1 ../../OUTSIDE.txt leaked.txt\n' > "$_EVIL/$_MAPN"
     bash "$CORPUS" build --corpus "$_EVIL" --out "$_CTMP/evilout2" >/dev/null 2>&1
+    _RC=$?
     check "#69 a map source-name containing a path separator is refused" \
-      "$([ "$?" -ne 0 ] && echo 0 || echo 1)"
+      "$([ "$_RC" -ne 0 ] && echo 0 || echo 1)"
     # 3. the same reach wearing a different hat: `-f` follows a symlink and `cp`
     #    (no -P) copies the TARGET's content, so a link planted in the corpus
     #    reaches the tree with bytes from anywhere on disk — equally invisible to
@@ -4817,8 +4823,9 @@ else
     # would score five passes here.
     printf 'f1 src.sh ok.sh\n' > "$_EVIL/$_MAPN"
     bash "$CORPUS" build --corpus "$_EVIL" --out "$_CTMP/evilout4" >/dev/null 2>&1
+    _RC=$?
     check "#69 control: a legitimate map line on the same corpus still builds" \
-      "$([ "$?" -eq 0 ] && [ -f "$_CTMP/evilout4/ok.sh" ] && echo 0 || echo 1)"
+      "$([ "$_RC" -eq 0 ] && [ -f "$_CTMP/evilout4/ok.sh" ] && echo 0 || echo 1)"
 
     # 4. A SYMLINKED DIRECTORY, which is the case the first two rounds of guards
     #    both missed. `..` in the string and a symlinked LEAF file were both
@@ -4853,8 +4860,9 @@ else
     mkdir -p "$_SLINK/evildir"
     printf 'inside-content\n' > "$_SLINK/evildir/secret.txt"
     bash "$CORPUS" build --corpus "$_SLINK" --out "$_CTMP/evilout5b" >/dev/null 2>&1
+    _RC=$?
     check "#69 control: the same corpus with a REAL directory builds (the refusal was the symlink)" \
-      "$([ "$?" -eq 0 ] && [ -f "$_CTMP/evilout5b/leaked.txt" ] && echo 0 || echo 1)"
+      "$([ "$_RC" -eq 0 ] && [ -f "$_CTMP/evilout5b/leaked.txt" ] && echo 0 || echo 1)"
 
     # 5. corpus_hash must FAIL LOUDLY rather than hash a short corpus. `set -e`
     #    does not see a failure inside a non-final pipeline stage and the final
@@ -4877,8 +4885,9 @@ else
       # Control: the SAME corpus, all files readable, builds — otherwise a script
       # that refused every corpus would pass the case above.
       bash "$CORPUS" build --corpus "$_NOREAD" --out "$_CTMP/noreadout2" >/dev/null 2>&1
+      _RC=$?
       check "#69 control: the same corpus with every file readable builds" \
-        "$([ "$?" -eq 0 ] && echo 0 || echo 1)"
+        "$([ "$_RC" -eq 0 ] && echo 0 || echo 1)"
     else
       echo "  skip #69 unreadable-file case: running as root, which can read anything"
     fi
@@ -4891,18 +4900,21 @@ else
     mkdir -p "$_CTMP/nomap/f1"
     : > "$_CTMP/nomap/f1/x.sh"
     bash "$CORPUS" build --corpus "$_CTMP/nomap" --out "$_CTMP/nomapout" >/dev/null 2>&1
+    _RC=$?
     check "#69 a corpus with no map is refused (it declares what gets copied out)" \
-      "$([ "$?" -ne 0 ] && echo 0 || echo 1)"
+      "$([ "$_RC" -ne 0 ] && echo 0 || echo 1)"
     printf 'f1 x.sh ok.sh\n' > "$_CTMP/realmap"
     ln -s "$_CTMP/realmap" "$_CTMP/nomap/$_MAPN"
     bash "$CORPUS" build --corpus "$_CTMP/nomap" --out "$_CTMP/nomapout2" >/dev/null 2>&1
+    _RC=$?
     check "#69 a SYMLINKED map is refused (never a map our tooling wrote)" \
-      "$([ "$?" -ne 0 ] && echo 0 || echo 1)"
+      "$([ "$_RC" -ne 0 ] && echo 0 || echo 1)"
     rm -f "$_CTMP/nomap/$_MAPN"
     cp "$_CTMP/realmap" "$_CTMP/nomap/$_MAPN"
     bash "$CORPUS" build --corpus "$_CTMP/nomap" --out "$_CTMP/nomapout3" >/dev/null 2>&1
+    _RC=$?
     check "#69 control: the same map as a REGULAR file is accepted" \
-      "$([ "$?" -eq 0 ] && echo 0 || echo 1)"
+      "$([ "$_RC" -eq 0 ] && echo 0 || echo 1)"
 
     # 7. --out safety. The inside-the-repo refusal is the one standing between
     #    "the corpus is neutralized" and "the panel is shown the repo it is
@@ -4910,18 +4922,21 @@ else
     #    behaviour is pinned too: `<repo>-2` must NOT be refused by a check meant
     #    for `<repo>`, which is the classic prefix off-by-one.
     bash "$CORPUS" build --corpus "$SECDIR" --out "$REPO/derived-in-repo" >/dev/null 2>&1
+    _RC=$?
     check "#69 --out inside the repo worktree is refused (the panel would review the repo)" \
-      "$([ "$?" -ne 0 ] && echo 0 || echo 1)"
+      "$([ "$_RC" -ne 0 ] && echo 0 || echo 1)"
     check "#69 control: the refused in-repo build left nothing in the worktree" \
       "$([ ! -d "$REPO/derived-in-repo" ] && echo 0 || echo 1)"
     bash "$CORPUS" build --corpus "$SECDIR" --out "$_CTMP/probe1-nonempty" >/dev/null 2>&1
     bash "$CORPUS" build --corpus "$SECDIR" --out "$_CTMP/probe1-nonempty" >/dev/null 2>&1
+    _RC=$?
     check "#69 a non-empty --out without --force is refused" \
-      "$([ "$?" -ne 0 ] && echo 0 || echo 1)"
+      "$([ "$_RC" -ne 0 ] && echo 0 || echo 1)"
     : > "$_CTMP/afile"
     bash "$CORPUS" build --corpus "$SECDIR" --out "$_CTMP/afile" >/dev/null 2>&1
+    _RC=$?
     check "#69 an --out that exists and is not a directory is refused" \
-      "$([ "$?" -ne 0 ] && echo 0 || echo 1)"
+      "$([ "$_RC" -ne 0 ] && echo 0 || echo 1)"
   else
     fail "#69 ops-corpus.sh build succeeds against the shipped security corpus"
   fi
@@ -5003,8 +5018,9 @@ if [ -d "$DRIFTDIR" ]; then
   printf '# a comment\nX=1\n' > "$_CTL_A"
   printf '# a different comment\nX=2\n' > "$_CTL_B"
   diff <(_drift_code_only "$_CTL_A") <(_drift_code_only "$_CTL_B") >/dev/null 2>&1
+  _RC=$?
   check "#70 control: the prose-only comparison still detects a real CODE difference" \
-    "$([ "$?" -ne 0 ] && echo 0 || echo 1)"
+    "$([ "$_RC" -ne 0 ] && echo 0 || echo 1)"
   # And the converse: two files differing ONLY in a whole-line comment must
   # compare equal, or the case above would fire on every fixture and its
   # "none differ in code" verdict would be luck.

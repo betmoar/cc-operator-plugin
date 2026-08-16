@@ -278,7 +278,15 @@ $name
   copied=0
   while IFS=' ' read -r dir src dest; do
     [ -n "$dir" ] || continue
-    [ -n "$src" ] && [ -n "$dest" ] || die "$MAP_NAME line '$dir $src $dest' is malformed — want: <dir> <source-file> <production-name>"
+    # `A && B || C`, which this was, is NOT if-then-else: C also runs when A is
+    # true and B is false — here that is the correct outcome by luck, not by
+    # construction, and the next edit to the condition would not be. Spelled as
+    # a real `if` so the guard means what it reads as (shellcheck SC2015, seen
+    # by CI's pinned 0.10.0 and NOT by a newer local shellcheck — run the
+    # container command from .github/workflows/validate.yml, not `shellcheck`).
+    if [ -z "$src" ] || [ -z "$dest" ]; then
+      die "$MAP_NAME line '$dir $src $dest' is malformed — want: <dir> <source-file> <production-name>"
+    fi
     # ALL THREE fields are parsed input and all three become path components, so
     # all three are guarded. The first shape guarded only `dest` — the write side
     # — while `dir` and `src` flowed unchecked into the read. Measured: a map line
