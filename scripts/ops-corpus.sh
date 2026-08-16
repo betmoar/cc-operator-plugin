@@ -366,6 +366,15 @@ $name
     esac
     case "$dest" in
       */*|..|.|"") die "$MAP_NAME: production name '$dest' must be a bare filename, not a path" ;;
+      # The stamp filename is RESERVED, and the collision is #69's own shape:
+      # the copy succeeds, then the stamp write at the end of build overwrites
+      # that mapped artifact with the hash — so the build announces the full
+      # count while shipping a tree one file short, and `verify` reports ok
+      # because the stamp it reads is exactly the one it expects. Measured: a
+      # map with `f1 b.sh .ops-corpus-stamp` printed "built ... 2 file(s)",
+      # left one file, and verified green. A plausible number again, this time
+      # inside the mechanism built to replace plausible numbers with errors.
+      "$STAMP_NAME") die "$MAP_NAME: production name '$dest' is reserved — build writes the corpus hash there, so a mapped file of that name would be silently overwritten and the tree would be one file short while verify still passed" ;;
     esac
     [ -f "$corpus/$dir/$src" ] || die "$MAP_NAME names '$dir/$src', which does not exist in '$corpus'"
     # Regular, non-symlink — the same contract `read_map` applies to the map and

@@ -509,8 +509,14 @@ class ValidatorTest(unittest.TestCase):
     # because a test that derives its expectation from the code under test
     # asserts self-consistency, not correctness — retype the spine to garbage and
     # a derived test follows it green.
-    _PACKET = ("TASK / TEXT / SCENE / INPUTS / FORBIDDEN / DONE / REACH (entry "
-               "point + proof) / REPORT (status, SHA, CHANGED: <paths>|none)\n")
+    # FENCED, because check_handout_packet extracts the ``` block rather than
+    # searching the whole document: prose around the packet already contains
+    # 'REACH', so a whole-document search stayed green when the field was
+    # deleted from the packet itself (Copilot, PR #72).
+    _PACKET = ("```\n"
+               "TASK / TEXT / SCENE / INPUTS / FORBIDDEN / DONE / REACH (entry "
+               "point + proof) / REPORT (status, SHA, CHANGED: <paths>|none)\n"
+               "```\n")
 
     # The spine's fields, hardcoded — and the reason is that writing the warning
     # above was NOT enough to avoid the trap it describes. The per-field cases
@@ -553,8 +559,14 @@ class ValidatorTest(unittest.TestCase):
         vp.check_handout_packet(self.dir, probs)
         self.assertEqual(probs, [])
         # F69, measured: the handout dropped CHANGED — ops-claims.sh's input.
-        write(h, "packet:\nTASK / TEXT / SCENE / INPUTS / DONE / REACH / REPORT\n")
-        self.assertFires("missing the packet literal")
+        # Kept FENCED, so this exercises the missing-FIELD path rather than the
+        # missing-BLOCK one; both are real and they are different findings.
+        write(h, "packet:\n```\nTASK / TEXT / SCENE / INPUTS / DONE / REACH / REPORT\n```\n")
+        self.assertFires("the dispatch packet is missing")
+        # And the missing-block path: an unfenced packet is REPORTED, not skipped.
+        # A checker that silently found nothing would read as "handout is clean".
+        write(h, "packet:\nTASK / TEXT / SCENE / INPUTS / DONE / REACH / CHANGED: <paths>|none\n")
+        self.assertFires("no fenced dispatch-packet block found")
 
     def test_handout_packet_pin_fires_per_field(self):
         # Every field in the spine must be independently load-bearing. The
@@ -585,10 +597,24 @@ class ValidatorTest(unittest.TestCase):
         write(c, stripped)
         probs = []
         vp.check_handout_packet(self.dir, probs)
+        # Stripping the whole stanza removes the FENCE as well, so the finding is
+        # the missing block rather than N missing fields. Both name OPERATOR.md
+        # and both are failures — what must never happen is silence.
+        self.assertTrue(
+            any("OPERATOR.md" in p for p in probs),
+            f"a charter with no dispatch packet produced no finding at all: {probs}")
+        self.assertTrue(
+            any("no fenced dispatch-packet block found" in p for p in probs),
+            f"expected the missing-block finding, got: {probs}")
+        # The per-FIELD half, on a charter that still HAS a packet but lost one
+        # field — the shape #57 actually shipped.
         for field in self._EXPECTED_SPINE:
+            write(c, stripped + "\n" + self._PACKET.replace(field, "«removed»"))
+            probs = []
+            vp.check_handout_packet(self.dir, probs)
             self.assertTrue(
                 any("OPERATOR.md" in p and repr(field) in p for p in probs),
-                f"a charter with no dispatch packet did not fire on {field!r}: {probs}")
+                f"a charter packet missing {field!r} did not fire: {probs}")
 
     # --- 1. manifests ---
     def test_wrong_plugin_name(self):

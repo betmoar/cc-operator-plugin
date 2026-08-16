@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Retry loop for acquiring the lock. Bounded at a 3s ceiling (30 spins of
-# 0.1s) so a caller never blocks the gate indefinitely if the lock holder
-# crashed.
+# Retry loop for acquiring the lock. Bounded at ~2.9s: the counter is tested
+# BEFORE the sleep, so the 30th iteration returns without sleeping and only 29
+# sleeps of 0.1s elapse. A caller never blocks the gate indefinitely if the
+# lock holder crashed.
 LOCK_MAX_SPINS=30
 SPIN_SLEEP=0.1
 

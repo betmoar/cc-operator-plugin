@@ -417,7 +417,7 @@ const { result: plainRes, rt: plainIso } = await run(WF("review.js"), "docs/x.md
   { ...everyLens, ...liveAdvReturn });
 ok(isoAdvCall(plainIso).isolation === undefined,
   "review/#23: no args.isolate → the adversarial seat runs in the builder's tree (opt-in, not default)");
-ok(plainRes.isolation?.mode === "builder-tree" && plainRes.isolation.commit === null,
+ok(plainRes.isolation?.mode === "builder-tree" && plainRes.isolation.requestedCommit === null,
   "review/#23: an un-isolated result SAYS builder-tree — the weaker claim is labelled as such");
 ok(/BUILDER'S ENVIRONMENT/.test(plainRes.isolation.bound),
   "review/#23: the un-isolated bound names what the verdict actually describes");
@@ -438,8 +438,16 @@ ok(!isoAdvCall(isoRt).prompt.includes("F-A1 tree check"),
   "review/#23: under isolation F-A1 is REPLACED, not joined — porcelain cannot fail in a fresh worktree");
 ok(/NOT full isolation/.test(isoAdvCall(isoRt).prompt),
   "review/#23: the prompt states the bound (same $HOME, caches, PATH) rather than overclaiming");
-ok(isoRes.isolation?.mode === "worktree" && isoRes.isolation.commit === SHA,
-  "review/#23: the result names WHICH tree produced the verdict, and at which commit");
+ok(isoRes.isolation?.mode === "worktree" && isoRes.isolation.requestedCommit === SHA,
+  "review/#23: the result names the REQUESTED commit, under a key that says so");
+// The field must NOT be called `commit`: nothing in review.js observes where the
+// seat ran, so on a REFUTED (which is exactly what an identity mismatch yields)
+// a bare `commit` would label the verdict with a sha the run may never have been
+// at — the overclaim the field exists to prevent, reintroduced by naming.
+ok(isoRes.isolation?.commit === undefined && "requestedCommit" in isoRes.isolation,
+  "review/#23: the field is requestedCommit, not commit — it reports the ASK, not an observation");
+ok(isoRes.isolation?.observedCommit === null && /adversarial\.evidence/.test(isoRes.isolation.bound),
+  "review/#23: observedCommit is null and the bound points at where the real HEAD is recorded");
 // The lenses are NOT isolated: they read the artifact under review, which is
 // the working tree the operator asked about. Isolation is the verifier's
 // property alone, and a blanket flag would silently change what the panel sees.

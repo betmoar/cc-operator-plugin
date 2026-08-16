@@ -418,9 +418,18 @@ return {
   // them identically is how the weaker one gets described as the stronger.
   // `bound` ships with the positive case rather than living only in the docs,
   // for the same reason: the overclaim is what the issue warned about.
+  //
+  // `requestedCommit`, NOT `commit`, and the rename is the whole correction.
+  // This field is what the caller ASKED FOR; nothing in this file observes
+  // where the seat actually ran. The F-A2 check that compares HEAD against it
+  // lives in the seat's prompt, so on a REFUTED — which is exactly the verdict
+  // an identity mismatch produces — a `commit:` key would label the result with
+  // a sha the run may never have been at. That is the overclaim this field was
+  // added to prevent, reintroduced by naming (Copilot, PR #72). The observed
+  // HEAD is in `adversarial.evidence`, where the seat put it; read it there.
   isolation: isolate
-    ? { mode: "worktree", commit: isolate, bound: "same filesystem, $HOME, caches and PATH — defeats in-tree artifacts, not a poisoned global cache" }
-    : { mode: "builder-tree", commit: null, bound: "the verdict describes the artifact AS OBSERVED FROM THE BUILDER'S ENVIRONMENT; pass args.isolate=<sha> for a worktree run (#23)" },
+    ? { mode: "worktree", requestedCommit: isolate, observedCommit: null, bound: "same filesystem, $HOME, caches and PATH — defeats in-tree artifacts, not a poisoned global cache. requestedCommit is what was ASKED for; the HEAD the seat actually observed is in adversarial.evidence (F-A2), and a mismatch there is why a REFUTED can carry a requestedCommit it never ran at" }
+    : { mode: "builder-tree", requestedCommit: null, observedCommit: null, bound: "the verdict describes the artifact AS OBSERVED FROM THE BUILDER'S ENVIRONMENT; pass args.isolate=<sha> for a worktree run (#23)" },
   findings: scored.map((f) => ({ ...f, bucket: bucket(f) })),
   dropped: returned.flatMap((p) => p.findings).length - scored.length,
   // Non-empty means the panel ran at reduced coverage: those lenses returned

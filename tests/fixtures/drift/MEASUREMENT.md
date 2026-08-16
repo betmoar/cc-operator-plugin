@@ -74,16 +74,31 @@ measure, found in the corpus's own write-up by the lens dispatched to hunt it.
 
 ## Result — control column (the false-positive check)
 
-**Zero of the six corrected claims was flagged as drift.** The control produced
-findings — 33 of them — but they are about *other* properties: a prototype-chain
-lookup in `seat-dispatch.mjs`, `resolve_tier` reading `tiers.env` by relative
-path, `ownerOrNull` failing open on EACCES. Those are real observations about
-fixture code that was written to be drift-clean, not claim-correct. One is a
-genuine near-miss worth naming: `feasibility` scored 55 on "the 3s ceiling
-overstates the bound — only 29 sleeps elapse before the ceiling trips". That is
-arithmetic about the *corrected* claim and it is arguably right, which makes it
-the most interesting single finding in the run: the lens is reading the claim
-against the code closely enough to out-argue the fixture author.
+**Five of the six corrected claims were not flagged as drift. The sixth was,
+and the lens was right.** Corrected 2026-08-16 after a Copilot review of PR #72
+named the consequence: a false-positive column that is not actually clean makes
+a zero-false-positive conclusion unsound.
+
+The control produced 33 findings. Most are about *other* properties — a
+prototype-chain lookup in `seat-dispatch.mjs`, `resolve_tier` reading
+`tiers.env` by relative path, `ownerOrNull` failing open on EACCES — real
+observations about fixture code written to be drift-clean, not defect-free.
+
+But **two of them were drift, in `lock-ceiling/true/lock.sh`**: `feasibility`
+scored 55 and `correctness` 54 on "the 3s ceiling overstates the bound — only
+29 sleeps elapse". The counter is tested before the sleep, so the corrected
+column's own claim was off by ~0.1s. Read at the time as an adjacent
+observation; it was the class this corpus measures, in the column that exists
+to prove the class is not being over-reported. The fixture now states ~2.9s and
+the honest count is **1/6 flagged, and correctly so** — which is not a false
+positive at all, but it is also not the clean zero the first draft claimed.
+
+What this does to the conclusion below: nothing, and that is checkable rather
+than asserted. The decision rests on the DRIFTED column's 6/6 detection, and
+the one control finding was a true positive, so no lens has yet been shown to
+flag a claim that holds. The weaker, accurate statement is: **no lens flagged a
+correct claim as drift; one lens flagged an incorrect claim the fixture author
+had believed correct.**
 
 Both columns' `quality` seat also independently flagged that
 `warn_lock_ceiling` is byte-identical in two files with no parity pin — F30's
@@ -93,8 +108,10 @@ shape, present in both columns by construction, correctly reported in both.
 
 **A sixth lens is not built, and the reason is measured rather than argued.**
 Option 1 in #70 (a narrow drift lens) has no headroom to buy: `feasibility` and
-`quality` already detect 6/6 with a clean control. A sixth seat would pay a
-fifth of the panel's cost per review for findings the panel already returns.
+`quality` already detect 6/6, and the control column produced no false positive
+— its one drift finding was a TRUE positive against a fixture claim that was
+itself wrong (see the control section). A sixth seat would pay a fifth of the
+panel's cost per review for findings the panel already returns.
 
 Option 2 (sharpen `feasibility`) is also not taken, for a subtler reason. It ran
 here **unmodified** and detected 6/6, including the three fixtures whose claim

@@ -4937,6 +4937,30 @@ else
     check "#69 control: the same corpus without the newline name builds" \
       "$([ "$_RC" -eq 0 ] && echo 0 || echo 1)"
 
+    # 5d. The STAMP FILENAME is reserved as a production name. Measured (Copilot,
+    #     PR #72): a map line mapping a fixture to `.ops-corpus-stamp` copies the
+    #     source successfully, then the stamp write at the end of build overwrites
+    #     it with the hash — so build announced "2 file(s)", the tree held one,
+    #     and `verify` reported ok because the stamp it read was exactly the one
+    #     it expected. #69's own shape, inside #69's own tool: a plausible number
+    #     where an error belongs.
+    _STAMPC="$_CTMP/stampcollide"; mkdir -p "$_STAMPC/f1"
+    printf 'A\n' > "$_STAMPC/f1/a.sh"
+    printf 'B\n' > "$_STAMPC/f1/b.sh"
+    printf 'f1 a.sh ok.sh\nf1 b.sh .ops-corpus-stamp\n' > "$_STAMPC/$_MAPN"
+    bash "$CORPUS" build --corpus "$_STAMPC" --out "$_CTMP/stampout" >/dev/null 2>&1
+    _RC=$?
+    check "#69 a map claiming the stamp filename is REFUSED (it would be overwritten, one file short, verify green)" \
+      "$([ "$_RC" -ne 0 ] && echo 0 || echo 1)"
+    # Control: the SAME corpus with a normal second name builds, and the tree
+    # actually holds BOTH files — the count and the contents agreeing is the
+    # property the collision broke.
+    printf 'f1 a.sh ok.sh\nf1 b.sh also.sh\n' > "$_STAMPC/$_MAPN"
+    bash "$CORPUS" build --corpus "$_STAMPC" --out "$_CTMP/stampout2" >/dev/null 2>&1
+    _RC=$?
+    check "#69 control: the same corpus with a non-reserved name builds BOTH files" \
+      "$([ "$_RC" -eq 0 ] && [ -f "$_CTMP/stampout2/ok.sh" ] && [ -f "$_CTMP/stampout2/also.sh" ] && echo 0 || echo 1)"
+
     # 6. The map FILE's own guards (missing / symlinked), as distinct from the
     #    guards on the fields inside it. Every field-level vector above is
     #    covered; the file that carries them was not, which is the same
@@ -5051,6 +5075,17 @@ if [ -d "$DRIFTDIR" ]; then
       if ! diff <(_drift_code_only "$_f") <(_drift_code_only "$_t") >/dev/null 2>&1; then
         _DRIFT_CODE_DIFF="$_DRIFT_CODE_DIFF $_d/$_b"
       fi
+    done
+    # THE REVERSE PASS, and its absence was a real hole: the loop above walks
+    # drifted/ and looks each member up in true/, so a file present ONLY in
+    # true/ was never visited and the suite certified the columns identical
+    # anyway. Measured (Copilot, PR #72) — a ghost.sh dropped into true/ alone
+    # left the case green. A one-way scan cannot answer a two-way question.
+    for _f in "$DRIFTDIR/$_d/true"/*; do
+      [ -f "$_f" ] || continue
+      _b="$(basename "$_f")"
+      [ -f "$DRIFTDIR/$_d/drifted/$_b" ] || \
+        _DRIFT_CODE_DIFF="$_DRIFT_CODE_DIFF $_d/$_b(no-drifted-counterpart)"
     done
   done
   check "#70 drifted/ and true/ differ ONLY in prose (${_DRIFT_CODE_DIFF:-none differ in code})" \

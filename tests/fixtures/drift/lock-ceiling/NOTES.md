@@ -8,20 +8,29 @@ contradict — arithmetic anyone can check without running anything.
 
 **≈, not =, and the correction is the fixture's own lesson.** The loop
 increments `n` BEFORE the guard and sleeps only in the else path, so the
-30th iteration returns without sleeping: **29 sleeps, ≈2.9s**. So
-`true/lock.sh`'s "3s ceiling (30 spins of 0.1s)" is *also* off — the
-corrected column carries a smaller version of the defect it was written to
-correct. Found on 2026-08-16 by the REPLAY-CHARTER R7 negative control: one
-`feasibility` lens, prompt verbatim, dispatched at this file alone. It was
-looking for the 2s claim and reported the off-by-one as well, unprompted.
-Left as ≈ rather than retyped to 2.9 in both columns, because a fixture
-whose two columns state different *precision* still isolates prose drift,
-while one whose columns state different *facts* would not.
+30th iteration returns without sleeping: **29 sleeps, ≈2.9s**.
 
-**true/lock.sh** carries the corrected claim ("Bounded at a 3s ceiling (30
-spins of 0.1s)") against the identical constants and identical
-`acquire_lock` body. Both variants behave identically: same retry count,
-same sleep interval, same timeout message, same return codes.
+`true/lock.sh` originally said "3s ceiling (30 spins of 0.1s)" and was
+therefore *also* wrong — the corrected column carrying a smaller version of
+the defect it exists to correct. Found on 2026-08-16 by the REPLAY-CHARTER R7
+negative control (one `feasibility` lens, prompt verbatim, this file alone:
+it went looking for the 2s claim and reported the off-by-one unprompted), and
+its consequence named by a Copilot review of PR #72: **the false-positive
+column must be actually clean, or the measurement's "zero drift
+false-positives" conclusion is unsound** — a lens flagging `true/lock.sh` was
+right, not spuriously firing.
+
+A first pass left it as `≈` in the NOTES and the wrong claim in the file,
+which is the same mistake one level up: recording the correction instead of
+making it. `true/lock.sh` now states the observable behaviour (~2.9s, counter
+tested before the sleep). The MEASUREMENT.md control column is re-read
+accordingly — see its "control column" section.
+
+**true/lock.sh** carries the corrected claim ("Bounded at ~2.9s: the counter
+is tested BEFORE the sleep, so the 30th iteration returns without sleeping and
+only 29 sleeps of 0.1s elapse") against the identical constants and identical
+`acquire_lock` body. Both variants behave identically: same retry count, same
+sleep interval, same timeout message, same return codes.
 
 **Which lens should have caught it and why it does not:** the real instance
 (#70 #4) was found by the review panel itself on PR #67 — this is the one
@@ -38,13 +47,15 @@ comments, so detection is incidental rather than guaranteed — worth
 measuring rather than assuming.
 
 **What a correct detection must name to count as detected:** the specific
-arithmetic — "30 × 0.1s = 3s, comment says 2s" — not a generic "verify
-timing constants," which is equally applicable to `true/lock.sh` where the
-arithmetic is correct, and would be a false positive there.
+arithmetic — "the comment says 2s, the constants give ~2.9s" — not a generic
+"verify timing constants," which is equally applicable to `true/lock.sh` and
+would be a false positive there. A detection naming "30 × 0.1 = 3s" counts as
+a hit on the 2s claim but is itself imprecise, which is why this fixture
+needed correcting twice.
 
 **Functional-identity verification:** `LOCK_MAX_SPINS`, `SPIN_SLEEP`, and
 `acquire_lock` are byte-identical between the two files; only the comment's
-stated ceiling differs (2s vs 3s). Ran both:
+stated ceiling differs (2s vs ~2.9s). Ran both:
 
 ```
 $ bash -c 'source tests/fixtures/drift/lock-ceiling/drifted/lock.sh; d=$(mktemp -d)/l; time acquire_lock "$d"; echo rc=$?'
@@ -54,7 +65,7 @@ rc=0
 ```
 
 identical behavior (immediate success on an unheld lock; both would spin
-identically to 3s on a held one, since `LOCK_MAX_SPINS`/`SPIN_SLEEP` do not
+identically to ~2.9s on a held one, since `LOCK_MAX_SPINS`/`SPIN_SLEEP` do not
 differ between the files).
 
 ## Measured 2026-08-16

@@ -336,6 +336,22 @@ def check_ledger_schema(root, problems):
 HANDOUT_PACKET_SPINE = ("TASK / TEXT / SCENE", "REACH", "CHANGED: <paths>|none")
 
 
+def _packet_block(text):
+    """The fenced block that carries the dispatch packet, or None.
+
+    Searching the WHOLE document was the bug (Copilot, PR #72): explanatory
+    prose around the packet already contains 'REACH', so deleting REACH from
+    the fenced packet itself left the pin green — the field could vanish from
+    the contract while the word survived in a sentence about it. Measured on
+    the shipped HANDOUT.md: REACH appears both inside and outside the fence.
+    The packet is the artifact; the prose is commentary about it.
+    """
+    for block in re.findall(r"```.*?```", text, re.S):
+        if "TASK / TEXT / SCENE" in block:
+            return block
+    return None
+
+
 def check_handout_packet(root, problems):
     # The CHARTER is checked first, and unconditionally. The handout half of this
     # pin only ever asked "does the copy match the original?" — which passes
@@ -343,27 +359,33 @@ def check_handout_packet(root, problems):
     # is invisible to a parity check (F30), and here the parity is between a doc
     # and the charter it teaches, so the charter needs its own assertion or the
     # pin is one deletion away from vacuous.
-    charter = root / "templates" / "OPERATOR.md"
-    if charter.is_file():
-        ctext = charter.read_text(encoding="utf-8")
-        for token in HANDOUT_PACKET_SPINE:
-            if token not in ctext:
-                problems.append(
-                    f"templates/OPERATOR.md: the dispatch packet is missing "
-                    f"{token!r} — the packet is the worker-boundary contract and "
-                    f"every field in it is load-bearing (REACH: #57; CHANGED: "
-                    f"the input ops-claims.sh verifies)")
-    h = root / "docs" / "HANDOUT.md"
-    if not h.is_file():
-        return
-    text = h.read_text(encoding="utf-8")
-    for token in HANDOUT_PACKET_SPINE:
-        if token not in text:
+    for rel, note in (("templates/OPERATOR.md",
+                       "the packet is the worker-boundary contract and every field "
+                       "in it is load-bearing (REACH: #57; CHANGED: the input "
+                       "ops-claims.sh verifies)"),
+                      ("docs/HANDOUT.md",
+                       "the handout must teach the charter's dispatch packet "
+                       "verbatim (templates/OPERATOR.md), or ops-claims.sh gets "
+                       "reports it cannot check (F69)")):
+        f = root / rel
+        # HANDOUT.md is optional prose; the charter is not. Deleting the handout
+        # is a visible act, drifting it is not — same reasoning as before.
+        if not f.is_file():
+            if rel == "docs/HANDOUT.md":
+                continue
+            problems.append(f"{rel}: missing — the charter is not optional")
+            continue
+        block = _packet_block(f.read_text(encoding="utf-8"))
+        if block is None:
             problems.append(
-                f"docs/HANDOUT.md: missing the packet literal {token!r} — the "
-                f"handout must teach the charter's dispatch packet verbatim "
-                f"(templates/OPERATOR.md), or ops-claims.sh gets reports it "
-                f"cannot check (F69)")
+                f"{rel}: no fenced dispatch-packet block found (looked for a "
+                f"``` block containing 'TASK / TEXT / SCENE') — a moved or "
+                f"unfenced packet is REPORTED, never silently skipped")
+            continue
+        for token in HANDOUT_PACKET_SPINE:
+            if token not in block:
+                problems.append(
+                    f"{rel}: the dispatch packet is missing {token!r} — {note}")
 
 
 # The source-state stamp (U10, issue #22): every verdict row's evidence cell ends

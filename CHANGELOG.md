@@ -14,8 +14,10 @@ single source of truth; bump it in the same commit as the changelog entry.
 Four measured unknowns closed, and the one that mattered most closed by
 **declining to build what its issue proposed**. #70 asked for a sixth review
 lens; the corpus it demanded got built, the panel got measured against it, and
-the panel detected 6/6 with a clean false-positive column — so the seat is not
-built, and the measurement says why.
+the panel detected 6/6 and the control column produced no false positive — so
+the seat is not built, and the measurement says why. (Its single control finding
+proved to be a TRUE positive: one fixture's "corrected" column carried an
+off-by-one of its own. Found by a lens, confirmed, and fixed under review.)
 
 ### Added
 
