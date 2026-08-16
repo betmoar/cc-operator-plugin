@@ -4819,6 +4819,109 @@ else
     bash "$CORPUS" build --corpus "$_EVIL" --out "$_CTMP/evilout4" >/dev/null 2>&1
     check "#69 control: a legitimate map line on the same corpus still builds" \
       "$([ "$?" -eq 0 ] && [ -f "$_CTMP/evilout4/ok.sh" ] && echo 0 || echo 1)"
+
+    # 4. A SYMLINKED DIRECTORY, which is the case the first two rounds of guards
+    #    both missed. `..` in the string and a symlinked LEAF file were both
+    #    refused, and `ln -s /outside <corpus>/d` with a map line `d f out` still
+    #    walked straight through: `[ -f ]` and `cp` follow the link, while
+    #    corpus_hash's `find` (no -L) does NOT descend it — so the content lands
+    #    in the tree, is in no stamp, and `verify` prints ok. Measured. The guard
+    #    is now a RESOLVED-path containment check, not a string check, which is
+    #    why this case tests the resolved property rather than the spelling.
+    #
+    #    ITS OWN CORPUS, not $_EVIL, and that is the case's whole validity: the
+    #    first draft reused $_EVIL, which still holds an `f1/` the one-line map
+    #    does not name — so the unmapped-directory check refused the build FIRST
+    #    and the case passed green with the containment guard neutered. Caught by
+    #    mutation, which is the only thing that could have caught it: every
+    #    assertion read exactly as intended, on a refusal from the wrong guard.
+    _SLINK="$_CTMP/slinkcorpus"; mkdir -p "$_SLINK"
+    mkdir -p "$_CTMP/outside"
+    printf 'outside-content\n' > "$_CTMP/outside/secret.txt"
+    ln -s "$_CTMP/outside" "$_SLINK/evildir"
+    printf 'evildir secret.txt leaked.txt\n' > "$_SLINK/$_MAPN"
+    bash "$CORPUS" build --corpus "$_SLINK" --out "$_CTMP/evilout5" >/dev/null 2>&1
+    _RC=$?
+    check "#69 a map fixture-path that RESOLVES outside the corpus is refused (symlinked dir)" \
+      "$([ "$_RC" -ne 0 ] && echo 0 || echo 1)"
+    check "#69 control: the refused symlinked-dir build copied no outside content" \
+      "$([ ! -f "$_CTMP/evilout5/leaked.txt" ] && echo 0 || echo 1)"
+    # Control: the SAME corpus with the symlink replaced by a real directory
+    # builds. Without it the two cases above pass on any refusal, including the
+    # wrong-guard refusal that is exactly how the first draft went green.
+    rm -f "$_SLINK/evildir"
+    mkdir -p "$_SLINK/evildir"
+    printf 'inside-content\n' > "$_SLINK/evildir/secret.txt"
+    bash "$CORPUS" build --corpus "$_SLINK" --out "$_CTMP/evilout5b" >/dev/null 2>&1
+    check "#69 control: the same corpus with a REAL directory builds (the refusal was the symlink)" \
+      "$([ "$?" -eq 0 ] && [ -f "$_CTMP/evilout5b/leaked.txt" ] && echo 0 || echo 1)"
+
+    # 5. corpus_hash must FAIL LOUDLY rather than hash a short corpus. `set -e`
+    #    does not see a failure inside a non-final pipeline stage and the final
+    #    stage exits 0 whatever bytes reached it, so an unreadable file produced a
+    #    plausible hash and exit 0 — and because it is deterministic, `verify`
+    #    recomputed the same wrong value and printed ok. A plausible number inside
+    #    the mechanism whose whole purpose is to replace plausible numbers with
+    #    errors. Skipped as root, which can read anything.
+    if [ "$(id -u)" -ne 0 ]; then
+      _NOREAD="$_CTMP/noread"; mkdir -p "$_NOREAD/f1"
+      printf 'readable\n' > "$_NOREAD/f1/a.sh"
+      printf 'unreadable\n' > "$_NOREAD/f1/b.sh"
+      printf 'f1 a.sh ok.sh\n' > "$_NOREAD/$_MAPN"
+      chmod 000 "$_NOREAD/f1/b.sh"
+      bash "$CORPUS" build --corpus "$_NOREAD" --out "$_CTMP/noreadout" >/dev/null 2>&1
+      _RC=$?
+      chmod 644 "$_NOREAD/f1/b.sh"
+      check "#69 an unreadable file in the corpus fails the build, not the hash silently" \
+        "$([ "$_RC" -ne 0 ] && echo 0 || echo 1)"
+      # Control: the SAME corpus, all files readable, builds — otherwise a script
+      # that refused every corpus would pass the case above.
+      bash "$CORPUS" build --corpus "$_NOREAD" --out "$_CTMP/noreadout2" >/dev/null 2>&1
+      check "#69 control: the same corpus with every file readable builds" \
+        "$([ "$?" -eq 0 ] && echo 0 || echo 1)"
+    else
+      echo "  skip #69 unreadable-file case: running as root, which can read anything"
+    fi
+
+    # 6. The map FILE's own guards (missing / symlinked), as distinct from the
+    #    guards on the fields inside it. Every field-level vector above is
+    #    covered; the file that carries them was not, which is the same
+    #    "surrounded by thoroughness, therefore assumed covered" shape as the
+    #    symlinked directory two cases up.
+    mkdir -p "$_CTMP/nomap/f1"
+    : > "$_CTMP/nomap/f1/x.sh"
+    bash "$CORPUS" build --corpus "$_CTMP/nomap" --out "$_CTMP/nomapout" >/dev/null 2>&1
+    check "#69 a corpus with no map is refused (it declares what gets copied out)" \
+      "$([ "$?" -ne 0 ] && echo 0 || echo 1)"
+    printf 'f1 x.sh ok.sh\n' > "$_CTMP/realmap"
+    ln -s "$_CTMP/realmap" "$_CTMP/nomap/$_MAPN"
+    bash "$CORPUS" build --corpus "$_CTMP/nomap" --out "$_CTMP/nomapout2" >/dev/null 2>&1
+    check "#69 a SYMLINKED map is refused (never a map our tooling wrote)" \
+      "$([ "$?" -ne 0 ] && echo 0 || echo 1)"
+    rm -f "$_CTMP/nomap/$_MAPN"
+    cp "$_CTMP/realmap" "$_CTMP/nomap/$_MAPN"
+    bash "$CORPUS" build --corpus "$_CTMP/nomap" --out "$_CTMP/nomapout3" >/dev/null 2>&1
+    check "#69 control: the same map as a REGULAR file is accepted" \
+      "$([ "$?" -eq 0 ] && echo 0 || echo 1)"
+
+    # 7. --out safety. The inside-the-repo refusal is the one standing between
+    #    "the corpus is neutralized" and "the panel is shown the repo it is
+    #    supposed to be blind to", and it had no case at all. Its sibling-prefix
+    #    behaviour is pinned too: `<repo>-2` must NOT be refused by a check meant
+    #    for `<repo>`, which is the classic prefix off-by-one.
+    bash "$CORPUS" build --corpus "$SECDIR" --out "$REPO/derived-in-repo" >/dev/null 2>&1
+    check "#69 --out inside the repo worktree is refused (the panel would review the repo)" \
+      "$([ "$?" -ne 0 ] && echo 0 || echo 1)"
+    check "#69 control: the refused in-repo build left nothing in the worktree" \
+      "$([ ! -d "$REPO/derived-in-repo" ] && echo 0 || echo 1)"
+    bash "$CORPUS" build --corpus "$SECDIR" --out "$_CTMP/probe1-nonempty" >/dev/null 2>&1
+    bash "$CORPUS" build --corpus "$SECDIR" --out "$_CTMP/probe1-nonempty" >/dev/null 2>&1
+    check "#69 a non-empty --out without --force is refused" \
+      "$([ "$?" -ne 0 ] && echo 0 || echo 1)"
+    : > "$_CTMP/afile"
+    bash "$CORPUS" build --corpus "$SECDIR" --out "$_CTMP/afile" >/dev/null 2>&1
+    check "#69 an --out that exists and is not a directory is refused" \
+      "$([ "$?" -ne 0 ] && echo 0 || echo 1)"
   else
     fail "#69 ops-corpus.sh build succeeds against the shipped security corpus"
   fi
@@ -4845,6 +4948,71 @@ if [ -d "$DRIFTDIR" ]; then
   done
   check "#70 all 6 named drift fixtures are present with both columns" \
     "$([ "$_DRIFT_FOUND" = 6 ] && echo 0 || echo 1)"
+
+  # THE DISCRIMINATING PROPERTY, pinned rather than asserted in prose. The
+  # security corpus earns its four cells per fixture (functional ok / exploit
+  # fires, both columns); this corpus's equivalent claim is "drifted/ and true/
+  # differ ONLY in prose" — and until now that lived in README.md and six
+  # NOTES.md files with nothing checking it. A drift fixture whose two columns
+  # differ in CODE is not measuring drift, it is measuring a bug, and the
+  # measurement built on it would be describing something other than what it
+  # claims. That is #69's lesson pointed at #70's instrument.
+  #
+  # Method: strip whole-line comments from both columns and compare what is
+  # left. Whole-line only, because the drift IS in the comments and a
+  # comment-blind diff is the entire point; a trailing `# …` on a code line
+  # would make the two files differ in a "code" line, which is why no fixture
+  # uses one (and if one ever does, this case says so instead of passing).
+  #
+  # Two fixtures legitimately differ outside comments and are named here rather
+  # than excluded by a pattern: `tier-split-meta` carries its claim in a
+  # meta.description STRING (that is the shape it models — metadata describing
+  # its own table), and the doc/changelog members of `doc-regex-table` and
+  # `stdout-copies` are markdown, where every line is prose. Naming them keeps
+  # the exemption auditable; a pattern would silently grow.
+  _drift_code_only() {  # _drift_code_only <file> — the file minus whole-line comments
+    grep -vE '^[[:space:]]*(#|//|\*|/\*)' "$1" 2>/dev/null || true
+  }
+  _DRIFT_CODE_DIFF=""
+  for _d in errno-claim lock-ceiling stdout-copies tier-split-meta agenttype-anchor doc-regex-table; do
+    for _f in "$DRIFTDIR/$_d/drifted"/*; do
+      [ -f "$_f" ] || continue
+      _b="$(basename "$_f")"
+      _t="$DRIFTDIR/$_d/true/$_b"
+      if [ ! -f "$_t" ]; then
+        _DRIFT_CODE_DIFF="$_DRIFT_CODE_DIFF $_d/$_b(no-true-counterpart)"
+        continue
+      fi
+      # Prose-only members: the claim IS the content, so a code-diff of 0 is
+      # impossible and meaningless. Everything else must be code-identical.
+      case "$_d/$_b" in
+        */*.md|tier-split-meta/review.mjs) continue ;;
+      esac
+      if ! diff <(_drift_code_only "$_f") <(_drift_code_only "$_t") >/dev/null 2>&1; then
+        _DRIFT_CODE_DIFF="$_DRIFT_CODE_DIFF $_d/$_b"
+      fi
+    done
+  done
+  check "#70 drifted/ and true/ differ ONLY in prose (${_DRIFT_CODE_DIFF:-none differ in code})" \
+    "$([ -z "$_DRIFT_CODE_DIFF" ] && echo 0 || echo 1)"
+  # Positive control: the comparison must be able to SEE a code difference.
+  # Without it, a broken `_drift_code_only` (wrong regex, unreadable file →
+  # empty both sides) reports every fixture identical, which is exactly the
+  # value that means "clean" — #24's own control idiom.
+  _CTL_A="$(newproj)/a"; _CTL_B="$(dirname "$_CTL_A")/b"
+  printf '# a comment\nX=1\n' > "$_CTL_A"
+  printf '# a different comment\nX=2\n' > "$_CTL_B"
+  diff <(_drift_code_only "$_CTL_A") <(_drift_code_only "$_CTL_B") >/dev/null 2>&1
+  check "#70 control: the prose-only comparison still detects a real CODE difference" \
+    "$([ "$?" -ne 0 ] && echo 0 || echo 1)"
+  # And the converse: two files differing ONLY in a whole-line comment must
+  # compare equal, or the case above would fire on every fixture and its
+  # "none differ in code" verdict would be luck.
+  printf '# a comment\nX=1\n' > "$_CTL_B"
+  printf '# a DIFFERENT comment\nX=1\n' > "$_CTL_A"
+  diff <(_drift_code_only "$_CTL_A") <(_drift_code_only "$_CTL_B") >/dev/null 2>&1
+  check "#70 control: a comment-only difference compares EQUAL (the drift is invisible to it)" \
+    "$?"
 
   # Same single exemption as #24's probe, for the same reason and with the same
   # control: ops-corpus.sh's header names both corpora because explaining why a

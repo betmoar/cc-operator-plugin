@@ -39,19 +39,42 @@ prose instead of exploits:
 | functional | **identical to true/** | **identical to drifted/** |
 | claim      | **false**            | **holds**             |
 
-The code paths in `drifted/` and `true/` are byte-identical (or, for the
-shell fixture, produce identical runtime behaviour for every input) — only
-the prose differs. That is the whole design constraint. If `drifted/` and
+The code paths in `drifted/` and `true/` are identical once whole-line
+comments are removed — only the prose differs. Stated that way rather than
+"byte-identical", which is what an earlier draft said and is false of
+`tier-split-meta`, whose claim lives in a `meta.description` **string**: the
+two columns differ in a string literal, and that literal is exactly what the
+fixture models. The property that matters is behavioural, not textual — no
+input distinguishes the two columns. That is the whole design constraint. If
+`drifted/` and
 `true/` behaved differently, this would be a functional-bug corpus, and
 this repo already has machinery (its own tests, the security corpus) for
 that. What this corpus isolates is a lens's ability to notice that a
 *sentence*, not the code, changed meaning — or failed to change when the
 code did.
 
-Each `NOTES.md` states how functional identity was verified: a `diff` of
-the code region showing only comment/prose lines differ, and for the one
-shell fixture (`lock-ceiling`), running both variants and showing identical
+Each `NOTES.md` states how functional identity was verified for its own
+fixture: a `diff` of the code region showing only comment/prose lines
+differ, and for `lock-ceiling`, running both variants and showing identical
 output.
+
+**That claim is pinned by the suite, not only asserted here.** `#70 drifted/
+and true/ differ ONLY in prose` in `tests/test-scripts.sh` strips whole-line
+comments from both columns of every fixture and compares what is left; a
+fixture whose columns diverge in code fails the build, naming the file. It
+carries two controls, because a comparison that cannot see a difference
+reports every fixture identical — which is the same value that means clean:
+one proves a real code difference IS detected, the other proves a
+comment-only difference is NOT.
+
+Three members are exempt and named individually in the case rather than
+matched by a pattern: every `.md` member (`doc-regex-table/tiers.md`,
+`stdout-copies/CHANGELOG-fragment.md`), where the prose *is* the content,
+and `tier-split-meta/review.mjs`, whose claim lives in a
+`meta.description` **string** — that is the shape it models, metadata
+describing its own table, so its two columns necessarily differ outside
+comments. Naming them keeps the exemption auditable; a pattern would grow
+silently.
 
 ## The false-positive control
 

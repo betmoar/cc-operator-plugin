@@ -54,9 +54,11 @@ no prompt explicitly instructs checking arithmetic comments.
 
 What actually happened (per `tests/fixtures/drift/MEASUREMENT.md`, drifted
 column): `testability` **55**, `feasibility` **72**, `quality` **68**,
-`correctness` **52**, `spec` **—**. Three lenses detected it — but at this
-fixture's lowest scores of the six (55/72/68/52), and `quality` detected it
-too, which the prediction did not name as a candidate.
+`correctness` **52**, `spec` **—**. **Four** lenses detected it — including
+`quality`, which the prediction did not name as a candidate — but at this
+fixture's lowest scores of the six (55/72/68/52). (An earlier draft said
+"three" while quoting four scores on the same line; the arithmetic-comment
+fixture had an arithmetic error in its own write-up.)
 
 The prediction was **partly right**: it correctly named `feasibility` and
 `correctness` as plausible catches, and both did detect. But "incidental

@@ -106,17 +106,60 @@ hash_stream() { HASH_CMD | awk '{print $1}'; }
 # mtime without changing a single byte. Each record is
 # "<relpath>\n<byte-length>\n<content>\n" — the length prefix stops one
 # file's trailing bytes from being ambiguous with the next path line.
+#
+# A HASH THAT CANNOT FAIL LOUDLY IS NOT A STAMP. `set -e` does not see a failure
+# inside a non-final pipeline stage, and the final stage here (`shasum | awk`)
+# exits 0 whatever bytes reached it — so an unreadable file, or a `find` that
+# died halfway, produced a hash over a SHORT corpus and returned success.
+# Measured. That is a third state the design never accounted for: not the clean
+# hash, not the empty-corpus hash, but a plausible one — and because it is
+# deterministic, `verify` recomputes the same wrong value and prints "ok". #69's
+# entire promise is that staleness becomes an error rather than a plausible
+# number, and this was a plausible number inside the mechanism that makes it.
+#
+# So: every file is read into the stream by an EXPLICIT loop whose failures the
+# caller sees, and the file list is materialized first so `find`'s own exit
+# status is checkable. Not `set -o pipefail`: this file targets bash 3.2 where it
+# exists, but the shape below states the intent locally instead of relying on a
+# shell option a future edit could drop from the top of the file.
 corpus_hash() {
   corpus="$1"
+  _ch_list="$(mktemp "${TMPDIR:-/tmp}/opscorp.XXXXXX")" || die "cannot create a temp file for the corpus listing"
   # LC_ALL=C: a byte-order sort, not a locale-dependent one — the same
   # hash must come out on any machine that runs this script.
-  find "$corpus" -type f -print | LC_ALL=C sort | while IFS= read -r f; do
-    rel="${f#"$corpus"/}"
-    sz=$(wc -c < "$f" | tr -d '[:space:]')
-    printf '%s\n%s\n' "$rel" "$sz"
-    cat "$f"
-    printf '\n'
-  done | hash_stream
+  if ! find "$corpus" -type f -print | LC_ALL=C sort > "$_ch_list"; then
+    rm -f "$_ch_list"
+    die "cannot list '$corpus' — refusing to stamp a hash over a partial corpus"
+  fi
+  # A newline in a filename would split one record into two and silently change
+  # the hash of an unchanged corpus. Refuse rather than hash it: a fixture corpus
+  # has no business carrying one, and a stamp nobody can reproduce is worse than
+  # no stamp. (`grep -c ''` counts lines; comparing to the file count catches it.)
+  _ch_lines="$(grep -c '' < "$_ch_list" || true)"
+  _ch_files="$(find "$corpus" -type f | grep -c '' || true)"
+  if [ "$_ch_lines" != "$_ch_files" ]; then
+    rm -f "$_ch_list"
+    die "'$corpus' contains a filename with a newline — refusing (it would split one hash record into two)"
+  fi
+  {
+    while IFS= read -r f; do
+      # No `[ -r ]` here, deliberately: a permission test is INERT for uid 0
+      # (root bypasses mode bits), so it would report "readable" for the one uid
+      # that then reads everything anyway — a guard that is either redundant or
+      # absent depending on who runs it, which is #21's class and which
+      # validate_plugin.check_permission_tests refuses. The reads themselves are
+      # the test, and they hold on every uid: `wc -c` and `cat` fail on a file
+      # this process cannot read, whoever this process is, and `|| die` turns
+      # that into an abort instead of a short hash.
+      sz=$(wc -c < "$f" | tr -d '[:space:]') || die "cannot read '$f' — refusing to stamp a hash that skips it"
+      [ -n "$sz" ] || die "cannot size '$f' — refusing to stamp a hash with an empty length field"
+      printf '%s\n%s\n' "${f#"$corpus"/}" "$sz"
+      cat "$f" || die "cannot read '$f' — refusing to stamp a hash that skips it"
+      printf '\n'
+    done < "$_ch_list"
+  } > "$_ch_list.stream" || { rm -f "$_ch_list" "$_ch_list.stream"; exit 2; }
+  hash_stream < "$_ch_list.stream"
+  rm -f "$_ch_list" "$_ch_list.stream"
 }
 
 # realpath_of <path> — portable realpath (macOS ships no `realpath` by
@@ -254,11 +297,37 @@ $name
     # `dir` may contain `/` (a drift fixture addresses `errno-claim/drifted`), so
     # it is checked for TRAVERSAL rather than for being a bare name; `src` and
     # `dest` are bare filenames.
+    #
+    # THE STRING CHECKS BELOW ARE NECESSARY AND NOT SUFFICIENT, and the gap cost
+    # a second round: the first fix rejected `..` in `dir` and a symlinked LEAF
+    # file, and left a symlinked DIRECTORY wide open. `ln -s /outside corpus/d`
+    # with a map line `d secret.txt leaked.txt` copies from outside the corpus,
+    # and — the part that matters — `corpus_hash`'s `find` (no `-L`) does not
+    # descend the link, so the content is in no stamp and `verify` prints ok.
+    # Measured, exactly the same escape and the same green verify the previous
+    # round's fix was written to close, through the one field-as-path-component
+    # case it did not cover.
+    #
+    # So the string checks stay (they give a precise message for the common typo)
+    # and the RESOLVED path is what decides. `cd + pwd -P` resolves every symlink
+    # in every component, and the resolved fixture dir must sit under the
+    # resolved corpus — the same discipline `repo_toplevel`/`realpath_of` already
+    # apply to `--out`, now applied to the read side too.
     case "/$dir/" in
       *"/../"*|*"//"*) die "$MAP_NAME: fixture path '$dir' must not contain '..' or an empty segment" ;;
     esac
     case "$dir" in
       /*) die "$MAP_NAME: fixture path '$dir' must be relative to the corpus, not absolute" ;;
+    esac
+    [ -d "$corpus/$dir" ] || die "$MAP_NAME names fixture path '$dir', which is not a directory in '$corpus'"
+    _real_corpus="$(realpath_of "$corpus")"
+    _real_dir="$(realpath_of "$corpus/$dir")"
+    case "$_real_dir" in
+      # The trailing-slash form is what stops `/corpus-2` from passing a check
+      # meant for `/corpus`; the bare form allows `dir` resolving to the corpus
+      # root itself, which a map may legitimately do.
+      "$_real_corpus"|"$_real_corpus"/*) ;;
+      *) die "$MAP_NAME: fixture path '$dir' resolves to '$_real_dir', outside the corpus '$_real_corpus' — refusing (a symlinked component would pull in content the stamp never covers, and verify would report ok)" ;;
     esac
     case "$src" in
       */*|..|.|"") die "$MAP_NAME: source name '$src' must be a bare filename, not a path" ;;

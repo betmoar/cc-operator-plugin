@@ -59,11 +59,18 @@ requirement — not a generic "verify the comments".
 | `agenttype-anchor` | — | — | **85** | **85** | **72** |
 | `doc-regex-table` | — | **85** | **88** | **88** | **58** |
 
-**6/6 detected, by three lenses each.** `feasibility` and `quality` detected
-**6/6** and named the mechanism in every case; `correctness` detected 6/6 at
-lower confidence; `testability` 4/6; `spec` 0/6 (it returned one finding, and it
-was about the artifact's file set — the F38 shape: dispatched with no task text,
-its question has no subject).
+**6/6 detected, by at least three lenses each** — four fixtures by four lenses,
+two (`errno-claim`, `agenttype-anchor`) by three. Read down the columns instead:
+`feasibility` and `quality` detected **6/6** and named the mechanism in every
+case; `correctness` 6/6 at lower confidence; `testability` 4/6; `spec` 0/6 (it
+returned one finding, and it was about the artifact's file set — the F38 shape:
+dispatched with no task text, its question has no subject).
+
+An earlier draft of this line read "by three lenses each", which the table three
+rows above contradicts. Recorded rather than quietly corrected, because this file
+is the measurement a decision rests on and a reader deserves to know its summary
+line was once wrong about its own data — the drift class this corpus exists to
+measure, found in the corpus's own write-up by the lens dispatched to hunt it.
 
 ## Result — control column (the false-positive check)
 
