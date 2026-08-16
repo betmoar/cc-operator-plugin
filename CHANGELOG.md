@@ -9,6 +9,179 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-08-16
+
+Six issues closed, and the one that mattered most closed by
+**declining to build what its issue proposed**. #70 asked for a sixth review
+lens; the corpus it demanded got built, the panel got measured against it, and
+the panel detected 6/6 and the control column produced no false positive — so
+the seat is not built, and the measurement says why. (Its single control finding
+proved to be a TRUE positive: one fixture's "corrected" column carried an
+off-by-one of its own. Found by a lens, confirmed, and fixed under review.)
+
+### Added
+
+- **`scripts/ops-corpus.sh` — a derived measurement tree is a stamped artifact**
+  ([#69]). During #24 step 3 a scratch tree built one step earlier was reused
+  after its source fixtures had been fixed. The panel correctly reported defects
+  in code that no longer shipped, and the number read as a mass false-positive
+  that would have invalidated the tier result had it been believed. Nothing
+  noticed: every assertion in the repo is about `tests/fixtures/security/`, none
+  about the derived copy that is the panel's actual *input*.
+
+  `build` stamps the source content hash into the tree it produces (hash over
+  sorted relpaths + contents, never mtimes — a checkout perturbs every mtime
+  without changing a byte); `verify` recomputes and refuses a tree the corpus has
+  moved under. **Exit 2 for stale, exit 3 for unstamped**, and the split is
+  load-bearing rather than cosmetic: an aborted build leaves exactly the
+  unstamped shape, so both are reachable in one session and "rebuild me" is a
+  different instruction from "I do not know what this directory is".
+
+  The neutralization is an **allowlist**, and that is the design. The first shape
+  copied the corpus and deleted the tells; measured against this repo's own
+  corpus it leaked three ways — the README's 2×2 table names `vuln.sh` as the
+  defective version, `MEASUREMENT.md` reprints the per-fixture scores, and the
+  surviving *filenames* (`vuln.sh` beside `fixed.sh`) answer the question before
+  a lens reads a line. Only the mapped source file of each fixture is copied,
+  under the production name `MEASUREMENT.md` records, so a rebuild reproduces the
+  tree a measurement was made on.
+
+  All three map fields are guarded, because all three become path components.
+  The first shape guarded only the write side (`dest`) and its comment claimed
+  parity with "every parsed-field-becomes-a-path-component guard in this repo" —
+  the frag-traversal fixture's own shape, asserted in the script that builds that
+  fixture. Measured: a `../..` fixture path, or a symlink in the corpus, pulls
+  content from outside into the derived tree. The sharp consequence is not the
+  read but what it does to this feature's promise — `corpus_hash` walks the
+  corpus, so those bytes are in no stamp and `verify` reports **ok** on a tree
+  the corpus never held.
+
+  The map lives **in the corpus** (`<corpus>/.ops-corpus-map`), not in the
+  script: this repo has two corpora that neutralize differently (a security
+  fixture contributes one file, a drift fixture contributes a set), and a table
+  in `scripts/` would have served exactly one. An unmapped fixture directory is
+  refused rather than silently omitted — building 5-of-6 and printing "built" is
+  #69's own shape.
+
+- **`tests/fixtures/drift/` — the claim/code drift corpus** ([#70]), six fixtures
+  modeled on measured instances, each a 2×2 of `drifted/` (the claim is false)
+  and `true/` (it holds) whose code is functionally identical. Plus
+  `tests/fixtures/drift/MEASUREMENT.md`, the run.
+
+### Changed
+
+- **The adversarial seat can run outside the builder's tree** ([#23]). U11 was
+  measured with a ~15-line fixture: a stale gitignored artifact makes a broken
+  assertion pass in the builder's tree and fail in a worktree of the same commit,
+  while the F-A1 `git status --porcelain` control reports **clean** throughout —
+  porcelain describes the tracked tree and the contaminant is ignored. F-A1
+  working exactly as designed, on a different axis.
+
+  `args.isolate=<sha>` on the review workflow runs the adversarial seat in a
+  worktree. The three things the issue required before this could ship:
+
+  1. **A worktree checks out HEAD, not the working tree.** The sandbox has no
+     filesystem, so the workflow cannot refuse a dirty tree itself. The caller
+     *names* the commit and the seat re-derives `git rev-parse HEAD` inside the
+     tree it actually ran in; a mismatch is REFUTED. A bare `isolate: true` is
+     refused — isolation with no named commit verifies whatever HEAD happens to
+     be and reports CONFIRMED about a tree nobody chose.
+  2. **It is not full isolation** — same filesystem, `$HOME`, caches and PATH. It
+     defeats in-tree artifacts, not a poisoned global cache. Stated in the prompt
+     *and* in the returned `isolation.bound`, both columns, because a result that
+     renders the weak and strong claims identically is how the weak one gets
+     described as the strong one.
+  3. **Cost, therefore scope**: opt-in, default off, for release-bound work.
+
+  Under isolation F-A1 is **replaced**, not joined, by the commit-identity check:
+  a fresh worktree is clean by construction, so keeping porcelain there would
+  ship a control that cannot fail — [#21]'s vacuous-guard class, arrived at by
+  *adding* a control.
+
+- **The GATE-EXCEPTION is written before the ledger row** ([#14]). U2's crash
+  window is closed by write **order**, not by a guard. Row-first left a row with
+  no exception, which the retry reads as an amendment — a genuine bypass keeping
+  its PASS row and losing its audit line, the exact outcome G1 exists to prevent,
+  reached through a crash instead of a swallowed error. Exception-first leaves an
+  exception with no row, which a retry completes; worst case it is duplicated,
+  which is legible. The guard the issue records as built-and-reverted stays
+  reverted: "prior row without exception" cannot distinguish crash-interrupted
+  from ordinary-amended (case G1.7), and the reorder works by removing the
+  ambiguous state rather than reading it. Both appends are already under one
+  lock, so this is a crash window, not a race.
+
+- **The dispatch packet has a `REACH` field** ([#57]). Three artifacts in one
+  engagement passed every gate — tests green, evidence real, verifier CONFIRMED —
+  while nothing called them. The evidence was true about the unit and silent
+  about its reach, because done-criteria are written about the artifact and never
+  about its call graph. `REACH` asks for the shipped entry point and the
+  grep/trace proving the path; when the deliverable **is** a gate, for a red run
+  on a real violation *and* a green run on a compliant input, mutation restored
+  byte-identical — an always-red gate proves something about one input, not about
+  the rule.
+
+  `check_handout_packet` now pins the packet in **`templates/OPERATOR.md` too**,
+  not only in the handout that teaches it. Its spine held the first and last
+  fragments, so a field inserted in the middle was invisible — which is where
+  `REACH` went, and the pin stayed green teaching a packet without it. The F69
+  drift repeating inside the guard written against it.
+
+### Notes
+
+- **No sixth review lens** ([#70]), and the reason is measured. The five shipped
+  lenses ran verbatim over the neutralized drift corpus at their shipped tiers:
+  `feasibility` and `quality` detected **6/6** and named the mechanism each time,
+  `correctness` 6/6 at lower confidence, `testability` 4/6, `spec` 0/6. The
+  corrected column produced **no false positive**: its one drift finding was a
+  TRUE positive against a fixture claim that was itself wrong (see below). Option 2 (sharpen
+  `feasibility`) is also declined: it ran *unmodified* and caught all three
+  fixtures whose claim and code live in different files — the shape #70 predicted
+  it would miss — scoring its two highest results of the run on exactly those.
+
+  The bound, because the measurement does not close the issue: nine dense files
+  under an explicit "check every load-bearing claim" instruction is a far better
+  position than a release-sized diff. This says the panel *detects* these shapes,
+  not that it *attends* to them at scale. #70 stays open on the attention
+  question. Each fixture's `NOTES.md` carries its pre-measurement prediction and
+  the result that refuted it — five of six predicted a miss and got a detection —
+  because leaving a refuted prediction standing in a drift corpus is an instance
+  of the class the corpus exists to measure.
+
+- **#18 (U6) closed as a record.** The B10 trigger is a user declaration, not a
+  measurement; the decision stands and nothing was built for it.
+
+- **REPLAY-CHARTER executed against this release** (third real run, 2026-08-16,
+  `8ef5d9e`, inline install). 10 PASS / 1 FAIL / 0 deferred / 0 not-executed,
+  every phase with its negative control. The FAIL is R7: the adversarial seat
+  returned REFUTED and found two live defects in the `corpus_hash` fix this same
+  release shipped — `if ! find … | sort` tests the LAST pipeline stage, so an
+  undescendable subdirectory produced a green build *and* a green verify over a
+  short corpus; and the newline-in-filename guard was vacuous, both sides
+  counting the same `find -print` output. Fixed with `-print0` (redirect outside
+  the pipe, `sort -z`, NUL-count vs line-count), four cases added for that round
+  alone (`ops-corpus.sh` carries 36 `#69` cases in total once the later rounds
+  are counted), mutation-verified, and hash-preserving — the security corpus still stamps
+  `2cf86bf4…`. The run also found that `drift/lock-ceiling`'s *corrected* column
+  was itself off (29 sleeps, not 30) and three defects in the charter's own text.
+  Those three are now fixed **in the R1/R4 instructions themselves**, not only
+  recorded in the retrospective — a replayer following the charter as written
+  would otherwise have hit them again.
+
+- **Two further review rounds, eight more defects**, five of them in fixes the
+  earlier rounds had just written. Recorded because a release whose notes stop at
+  the first review round describes a tree that no longer exists:
+
+  | Found by | Defect |
+  |---|---|
+  | Copilot | A map may name `.ops-corpus-stamp` as its production name: the copy succeeds, the stamp write overwrites it. Build announced `2 file(s)`, the tree held one, `verify` said ok. |
+  | Copilot | `isolation.commit` reported the caller's *request*, so a REFUTED — the verdict an identity mismatch produces — stamped a sha the run may never have been at. Renamed `requestedCommit`; `observedCommit` added and documented as unwired. |
+  | Copilot | `check_handout_packet` searched the whole document, and prose around the packet contains `REACH` — so deleting the field from the fenced packet left the pin green. It now extracts the fenced block. |
+  | Copilot | The drift 2×2 scan was one-way: a file present only in `true/` was never visited. Reverse pass added. |
+  | Copilot | `lock-ceiling/true/lock.sh` was not clean, which makes a zero-false-positive claim unsound. The evidence was already in the measurement's own control column, read as an adjacent observation. |
+  | silent-failure lens | `corpus_hash` leaked **three** temp files per failure — it runs in a command substitution, so `die` ends that subshell and no cleanup placed after it can run. 83 files measured in one afternoon. Fixed with a trap in the same subshell. |
+  | silent-failure lens | The reserved-stamp guard compared bytes; APFS does not. `.OPS-CORPUS-STAMP` walked past it onto the same directory entry — the guard's own target, through case. |
+  | comment lens | The `lock-ceiling` timing claim was wrong a **third** time: `~2.9s` is the sum of the sleeps, measured wall clock is ~3.7s. The fixture now states the mechanism and both numbers, because three precise figures in a row missed.
+
 ## [0.8.3] - 2026-08-15
 
 ### Added
@@ -753,6 +926,7 @@ BAR block lands, after decomposition.
 [#59]: https://github.com/betmoar/cc-operator-plugin/issues/59
 [#68]: https://github.com/betmoar/cc-operator-plugin/issues/68
 [#70]: https://github.com/betmoar/cc-operator-plugin/issues/70
+[#69]: https://github.com/betmoar/cc-operator-plugin/issues/69
 [#60]: https://github.com/betmoar/cc-operator-plugin/issues/60
 
 ## [0.7.1] - 2026-08-12

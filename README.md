@@ -24,9 +24,10 @@ non-Anthropic model routing.
 - **`.operator/`** — the ledger: `VERDICTS.md` (append-only, one row per
   gated task), `DECISIONS.md` (append-only, one line per deviation/decision),
   `verdicts.d/` (per-session row fragments — a merge-repair backstop),
-  `pending/` (task sentinels), and `bin/` (the gate CLIs `ops-task.sh`,
-  `ops-verdict.sh`, `ops-adopt.sh`, installed so the charter's paths resolve in
-  any project; refreshed on every re-run of `/cc-operator:start`).
+  `pending/` (task sentinels), and `bin/` (the five gate CLIs `ops-task.sh`,
+  `ops-verdict.sh`, `ops-adopt.sh`, `ops-claims.sh` and `ops-backlog.sh`,
+  installed so the charter's paths resolve in any project; refreshed on every
+  re-run of `/cc-operator:start`).
 - A **CLAUDE.md** stanza importing the charter (`@OPERATOR.md`) so it survives
   compaction, or the full charter inlined with `--inline`.
 
@@ -103,6 +104,7 @@ Or from a local checkout:
 .operator/bin/ops-verdict.sh <id> --defer "<reason>"    # honest exit for a blocked task
 .operator/bin/ops-adopt.sh --owner <new-id> <id>...     # re-claim your tasks after a /clear
 .operator/bin/ops-verdict.sh --reconcile                # restore rows lost to a messy merge
+.operator/bin/ops-claims.sh --claimed "<paths>"         # verify a DONE report against the diff
 ```
 
 `ops-init.sh` (run by `/cc-operator:start`) installs those CLIs into
@@ -185,16 +187,17 @@ commands/{start,handoff,tiers}.md # the three slash commands
 workflows/{review,brainstorm,plan,crawl,dispatch}.js  # the orchestration primitives
 agents/op-*.md                    # tier-aliased seats: author, mechanic, reviewer, scout, verifier, brainstorm, crawler
 skills/chief-operator/SKILL.md    # thin router (front door only)
-scripts/ops-{init,task,verdict,adopt}.sh       # the evidence-gate mechanism
-scripts/ops-{stop,sessionstart}-hook.sh        # completion gate + session-id injection
+scripts/ops-{init,task,verdict,adopt,claims,backlog}.sh  # the evidence-gate mechanism
+scripts/ops-{stop,sessionstart,armgate}-hook.sh # completion gate + session-id injection + arm gate
+scripts/ops-corpus.sh             # stamped, neutralized derived trees for measurement corpora
 scripts/ops-{tiers,render}.sh     # tier resolver + project-layer agent renderer
 scripts/ops-compress.mjs          # input-axis compressor (PostToolUse)
 .claude-plugin/statusline.json    # cc-status segment manifest (name/render/order)
 scripts/statusline.sh             # the segment: open tasks, partitioned by owner
 scripts/validate_plugin.py        # contract linter — run before every PR
 scripts/release_gate.py           # tag == version == newest changelog heading
-hooks/hooks.json                  # Stop + SessionStart wiring via ${CLAUDE_PLUGIN_ROOT}
-tests/                            # bash script suite + stdlib Python tests
+hooks/hooks.json                  # SessionStart + Stop + PreToolUse (arm gate) + PostToolUse (compressor), via ${CLAUDE_PLUGIN_ROOT}
+tests/                            # bash suite + stdlib Python tests + two node suites
 ```
 
 ## Development

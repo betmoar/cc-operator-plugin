@@ -127,7 +127,12 @@ Open the replay's own tracking task:
   .gitattributes .gitignore tiers.env` (order aside).
 - `.operator/.gitignore` first non-comment line is `*` (v2 allowlist; the bare
   `*` is the load-bearing half — check_gitignore_parity's lesson).
-- **F67 probe:** `printf '/.operator/\n' >> .gitignore`, then re-run the
+- **F67 probe.** **First check whether the project ALREADY gitignores
+  `.operator/` from outside** — `grep -n '^/\?\.operator/\?$' .gitignore`. This
+  repo does, at `.gitignore:34`, and a probe that adds a second rule then removes
+  only its own leaves the warning standing, which reads as a broken detector
+  while it is working perfectly. The control only discriminates once EVERY such
+  rule is gone (third run, 2026-08-16). Then: `printf '/.operator/\n' >> .gitignore`, then re-run the
   scaffold. `ops-init.sh` is **not** in the `.operator/bin/` install set — that
   set is `ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh ops-backlog.sh`
   (`ops-init.sh:194`), because init is what *creates* `bin/` and would have to
@@ -138,7 +143,11 @@ Open the replay's own tracking task:
   .operator/.gitignore:`. Then remove the line and re-run: warning absent —
   **that removal IS this phase's negative control**, and it is the half that
   distinguishes a working detector from a script that always warns.
-- **F05 root check:** the scaffold must NOT warn `NOT the repository root` at the
+- **F05 root check** — and **clean up after its control**: running the scaffold
+  from a subdirectory SCAFFOLDS THERE. The third run left a real `docs/.operator/`
+  with 11 files behind, gitignored and therefore invisible to `git status`, in the
+  repo it was auditing. Remove it before continuing. The check itself: the
+  scaffold must NOT warn `NOT the repository root` at the
   repo root. On macOS this is load-bearing: `/tmp` is a symlink to `private/tmp`,
   and the pre-0.8.1 comparison of git's physical toplevel against `$PWD` fired on
   every scratch project (issue #61). Control: `mkdir sub && cd sub` and re-run —
@@ -322,6 +331,13 @@ row, and cleared the sentinel at rc 0. Control for the control: an evidence cell
 that legitimately starts with a single dash still records —
 `ops-verdict.sh R4-dash "c" "-v output: 3 passed" PASS --owner <sid>` exits 0.
 
+**Recording this phase needs one rewording, and the guard is right.** Evidence
+cells are pipe-delimited, and `ops-verdict.sh` refuses a cell containing `|` —
+so the natural evidence line, which quotes this phase's own expected usage
+string (the one carrying `<PASS|FAIL>`), is itself refused. Paraphrase the
+usage string in the cell rather than quoting it verbatim; the guard firing on
+your evidence is the guard working (third run, 2026-08-16).
+
 ## R5 — Retro-gate (G1) and the deviation gate
 
 `ops-verdict.sh never-armed-probe "retro" "no sentinel existed" PASS --owner
@@ -503,3 +519,63 @@ The transferable lesson is now rule-shaped in R8: **before recording a phase as
 unexecutable, try to execute it.** "Cannot be tested" is a claim, and it owes
 evidence like any other. This one survived a release because it sounded
 structural.
+
+## What the third real run changed (2026-08-16, `8ef5d9e`, 0.8.4 inline)
+
+The first run to record a **FAIL**, and the first where the protocol's own
+negative controls — not its positive assertions — produced every finding worth
+having. Scorecard by stamp: 10 PASS, 1 FAIL, 0 human-verified, 0 deferred,
+0 not-executed.
+
+**The FAIL is R7 and it is the point of the phase.** The adversarial seat
+returned REFUTED and it was right twice over: it refuted on F-A1 (an
+uncommitted fixture edit, which it *demonstrated* changes the stamp
+`ops-corpus.sh` produces rather than merely reporting the tree dirty), and it
+found two live defects in `corpus_hash` — code this repo had shipped one day
+earlier as the fix for the plausible-hash class:
+
+- `if ! find … | sort > list` tests the **last** stage. `sort` succeeds on a
+  partial stream, so an undescendable subdirectory produced a green build **and**
+  a green verify over a corpus missing files — precisely the state the comment
+  above it claimed was closed.
+- The newline-in-filename guard was **vacuous**: both sides counted `grep -c ''`
+  of the same `find -print` output, and a newline splits both identically.
+  Measured `lines=3 files=3` on a two-file corpus containing `a<LF>b.txt`.
+
+Recorded as FAIL rather than outvoted by five green lens findings, per the
+unoutvotable rule. Fixed under `R7-fix`, mutation-verified (restoring both
+pre-R7 shapes reddens exactly the two new cases), hash-preserving.
+
+**Three charter defects, all in phases the charter calls simple:**
+
+- **R1's F67 control is invalid in any project that already has an
+  `/.operator/` rule.** This repo carries one at `.gitignore:34`. The probe adds
+  a second, and removing *that* leaves the warning standing — which reads as a
+  broken detector while it is working correctly. The control only discriminates
+  once **every** such line is removed. The charter says "remove the line";
+  it must say "confirm no such rule pre-exists, or remove them all".
+- **R1's F05 control scaffolds a real `.operator/` in the subdirectory it runs
+  from.** Eleven files, gitignored, invisible to `git status` — a replayer
+  following the charter literally leaves a stray ledger inside the repo being
+  audited. The phase needs a cleanup line.
+- **R4's parser control cannot be recorded verbatim.** Its own expected-output
+  string contains `PASS|FAIL`, and the evidence cell refuses a pipe (cells are
+  pipe-delimited). The guard is right; the charter's example is unrecordable as
+  written.
+
+**One fixture defect, found by R7's negative control rather than by the panel.**
+Pointed at `drift/lock-ceiling/drifted/lock.sh` with the `feasibility` prompt
+verbatim, one lens found the 2s claim it was meant to find *and*, unprompted,
+that the loop increments before the guard and sleeps only in the else path:
+**29 sleeps ≈ 2.9s, not 30**. So the fixture's *corrected* column was also
+wrong. A negative control is supposed to prove the panel is not a rubber stamp;
+this one did that and improved the instrument.
+
+**What did not need correcting:** R4.3's honesty probe, again — broken
+criterion, silent Stop, PASS row standing. Two runs in a row, the one phase
+designed to confirm a limitation is the one that needs no edits.
+
+**The ledger separated the runs by itself.** Filtering the phase rows to
+`@8ef5d9eb26bd` gave exactly this run's eleven, with 2026-08-14's rows sitting
+above them untouched — U10's stamp doing the job it was built for, incidentally,
+in the middle of an audit about something else.

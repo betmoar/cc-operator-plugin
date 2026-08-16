@@ -123,10 +123,20 @@ You'll recognize a good dispatch packet — every task ships with exactly the
 charter's fields:
 ```
 TASK / TEXT / SCENE / INPUTS / FORBIDDEN (gate files off-limits unless the task
-IS the gate) / DONE / REPORT (status <=30 lines, SHA, CHANGED: <paths>|none)
+IS the gate) / DONE / REACH (the shipped entry point this is reached from + the
+grep or trace proving the path; when the deliverable IS a gate, a red run on a
+real violation AND a green run on a compliant input, mutation restored
+byte-identical) / REPORT (status <=30 lines, SHA, CHANGED: <paths>|none)
 ```
 The `CHANGED:` line is not decoration — on a DONE report the operator feeds it
 to `ops-claims.sh`, which checks the claimed paths against the actual diff.
+
+`REACH` is newer and answers a question the rest of the packet does not: *is this
+code on any path that ships?* Three artifacts in one engagement passed every gate
+— tests green, evidence real, verifier CONFIRMED — while nothing called them; the
+evidence was true about the unit and silent about its reach. The gate clause is
+the same question aimed at a gate: a check that has only ever gone red proves
+something about one input, not about the rule.
 
 ### 4. Workers report one of four statuses
 | Status              | What it means                         | What the operator does                    |

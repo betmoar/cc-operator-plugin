@@ -22,9 +22,21 @@ import validate_plugin as vp  # noqa: E402
 _CLI_SENTENCE = " — run [DOC:spec-D4]:\n" + "\n".join(
     f"`.operator/bin/{c}`" for c in vp.CHARTER_REQUIRED_CLIS)
 
+# The dispatch packet, which check_handout_packet requires the charter to carry
+# (#57). Split across lines like the real charter's, so the fixture also honours
+# CHARTER_MAX_LINE_CHARS. Written out rather than joined from
+# vp.HANDOUT_PACKET_SPINE: a good-tree fixture derived from the constant under
+# test is clean by construction and would stay clean if the constant were
+# retyped to nonsense.
+_PACKET_SENTENCE = (
+    "\n\n```\nTASK / TEXT / SCENE / INPUTS / FORBIDDEN / DONE / REACH (entry\n"
+    "point + the proof) / REPORT (status, SHA, CHANGED: <paths>|none)\n```"
+)
+
 GOOD_CHARTER = "# OPERATOR.md\n\n" + "\n".join(
     f"## {sec}\n\nrule [D:tag-{i}] body"
     + (_CLI_SENTENCE if sec == "EVIDENCE GATE" else ".")
+    + (_PACKET_SENTENCE if sec == "ORCHESTRATED MODE" else "")
     + "\n"
     for i, sec in enumerate(vp.CHARTER_SECTION_ORDER)
 )
@@ -489,22 +501,120 @@ class ValidatorTest(unittest.TestCase):
         self._mutate_verdict("# --- Verdict path ---", "# --- verdict stuff ---")
         self.assertFires("Verdict path")
 
-    # --- the handout packet pin (check_handout_packet, F69) ---
+    # --- the handout packet pin (check_handout_packet, F69 + #57) ---
+    #
+    # The full packet spine, written once. Both halves of the pin are checked
+    # against it: the charter must carry every field, and the handout must teach
+    # every field. Spelled out rather than built from vp.HANDOUT_PACKET_SPINE,
+    # because a test that derives its expectation from the code under test
+    # asserts self-consistency, not correctness — retype the spine to garbage and
+    # a derived test follows it green.
+    # FENCED, because check_handout_packet extracts the ``` block rather than
+    # searching the whole document: prose around the packet already contains
+    # 'REACH', so a whole-document search stayed green when the field was
+    # deleted from the packet itself (Copilot, PR #72).
+    _PACKET = ("```\n"
+               "TASK / TEXT / SCENE / INPUTS / FORBIDDEN / DONE / REACH (entry "
+               "point + proof) / REPORT (status, SHA, CHANGED: <paths>|none)\n"
+               "```\n")
+
+    # The spine's fields, hardcoded — and the reason is that writing the warning
+    # above was NOT enough to avoid the trap it describes. The per-field cases
+    # below first shipped as `for field in vp.HANDOUT_PACKET_SPINE`, which reads
+    # the tuple out of the module under test: drop "REACH" from the spine and the
+    # loop drops the same field from its own expectation, so the cases stayed
+    # green while the guard lost the field they exist to protect. Measured
+    # exactly that way — 3 passed with REACH deleted from the spine.
+    #
+    # That is the vacuous-guard class (#21) reached from its least obvious side:
+    # not a check that cannot fail, but a check whose expectation is defined by
+    # the thing it checks. `_EXPECTED_SPINE` is the independent copy, and
+    # test_spine_matches_expected below is what makes adding a field to the
+    # product require adding it here — the coupling stated out loud instead of
+    # silently satisfied.
+    _EXPECTED_SPINE = ("TASK / TEXT / SCENE", "REACH", "CHANGED: <paths>|none")
+
+    def test_spine_matches_expected(self):
+        # The one place the two copies are compared. A field added to the product
+        # spine without being added here fails HERE, loudly, instead of silently
+        # widening every per-field loop below.
+        self.assertEqual(
+            tuple(vp.HANDOUT_PACKET_SPINE), self._EXPECTED_SPINE,
+            "HANDOUT_PACKET_SPINE changed — update _EXPECTED_SPINE too, and check "
+            "that templates/OPERATOR.md and docs/HANDOUT.md carry the new field")
+
     def test_handout_packet_pin(self):
-        # Absent file: the check must skip — prose is optional, and the good
-        # tree has no handout. Then a handout carrying the charter packet is
-        # clean, and one that drops the CHANGED line (the measured F69 drift —
-        # it is ops-claims.sh's input) fires.
+        # No handout: the handout half must skip — prose is optional, and the
+        # good tree has no HANDOUT.md. The CHARTER half is unconditional, so the
+        # stub charter gets the packet first.
+        c = self.dir / "templates" / "OPERATOR.md"
+        write(c, c.read_text() + "\n" + self._PACKET)
         probs = []
         vp.check_handout_packet(self.dir, probs)
         self.assertEqual(probs, [])
+        # A handout carrying the packet is clean.
         h = self.dir / "docs" / "HANDOUT.md"
-        write(h, "packet:\nTASK / TEXT / SCENE / ... / CHANGED: <paths>|none\n")
+        write(h, "packet:\n" + self._PACKET)
         probs = []
         vp.check_handout_packet(self.dir, probs)
         self.assertEqual(probs, [])
-        write(h, "packet:\nTASK / SCENE / INPUTS / DONE MEANS / REPORT\n")
-        self.assertFires("missing the packet literal")
+        # F69, measured: the handout dropped CHANGED — ops-claims.sh's input.
+        # Kept FENCED, so this exercises the missing-FIELD path rather than the
+        # missing-BLOCK one; both are real and they are different findings.
+        write(h, "packet:\n```\nTASK / TEXT / SCENE / INPUTS / DONE / REACH / REPORT\n```\n")
+        self.assertFires("the dispatch packet is missing")
+        # And the missing-block path: an unfenced packet is REPORTED, not skipped.
+        # A checker that silently found nothing would read as "handout is clean".
+        write(h, "packet:\nTASK / TEXT / SCENE / INPUTS / DONE / REACH / CHANGED: <paths>|none\n")
+        self.assertFires("no fenced dispatch-packet block found")
+
+    def test_handout_packet_pin_fires_per_field(self):
+        # Every field in the spine must be independently load-bearing. The
+        # original pin held only the FIRST and LAST fragments, so a field added
+        # or dropped in the MIDDLE was invisible — which is where REACH went in
+        # 0.8.4, and the pin stayed green teaching a packet without it. One
+        # assertion per field, so no future field can be added to the tuple
+        # without being genuinely enforced.
+        c = self.dir / "templates" / "OPERATOR.md"
+        write(c, c.read_text() + "\n" + self._PACKET)
+        h = self.dir / "docs" / "HANDOUT.md"
+        for field in self._EXPECTED_SPINE:
+            write(h, "packet:\n" + self._PACKET.replace(field, "«removed»"))
+            probs = []
+            vp.check_handout_packet(self.dir, probs)
+            self.assertTrue(
+                any(repr(field) in p for p in probs),
+                f"dropping {field!r} from the handout packet did not fire: {probs}")
+
+    def test_handout_packet_pin_checks_the_charter_itself(self):
+        # The half that did not exist before #57: parity between the handout and
+        # the charter passes perfectly when the CHARTER is what lost the field
+        # (F30 — uniform drift is invisible to a parity check). With no packet in
+        # the charter at all, every field must fire, handout or no handout.
+        c = self.dir / "templates" / "OPERATOR.md"
+        stripped = c.read_text().replace(_PACKET_SENTENCE, "")
+        self.assertNotIn("REACH", stripped, "the strip did not take — this case would be vacuous")
+        write(c, stripped)
+        probs = []
+        vp.check_handout_packet(self.dir, probs)
+        # Stripping the whole stanza removes the FENCE as well, so the finding is
+        # the missing block rather than N missing fields. Both name OPERATOR.md
+        # and both are failures — what must never happen is silence.
+        self.assertTrue(
+            any("OPERATOR.md" in p for p in probs),
+            f"a charter with no dispatch packet produced no finding at all: {probs}")
+        self.assertTrue(
+            any("no fenced dispatch-packet block found" in p for p in probs),
+            f"expected the missing-block finding, got: {probs}")
+        # The per-FIELD half, on a charter that still HAS a packet but lost one
+        # field — the shape #57 actually shipped.
+        for field in self._EXPECTED_SPINE:
+            write(c, stripped + "\n" + self._PACKET.replace(field, "«removed»"))
+            probs = []
+            vp.check_handout_packet(self.dir, probs)
+            self.assertTrue(
+                any("OPERATOR.md" in p and repr(field) in p for p in probs),
+                f"a charter packet missing {field!r} did not fire: {probs}")
 
     # --- 1. manifests ---
     def test_wrong_plugin_name(self):

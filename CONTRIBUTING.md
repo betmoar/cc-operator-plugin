@@ -1,8 +1,9 @@
 # Contributing to cc-operator
 
-The plugin is deliberately small — a charter, four gate scripts, two commands,
-five agents, a thin skill. Most contributions are edits to the charter prose or
-the evidence-gate scripts, not new machinery.
+The plugin is small but no longer tiny: a charter, the evidence-gate scripts,
+three slash commands, seven agents, five orchestration workflows, four wired
+hooks and a thin skill. Most contributions are edits to the charter prose or the
+gate scripts, not new machinery.
 
 ## Repository layout
 
@@ -11,14 +12,16 @@ the evidence-gate scripts, not new machinery.
 .claude-plugin/marketplace.json   # standalone install path; name must match plugin.json + ccp-market
 templates/OPERATOR.md             # the charter — <=150 lines, every rule line citation-tagged
 templates/{VERDICTS,DECISIONS}-header.md   # ledger schemas — byte-identical to the proven originals
-commands/{start,handoff}.md       # slash commands (trigger-only frontmatter descriptions)
-agents/*.md                       # tier-aliased delegation roles (author/mechanic/reviewer/scout/verifier)
+commands/{start,handoff,tiers}.md # slash commands (trigger-only frontmatter descriptions)
+agents/*.md                       # tier-aliased delegation roles (author/mechanic/reviewer/scout/verifier/crawler/brainstorm)
+workflows/*.js                    # orchestration primitives (review/plan/brainstorm/crawl/dispatch)
 skills/chief-operator/SKILL.md    # thin router (front door only — nothing load-bearing)
-scripts/ops-*.sh                  # the evidence-gate mechanism
+scripts/ops-*.sh                  # the evidence-gate mechanism, the tier resolver/renderer, the corpus builder
+scripts/ops-compress.mjs          # the PostToolUse output compressor
 scripts/validate_plugin.py        # contract linter — run before every PR
 scripts/release_gate.py           # release-tag coupling gate
-hooks/hooks.json                  # Stop-hook wiring
-tests/                            # bash + stdlib Python suites
+hooks/hooks.json                  # SessionStart + Stop + PreToolUse (arm gate) + PostToolUse (compressor)
+tests/                            # bash + stdlib Python + node suites
 ```
 
 See [`CLAUDE.md`](CLAUDE.md) for the maintainer handoff: the load-bearing
@@ -73,14 +76,27 @@ After editing a component, `/reload-plugins` so changes take effect.
 - If the change is user-visible, bump the version in
   [`.claude-plugin/plugin.json`](.claude-plugin/plugin.json) — the single source
   of truth — following [SemVer](https://semver.org/).
-- Validate before opening a PR (CI runs the same four commands):
+- Validate before opening a PR. CI runs these six, in this order — the two node
+  suites are easy to forget and a PR that skips them can go green locally and
+  red in CI:
 
   ```
   shellcheck scripts/*.sh tests/test-scripts.sh
   python3 scripts/validate_plugin.py
   python3 -m unittest discover -s tests
   bash tests/test-scripts.sh
+  node tests/test_workflows.mjs
+  node tests/test_compress.mjs
   ```
+
+  Two things the local run does not reproduce by itself. **shellcheck is pinned
+  in CI** to `koalaman/shellcheck-alpine:v0.10.0`, and versions disagree — a
+  newer local shellcheck missed an SC2015 that CI reports, so check with the
+  container command from `.github/workflows/validate.yml` before trusting a
+  clean local run. **`bash tests/test-scripts.sh` reads `.operator/`** from the
+  cwd it runs in, so a project with leftover pending sentinels sees statusline
+  cases fail that CI (which has no `.operator/`) never sees; run it from a
+  neutral cwd such as `/tmp` if the failures are all in the statusline block.
 
 ## Releasing
 

@@ -53,7 +53,10 @@ model id behind each tier [DOC:spec-wf].
 
 ```
 TASK / TEXT / SCENE / INPUTS / FORBIDDEN (gate files off-limits unless the task
-IS the gate) / DONE / REPORT (status <=30 lines, SHA, CHANGED: <paths>|none)
+IS the gate) / DONE / REACH (the shipped entry point this is reached from + the
+grep or trace proving the path; when the deliverable IS a gate, a red run on a
+real violation AND a green run on a compliant input, mutation restored
+byte-identical) / REPORT (status <=30 lines, SHA, CHANGED: <paths>|none)
 ```
 
 **Four-status protocol** [D:CHART-status]:

@@ -3,7 +3,7 @@ export const meta = {
   description:
     "Operator review panel: parallel narrow lenses, two at cheap tiers and three at judgment tier, then an adversarial verifier at judgment tier. A REFUTED verdict is a hard stop and cannot be outvoted.",
   whenToUse:
-    "After an implementation dispatch returns DONE on work that will be merged, published, or depended on by a later task. Pass the artifact path, or an array of paths, as args; pass args.doneMeans to give the spec and testability lenses the task text they ask about.",
+    "After an implementation dispatch returns DONE on work that will be merged, published, or depended on by a later task. Pass the artifact path, or an array of paths, as args; pass args.doneMeans to give the spec and testability lenses the task text they ask about. For release-bound work, commit first and pass args.isolate=<sha> to run the adversarial seat in a worktree of that commit instead of the builder's tree.",
   phases: [
     { title: "Panel", detail: "narrow lenses in parallel, mixed tiers" },
     { title: "Adversarial", detail: "re-run DONE MEANS, judgment tier" },
@@ -145,6 +145,72 @@ const doneMeans = (() => {
     );
   }
   return raw.trim();
+})();
+
+// --- U11 / #23: isolating the adversarial seat -------------------------------
+// MEASURED gap: the verifier's independence was built as an INSTRUCTION problem
+// and solved well at that layer (assume-false, re-run it yourself, never trust a
+// prior report, unoutvotable REFUTED). None of it governs WHERE the results are
+// produced. A ~15-line fixture settled it: a stale `__pycache__` makes a broken
+// assertion pass in the builder's tree and fail in a worktree of the same
+// commit. The F-A1 `git status --porcelain` control reports CLEAN throughout,
+// because the contaminant is gitignored and porcelain describes the TRACKED
+// tree — F-A1 working exactly as designed, on a different axis.
+//
+// Three things the issue required before this could ship, and how each is met:
+//
+// 1. A WORKTREE CHECKS OUT HEAD, NOT THE WORKING TREE. Point the seat at one
+//    while the artifact is uncommitted and it verifies something other than what
+//    was reviewed — the F37 silent-wrong shape, on the very axis F-A1 guards.
+//    The workflow sandbox has no filesystem (review.js:14, measured), so this
+//    file cannot run `git status` and refuse a dirty tree itself. So the caller
+//    NAMES the commit (`args.isolate = "<sha>"`) and the seat verifies that name
+//    against `git rev-parse HEAD` INSIDE the isolated tree. A promise from the
+//    caller is not evidence; the same claim re-derived by the seat in the tree
+//    it actually ran in is. A mismatch is REFUTED, not a warning.
+// 2. IT IS NOT FULL ISOLATION. Same filesystem, same $HOME, same package and
+//    toolchain caches, same PATH. It defeats in-tree artifacts (ignored build
+//    output, stale caches, uncommitted helper files); it does NOT defeat a
+//    poisoned global cache. That bound is stated in the prompt and in the
+//    returned `isolation` field, because a control described as more than it is
+//    is worse than none.
+// 3. COST, THEREFORE SCOPE. Worktree setup is per-dispatch overhead, so this is
+//    OPT-IN — release-bound and high-assurance work, not every review. Default
+//    off keeps every existing caller on today's behaviour.
+//
+// The F-A1 substitution below is the part that is easy to get wrong: in a fresh
+// worktree `git status --porcelain` is trivially empty, so keeping F-A1 as-is
+// under isolation would ship a check that CANNOT fail — the #21 vacuous-guard
+// class, arrived at by adding a control rather than by dropping one. Under
+// isolation the tree check is therefore REPLACED by the HEAD-identity check,
+// which is the question that still has an answer in that tree.
+const isolate = (() => {
+  const raw = typeof A === "object" && !Array.isArray(A) ? A?.isolate : undefined;
+  if (raw == null || raw === false) return "";
+  // A bare `true` is refused rather than accommodated: isolation without a named
+  // commit is precisely the silent-wrong case above — the seat would verify HEAD
+  // whatever HEAD happens to be, and report CONFIRMED about a tree nobody chose.
+  if (raw === true) {
+    throw new Error(
+      "args.isolate must be the commit sha the artifact is at, not `true` — an isolated worktree " +
+        "checks out HEAD, so a run with no named commit verifies an unknown tree (#23)",
+    );
+  }
+  if (typeof raw !== "string" || !raw.trim()) {
+    throw new Error(
+      `args.isolate must be a commit sha string (or omitted); got ${Array.isArray(raw) ? "array" : typeof raw}`,
+    );
+  }
+  const sha = raw.trim();
+  // Same posture as the model-id guard (0.8.3): test the STRING, decide nothing
+  // about which commits exist. A sha that is well-formed but absent is the
+  // seat's finding to report from inside the tree, not this file's to predict.
+  if (!/^[0-9a-fA-F]{7,40}$/.test(sha)) {
+    throw new Error(
+      `args.isolate=${JSON.stringify(sha)} is not a commit sha (7-40 hex chars)`,
+    );
+  }
+  return sha;
 })();
 
 // Each lens is a narrow question. Narrow is what makes a cheap tier honest:
@@ -295,10 +361,24 @@ const adversarial = await agent(
     `\nRe-run the done-criteria YOURSELF. Never trust a prior run's report. ` +
     `Never fix anything. Return CONFIRMED only if you personally observed the expected output; ` +
     `otherwise REFUTED. Your evidence must be the command you ran and what it actually printed.\n\n` +
-    `F-A1 tree check: also confirm the working tree contains no changes beyond the ` +
-    `reviewed artifact set (run \`git status --porcelain\`). A worker (or a read-only ` +
-    `seat with Bash) touching files outside the artifact under review is an unpresented ` +
-    `change — REFUTED on that basis, naming the stray path(s).`,
+    (isolate
+      ? // Isolated run: the HEAD-identity check REPLACES F-A1. See the #23 block
+        // above — porcelain is trivially empty in a fresh worktree, so keeping it
+        // here would ship a check that cannot fail.
+        `ISOLATION: you are running in a fresh git worktree, not the builder's tree. ` +
+        `Ignored build output, stale caches and uncommitted helper files do not exist here; ` +
+        `that is the point. Bound, stated so you do not overclaim: this is NOT full isolation — ` +
+        `same filesystem, same $HOME, same package and toolchain caches, same PATH. It defeats ` +
+        `in-tree artifacts, not a poisoned global cache.\n\n` +
+        `F-A2 commit-identity check, and do this FIRST: run \`git rev-parse HEAD\` here and confirm ` +
+        `it is ${isolate}. A worktree checks out HEAD, so if it is any other commit you are ` +
+        `verifying a tree nobody chose — REFUTED, quoting both shas. Do NOT substitute ` +
+        `\`git status --porcelain\` for this: a fresh worktree is clean by construction, so that ` +
+        `command cannot fail here and proves nothing.`
+      : `F-A1 tree check: also confirm the working tree contains no changes beyond the ` +
+        `reviewed artifact set (run \`git status --porcelain\`). A worker (or a read-only ` +
+        `seat with Bash) touching files outside the artifact under review is an unpresented ` +
+        `change — REFUTED on that basis, naming the stray path(s).`),
   {
     agentType: "cc-operator:op-verifier",
     model: JUDGMENT,
@@ -306,6 +386,7 @@ const adversarial = await agent(
     label: "adversarial",
     phase: "Adversarial",
     schema: VERDICT,
+    ...(isolate ? { isolation: "worktree" } : {}),
   },
 );
 
@@ -331,6 +412,31 @@ return {
   blocked: !verified || verdict === "REFUTED",
   unverified: !verified || undefined,
   adversarial,
+  // #23: the caller reading this verdict must be able to tell WHICH tree
+  // produced it. A CONFIRMED from the builder's tree and a CONFIRMED from a
+  // worktree of a named commit are different claims, and a result that renders
+  // them identically is how the weaker one gets described as the stronger.
+  // `bound` ships with the positive case rather than living only in the docs,
+  // for the same reason: the overclaim is what the issue warned about.
+  //
+  // NOTE FOR WHOEVER WIRES `observedCommit`: it is null in both branches today
+  // and nothing populates it. When something does — by parsing the seat's
+  // `adversarial.evidence` for the `git rev-parse HEAD` it printed — give
+  // "checked, no discrepancy" a value distinguishable from "never checked".
+  // A bare null cannot carry both, and conflating them is this field's own
+  // failure mode one level down (silent-failure review, PR #72).
+  //
+  // `requestedCommit`, NOT `commit`, and the rename is the whole correction.
+  // This field is what the caller ASKED FOR; nothing in this file observes
+  // where the seat actually ran. The F-A2 check that compares HEAD against it
+  // lives in the seat's prompt, so on a REFUTED — which is exactly the verdict
+  // an identity mismatch produces — a `commit:` key would label the result with
+  // a sha the run may never have been at. That is the overclaim this field was
+  // added to prevent, reintroduced by naming (Copilot, PR #72). The observed
+  // HEAD is in `adversarial.evidence`, where the seat put it; read it there.
+  isolation: isolate
+    ? { mode: "worktree", requestedCommit: isolate, observedCommit: null, bound: "same filesystem, $HOME, caches and PATH — defeats in-tree artifacts, not a poisoned global cache. requestedCommit is what was ASKED for; the HEAD the seat actually observed is in adversarial.evidence (F-A2), and a mismatch there is why a REFUTED can carry a requestedCommit it never ran at" }
+    : { mode: "builder-tree", requestedCommit: null, observedCommit: null, bound: "the verdict describes the artifact AS OBSERVED FROM THE BUILDER'S ENVIRONMENT; pass args.isolate=<sha> for a worktree run (#23)" },
   findings: scored.map((f) => ({ ...f, bucket: bucket(f) })),
   dropped: returned.flatMap((p) => p.findings).length - scored.length,
   // Non-empty means the panel ran at reduced coverage: those lenses returned

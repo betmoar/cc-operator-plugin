@@ -1098,24 +1098,24 @@ retro_gate() {
   if [ "$found" -eq 0 ]; then
     RETRO_STATE="duplicate"
     echo "ops-verdict: warning — no sentinel for '$ID' but a prior row exists in the fragment; treating as duplicate/amending row" >&2
-    # RESIDUAL, recorded rather than papered over (PR-review finding 2026-08-07).
-    # The fragment row and the GATE-EXCEPTION are two appends, not one atomic
-    # act. A crash between them leaves a row whose audit line never landed, and
-    # THIS branch then reads it as an amendment — the bypass record is lost.
+    # #14 (U2), CLOSED in 0.8.4 by reordering the two appends — read the write
+    # block at the bottom of this file for the reasoning. Kept here because THIS
+    # branch is where the old failure surfaced, and a reader who lands on it
+    # needs to know why it is no longer one.
     #
-    # The obvious guard (downgrade only when a GATE-EXCEPTION for <id> exists)
-    # was implemented and REVERTED: a legitimately ARMED first verdict also
-    # leaves a row with no exception, so the guard reclassified every ordinary
-    # armed-then-amended verdict as never-armed and wrote a spurious exception
-    # (caught by the G1.7 case). "Prior row without exception" is genuinely
-    # ambiguous between the two, and nothing in the fragment distinguishes them.
+    # It was: the fragment row and the GATE-EXCEPTION are two appends, so a crash
+    # between them left a row whose audit line never landed, and this branch read
+    # that row as an amendment — the bypass record lost. The exception now goes
+    # FIRST, so the crash-interrupted state is an exception with no row, which a
+    # retry completes rather than misreads.
     #
-    # Closing it properly means making the pair atomic — writing the exception
-    # BEFORE the row, or journaling both under one fsync — which is a change to
-    # the single writer's ordering contract and belongs in its own slice with
-    # its own bar. The crash window is ~1 line wide and the failure is
-    # audit-trail loss, not ledger corruption; recording it beats a guard that
-    # trades a rare loss for a common false positive.
+    # What did NOT change, and must not: the guard that downgrades to `duplicate`
+    # only when a GATE-EXCEPTION for <id> exists. It was implemented and REVERTED,
+    # because a legitimately ARMED first verdict also leaves a row with no
+    # exception, so it reclassified every ordinary armed-then-amended verdict as
+    # never-armed and wrote a spurious exception (case G1.7 caught it). "Prior row
+    # without exception" is still ambiguous between the two; the reorder works by
+    # removing the ambiguous state, not by reading it.
   else
     RETRO_STATE="never-armed"
   fi
@@ -1135,6 +1135,15 @@ if [ "${2:-}" = "--defer" ]; then
   # never armed and leave no trace, while the identical act through the PASS/FAIL
   # path is recorded — an asymmetry a bypass would find (PR review 2026-08-07).
   retro_gate
+  # NOT reordered like the verdict path was for #14, and the asymmetry is
+  # deliberate. U2's loss needs a reader that misclassifies the surviving half:
+  # there, a row with no exception is read as an amendment by retro_gate's
+  # prior-row scan. That scan reads the session FRAGMENT, and --defer writes no
+  # fragment row at all — so a crash between these two appends leaves a
+  # DEFERRED-VERDICT with no exception, the retry classifies never-armed again
+  # (unchanged, since nothing it reads has moved), and the exception lands.
+  # The audit line is recoverable here; reordering would only trade that for a
+  # duplicate exception. Re-check this if --defer ever starts writing a fragment.
   printf '%s | %s | DEFERRED-VERDICT | %s | deferred via ops-verdict.sh --defer\n' \
     "$(date +%F)" "$ID" "$REASON" >> "$DECISIONS"
   if [ "$RETRO_STATE" = "never-armed" ]; then
@@ -1175,19 +1184,48 @@ lock_acquire
 ownership_gate            # inside the lock: adoption cannot slip in behind it
 retro_gate                # three-state arm check (G1) — also inside the lock
 ROW="$(printf '| %s | %s | %s @%s | %s |' "$ID" "$CRITERION" "$EVIDENCE" "$SOURCE_STAMP" "$VERDICT")"
-# Fragment FIRST. Under `set -e` a failed write aborts the script, so the order
-# decides what a partial failure leaves behind: a fragment without a ledger row
-# is repaired by --reconcile and a duplicate fragment row is deduped there, but
-# a ledger row without its fragment is silently un-repairable, and a retry after
-# the abort would double the ledger row. Sentinel-clear stays last so a failure
-# anywhere above leaves the task OPEN — the gate holds.
-append_fragment "$FRAG_OWNER" "$ROW"
-printf '%s\n' "$ROW" >> "$VERDICTS"
-# G1: never-armed verdict → write GATE-EXCEPTION to DECISIONS.md under the same lock.
+# Write order in this block, and every part of it is load-bearing:
+#   1. GATE-EXCEPTION (if never-armed)  — #14, reasoned through below
+#   2. fragment                          — repairable by --reconcile
+#   3. ledger row                        — the un-repairable one, so it goes last
+#   4. sentinel clear                    — last of all, so a failure anywhere
+#      above leaves the task OPEN and the gate holds
+#
+# G1 / #14 (U2): the GATE-EXCEPTION is written BEFORE the row, and the order is
+# the whole fix. The pair is two appends, not one atomic act, so the ordering
+# decides what a crash between them leaves behind:
+#
+#   row first (until 0.8.4): a row with no exception. The retry reads a prior row
+#     for an id with no sentinel and classifies it `duplicate` — so a genuine
+#     bypass KEEPS its PASS row and LOSES its exception. That is precisely the
+#     outcome G1 exists to prevent, reached through a crash window instead of a
+#     swallowed error.
+#   exception first (now): an exception with no row. The retry re-runs and
+#     appends the row; the exception is at worst duplicated, which is a
+#     legible audit trail rather than a missing one. An orphan exception says
+#     "an unarmed close was attempted here" — true, and the conservative
+#     direction to be wrong in.
+#
+# The guard the issue records as built-and-reverted is still the wrong fix and
+# stays out: "prior row without an exception" cannot distinguish crash-interrupted
+# from ordinary-armed-then-amended (an armed first verdict also leaves a row with
+# no exception), so it reclassified every amendment as never-armed and wrote a
+# spurious exception — case G1.7 caught it. Reordering needs no such distinction,
+# because it removes the state that was ambiguous rather than trying to read it.
+#
+# Both appends are already under the SAME lock, so no concurrent writer can
+# interleave between them; the window this closes is a crash, not a race.
 if [ "$RETRO_STATE" = "never-armed" ]; then
   printf '%s | %s | GATE-EXCEPTION | [sid:%s] verdict %s recorded without an open sentinel — the arm gate was not used | never-armed via ops-verdict.sh\n' \
     "$(date +%F)" "$ID" "${OWNER:-$SOWNER}" "$ID" >> "$DECISIONS"
 fi
+# Fragment BEFORE the ledger. Under `set -e` a failed write aborts the script, so
+# the order decides what a partial failure leaves: a fragment without a ledger row
+# is repaired by --reconcile and a duplicate fragment row is deduped there, but a
+# ledger row without its fragment is silently un-repairable, and a retry after the
+# abort would double the ledger row.
+append_fragment "$FRAG_OWNER" "$ROW"
+printf '%s\n' "$ROW" >> "$VERDICTS"
 clear_sentinel
 recompute_arm_marker "$FRAG_OWNER"     # G2.1 — under the lock, after the clear
 lock_release
