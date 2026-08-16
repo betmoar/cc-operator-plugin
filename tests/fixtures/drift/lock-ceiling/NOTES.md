@@ -8,7 +8,8 @@ contradict — arithmetic anyone can check without running anything.
 
 **≈, not =, and the correction is the fixture's own lesson.** The loop
 increments `n` BEFORE the guard and sleeps only in the else path, so the
-30th iteration returns without sleeping: **29 sleeps, ≈2.9s**.
+30th iteration returns without sleeping: **29 sleeps, 2.9s of sleep time**
+(and ~3.7s of wall clock — see the third-pass note below).
 
 `true/lock.sh` originally said "3s ceiling (30 spins of 0.1s)" and was
 therefore *also* wrong — the corrected column carrying a smaller version of
@@ -22,13 +23,23 @@ right, not spuriously firing.
 
 A first pass left it as `≈` in the NOTES and the wrong claim in the file,
 which is the same mistake one level up: recording the correction instead of
-making it. `true/lock.sh` now states the observable behaviour (~2.9s, counter
-tested before the sleep). The MEASUREMENT.md control column is re-read
-accordingly — see its "control column" section.
+making it.
 
-**true/lock.sh** carries the corrected claim ("Bounded at ~2.9s: the counter
-is tested BEFORE the sleep, so the 30th iteration returns without sleeping and
-only 29 sleeps of 0.1s elapse") against the identical constants and identical
+**And the second pass was still wrong.** "~2.9s" is the sum of the SLEEPS; a
+comment-accuracy review timed the function against a held lock and measured
+**3.68/3.67/3.69s (drifted) and 3.72/3.69/3.71s (true)** — 30 `mkdir` attempts
+and the loop itself are not free, so a stated 2.9s ceiling is ~27% under. Three
+versions of this comment, three precise numbers, three misses; the file now
+separates sleep time from wall clock and states both. The teaching point was
+never a duration — it is the counter-before-guard off-by-one — and a fixture
+that keeps needing its own numbers corrected is evidence for stating the
+mechanism rather than a figure.
+
+The MEASUREMENT.md control column is re-read accordingly — see its "control
+column" section.
+
+**true/lock.sh** carries the corrected claim (bounded; 29 sleeps of 0.1s =
+2.9s of SLEEP, ~3.7s of wall clock) against the identical constants and identical
 `acquire_lock` body. Both variants behave identically: same retry count, same
 sleep interval, same timeout message, same return codes.
 
@@ -47,7 +58,7 @@ comments, so detection is incidental rather than guaranteed — worth
 measuring rather than assuming.
 
 **What a correct detection must name to count as detected:** the specific
-arithmetic — "the comment says 2s, the constants give ~2.9s" — not a generic
+arithmetic — "the comment says 2s, the constants give 29 sleeps of 0.1s" — not a generic
 "verify timing constants," which is equally applicable to `true/lock.sh` and
 would be a false positive there. A detection naming "30 × 0.1 = 3s" counts as
 a hit on the 2s claim but is itself imprecise, which is why this fixture
@@ -55,7 +66,7 @@ needed correcting twice.
 
 **Functional-identity verification:** `LOCK_MAX_SPINS`, `SPIN_SLEEP`, and
 `acquire_lock` are byte-identical between the two files; only the comment's
-stated ceiling differs (2s vs ~2.9s). Ran both:
+stated ceiling differs. Ran both:
 
 ```
 $ bash -c 'source tests/fixtures/drift/lock-ceiling/drifted/lock.sh; d=$(mktemp -d)/l; time acquire_lock "$d"; echo rc=$?'
@@ -65,7 +76,7 @@ rc=0
 ```
 
 identical behavior (immediate success on an unheld lock; both would spin
-identically to ~2.9s on a held one, since `LOCK_MAX_SPINS`/`SPIN_SLEEP` do not
+identically on a held one, since `LOCK_MAX_SPINS`/`SPIN_SLEEP` do not
 differ between the files).
 
 ## Measured 2026-08-16

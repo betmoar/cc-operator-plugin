@@ -125,6 +125,23 @@ hash_stream() { HASH_CMD | awk '{print $1}'; }
 corpus_hash() {
   corpus="$1"
   _ch_list="$(mktemp "${TMPDIR:-/tmp}/opscorp.XXXXXX")" || die "cannot create a temp file for the corpus listing"
+  # ONE cleanup path for THREE temp files, and it has to be a trap. Measured
+  # after the NUL rewrite: 83 opscorp.* files left in TMPDIR by one afternoon of
+  # runs. Two leaks, and the second is the instructive one:
+  #
+  #   1. every `die` inside the read loop below exits without reaching any of
+  #      the explicit `rm -f` lines, and each guard added later would have to
+  #      remember to clean up three paths — a rule that decays on the next edit.
+  #   2. `corpus_hash` is called in a COMMAND SUBSTITUTION (`$(corpus_hash …)`),
+  #      so it runs in a subshell. `die`'s exit ends that subshell, and nothing
+  #      after the substitution ever sees it — a `trap` in the CALLER could not
+  #      have covered these files even if one existed.
+  #
+  # The trap is installed in the same subshell that creates them, so it fires on
+  # every exit path including `set -e` aborts. RETURN is not in the list: this
+  # function is only ever run in a substitution, and adding it would delete the
+  # files on a normal return before `hash_stream` had read them.
+  trap 'rm -f "$_ch_list" "$_ch_list.raw" "$_ch_list.stream"' EXIT HUP INT TERM
   # NUL-separated, and both reasons are measured failures of the line-based
   # shape this replaces (REPLAY-CHARTER R7, 2026-08-16, adversarial seat):
   #
@@ -145,13 +162,11 @@ corpus_hash() {
   # `find`'s exit status is the one `set -e`/the `if` actually sees. The sort
   # then reads that file, so its status is separately checkable too.
   if ! find "$corpus" -type f -print0 > "$_ch_list.raw"; then
-    rm -f "$_ch_list" "$_ch_list.raw"
     die "cannot list '$corpus' — refusing to stamp a hash over a partial corpus"
   fi
   # LC_ALL=C: a byte-order sort, not a locale-dependent one — the same hash must
   # come out on any machine that runs this script. `-z` keeps the NUL framing.
   if ! LC_ALL=C sort -z < "$_ch_list.raw" > "$_ch_list"; then
-    rm -f "$_ch_list" "$_ch_list.raw"
     die "cannot sort the listing of '$corpus' — refusing to stamp a hash from an unordered walk"
   fi
   # A newline in a filename would split one hash record into two and silently
@@ -162,7 +177,6 @@ corpus_hash() {
   # tr appends a trailing newline per record, so a clean corpus gives
   # lines == files; a newline in a name pushes lines above files.
   if [ "$_ch_lines" != "$_ch_files" ]; then
-    rm -f "$_ch_list" "$_ch_list.raw"
     die "'$corpus' contains a filename with a newline — refusing (it would split one hash record into two)"
   fi
   {
@@ -181,9 +195,8 @@ corpus_hash() {
       cat "$f" || die "cannot read '$f' — refusing to stamp a hash that skips it"
       printf '\n'
     done < "$_ch_list"
-  } > "$_ch_list.stream" || { rm -f "$_ch_list" "$_ch_list.raw" "$_ch_list.stream"; exit 2; }
+  } > "$_ch_list.stream" || exit 2
   hash_stream < "$_ch_list.stream"
-  rm -f "$_ch_list" "$_ch_list.raw" "$_ch_list.stream"
 }
 
 # realpath_of <path> — portable realpath (macOS ships no `realpath` by
@@ -376,6 +389,24 @@ $name
       # inside the mechanism built to replace plausible numbers with errors.
       "$STAMP_NAME") die "$MAP_NAME: production name '$dest' is reserved — build writes the corpus hash there, so a mapped file of that name would be silently overwritten and the tree would be one file short while verify still passed" ;;
     esac
+    # CASE-INSENSITIVELY, because `case` compares bytes and the filesystem does
+    # not. Measured on stock macOS/APFS (case-insensitive by default): a map
+    # naming `.OPS-CORPUS-STAMP` sailed past the byte-exact guard above, `cp`
+    # and the stamp write landed on the SAME directory entry, and the build
+    # printed "2 file(s)" over a one-file tree that verified green — the exact
+    # failure the guard above was written to close, reached through case
+    # (silent-failure review, PR #72). A byte-exact reservation on a
+    # case-insensitive filesystem is a guard that does not cover its own target.
+    #
+    # `tr` rather than bash 4's `${var,,}`: this file targets bash 3.2, where
+    # that expansion is a syntax error. The comparison is deliberately wider
+    # than the platform strictly needs — refusing `.OPS-CORPUS-STAMP` on a
+    # case-SENSITIVE filesystem costs a maintainer one rename of a name they
+    # had no reason to pick, while allowing it on a case-insensitive one costs
+    # a silently short tree.
+    _dest_lc="$(printf '%s' "$dest" | tr '[:upper:]' '[:lower:]')"
+    _stamp_lc="$(printf '%s' "$STAMP_NAME" | tr '[:upper:]' '[:lower:]')"
+    [ "$_dest_lc" != "$_stamp_lc" ] || die "$MAP_NAME: production name '$dest' collides with the reserved stamp filename '$STAMP_NAME' (case-insensitively — this filesystem may treat them as one file, and the stamp write would silently overwrite the mapped artifact)"
     [ -f "$corpus/$dir/$src" ] || die "$MAP_NAME names '$dir/$src', which does not exist in '$corpus'"
     # Regular, non-symlink — the same contract `read_map` applies to the map and
     # `verify` to the stamp, and the repo-wide rule for any file a CLI trusts.

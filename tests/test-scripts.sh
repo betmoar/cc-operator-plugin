@@ -4952,6 +4952,20 @@ else
     _RC=$?
     check "#69 a map claiming the stamp filename is REFUSED (it would be overwritten, one file short, verify green)" \
       "$([ "$_RC" -ne 0 ] && echo 0 || echo 1)"
+    # ...and CASE-INSENSITIVELY. `case` compares bytes; APFS (stock macOS) does
+    # not. Measured: `.OPS-CORPUS-STAMP` sailed past the byte-exact guard, cp and
+    # the stamp write hit the SAME directory entry, and the build printed
+    # "2 file(s)" over a one-file tree that verified green — the guard's own
+    # target, reached through case (silent-failure review, PR #72). The case runs
+    # on every platform: on a case-SENSITIVE filesystem the refusal is still
+    # correct behaviour, just not load-bearing, and asserting it there keeps the
+    # guard from being quietly dropped by someone testing on Linux only.
+    printf 'f1 a.sh ok.sh\nf1 b.sh .OPS-CORPUS-STAMP\n' > "$_STAMPC/$_MAPN"
+    bash "$CORPUS" build --corpus "$_STAMPC" --out "$_CTMP/stampout_case" >/dev/null 2>&1
+    _RC=$?
+    check "#69 a map claiming the stamp filename in another CASE is REFUSED too" \
+      "$([ "$_RC" -ne 0 ] && echo 0 || echo 1)"
+
     # Control: the SAME corpus with a normal second name builds, and the tree
     # actually holds BOTH files — the count and the contents agreeing is the
     # property the collision broke.
@@ -4960,6 +4974,68 @@ else
     _RC=$?
     check "#69 control: the same corpus with a non-reserved name builds BOTH files" \
       "$([ "$_RC" -eq 0 ] && [ -f "$_CTMP/stampout2/ok.sh" ] && [ -f "$_CTMP/stampout2/also.sh" ] && echo 0 || echo 1)"
+
+    # 5e. TEMP-FILE HYGIENE. corpus_hash makes three temp files and runs inside a
+    #     command substitution, so `die` ends that subshell and no cleanup after
+    #     the substitution can ever run — the explicit `rm -f` lines covered the
+    #     guards that had them and nothing else. Measured: 83 opscorp.* left in
+    #     TMPDIR by one afternoon of runs. Now a trap in the same subshell, which
+    #     is the only construct that covers every exit including a `die` inside
+    #     the read loop.
+    #
+    #     Counted with `find | grep -c ''` rather than `ls | wc -l`: `ls` on a
+    #     no-match glob prints an error and a count of 1, which would read as a
+    #     leak that is not there — a probe whose failure mode is a false alarm
+    #     teaches the next maintainer to ignore it.
+    _tmpd="${TMPDIR:-/tmp}"
+    _leak_count() { find "$_tmpd" -maxdepth 1 -name 'opscorp.*' 2>/dev/null | grep -c '' ; }
+    _LEAK_BEFORE="$(_leak_count)"
+    bash "$CORPUS" build --corpus "$SECDIR" --out "$_CTMP/leakout" >/dev/null 2>&1
+    bash "$CORPUS" verify --corpus "$SECDIR" --tree "$_CTMP/leakout" >/dev/null 2>&1
+    check "#69 a successful build+verify leaves no temp file behind" \
+      "$([ "$(_leak_count)" = "$_LEAK_BEFORE" ] && echo 0 || echo 1)"
+    # The path that leaked worst: `die` from INSIDE the read loop, which reaches
+    # none of the explicit cleanup lines. Skipped as root (reads anything).
+    if [ "$(id -u)" -ne 0 ]; then
+      _LEAKC="$_CTMP/leakcorpus"; mkdir -p "$_LEAKC/f1"
+      printf 'a\n' > "$_LEAKC/f1/a.sh"
+      printf 'b\n' > "$_LEAKC/f1/b.sh"
+      printf 'f1 a.sh ok.sh\n' > "$_LEAKC/$_MAPN"
+      chmod 000 "$_LEAKC/f1/b.sh"
+      _LEAK_BEFORE="$(_leak_count)"
+      bash "$CORPUS" build --corpus "$_LEAKC" --out "$_CTMP/leakout2" >/dev/null 2>&1
+      _RC=$?
+      chmod 644 "$_LEAKC/f1/b.sh"
+      # Both halves: it must still REFUSE (the guard) and still clean up (the trap).
+      # Asserting only the cleanup would pass on a build that stopped refusing.
+      check "#69 a die inside the read loop still refuses AND leaves no temp file" \
+        "$([ "$_RC" -ne 0 ] && [ "$(_leak_count)" = "$_LEAK_BEFORE" ] && echo 0 || echo 1)"
+    else
+      echo "  skip #69 temp-file-on-die case: running as root, which can read anything"
+    fi
+
+    # 5f. BOUNDARY: a one-file corpus. The suite's other corpora are all 2+ files,
+    #     so the smallest non-empty listing — one record, one trailing NUL — was
+    #     only ever exercised incidentally. It is the shape most likely to break
+    #     under a NUL-framing change: an off-by-one in the count comparison, or a
+    #     `read -r -d ''` that drops a final record, both show up here first and
+    #     nowhere else. Asserted through build AND verify, because a hash that is
+    #     wrong but stable would pass build alone.
+    #
+    #     The 0-FILE case is deliberately not tested through the CLI: read_map
+    #     refuses an empty map before corpus_hash is ever called, so a test would
+    #     be asserting the map guard while appearing to assert the hash. Naming
+    #     that here is the honest alternative to a case that measures the wrong
+    #     thing (#21's class, reached by testing an unreachable path).
+    _ONEF="$_CTMP/onefile"; mkdir -p "$_ONEF/f1"
+    printf 'only\n' > "$_ONEF/f1/a.sh"
+    printf 'f1 a.sh ok.sh\n' > "$_ONEF/$_MAPN"
+    bash "$CORPUS" build --corpus "$_ONEF" --out "$_CTMP/onefileout" >/dev/null 2>&1
+    _RC=$?
+    bash "$CORPUS" verify --corpus "$_ONEF" --tree "$_CTMP/onefileout" >/dev/null 2>&1
+    _RC2=$?
+    check "#69 a one-file corpus builds AND verifies (smallest NUL-framed listing)" \
+      "$([ "$_RC" -eq 0 ] && [ "$_RC2" -eq 0 ] && [ -f "$_CTMP/onefileout/ok.sh" ] && echo 0 || echo 1)"
 
     # 6. The map FILE's own guards (missing / symlinked), as distinct from the
     #    guards on the fields inside it. Every field-level vector above is

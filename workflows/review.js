@@ -419,6 +419,13 @@ return {
   // `bound` ships with the positive case rather than living only in the docs,
   // for the same reason: the overclaim is what the issue warned about.
   //
+  // NOTE FOR WHOEVER WIRES `observedCommit`: it is null in both branches today
+  // and nothing populates it. When something does — by parsing the seat's
+  // `adversarial.evidence` for the `git rev-parse HEAD` it printed — give
+  // "checked, no discrepancy" a value distinguishable from "never checked".
+  // A bare null cannot carry both, and conflating them is this field's own
+  // failure mode one level down (silent-failure review, PR #72).
+  //
   // `requestedCommit`, NOT `commit`, and the rename is the whole correction.
   // This field is what the caller ASKED FOR; nothing in this file observes
   // where the seat actually ran. The F-A2 check that compares HEAD against it

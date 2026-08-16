@@ -127,7 +127,12 @@ Open the replay's own tracking task:
   .gitattributes .gitignore tiers.env` (order aside).
 - `.operator/.gitignore` first non-comment line is `*` (v2 allowlist; the bare
   `*` is the load-bearing half — check_gitignore_parity's lesson).
-- **F67 probe:** `printf '/.operator/\n' >> .gitignore`, then re-run the
+- **F67 probe.** **First check whether the project ALREADY gitignores
+  `.operator/` from outside** — `grep -n '^/\?\.operator/\?$' .gitignore`. This
+  repo does, at `.gitignore:34`, and a probe that adds a second rule then removes
+  only its own leaves the warning standing, which reads as a broken detector
+  while it is working perfectly. The control only discriminates once EVERY such
+  rule is gone (third run, 2026-08-16). Then: `printf '/.operator/\n' >> .gitignore`, then re-run the
   scaffold. `ops-init.sh` is **not** in the `.operator/bin/` install set — that
   set is `ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh ops-backlog.sh`
   (`ops-init.sh:194`), because init is what *creates* `bin/` and would have to
@@ -138,7 +143,11 @@ Open the replay's own tracking task:
   .operator/.gitignore:`. Then remove the line and re-run: warning absent —
   **that removal IS this phase's negative control**, and it is the half that
   distinguishes a working detector from a script that always warns.
-- **F05 root check:** the scaffold must NOT warn `NOT the repository root` at the
+- **F05 root check** — and **clean up after its control**: running the scaffold
+  from a subdirectory SCAFFOLDS THERE. The third run left a real `docs/.operator/`
+  with 11 files behind, gitignored and therefore invisible to `git status`, in the
+  repo it was auditing. Remove it before continuing. The check itself: the
+  scaffold must NOT warn `NOT the repository root` at the
   repo root. On macOS this is load-bearing: `/tmp` is a symlink to `private/tmp`,
   and the pre-0.8.1 comparison of git's physical toplevel against `$PWD` fired on
   every scratch project (issue #61). Control: `mkdir sub && cd sub` and re-run —
@@ -321,6 +330,13 @@ this is the ownership gate's own control:
 row, and cleared the sentinel at rc 0. Control for the control: an evidence cell
 that legitimately starts with a single dash still records —
 `ops-verdict.sh R4-dash "c" "-v output: 3 passed" PASS --owner <sid>` exits 0.
+
+**Recording this phase needs one rewording, and the guard is right.** Evidence
+cells are pipe-delimited, and `ops-verdict.sh` refuses a cell containing `|` —
+so the natural evidence line, which quotes this phase's own expected usage
+string (the one carrying `<PASS|FAIL>`), is itself refused. Paraphrase the
+usage string in the cell rather than quoting it verbatim; the guard firing on
+your evidence is the guard working (third run, 2026-08-16).
 
 ## R5 — Retro-gate (G1) and the deviation gate
 
