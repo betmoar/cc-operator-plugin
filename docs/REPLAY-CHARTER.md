@@ -503,3 +503,63 @@ The transferable lesson is now rule-shaped in R8: **before recording a phase as
 unexecutable, try to execute it.** "Cannot be tested" is a claim, and it owes
 evidence like any other. This one survived a release because it sounded
 structural.
+
+## What the third real run changed (2026-08-16, `8ef5d9e`, 0.8.4 inline)
+
+The first run to record a **FAIL**, and the first where the protocol's own
+negative controls — not its positive assertions — produced every finding worth
+having. Scorecard by stamp: 10 PASS, 1 FAIL, 0 human-verified, 0 deferred,
+0 not-executed.
+
+**The FAIL is R7 and it is the point of the phase.** The adversarial seat
+returned REFUTED and it was right twice over: it refuted on F-A1 (an
+uncommitted fixture edit, which it *demonstrated* changes the stamp
+`ops-corpus.sh` produces rather than merely reporting the tree dirty), and it
+found two live defects in `corpus_hash` — code this repo had shipped one day
+earlier as the fix for the plausible-hash class:
+
+- `if ! find … | sort > list` tests the **last** stage. `sort` succeeds on a
+  partial stream, so an undescendable subdirectory produced a green build **and**
+  a green verify over a corpus missing files — precisely the state the comment
+  above it claimed was closed.
+- The newline-in-filename guard was **vacuous**: both sides counted `grep -c ''`
+  of the same `find -print` output, and a newline splits both identically.
+  Measured `lines=3 files=3` on a two-file corpus containing `a<LF>b.txt`.
+
+Recorded as FAIL rather than outvoted by five green lens findings, per the
+unoutvotable rule. Fixed under `R7-fix`, mutation-verified (restoring both
+pre-R7 shapes reddens exactly the two new cases), hash-preserving.
+
+**Three charter defects, all in phases the charter calls simple:**
+
+- **R1's F67 control is invalid in any project that already has an
+  `/.operator/` rule.** This repo carries one at `.gitignore:34`. The probe adds
+  a second, and removing *that* leaves the warning standing — which reads as a
+  broken detector while it is working correctly. The control only discriminates
+  once **every** such line is removed. The charter says "remove the line";
+  it must say "confirm no such rule pre-exists, or remove them all".
+- **R1's F05 control scaffolds a real `.operator/` in the subdirectory it runs
+  from.** Eleven files, gitignored, invisible to `git status` — a replayer
+  following the charter literally leaves a stray ledger inside the repo being
+  audited. The phase needs a cleanup line.
+- **R4's parser control cannot be recorded verbatim.** Its own expected-output
+  string contains `PASS|FAIL`, and the evidence cell refuses a pipe (cells are
+  pipe-delimited). The guard is right; the charter's example is unrecordable as
+  written.
+
+**One fixture defect, found by R7's negative control rather than by the panel.**
+Pointed at `drift/lock-ceiling/drifted/lock.sh` with the `feasibility` prompt
+verbatim, one lens found the 2s claim it was meant to find *and*, unprompted,
+that the loop increments before the guard and sleeps only in the else path:
+**29 sleeps ≈ 2.9s, not 30**. So the fixture's *corrected* column was also
+wrong. A negative control is supposed to prove the panel is not a rubber stamp;
+this one did that and improved the instrument.
+
+**What did not need correcting:** R4.3's honesty probe, again — broken
+criterion, silent Stop, PASS row standing. Two runs in a row, the one phase
+designed to confirm a limitation is the one that needs no edits.
+
+**The ledger separated the runs by itself.** Filtering the phase rows to
+`@8ef5d9eb26bd` gave exactly this run's eleven, with 2026-08-14's rows sitting
+above them untouched — U10's stamp doing the job it was built for, incidentally,
+in the middle of an audit about something else.

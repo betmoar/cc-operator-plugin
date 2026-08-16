@@ -125,24 +125,48 @@ hash_stream() { HASH_CMD | awk '{print $1}'; }
 corpus_hash() {
   corpus="$1"
   _ch_list="$(mktemp "${TMPDIR:-/tmp}/opscorp.XXXXXX")" || die "cannot create a temp file for the corpus listing"
-  # LC_ALL=C: a byte-order sort, not a locale-dependent one — the same
-  # hash must come out on any machine that runs this script.
-  if ! find "$corpus" -type f -print | LC_ALL=C sort > "$_ch_list"; then
-    rm -f "$_ch_list"
+  # NUL-separated, and both reasons are measured failures of the line-based
+  # shape this replaces (REPLAY-CHARTER R7, 2026-08-16, adversarial seat):
+  #
+  #   1. `if ! find … | sort > list` tests the LAST stage. `sort` succeeds on a
+  #      partial stream, so `find`'s own failure — an undescendable subdirectory,
+  #      a corpus that vanished mid-walk — was invisible, and the build printed
+  #      "built" and a stamp over a SHORT corpus. Measured: `find <missing> |
+  #      sort` reports NOT CAUGHT, and a `chmod 000` subdir produced a green
+  #      build AND a green verify with `find: Permission denied` on stderr. That
+  #      is exactly the plausible-hash state the comment above claims was closed.
+  #   2. The newline guard was VACUOUS. It compared `grep -c ''` of the list
+  #      against `grep -c ''` of the same `find -print` output — a filename with
+  #      a newline splits into two lines on BOTH sides, so the counts always
+  #      matched. Measured on a 2-file corpus containing `a<LF>b.txt`: lines=3,
+  #      files=3, equal, no refusal. A real file count needs `-print0`.
+  #
+  # `find … -print0` into a temp file, with the redirection OUTSIDE any pipe, so
+  # `find`'s exit status is the one `set -e`/the `if` actually sees. The sort
+  # then reads that file, so its status is separately checkable too.
+  if ! find "$corpus" -type f -print0 > "$_ch_list.raw"; then
+    rm -f "$_ch_list" "$_ch_list.raw"
     die "cannot list '$corpus' — refusing to stamp a hash over a partial corpus"
   fi
-  # A newline in a filename would split one record into two and silently change
-  # the hash of an unchanged corpus. Refuse rather than hash it: a fixture corpus
-  # has no business carrying one, and a stamp nobody can reproduce is worse than
-  # no stamp. (`grep -c ''` counts lines; comparing to the file count catches it.)
-  _ch_lines="$(grep -c '' < "$_ch_list" || true)"
-  _ch_files="$(find "$corpus" -type f | grep -c '' || true)"
+  # LC_ALL=C: a byte-order sort, not a locale-dependent one — the same hash must
+  # come out on any machine that runs this script. `-z` keeps the NUL framing.
+  if ! LC_ALL=C sort -z < "$_ch_list.raw" > "$_ch_list"; then
+    rm -f "$_ch_list" "$_ch_list.raw"
+    die "cannot sort the listing of '$corpus' — refusing to stamp a hash from an unordered walk"
+  fi
+  # A newline in a filename would split one hash record into two and silently
+  # change the hash of an unchanged corpus. Now genuinely detectable: NUL-counted
+  # entries vs newline-counted ones differ exactly when a name contains a newline.
+  _ch_files="$(tr -dc '\0' < "$_ch_list" | wc -c | tr -d '[:space:]')"
+  _ch_lines="$(tr '\0' '\n' < "$_ch_list" | grep -c '' || true)"
+  # tr appends a trailing newline per record, so a clean corpus gives
+  # lines == files; a newline in a name pushes lines above files.
   if [ "$_ch_lines" != "$_ch_files" ]; then
-    rm -f "$_ch_list"
+    rm -f "$_ch_list" "$_ch_list.raw"
     die "'$corpus' contains a filename with a newline — refusing (it would split one hash record into two)"
   fi
   {
-    while IFS= read -r f; do
+    while IFS= read -r -d '' f; do
       # No `[ -r ]` here, deliberately: a permission test is INERT for uid 0
       # (root bypasses mode bits), so it would report "readable" for the one uid
       # that then reads everything anyway — a guard that is either redundant or
@@ -157,9 +181,9 @@ corpus_hash() {
       cat "$f" || die "cannot read '$f' — refusing to stamp a hash that skips it"
       printf '\n'
     done < "$_ch_list"
-  } > "$_ch_list.stream" || { rm -f "$_ch_list" "$_ch_list.stream"; exit 2; }
+  } > "$_ch_list.stream" || { rm -f "$_ch_list" "$_ch_list.raw" "$_ch_list.stream"; exit 2; }
   hash_stream < "$_ch_list.stream"
-  rm -f "$_ch_list" "$_ch_list.stream"
+  rm -f "$_ch_list" "$_ch_list.raw" "$_ch_list.stream"
 }
 
 # realpath_of <path> — portable realpath (macOS ships no `realpath` by

@@ -2,9 +2,21 @@
 
 **Claim (drifted/lock.sh, line 2):** "Bounded at a 2s ceiling."
 
-**The code that falsifies it:** `LOCK_MAX_SPINS=30` × `SPIN_SLEEP=0.1` = 3
+**The code that falsifies it:** `LOCK_MAX_SPINS=30` × `SPIN_SLEEP=0.1` ≈ 3
 seconds, not 2. The comment states a numeric bound the constants directly
 contradict — arithmetic anyone can check without running anything.
+
+**≈, not =, and the correction is the fixture's own lesson.** The loop
+increments `n` BEFORE the guard and sleeps only in the else path, so the
+30th iteration returns without sleeping: **29 sleeps, ≈2.9s**. So
+`true/lock.sh`'s "3s ceiling (30 spins of 0.1s)" is *also* off — the
+corrected column carries a smaller version of the defect it was written to
+correct. Found on 2026-08-16 by the REPLAY-CHARTER R7 negative control: one
+`feasibility` lens, prompt verbatim, dispatched at this file alone. It was
+looking for the 2s claim and reported the off-by-one as well, unprompted.
+Left as ≈ rather than retyped to 2.9 in both columns, because a fixture
+whose two columns state different *precision* still isolates prose drift,
+while one whose columns state different *facts* would not.
 
 **true/lock.sh** carries the corrected claim ("Bounded at a 3s ceiling (30
 spins of 0.1s)") against the identical constants and identical

@@ -4888,9 +4888,54 @@ else
       _RC=$?
       check "#69 control: the same corpus with every file readable builds" \
         "$([ "$_RC" -eq 0 ] && echo 0 || echo 1)"
+
+      # 5b. A find that fails MID-WALK. Both of these were live defects found by
+      #     the REPLAY-CHARTER R7 adversarial seat (2026-08-16) in the very fix
+      #     written to close the short-hash class — the guard's own comment
+      #     claimed the failure was checkable while the code checked the wrong
+      #     thing. `if ! find … | sort > list` tests SORT, which succeeds on a
+      #     partial stream, so an undescendable subdirectory produced a green
+      #     build AND a green verify over a corpus missing files.
+      _UNWALK="$_CTMP/unwalkable"; mkdir -p "$_UNWALK/f1/deep"
+      printf 'code\n' > "$_UNWALK/f1/prod.sh"
+      printf 'x\n' > "$_UNWALK/f1/deep/hidden.sh"
+      printf 'f1 prod.sh runner.sh\n' > "$_UNWALK/$_MAPN"
+      chmod 000 "$_UNWALK/f1/deep"
+      bash "$CORPUS" build --corpus "$_UNWALK" --out "$_CTMP/unwalkout" >/dev/null 2>&1
+      _RC=$?
+      chmod 755 "$_UNWALK/f1/deep"
+      check "#69 a corpus find cannot fully walk is REFUSED, not stamped short" \
+        "$([ "$_RC" -ne 0 ] && echo 0 || echo 1)"
+      bash "$CORPUS" build --corpus "$_UNWALK" --out "$_CTMP/unwalkout2" >/dev/null 2>&1
+      _RC=$?
+      check "#69 control: the same corpus with every directory readable builds" \
+        "$([ "$_RC" -eq 0 ] && echo 0 || echo 1)"
     else
       echo "  skip #69 unreadable-file case: running as root, which can read anything"
     fi
+
+    # 5c. A filename containing a NEWLINE. The first guard for this was vacuous —
+    #     it compared `grep -c ''` of the listing against `grep -c ''` of the same
+    #     `find -print` output, and a newline splits BOTH sides identically, so
+    #     the counts always matched (measured: lines=3 files=3 on a 2-file corpus).
+    #     Counting NULs from `-print0` is what makes the two numbers differ.
+    #     Not inside the non-root branch: this needs no permission trick.
+    _NLC="$_CTMP/newlinecorpus"; mkdir -p "$_NLC/f1"
+    printf 'code\n' > "$_NLC/f1/prod.sh"
+    printf 'f1 prod.sh runner.sh\n' > "$_NLC/$_MAPN"
+    # The literal newline in the name is the whole point; build it with printf so
+    # the intent is visible rather than hidden in an escaped string.
+    _NLNAME="$(printf 'a\nb.txt')"
+    printf 'y\n' > "$_NLC/f1/$_NLNAME"
+    bash "$CORPUS" build --corpus "$_NLC" --out "$_CTMP/nlout" >/dev/null 2>&1
+    _RC=$?
+    check "#69 a filename with a newline is REFUSED (its stamp would be unreproducible)" \
+      "$([ "$_RC" -ne 0 ] && echo 0 || echo 1)"
+    rm -f "$_NLC/f1/$_NLNAME"
+    bash "$CORPUS" build --corpus "$_NLC" --out "$_CTMP/nlout2" >/dev/null 2>&1
+    _RC=$?
+    check "#69 control: the same corpus without the newline name builds" \
+      "$([ "$_RC" -eq 0 ] && echo 0 || echo 1)"
 
     # 6. The map FILE's own guards (missing / symlinked), as distinct from the
     #    guards on the fields inside it. Every field-level vector above is

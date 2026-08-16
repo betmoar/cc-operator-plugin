@@ -147,6 +147,20 @@ built, and the measurement says why.
 - **#18 (U6) closed as a record.** The B10 trigger is a user declaration, not a
   measurement; the decision stands and nothing was built for it.
 
+- **REPLAY-CHARTER executed against this release** (third real run, 2026-08-16,
+  `8ef5d9e`, inline install). 10 PASS / 1 FAIL / 0 deferred / 0 not-executed,
+  every phase with its negative control. The FAIL is R7: the adversarial seat
+  returned REFUTED and found two live defects in the `corpus_hash` fix this same
+  release shipped — `if ! find … | sort` tests the LAST pipeline stage, so an
+  undescendable subdirectory produced a green build *and* a green verify over a
+  short corpus; and the newline-in-filename guard was vacuous, both sides
+  counting the same `find -print` output. Fixed with `-print0` (redirect outside
+  the pipe, `sort -z`, NUL-count vs line-count), four new cases,
+  mutation-verified, and hash-preserving — the security corpus still stamps
+  `2cf86bf4…`. The run also found that `drift/lock-ceiling`'s *corrected* column
+  was itself off (29 sleeps, not 30) and three defects in the charter's own text,
+  all recorded in `docs/REPLAY-CHARTER.md`.
+
 ## [0.8.3] - 2026-08-15
 
 ### Added
