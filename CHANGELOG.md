@@ -16,6 +16,49 @@ landed so far is the release's own precondition: a gate that is green on the
 machine that runs it most, and two assertions that were passing for reasons
 unrelated to what they name.
 
+### Added
+
+- **`tests/fixtures/plan-align/` — the measurement instrument for #58's
+  north-star question, built before the field it would justify.** #58 makes its
+  own gate explicit: a plan whose tasks are each individually sound and which
+  collectively misses a stated goal, measured against the shipped vet lenses
+  before any alignment pass is written. Same discipline #24 required of the
+  security corpus and #70 of the drift corpus, and in both of those the
+  measurement said *do not build the seat*.
+
+  One canonical control column (`aligned.json`, six tasks that reach the goal)
+  shared by three misaligned columns, each with a **different prediction** —
+  `missing-final-step` (predicted MISS: the columns differ by an absence, so both
+  hand a per-task lens the same four task objects and its verdicts cannot
+  differ), `adjacent-deliverable` (predicted CATCH: agent-mediated recovery that
+  genuinely works and violates *without contacting support*, a contradiction
+  visible inside one task), `unverifiable-goal` (predicted CATCH via feasibility
+  only: covers all six requirements, but no criterion ever calls `login`, so the
+  goal is untested by construction). A corpus whose every fixture is predicted to
+  be missed is built to justify a conclusion rather than test one.
+
+  Neutralization differs from the other two corpora because it can: a task
+  reaches a seat as inline JSON exactly as `plan.js` serializes it, so
+  `misaligned.json` is a filename the dispatcher reads and the lens never does.
+  `ops-corpus.sh` is deliberately not used — its map emits a flat tree (`dest` is
+  a bare filename by traversal guard) while a plan fixture needs a nested project
+  the feasibility lens can read, and with no derived tree there is nothing for
+  #69's staleness stamp to protect.
+
+  `tests/test_plan_align_corpus.py` pins the 2×2's load-bearing cell — every task
+  in **both** columns individually feasible and testable — because a misaligned
+  column containing an infeasible task would measure what `plan.js` already
+  blocks and score the existing gate firing as a detection. Two columns' shared
+  prefixes are byte-identical to the control by construction and pinned as such.
+  Five mutations checked: a `testCycle` losing its expected output, a `consumes`
+  naming an unknown dependency, a shared prefix diverging, a task leaking its
+  column name to a seat, an empty `produces` — all caught.
+
+  `MEASUREMENT.md` carries the method, the scoring rule, and the predictions,
+  **fixed before the run**, with the results section empty and marked as such:
+  whether a finding counts as a detection is the judgment a measurement's author
+  is worst placed to make afterwards.
+
 ### Fixed
 
 - **A control assertion that could not pass, and a CI runner that could not see
