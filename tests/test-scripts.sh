@@ -1813,15 +1813,38 @@ check "untagged deviation → dev[1] for any session" \
 # Hostile/degenerate stdin must render nothing rather than spray errors onto
 # the bar. Includes the no-parser case: unlike the Stop hook, which warns on
 # stderr, a statusline has nowhere to warn — silence IS the correct behavior.
+#
+# Run from SLBARE — a temp dir with no `.operator/` at or above it. When the
+# payload cannot be parsed there is no cwd to read, so statusline.sh:84 falls
+# back to $PWD *deliberately* (documented at :49-50: the bar renders for where
+# it stands). These three used to run with cwd = THIS REPO, where the fallback
+# found no ledger only because the repo has never had `.operator/` scaffolded in
+# it — so "renders nothing" was really asserting "the maintainer never dogfooded
+# the gate here". Opening one real task turned all three red at once, with the
+# renderer behaving exactly as designed. Vacuous-guard class (#21), reached
+# through ambient state instead of a missing call site; the positive control
+# below is what keeps it non-vacuous.
+SLBARE="$(newproj)"
 check "garbage payload renders nothing" \
-  "$([ -z "$(printf 'NOT JSON{{' | "$BASH_ABS" "$SL" 2>&1)" ] && echo 0 || echo 1)"
+  "$([ -z "$(cd "$SLBARE" && printf 'NOT JSON{{' | "$BASH_ABS" "$SL" 2>&1)" ] && echo 0 || echo 1)"
 check "empty payload renders nothing" \
-  "$([ -z "$(printf '' | "$BASH_ABS" "$SL" 2>&1)" ] && echo 0 || echo 1)"
+  "$([ -z "$(cd "$SLBARE" && printf '' | "$BASH_ABS" "$SL" 2>&1)" ] && echo 0 || echo 1)"
 # No jq AND no python3: PATH_NONE is an empty dir, so even `cat` is gone. This
 # is why the segment slurps stdin with the `read` builtin — an external command
 # here printed a bash error INTO the statusline (caught in review, pre-release).
 check "no parser and no external commands: silent, no stray output" \
-  "$([ -z "$(sljson SESS-A "$P" | PATH="$SLNONE" "$BASH_ABS" "$SL" 2>&1)" ] && echo 0 || echo 1)"
+  "$([ -z "$(cd "$SLBARE" && sljson SESS-A "$P" | PATH="$SLNONE" "$BASH_ABS" "$SL" 2>&1)" ] && echo 0 || echo 1)"
+# The positive control for all three: silence above must come from an empty
+# ledger, NOT from the renderer giving up on an unparseable payload. Same
+# garbage stdin, cwd switched to a project that HAS a sentinel this session
+# owns — the segment must appear. Without this, deleting the $PWD fallback
+# entirely would leave the three assertions above green.
+SLFB="$(newproj)"; ( cd "$SLFB" && bash "$INIT" >/dev/null 2>&1 )
+printf 'session_id: SESS-A\n' > "$SLFB/.operator/pending/fallback-probe"
+check "unparseable payload falls back to \$PWD, not to silence (statusline.sh:84)" \
+  "$(cd "$SLFB" && printf 'NOT JSON{{' | "$BASH_ABS" "$SL" 2>/dev/null \
+     | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g' \
+     | grep -q 'op\[1\]' && echo 0 || echo 1)"
 # ...and it must TERMINATE, not merely stay quiet. Slurping stdin with `cat`
 # under an empty PATH does not fail — it HANGS, waiting on a command that will
 # never run, which freezes the whole bar rather than dropping one segment.
@@ -4396,9 +4419,19 @@ eval "$(sed -n '/^lock_holder_read() {$/,/^}$/p' "$2")"
 printf 'someone 1 2\n' > "$LOCKDIR/holder"
 chmod 000 "$LOCKDIR/holder" 2>/dev/null || true
 lock_holder_read
+# Report the record on STDOUT so the control below attests to THIS run — the run
+# whose stderr the first assertion reads. It used to re-extract the function in a
+# separate one-liner, which meant the two assertions could exercise different
+# code and, on bash 3.2, one of them exercised none at all (see the caller).
+printf 'REC=[%s]\n' "$LOCK_HOLDER_REC"
 chmod 644 "$LOCKDIR/holder" 2>/dev/null || true
 HOLDPROBE
-HOLDERR="$( bash "$P/probe.sh" "$P/.operator/.lock" "$VERDICT" 2>&1 >/dev/null )"
+# Separate files rather than `2>&1 >/dev/null`: the two streams answer two
+# different questions (did a raw bash error reach the operator; did the read
+# actually fail) and both come from the SAME run.
+bash "$P/probe.sh" "$P/.operator/.lock" "$VERDICT" >"$P/holder.out" 2>"$P/holder.err" || true
+HOLDERR="$(cat "$P/holder.err")"
+HOLDREC="$(cat "$P/holder.out")"
 # root can read a 000 file, so the redirection never fails there — skip rather
 # than assert a property the environment cannot exhibit.
 if [ "$(id -u)" = "0" ]; then
@@ -4409,8 +4442,17 @@ else
   # The control: the guard is only meaningful if the probe REACHED the read.
   # An empty record is what a failed read must leave behind — the documented
   # "cannot judge this holder" input the caller already handles.
+  #
+  # This reads the probe's own stdout. The earlier form re-extracted the function
+  # inside `bash -c '… eval "$(sed -n "/^…{\$/,/^}\$/p" …)" …'`, and under bash 3.2
+  # the nested double quotes inside `"$( … )"` do not survive: the `{…,…}` in the
+  # sed address became a BRACE EXPANSION, sed got a mangled script ("invalid
+  # command code $"), the function was never defined, and the assertion failed on
+  # every darwin run while ubuntu's bash 5 parsed it correctly and stayed green.
+  # A control that cannot pass is worse than no control — it is #21's class with
+  # the polarity inverted. check_platform_idioms now bans the shape.
   check "control: the probe's read actually failed (guard was exercised)" \
-    "$(bash -c 'set -u; LOCKDIR="'"$P/.operator/.lock"'"; eval "$(sed -n "/^lock_holder_read() {\$/,/^}\$/p" "'"$VERDICT"'")"; chmod 000 "$LOCKDIR/holder" 2>/dev/null; lock_holder_read; chmod 644 "$LOCKDIR/holder" 2>/dev/null; [ -z "$LOCK_HOLDER_REC" ]' && echo 0 || echo 1)"
+    "$([ "$HOLDREC" = "REC=[]" ] && echo 0 || echo 1)"
 fi
 rm -rf "$P"
 

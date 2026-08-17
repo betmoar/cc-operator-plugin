@@ -252,3 +252,39 @@ being re-read every session.
   scaffold creates and was caught only because a case asserts a healthy project
   stays quiet. The two calls in `ops-init.sh` are load-bearing; the comment
   there says so.
+- **A control assertion that cannot pass, and CI that cannot see it.** A control
+  drove `sed -n "/^f() {$/,/^}$/p"` inside `"$( … )"` to extract a function and
+  `eval` it. Under bash 5 that is correct. Under bash 3.2 — still `/bin/bash` on
+  every macOS — the nested double quotes do not survive the parse, `{$/,/^}`
+  becomes a **brace expansion**, sed receives a split script (`invalid command
+  code $`), the function is never defined, and the assertion fails on every run.
+  So the local suite was red on the maintainer's own machine while ubuntu's bash
+  5 parsed it fine and CI reported green — the one signal anyone actually looks
+  at. Note which assertion it was: the *control*, the thing whose whole job is to
+  prove the guard beside it was exercised. That is #21's class with the polarity
+  inverted — not a guard that cannot fail, a control that cannot pass — and the
+  inverted form is harder to notice, because a red local run reads as flakiness
+  while a green CI run reads as truth. Two fixes, and both were needed: the
+  extraction is single-quoted (nothing in a sed address needs interpolation, and
+  a single-quoted script is immune at every nesting depth), and
+  `check_platform_idioms` now bans the shape statically, which is the only way
+  the ban reaches CI at all — a bash-5 runner can never reproduce the bug it is
+  meant to catch. Prefer a heredoc probe script over a nested `bash -c` one-liner
+  when a test needs to run extracted code; the sibling assertion twenty lines
+  above had done exactly that and was always green.
+- **A statusline assertion that was really an assertion about the maintainer's
+  desk.** Three cases claimed *"degenerate stdin renders nothing"* while running
+  with cwd = **this repository**. When the payload cannot be parsed there is no
+  cwd to read, so `statusline.sh:84` falls back to `$PWD` deliberately (the bar
+  renders for where it stands). The repo had never had `.operator/` scaffolded in
+  it, so the fallback found no ledger and the three cases passed — for a reason
+  nothing to do with degenerate stdin. Opening one real task in the plugin's own
+  tree turned all three red at once with the renderer behaving exactly as
+  designed, which is how it was found: the gate cannot be dogfooded in its own
+  repo without tripping its own suite. They now run from a temp dir with no
+  `.operator/` at or above it, **and** a positive control pins the fallback from a
+  cwd that does have a pending sentinel — without that control, deleting the
+  `$PWD` fallback outright would leave all three green. Vacuous-guard class
+  reached through ambient state rather than a missing call site: if an assertion's
+  verdict depends on anything outside its fixture, it is measuring the
+  environment, and the environment is not under test.

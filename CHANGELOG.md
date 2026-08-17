@@ -9,6 +9,56 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-17
+
+Two workstreams still open (the north star, #58; the plan graph, #66). What has
+landed so far is the release's own precondition: a gate that is green on the
+machine that runs it most, and two assertions that were passing for reasons
+unrelated to what they name.
+
+### Fixed
+
+- **A control assertion that could not pass, and a CI runner that could not see
+  it.** `tests/test-scripts.sh`'s holder-read control extracted
+  `lock_holder_read` with `sed -n "/^f() {$/,/^}$/p"` inside `"$( … )"`. Under
+  bash 3.2 — still `/bin/bash` on every macOS — the nested quoting does not
+  survive the parse, `{$/,/^}` brace-expands, sed gets a split script (`invalid
+  command code $`), the function is never defined, and the assertion fails every
+  run. ubuntu's bash 5 parses it correctly, so CI was green on `main` for the
+  whole time the local suite was red — measured **708 passed / 1 failed** on
+  darwin at `d9eef21` against five consecutive green CI runs.
+
+  It was the *control*: the assertion whose only job is to prove the guard beside
+  it was exercised. #21's class with the polarity inverted, and the inverted form
+  hides better, because a red local run reads as flakiness while a green CI run
+  reads as truth.
+
+  The probe now reports the record on its own stdout, so the control attests to
+  **the same run** whose stderr the first assertion reads — previously the two
+  re-extracted the function separately and could exercise different code.
+  `check_platform_idioms` bans the shape statically, which is the only way this
+  ban reaches CI at all: a bash-5 runner cannot reproduce the bug it is meant to
+  catch. Mutation-checked in both directions, with controls that a single-quoted
+  script and a brace-free double-quoted script both stay accepted.
+
+- **Three statusline assertions were measuring the maintainer's desk.** They
+  claimed *"degenerate stdin renders nothing"* while running with cwd = this
+  repository. An unparseable payload leaves no cwd to read, so
+  `statusline.sh:84` falls back to `$PWD` **deliberately** (documented at
+  :49-50 — the bar renders for where it stands); the repo had simply never had
+  `.operator/` scaffolded in it, so the fallback found no ledger and all three
+  passed for a reason unrelated to what they name.
+
+  Found by dogfooding: opening one real task in the plugin's own tree turned all
+  three red at once, with the renderer behaving exactly as designed. The gate
+  could not be run in its own repo without tripping its own suite. They now run
+  from a temp dir with no `.operator/` at or above it, plus **a positive control**
+  pinning the fallback from a cwd that does have a pending sentinel — without it,
+  deleting the `$PWD` fallback outright would leave all three green.
+
+  The suite's assertion count is now invariant to ambient state (711/0 with and
+  without a sentinel in the repo root); at `d9eef21` it varied, 709 vs 710.
+
 ## [0.8.4] - 2026-08-16
 
 Six issues closed, and the one that mattered most closed by

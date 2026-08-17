@@ -1681,6 +1681,42 @@ class RenderTemplateTest(unittest.TestCase):
         vp.check_platform_idioms(self.dir, probs)
         self.assertEqual(probs, [])
 
+    # --- a brace group in a double-quoted sed script (fixed 2026-08-17) -------
+    # Under bash 3.2 — still /bin/bash on macOS — `sed -n "/^f() {$/,/^}$/p"`
+    # inside `"$( … )"` loses the nested quoting and `{$/,/^}` brace-expands, so
+    # sed gets a split script and the extraction yields nothing. bash 5 parses it
+    # correctly, which is why CI reported green while the local suite was red on
+    # a CONTROL assertion — a control that cannot pass, #21 inverted.
+
+    def test_double_quoted_sed_brace_group_fires(self):
+        write(self.dir / "scripts" / "statusline.sh",
+              GOOD_STATUSLINE +
+              'eval "$(sed -n "/^f() {$/,/^}$/p" "$SRC")"\n')
+        probs = []
+        vp.check_platform_idioms(self.dir, probs)
+        self.assertTrue(any("brace group inside a double-quoted sed" in p
+                            for p in probs), probs)
+
+    def test_single_quoted_sed_brace_group_is_accepted(self):
+        # The control that makes the check a rule and not a ban on sed: the fix
+        # this check exists to push people toward must itself pass.
+        write(self.dir / "scripts" / "statusline.sh",
+              GOOD_STATUSLINE +
+              "eval \"$(sed -n '/^f() {$/,/^}$/p' \"$SRC\")\"\n")
+        probs = []
+        vp.check_platform_idioms(self.dir, probs)
+        self.assertEqual(probs, [])
+
+    def test_double_quoted_sed_without_brace_group_is_accepted(self):
+        # A double-quoted sed script is not itself the defect — only an
+        # expandable brace group inside one is. Firing on every quoted sed
+        # would make the check noise and get it disabled.
+        write(self.dir / "scripts" / "statusline.sh",
+              GOOD_STATUSLINE + 'x="$(sed -n "/^foo$/p" "$SRC")"\n')
+        probs = []
+        vp.check_platform_idioms(self.dir, probs)
+        self.assertEqual(probs, [])
+
     def test_real_tree_platform_idioms_clean(self):
         probs = []
         vp.check_platform_idioms(ROOT, probs)

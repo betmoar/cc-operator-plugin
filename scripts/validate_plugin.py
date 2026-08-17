@@ -952,7 +952,12 @@ def check_reader_bounds(root, problems):
 
 
 def check_platform_idioms(root, problems):
-    """Ban the try-BSD-then-GNU fallback idiom in scripts and tests.
+    """Ban idioms that pass on one platform and silently fail on the other.
+
+    Two families, same failure signature — green where the author runs it, wrong
+    where the other half of the world runs it.
+
+    ONE: the try-BSD-then-GNU fallback.
 
     `stat -f %m F || stat -c %Y F` looks portable and is not. On GNU coreutils
     `-f` means FILESYSTEM status and the format goes via `-c`, so `stat -f %m F`
@@ -970,8 +975,35 @@ def check_platform_idioms(root, problems):
     The rule: PROBE the flavor once and branch, or use a form both accept
     (`touch -t <literal>`). Never `A || B` across platform dialects where A can
     emit stdout before failing.
+
+    TWO: a brace group inside a DOUBLE-QUOTED sed script. `sed -n "/^f() {$/,/^}$/p"`
+    is correct under bash 5 and mangled under bash 3.2 — which is still
+    /bin/bash on every macOS — once it sits inside `"$( … )"`: the nested double
+    quotes do not survive that parse, `{$/,/^}` becomes a BRACE EXPANSION, and
+    sed receives a split script ("invalid command code $"). The extraction it was
+    driving silently produces nothing.
+
+    That is worse than a normal portability bug because of WHERE it lands. The
+    measured instance (tests/test-scripts.sh, fixed 2026-08-17) was a control
+    assertion — the one asserting that a guard had been exercised. It could not
+    pass on darwin, and CI's bash 5 parsed it correctly and reported green, so
+    the local suite was red and the only visible signal said fine. #21's class
+    with the polarity inverted: not a guard that cannot fail, a control that
+    cannot pass.
+
+    Single-quote the sed script. Nothing in a sed address needs interpolation,
+    and a single-quoted script is immune at every nesting depth.
     """
+    # A brace group is only expandable when unquoted or double-quoted, so the
+    # pattern requires the double quote. `[^"}]*` on both sides of the comma
+    # keeps it inside one brace group rather than spanning two arguments.
+    sed_brace = re.compile(r"""sed\s+(?:-[a-zA-Z]+\s+)*"[^"]*\{[^"}]*,[^"}]*\}""")
     bad = (
+        (sed_brace,
+         "a brace group inside a double-quoted sed script — bash 3.2 (every "
+         "macOS /bin/bash) brace-expands it inside \"$( … )\" and sed gets a "
+         "split script, while bash 5 parses it correctly and CI stays green; "
+         "single-quote the sed script"),
         (re.compile(r"stat\s+-f\s+%\w+.*\|\|.*stat\s+-c"),
          "stat -f … || stat -c … — GNU `-f` prints filesystem info to stdout "
          "before failing, so the fallback CONCATENATES garbage; probe the "
