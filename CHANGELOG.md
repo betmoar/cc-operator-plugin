@@ -11,10 +11,24 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [0.9.0] - 2026-08-17
 
-Two workstreams still open (the north star, #58; the plan graph, #66). What has
-landed so far is the release's own precondition: a gate that is green on the
-machine that runs it most, and two assertions that were passing for reasons
-unrelated to what they name.
+A release whose headline is that a **measurement changed what got built**. #58
+asked for a north-star field, a refusal, and possibly an alignment pass over the
+plan as a whole. The fixture it demanded got built first, the shipped vet lenses
+were measured against it across 42 seats, and the result narrowed the work: the
+field ships and the alignment lens does not, because putting the goal in the
+per-task packets drew goal-reachability findings from **6 of 6** seats against
+the control column — the plan that reaches its goal. That is the third time this
+project has declined to build a seat on evidence (#24, #70), and the first time
+the evidence redirected a feature rather than cancelling one.
+
+Underneath that, the release's own precondition: a gate that is green on the
+machine that runs it most. Two assertions were passing for reasons unrelated to
+what they name, one of them a control that could not pass on macOS at all while
+CI stayed green.
+
+The measurement also produced [#73] — a defect in `plan.js` larger in blast
+radius than the north star, found by accident and not yet fixed — and #66's
+graph work now computes the answer that issue needs.
 
 ### Added
 
@@ -1125,6 +1139,7 @@ BAR block lands, after decomposition.
 [#68]: https://github.com/betmoar/cc-operator-plugin/issues/68
 [#70]: https://github.com/betmoar/cc-operator-plugin/issues/70
 [#69]: https://github.com/betmoar/cc-operator-plugin/issues/69
+[#73]: https://github.com/betmoar/cc-operator-plugin/issues/73
 [#66]: https://github.com/betmoar/cc-operator-plugin/issues/66
 [#60]: https://github.com/betmoar/cc-operator-plugin/issues/60
 
