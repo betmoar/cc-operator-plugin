@@ -112,7 +112,11 @@ const repoRoot = A.repoRoot ?? ".";
 // NOTHING after the colon also satisfied it. Both measured. A miss clause
 // that is empty or accidental is the same as none, which is the case this
 // gate exists to refuse.
-const MISS_CLAUSE = /\bmissed\s+if\s*:\s*(\S.*)/is;
+// `[^\S\n]*` after the colon, not `\s*`: `\s*` crosses newlines, so
+// "Missed if:\n\nNotes: see docs/…" borrowed 47 chars of unrelated prose and
+// cleared the >=10 floor — the empty-clause case the capture group was added
+// to close, reopened by any trailing text. Measured.
+const MISS_CLAUSE = /\bmissed\s+if[^\S\n]*:[^\S\n]*(\S[^\n]*)/i;
 const NORTH_STAR_MIN_CHARS = 40;
 
 const northStar = A.northStar;
@@ -136,7 +140,13 @@ const missClause = MISS_CLAUSE.exec(northStar);
 // agent."` is 48 chars, clears the floor, matches the clause, and states no goal
 // at all — measured. The 40-char minimum is satisfiable entirely by filler after
 // the colon.
-if (missClause && missClause.index < 12) {
+// Measured against the TRIMMED string. `.index` on the raw one meant twelve
+// leading spaces — the indented-template-literal spelling a JS caller writes —
+// counted as a goal, while the legitimate short goal "It ships. Missed if: …"
+// was hard-refused.
+const nsTrimmed = northStar.trim();
+const trimmedClause = MISS_CLAUSE.exec(nsTrimmed);
+if (trimmedClause && trimmedClause.index < 12) {
   throw new Error(
     "args.northStar starts with its `Missed if:` clause and names no goal. State " +
       "what must be true when this work is done FIRST, then how you would know it " +
@@ -164,7 +174,11 @@ phase("Decompose");
 
 const TASK = {
   type: "object",
-  required: ["id", "title", "files", "produces", "testCycle", "specExcerpt"],
+  // `consumes` is REQUIRED: it is the only input the whole graph section reads,
+  // and a schema-legal decomposition omitting it produced the strongest possible
+  // clean signal — zero unresolved, zero out-of-order, a 5x ceiling — computed
+  // from no dependency data at all. An empty string is the way to say "nothing".
+  required: ["id", "title", "files", "produces", "consumes", "testCycle", "specExcerpt"],
   properties: {
     id: { type: "string", description: "Stable short id, e.g. 'auth-token'." },
     title: { type: "string", description: "One line: the deliverable." },
@@ -404,7 +418,14 @@ const STOPWORDS = new Set([
 const NAMEY = /[A-Za-z_][A-Za-z0-9/_-]{2,}/g;
 function contractNames(text) {
   const out = new Set();
-  const src = String(text ?? "");
+  // A non-string reaches this via the schema being advisory, and String() turns
+  // it into "[object Object]" — where `Object` clears the leadingCapital rule, so
+  // EVERY task shares one token and the graph fabricates real edges across the
+  // whole plan. Measured: four independent tasks with object-valued produces came
+  // back as a 2-layer chain, p 0.5, via ["Object"]. The defensive coercion was
+  // inventing evidence; a non-string simply has no contract names.
+  if (typeof text !== "string") return out;
+  const src = text;
   for (const m of src.matchAll(NAMEY)) {
     const tok = m[0];
     const followedByParen = src[m.index + tok.length] === "(";
@@ -459,9 +480,18 @@ names.forEach((t, i) => {
 
 // Per consumed token: the earliest producer strictly BEFORE this task, if any.
 const resolveBackward = (j, tok) => {
+  // NEAREST producer before j, not the earliest. A token produced twice — a task
+  // rewriting a name an earlier task also produced — resolved to the first
+  // occurrence, so the consumer was layered a full level BELOW the producer the
+  // same result stamps as its `real` edge. Measured: a strict 4-task chain
+  // reported layers [[t0],[t1,t3],[t2]], width 2, p 0.25, ceiling 1.33x for what
+  // is 4 layers, width 1, p 0. The result object contradicted itself and nothing
+  // warned — the "p-estimator that laundered a guess as a measurement" this
+  // file's own comment names as the thing to prevent.
   const idxs = laterProducers.get(tok) ?? [];
-  for (const i of idxs) if (i < j) return i;
-  return -1;
+  let best = -1;
+  for (const i of idxs) { if (i < j && i > best) best = i; }
+  return best;
 };
 const resolveForward = (j, tok) => (laterProducers.get(tok) ?? []).filter((i) => i > j);
 
@@ -525,6 +555,14 @@ for (let i = 1; i < names.length; i++) {
   edges.push({
     from: prev.id,
     to: here.id,
+    // Indices too. `layers` and `edges` both key by id, so when a decomposer
+    // emits the same id twice the returned graph is ambiguous to every consumer
+    // — a fuzz property added this round reported "real edge t1->dup points
+    // backwards in layers" against correct layering, because resolving `dup` by
+    // id landed on the wrong occurrence. Ids stay for readability; indices are
+    // what a consumer should join on.
+    fromIndex: i - 1,
+    toIndex: i,
     status: shared.length ? "real" : "unverified",
     via: shared,
     ...(shared.length ? {} : { dependsInsteadOn: earlier }),
@@ -546,8 +584,13 @@ for (let i = 1; i < names.length; i++) {
 // Per token, because one resolved name used to hide every unresolved one.
 const consumesNoTaskProduces = [];
 names.forEach((t, j) => {
+  // `!t.produces.has(tok)` because i===j was never tested: a task consuming a
+  // name it produces ITSELF was listed as produced by no task in the plan, which
+  // is the one row that is unambiguously noise in a field whose whole warning is
+  // that its rows are not defects.
   const unresolved = [...t.consumes].filter(
-    (tok) => resolveBackward(j, tok) < 0 && !resolveForward(j, tok).length);
+    (tok) => !t.produces.has(tok)
+      && resolveBackward(j, tok) < 0 && !resolveForward(j, tok).length);
   if (unresolved.length) consumesNoTaskProduces.push({ taskId: t.id, tokens: unresolved });
 });
 
@@ -567,6 +610,10 @@ for (let i = 0; i < names.length; i++) {
 }
 const layers = [];
 for (let i = 0; i < names.length; i++) (layers[layerAt[i]] ??= []).push(names[i].id);
+// Index-keyed twin of `layers`, for consumers that must not guess which task a
+// repeated id refers to.
+const layerIndexes = [];
+for (let i = 0; i < names.length; i++) (layerIndexes[layerAt[i]] ??= []).push(i);
 
 // AMDAHL. Unit-cost tasks, so the critical path is the layer count L and the
 // ideal speedup with unlimited workers is N/L. Writing that as the standard form:
@@ -632,6 +679,7 @@ return {
     // that keeps the relation acyclic could not see those dependencies.
     outOfOrder,
     layers,
+    layerIndexes,
     graphWidth,
     // What the graph permits is not what the charter permits: one implementer at
     // a time, read-only workers parallel on disjoint inputs [D:CHART-r6].

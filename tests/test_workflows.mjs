@@ -474,6 +474,18 @@ ok(keepPlan.graph.edges[0].via.includes("create_token") && keepPlan.graph.edges[
     const expect = Number((tasks.length / g.layers.length).toFixed(2));
     if (Math.abs(g.ceiling - expect) > 0.02) broken.push(`iter ${iter}: ceiling ${g.ceiling} != N/L ${expect}`);
     if ((res.blocked ?? []).length || (res.needsInfo ?? []).length) broken.push(`iter ${iter}: graph reached a blocking bucket`);
+    // The property whose absence let a layer inversion pass 120/120: the ceiling
+    // check above derives L from the OUTPUT, so it only proves internal
+    // consistency. This one is about the graph being a graph.
+    const lo = new Map();
+    (g.layerIndexes ?? []).forEach((l, li) => l.forEach((ix) => lo.set(ix, li)));
+    for (const e of g.edges) {
+      if (e.status === "real" && !(lo.get(e.fromIndex) < lo.get(e.toIndex)))
+        broken.push(`iter ${iter}: real edge ${e.from}->${e.to} points backwards in layers`);
+    }
+    // Array#some SKIPS holes, so the sparse-hole check could never fire.
+    for (let li = 0; li < g.layers.length; li++)
+      if (g.layers[li] === undefined) broken.push(`iter ${iter}: hole at layer ${li}`);
   }
   ok(checked === 120, `plan graph fuzz: all 120 seeded plans produced a graph (got ${checked})`);
   ok(broken.length === 0, `plan graph fuzz: no invariant violated${broken.length ? " — " + broken[0] : ""}`);
@@ -540,6 +552,63 @@ ok(keepPlan.graph.edges[0].via.includes("create_token") && keepPlan.graph.edges[
     "plan: an empty decomposition returns an empty graph, not undefined");
   for (const k of ["tasks", "vetting", "blocked", "needsInfo", "vettingIncomplete"])
     ok(Array.isArray(emptyPlan[k]), `plan: empty decomposition still returns ${k} as an array`);
+}
+
+// B7: the round-4 regressions, each pinned by the property that would have
+// caught it. The fuzz missed all of them because its ceiling check derives L
+// from the output under test — internal consistency, not correctness.
+{
+  // NEAREST producer, not earliest: a re-produced name used to layer the
+  // consumer above a producer the same result stamps `real`.
+  const rp = { decompose: { fileStructure: "f: r", tasks: [
+      gtask("t0", "make_alpha() -> str", ""),
+      gtask("t1", "make_beta() -> str", "make_alpha from t0"),
+      gtask("t2", "make_alpha() -> str", "make_beta from t1"),
+      gtask("t3", "make_final() -> str", "make_alpha from t2"),
+    ] }, ...graphVet(["t0", "t1", "t2", "t3"]) };
+  const { result: rpPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, rp);
+  const g = rpPlan.graph;
+  ok(g.layers.length === 4 && g.graphWidth === 1 && g.p === 0,
+    "plan graph: a re-produced name resolves to the NEAREST producer — a chain reports as a chain");
+  // The invariant the fuzz lacked: no real edge may point backwards in layers.
+  const layerOf = new Map();
+  g.layerIndexes.forEach((l, i) => l.forEach((ix) => layerOf.set(ix, i)));
+  ok(g.edges.filter((e) => e.status === "real").every((e) => layerOf.get(e.fromIndex) < layerOf.get(e.toIndex)),
+    "plan graph: every REAL edge points from a lower layer to a higher one (joined on index, not id)");
+}
+{
+  // A non-string produces used to become "[object Object]" and share a token
+  // across every task.
+  const objTasks = ["o1", "o2", "o3"].map((id) => ({
+    id, title: "t", files: ["f.py"], produces: { name: id }, consumes: { needs: id },
+    specExcerpt: "x", testCycle: "run x → pass", steps: ["s"] }));
+  const { result: objPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR },
+    { decompose: { fileStructure: "f", tasks: objTasks }, ...graphVet(["o1", "o2", "o3"]) });
+  ok(objPlan.graph.edges.every((e) => e.status === "unverified"),
+    "plan graph: a non-string produces yields NO contract names, it does not invent 'Object'");
+  ok(objPlan.graph.graphWidth === 3,
+    "plan graph: …so three independent object-valued tasks stay independent");
+}
+{
+  // A token the task produces itself is not "produced by no task".
+  const selfP = { decompose: { fileStructure: "f: r", tasks: [
+      gtask("s1", "make_s() -> str", "make_s from s1"),
+    ] }, ...graphVet(["s1"]) };
+  const { result: spPlan2 } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, selfP);
+  ok(spPlan2.graph.consumesNoTaskProduces.length === 0,
+    "plan graph: a token the task produces ITSELF is not reported as produced by nobody");
+}
+// A bare `Missed if:` must not borrow later prose to clear the floor.
+await throws(() => run(WF("plan.js"), { spec: "s",
+    northStar: "Users can reset their own password unaided end to end.\nMissed if:\n\nNotes: see docs/spec/reset.md for the flow." },
+  planFixtures),
+  "plan northStar: an empty miss clause cannot borrow a later line to clear the floor", "usable");
+// …and an indented goal is still a goal.
+{
+  const padded = "            It ships and users sign in. Missed if: any path still needs a support agent.";
+  const { result: padPlan } = await run(WF("plan.js"), { spec: "s", northStar: padded }, planFixtures);
+  ok(padPlan.northStar === padded,
+    "plan northStar: leading whitespace does not turn a real goal into a bare miss clause");
 }
 
 // B6: the FALSE-NEGATIVE direction. Dropping bare capitals to kill "The" made
