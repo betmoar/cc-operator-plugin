@@ -342,6 +342,22 @@ class PlanAlignCorpusTest(unittest.TestCase):
         self.assertEqual(sorted(self.PARAPHRASED - set(offenders)), [],
                          "PARAPHRASED lists a task that now quotes correctly — remove it")
 
+    def test_measurement_method_records_the_dispatch_read_bound(self):
+        """The scan cannot cover the corpus's own documentation.
+
+        README.md, the per-shape NOTES.md and MEASUREMENT.md all state the
+        planted defect — that is their job. A seat is granted Read/Grep/Glob with
+        no path restriction, so the only thing keeping it out of them is the
+        read-bound in the dispatch prompt. That makes the bound part of the
+        instrument, and an instrument's neutralization must not live in the
+        habits of whoever ran it last.
+        """
+        method = (CORPUS / "MEASUREMENT.md").read_text(encoding="utf-8")
+        self.assertIn("Read only files under", method,
+                      "MEASUREMENT.md must record the per-seat read-bound verbatim")
+        self.assertIn("neutral path", method,
+                      "MEASUREMENT.md must record that project/ is copied out of the corpus")
+
     def test_corpus_is_inert(self):
         for p in sorted(CORPUS.rglob("*")):
             if p.is_file():

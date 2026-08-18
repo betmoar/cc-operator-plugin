@@ -130,6 +130,19 @@ if (northStar.trim().length < NORTH_STAR_MIN_CHARS) {
   );
 }
 const missClause = MISS_CLAUSE.exec(northStar);
+// The goal sentence has to exist too. The throw below promises "one sentence
+// naming what must be true when this work is done, THEN a `Missed if:` clause",
+// and nothing checked the "then": `"Missed if: any path still needs a support
+// agent."` is 48 chars, clears the floor, matches the clause, and states no goal
+// at all — measured. The 40-char minimum is satisfiable entirely by filler after
+// the colon.
+if (missClause && missClause.index < 12) {
+  throw new Error(
+    "args.northStar starts with its `Missed if:` clause and names no goal. State " +
+      "what must be true when this work is done FIRST, then how you would know it " +
+      "was missed.",
+  );
+}
 if (!missClause || missClause[1].trim().length < 10) {
   throw new Error(
     "args.northStar has no usable `Missed if: …` clause. A goal with no miss " +
@@ -220,7 +233,28 @@ const tasks = decomp?.tasks ?? [];
 log(`decompose: ${tasks.length} tasks`);
 
 if (!tasks.length) {
-  return { error: "decomposition produced no tasks — check args.spec", decomp };
+  // Same shape as the success path, minus the parts a task list would fill. The
+  // early return used to omit northStar, tasks, vetting and graph entirely, so a
+  // caller reading result.graph.layers — or result.northStar, which the charter
+  // now tells the operator to check spec coverage against — got a TypeError on
+  // undefined instead of an empty graph. Two incompatible return shapes from one
+  // workflow is a defect the caller pays for.
+  return {
+    error: "decomposition produced no tasks — check args.spec",
+    decomp,
+    northStar,
+    fileStructure: decomp?.fileStructure ?? "",
+    tasks: [],
+    vetting: [],
+    blocked: [],
+    needsInfo: [],
+    vettingIncomplete: [],
+    graph: {
+      edges: [], consumesNoTaskProduces: [], outOfOrder: [], layers: [],
+      graphWidth: 0, dispatchBound: "no tasks to dispatch",
+      p: 0, ceiling: 1, speedupAt: { 2: 1, 4: 1, 16: 1 },
+    },
+  };
 }
 
 // --- Phase 2: vet each task ------------------------------------------------
@@ -358,7 +392,16 @@ log(
 // why `edges` is report-only and why the `unverified` side now names the real
 // producer when it has one. Do not restore the one-directional claim; it was
 // wrong twice.
-const NAMEY = /[A-Za-z_][A-Za-z0-9_]{2,}/g;
+// Sentence-openers a decomposer writes in prose. Small and closed on purpose: a
+// long list starts excluding real type names, which is the failure this exists to
+// avoid in the first place.
+const STOPWORDS = new Set([
+  "the", "this", "that", "these", "those", "and", "but", "for", "nothing", "none",
+  "every", "each", "any", "all", "when", "where", "which", "with", "without",
+  "adds", "added", "uses", "used", "from", "into", "only", "also", "then", "there",
+  "creates", "returns", "sets", "gets", "makes", "new", "same", "one", "two",
+]);
+const NAMEY = /[A-Za-z_][A-Za-z0-9/_-]{2,}/g;
 function contractNames(text) {
   const out = new Set();
   const src = String(text ?? "");
@@ -366,7 +409,16 @@ function contractNames(text) {
     const tok = m[0];
     const followedByParen = src[m.index + tok.length] === "(";
     const internalCapital = /[a-z][A-Z]/.test(tok);
-    if (followedByParen || tok.includes("_") || /\d/.test(tok) || internalCapital) out.add(tok);
+    // A leading capital that is not an English sentence-opener. Dropping bare
+    // capitals fixed the "The" false positive and created a false NEGATIVE the
+    // same size: `Mailer`, `User`, `Token`, `Store` — single-word type names are
+    // one of the three shapes `produces` is documented to carry, and missing
+    // them reports every edge unverified and every consume unresolved, which
+    // OVERSTATES the concurrency ceiling. That is the dangerous direction for
+    // #66's deliverable, where the false positive merely understated it.
+    const leadingCapital = /^[A-Z][a-z]/.test(tok) && !STOPWORDS.has(tok.toLowerCase());
+    if (followedByParen || tok.includes("_") || /\d/.test(tok) || internalCapital
+        || leadingCapital || tok.includes("/")) out.add(tok);
   }
   return out;
 }
@@ -377,40 +429,72 @@ const names = tasks.map((t) => ({
   consumes: contractNames(t.consumes),
 }));
 
-// DEPENDS. B depends on A when B consumes a name A produces, for any A EARLIER
-// in the list — not merely the immediately preceding task.
+// RESOLUTION IS PER TOKEN, NOT PER TASK. One index of producers, built in a
+// single forward pass, and every consumed token resolved against it
+// individually. Three defects shared the per-task shape and all three are the
+// same mistake — asking "did this task resolve at all" instead of "did this
+// name resolve":
 //
-// INDICES, not ids. A decomposer can emit the same id twice, and resolving a
-// dependency by id then takes the FIRST match: a review measured ids
-// [dup(produces make_a), b, dup(produces make_c), d(consumes make_c)] placing
-// `d` in layer 1 while its real producer sat in layer 2 — the report asserting
-// concurrency the dependency forbids, which is worse than the dropped task the
-// id-keying was fixed for, because it is wrong rather than absent.
-const dependsOn = names.map((b, j) =>
-  names.slice(0, j)
-    .map((a, i) => ([...b.consumes].some((c) => a.produces.has(c)) ? i : -1))
-    .filter((i) => i >= 0));
+//   * a task consuming one backward-resolved name AND one forward-only name was
+//     never reported out of order, because the per-task `continue` fired on the
+//     first. Measured as a REGRESSION on this branch's own corpus: at b6f140d
+//     adjacent-deliverable reported admin-audit-entry out of order, and the
+//     guard added to silence a false positive silenced that true one too.
+//   * a task consuming one resolved name and one produced-by-nobody name
+//     reported no dangling consumes at all, which is the #73 question this field
+//     claims to answer exactly.
+//   * the pair scan re-spread `b.consumes` and re-sliced `names` per ordered
+//     pair — 780 allocations on a 40-task plan for work an index does once.
+//
+// firstProducer keeps the EARLIEST producing index per token, so a duplicated
+// produced name resolves the way a reader of a dependency-ordered list would.
+const firstProducer = new Map();
+const laterProducers = new Map();
+names.forEach((t, i) => {
+  for (const tok of t.produces) {
+    if (!firstProducer.has(tok)) firstProducer.set(tok, i);
+    (laterProducers.get(tok) ?? laterProducers.set(tok, []).get(tok)).push(i);
+  }
+});
 
-// OUT-OF-ORDER. `dependsOn` scans only earlier tasks, which is what makes the
-// relation a DAG whatever the text says — but the same property means a
-// decomposition NOT emitted in dependency order is silently mis-measured: a
-// strict chain written backwards reports as fully parallel, overstating p, the
-// ceiling and the width with nothing to say the ordering assumption was
-// violated. Measured on [a(consumes make_b), b(produces make_b)]: p=0.5, width 2
-// for what is really a two-task chain. So look forward once, purely to report.
+// Per consumed token: the earliest producer strictly BEFORE this task, if any.
+const resolveBackward = (j, tok) => {
+  const idxs = laterProducers.get(tok) ?? [];
+  for (const i of idxs) if (i < j) return i;
+  return -1;
+};
+const resolveForward = (j, tok) => (laterProducers.get(tok) ?? []).filter((i) => i > j);
+
+const dependsOn = names.map((b, j) => {
+  const out = new Set();
+  for (const tok of b.consumes) {
+    const i = resolveBackward(j, tok);
+    if (i >= 0) out.add(i);
+  }
+  return [...out].sort((x, y) => x - y);
+});
+
+// OUT-OF-ORDER, per token. `dependsOn` scans only earlier tasks, which is what
+// makes the relation a DAG whatever the text says — and the same property means
+// a decomposition NOT emitted in dependency order is silently mis-measured: a
+// backwards chain reports as fully parallel, overstating p, the ceiling and the
+// width. A token is out of order when it resolves ONLY forward: that keeps the
+// benign case quiet (a later task merely reusing a produced name, where the
+// token also resolves backward) without losing the real one.
 const outOfOrder = [];
 for (let j = 0; j < names.length; j++) {
-  // Only when the backward scan found NOTHING. A later task reusing a produced
-  // name is common and benign — measured on [A produces make_x, B consumes
-  // make_x, C produces make_x]: B resolves correctly against A, layers and p are
-  // exact, and the unguarded version still announced "1 task OUT OF ORDER,
-  // p/ceiling understate the serial path". Both halves of that were false, and a
-  // signal that cries wolf on a correct measurement is worse than silence.
-  if (dependsOn[j].length) continue;
-  const later = names.slice(j + 1)
-    .filter((a) => [...names[j].consumes].some((c) => a.produces.has(c)))
-    .map((a) => a.id);
-  if (later.length) outOfOrder.push({ taskId: names[j].id, producedLaterBy: later });
+  const stranded = [];
+  for (const tok of names[j].consumes) {
+    if (resolveBackward(j, tok) >= 0) continue;
+    for (const i of resolveForward(j, tok)) stranded.push({ token: tok, producer: names[i].id });
+  }
+  if (stranded.length) {
+    outOfOrder.push({
+      taskId: names[j].id,
+      producedLaterBy: [...new Set(stranded.map((x) => x.producer))],
+      tokens: [...new Set(stranded.map((x) => x.token))],
+    });
+  }
 }
 
 // EDGES. The DECLARED ordering is the array order — the decomposer is told to
@@ -431,7 +515,13 @@ for (let i = 1; i < names.length; i++) {
   // unverified against its predecessor while dependsOn shows it genuinely
   // depending on task 0. The ordering is real, just not adjacent — a different
   // statement from a spurious one, and the operator acts differently on each.
-  const earlier = dependsOn[i].map((d) => names[d].id).filter((id) => id !== prev.id);
+  // Filter by INDEX, not id. Filtering `id !== prev.id` erased a real producer
+  // whenever an earlier task happened to share the predecessor's id — measured
+  // on [A, B, A, C(consumes make_alpha)]: dependsInsteadOn came back empty and
+  // the operator read "this ordering buys nothing", the exact false statement
+  // this field was added to prevent. The layer fix in the same commit went
+  // index-keyed for this reason and this site was left behind.
+  const earlier = dependsOn[i].filter((d) => d !== i - 1).map((d) => names[d].id);
   edges.push({
     from: prev.id,
     to: here.id,
@@ -441,14 +531,25 @@ for (let i = 1; i < names.length; i++) {
   });
 }
 
-// A consumes naming nothing any earlier task produces. This is the question
-// plan.js asks each feasibility seat while handing it exactly one task and never
-// its siblings — measured at 14/21 needs-info, including 5/6 of a correct plan
-// (#73). Computed here it is exact and free; the prompt-side fix is #73's.
-const danglingConsumes = names
-  .map((t, j) => ({ taskId: t.id, unresolved: t.consumes.size && !dependsOn[j].length }))
-  .filter((x) => x.unresolved)
-  .map((x) => x.taskId);
+// Named for exactly what it can know. This workflow never reads the codebase, so
+// "no task in this plan produces it" is the whole claim — and the commonest
+// reason for that is entirely legitimate: the task consumes something the
+// project ALREADY provides. Measured on this repo's own corpus, every single hit
+// is a pre-existing project symbol (hash_password, save_user, verify_password,
+// locked_reason), i.e. correct plans consuming existing code.
+//
+// It was called `danglingConsumes` and #73 was told it answers the feasibility
+// lens's "is this produced by an earlier task?" exactly and for free. That was
+// overstated in the direction that matters: the LENS has Read/Grep and can tell
+// a missing producer from an existing function; this arithmetic cannot, and a
+// field named "dangling" invites an operator to read every entry as a defect.
+// Per token, because one resolved name used to hide every unresolved one.
+const consumesNoTaskProduces = [];
+names.forEach((t, j) => {
+  const unresolved = [...t.consumes].filter(
+    (tok) => resolveBackward(j, tok) < 0 && !resolveForward(j, tok).length);
+  if (unresolved.length) consumesNoTaskProduces.push({ taskId: t.id, tokens: unresolved });
+});
 
 // LAYERS. Layer 0 is every task depending on nothing else in the set; layer k
 // is every task all of whose dependencies sit in earlier layers. Each layer is
@@ -494,7 +595,7 @@ log(
   `graph: ${edges.filter((e) => e.status === "real").length}/${edges.length} declared edges real, ` +
     `${layers.length} layer(s), width ${graphWidth}, p=${p.toFixed(2)}, ` +
     `ceiling ${speedup(Infinity).toFixed(1)}x` +
-    (danglingConsumes.length ? ` — ${danglingConsumes.length} unresolved consumes` : "") +
+    (consumesNoTaskProduces.length ? ` — ${consumesNoTaskProduces.length} task(s) consume names no task produces (often pre-existing code)` : "") +
     (outOfOrder.length ? ` — ${outOfOrder.length} task(s) OUT OF ORDER, p/ceiling understate the serial path` : ""),
 );
 
@@ -522,7 +623,10 @@ return {
   //  5. The graph. REPORT ONLY — nothing here can block a task, by design (#66).
   graph: {
     edges,
-    danglingConsumes,
+    // NOT a defect list: "no task here produces it" is usually "the project
+    // already provides it". Report-only, and the codebase question stays the
+    // lens's (#73).
+    consumesNoTaskProduces,
     // Non-empty means the p/ceiling/width below UNDERSTATE the serial path: the
     // decomposition was not emitted in dependency order, so the backward scan
     // that keeps the relation acyclic could not see those dependencies.

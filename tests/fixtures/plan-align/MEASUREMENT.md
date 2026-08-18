@@ -94,10 +94,22 @@ Four, none silent:
    describes — so the bound MECHANICAL id is not reachable without the dispatch
    workflow. The testability arm is therefore a different model at the same
    tier. The feasibility arm, which carries the decisive result, is exact.
-2. **Each feasibility seat was told the codebase root explicitly.** The shipped
-   workflow inherits the operator's cwd; a hand dispatch has no cwd to inherit.
-   The added line names the tree and forbids reading outside it, which also
-   keeps the corpus directories out of reach.
+2. **Each feasibility seat was told the codebase root explicitly, and forbidden
+   to read outside it.** The shipped workflow inherits the operator's cwd; a hand
+   dispatch has no cwd to inherit. The line prepended to every feasibility
+   prompt, verbatim:
+
+   > The codebase under review is exactly `<neutral tree>`. Read only files under
+   > that directory; nothing outside it is part of this project.
+
+   This is not a convenience — it is part of the instrument. A reviewer seat is
+   granted `Read, Grep, Glob, Bash` with no path restriction, and the corpus's own
+   `README.md`, per-shape `NOTES.md` and this file all state the planted defect in
+   prose, because that is what they are for. `missing-final-step/NOTES.md` says
+   outright that nothing in the set writes `password_hash`. The leak scan covers
+   `project/` and cannot cover documentation that must state the answer, so the
+   read-bound is the only thing standing between a seat and the answer key. A test
+   pins that this file still records it.
 3. **The project was copied to a neutral path.** The absolute path
    `tests/fixtures/plan-align/project` names the corpus in every prompt, and
    three of the tree's own docstrings said "fixture" while `project/README.md`

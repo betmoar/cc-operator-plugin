@@ -72,6 +72,19 @@ lens never does. Two rules keep that true, and the suite pins both:
 Dispatch with cwd = `project/`, so task paths (`app/reset.py`) resolve without
 naming the corpus.
 
+4. **The dispatch must bound what a seat may read, and that bound is part of the
+   instrument.** The scan above covers `project/`; it cannot cover this README,
+   the per-shape `NOTES.md`, or `MEASUREMENT.md`, because those exist precisely
+   to state the planted defect to a maintainer — `missing-final-step/NOTES.md`
+   says in prose that nothing in the set writes `password_hash`. A reviewer seat
+   is granted `Read, Grep, Glob, Bash` with no path restriction, so a run
+   dispatched from the repo root can grep the answer. Every seat prompt therefore
+   carries an explicit read-bound naming the tree and forbidding anything outside
+   it, and the run copies `project/` to a neutral path so the bound does not name
+   the corpus either. `MEASUREMENT.md`'s method records this, and a test pins that
+   it still does — an instrument whose neutralization lives only in the habits of
+   whoever ran it last is not an instrument.
+
 ## The discriminating property
 
 |                          | `misaligned.json`      | `aligned.json`        |

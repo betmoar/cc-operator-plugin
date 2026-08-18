@@ -383,7 +383,7 @@ ok(cg.layers.length === 4 && cg.graphWidth === 1,
   "plan graph: NEGATIVE CONTROL — a chain has no concurrency (4 layers, width 1)");
 ok(cg.p === 0 && cg.ceiling === 1,
   "plan graph: NEGATIVE CONTROL — a chain reports p=0 and a 1.0x ceiling, not 'wide'");
-ok(cg.danglingConsumes.length === 0,
+ok(cg.consumesNoTaskProduces.length === 0,
   "plan graph: a chain has no unresolved consumes");
 
 // B: FOUR INDEPENDENT tasks — same shape, none consuming anything.
@@ -425,7 +425,7 @@ ok(pg.edges.every((e) => !e.via.includes("The")),
 ok(pg.graphWidth === 4 && pg.p === 0.75,
   "plan graph: four independent tasks with prose contracts still report width 4, p=0.75");
 ok(pg.edges.every((e) => e.status === "unverified"),
-  "plan graph: prose contracts degrade to unverified — the failure mode stays one-directional");
+  "plan graph: prose contracts degrade to unverified (this class only — the failure mode is NOT one-directional overall)");
 
 // …and the rule must still admit the names it exists for.
 const keepIds = ["k1", "k2"];
@@ -528,6 +528,55 @@ ok(keepPlan.graph.edges[0].via.includes("create_token") && keepPlan.graph.edges[
     "plan graph: an unverified edge names the producer it DOES depend on — 'buys nothing' would be false here");
 }
 
+// An empty decomposition must return the SAME shape as a full one. It used to
+// omit northStar, tasks, vetting and graph, so a caller reading result.graph or
+// result.northStar got a TypeError on undefined.
+{
+  const { result: emptyPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR },
+    { decompose: { fileStructure: "f", tasks: [] } });
+  ok(emptyPlan.error && emptyPlan.northStar === NORTH_STAR,
+    "plan: an empty decomposition still returns the north star");
+  ok(emptyPlan.graph && Array.isArray(emptyPlan.graph.layers) && emptyPlan.graph.ceiling === 1,
+    "plan: an empty decomposition returns an empty graph, not undefined");
+  for (const k of ["tasks", "vetting", "blocked", "needsInfo", "vettingIncomplete"])
+    ok(Array.isArray(emptyPlan[k]), `plan: empty decomposition still returns ${k} as an array`);
+}
+
+// B6: the FALSE-NEGATIVE direction. Dropping bare capitals to kill "The" made
+// contractNames blind to single-word type names and routes — two of the three
+// shapes `produces` documents — and that direction OVERSTATES the ceiling, which
+// is worse for #66 than understating it.
+{
+  const tnIds = ["ty1", "ty2"];
+  const tn = { decompose: { fileStructure: "f: r", tasks: [
+      gtask("ty1", "class Mailer; POST /api/reset-password", ""),
+      gtask("ty2", "send() -> bool", "Mailer and the /api/reset-password route from ty1"),
+    ] }, ...graphVet(tnIds) };
+  const { result: tnPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, tn);
+  ok(tnPlan.graph.edges[0].status === "real",
+    "plan graph: a single-word type name (Mailer) resolves — the false-NEGATIVE class is closed");
+  ok(tnPlan.graph.edges[0].via.some((v) => v.includes("api/reset-password")),
+    "plan graph: a route string resolves too");
+}
+
+// …and the stopword list must not have reopened the false-POSITIVE class.
+{
+  const spIds = ["s1", "s2"];
+  const sp = { decompose: { fileStructure: "f: r", tasks: [
+      gtask("s1", "The helper. Nothing else is produced.", ""),
+      gtask("s2", "Another thing entirely.", "The project layout only"),
+    ] }, ...graphVet(spIds) };
+  const { result: spPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, sp);
+  ok(spPlan.graph.edges[0].status === "unverified",
+    "plan graph: NEGATIVE CONTROL — sentence-opening capitals still fabricate no edge");
+}
+
+// A north star that is ONLY a miss clause states no goal, and used to pass.
+await throws(() => run(WF("plan.js"), {
+    spec: "s", northStar: "Missed if: any path still needs a support agent today.",
+  }, planFixtures),
+  "plan northStar: a bare miss clause with no goal sentence → refused", "names no goal");
+
 // C: the dangling consumes #73 measured — a task naming a producer nobody ships.
 const dangIds = ["m", "n"];
 const dang = {
@@ -538,10 +587,46 @@ const dang = {
   ...graphVet(dangIds),
 };
 const { result: dangPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, dang);
-ok(dangPlan.graph.danglingConsumes.includes("n"),
+const dangIdsOut = dangPlan.graph.consumesNoTaskProduces.map((d) => d.taskId);
+ok(dangIdsOut.includes("n"),
   "plan graph: a consumes naming nothing any earlier task produces is reported (#73's question, computed)");
-ok(!dangPlan.graph.danglingConsumes.includes("m"),
+ok(!dangIdsOut.includes("m"),
   "plan graph: NEGATIVE CONTROL — an empty consumes is not a dangling one");
+ok(dangPlan.graph.consumesNoTaskProduces[0].tokens.includes("never_produced_anywhere"),
+  "plan graph: dangling names WHICH token is unproduced, not just which task");
+
+// PER-TOKEN, the defect a review measured: one resolved name used to hide every
+// unresolved one in the same task, so the field answering #73 "exact and free"
+// reported nothing for the commonest real case.
+{
+  const mixIds = ["m1", "m2"];
+  const mix = { decompose: { fileStructure: "f: r", tasks: [
+      gtask("m1", "make_a() -> str", ""),
+      gtask("m2", "make_b() -> str", "make_a from m1, make_ghost from nowhere"),
+    ] }, ...graphVet(mixIds) };
+  const { result: mixPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, mix);
+  const d = mixPlan.graph.consumesNoTaskProduces.find((x) => x.taskId === "m2");
+  ok(d && d.tokens.includes("make_ghost"),
+    "plan graph: a task with one RESOLVED and one unproduced consume still reports the unproduced one");
+}
+
+// PER-TOKEN for outOfOrder too — the regression a review caught: the per-task
+// `continue` I added to silence a false positive also silenced a true one on
+// this repo's own corpus.
+{
+  const ooIds2 = ["a1", "b1", "c1"];
+  const oo2 = { decompose: { fileStructure: "f: r", tasks: [
+      gtask("a1", "make_early() -> str", ""),
+      gtask("b1", "make_mid() -> str", "make_early from a1, make_late from c1"),
+      gtask("c1", "make_late() -> str", ""),
+    ] }, ...graphVet(ooIds2) };
+  const { result: oo2Plan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, oo2);
+  const rec = oo2Plan.graph.outOfOrder.find((x) => x.taskId === "b1");
+  ok(rec && rec.tokens.includes("make_late"),
+    "plan graph: a task consuming one BACKWARD-resolved and one forward-only name is still reported out of order");
+  ok(rec && !rec.tokens.includes("make_early"),
+    "plan graph: …and names only the forward-only token, not the one that resolved");
+}
 ok((dangPlan.blocked ?? []).length === 0,
   "plan graph: POLARITY — a dangling consumes reports, it does not block");
 

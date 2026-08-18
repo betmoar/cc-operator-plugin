@@ -1828,6 +1828,14 @@ check "untagged deviation → dev[1] for any session" \
 # through ambient state instead of a missing call site; the positive control
 # below is what keeps it non-vacuous.
 SLBARE="$(newproj)"
+# `.git` bounds the upward walk. statusline.sh:86-95 climbs from $PWD looking for
+# .operator/, stopping only at a .git boundary or /, so "a temp dir with no
+# .operator/" was asserted in a comment and true only by luck: with TMPDIR set
+# inside a scaffolded project — TMPDIR=$GITHUB_WORKSPACE/tmp is a common CI
+# pattern — the walk finds an ancestor ledger and all three silence cases go red.
+# The fixture is now hermetic by construction rather than by where $TMPDIR
+# happens to point.
+mkdir -p "$SLBARE/.git"
 # The setup must be verified BEFORE it is relied on. These three cases assert on
 # an EMPTY substitution, and `cd "$SLBARE" && …` inside `$( )` yields exactly
 # that when the cd fails — so a missing or unwritable dir reported ok, for a run
@@ -1835,6 +1843,8 @@ SLBARE="$(newproj)"
 # layer under the rewrite whose own comment says it was removing it.
 check "control: the statusline fixture dirs exist before the silence cases run" \
   "$([ -d "$SLBARE" ] && echo 0 || echo 1)"
+check "control: the silence fixture bounds the upward .operator walk (hermetic under any TMPDIR)" \
+  "$([ -d "$SLBARE/.git" ] && echo 0 || echo 1)"
 check "garbage payload renders nothing" \
   "$([ -z "$(cd "$SLBARE" && printf 'NOT JSON{{' | "$BASH_ABS" "$SL" 2>&1)" ] && echo 0 || echo 1)"
 check "empty payload renders nothing" \

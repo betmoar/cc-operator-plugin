@@ -1004,8 +1004,15 @@ def check_platform_idioms(root, problems):
     # not consume a long flag, so `sed --posix -n "/^f() {$/,/^}$/p"` — the real
     # defect — slipped through. Both measured. A checker that fires on correct
     # code is the one that gets disabled, which its own docstring says.
+    #
+    # The flag part accepts `--expression=…` (a `=value` form) and a flag with no
+    # following space (`-e"…"`), both of which the first anchored version missed
+    # while firing on the space-separated spelling of the same command. The
+    # closing side allows text before `}` so an indented brace still matches. A
+    # `\`-continued invocation is still invisible: the scan is line-based, and
+    # that bound is real rather than fixed.
     sed_brace = re.compile(
-        r"""sed\s+(?:--?[a-zA-Z-]+\s+)*"[^"]*/\^?[^"]*\{\\?\$?/\s*,\s*/\^?\\?\}""")
+        r"""sed\s+(?:--?[a-zA-Z-]+(?:=\S*)?\s*)*"[^"]*/\^?[^"]*\{\\?\$?/\s*,\s*/\^?\\?[^"]*\}""")
     bad = (
         (sed_brace,
          "a brace group inside a double-quoted sed script — bash 3.2 (every "
@@ -2630,10 +2637,6 @@ def check_release_gates_cover_validate(root, problems):
                 f"than the PR build that does not (#38)")
 
 
-# The registry, in run order. Both main() and the test suite iterate THIS —
-# a hand-copied second list is how three guardrails (reader bounds, guard
-# parity, lock parity) ended up running in the build but not in the test that
-# asserts a good tree is clean, which is the test most likely to be trusted.
 def check_northstar(root, problems):
     """`plan.js`'s north star stays REQUIRED, and stays out of the vet packets.
 
@@ -2660,6 +2663,14 @@ def check_northstar(root, problems):
     at 1 and this check green, and that `+`-concatenated template literals are
     exactly how both vet prompts in plan.js are built, i.e. the idiomatic way a
     maintainer would actually add it.
+
+    A SECOND gap, disclosed for the same reason: this is a grep with no ordering
+    awareness. Moving the three throws below the decompose dispatch keeps every
+    pin satisfied and the check green, while the refusal fires only after a
+    judgment-tier pass has been paid for — the exact cost the guard exists to
+    prevent. That is caught by the `spends NOTHING` assertions in
+    tests/test_workflows.mjs, which count agent calls, and cannot be caught here
+    without parsing JS.
 
     So the guarantee here is narrow and the real enforcement is elsewhere: the
     `no vet lens receives it` assertion in tests/test_workflows.mjs inspects the
@@ -2689,7 +2700,11 @@ def check_northstar(root, problems):
     src = re.sub(r"/\*.*?\*/", "", raw, flags=re.DOTALL)
     src = "\n".join(ln for ln in src.split("\n") if not ln.lstrip().startswith("//"))
 
-    if not re.search(r"const\s+northStar\s*=\s*A\.northStar\s*;", src):
+    # `const { … northStar … } = A;` is the behaviour-identical refactor and used
+    # to be reported as a missing read.
+    reads_goal = (re.search(r"const\s+northStar\s*=\s*A\.northStar\s*;", src)
+                  or re.search(r"const\s*\{[^}]*\bnorthStar\b[^}]*\}\s*=\s*A\s*;", src))
+    if not reads_goal:
         problems.append(
             "workflows/plan.js: no bare `const northStar = A.northStar;` — the goal "
             "must be read without a default (#58: the fallback placeholder was the bug)")
@@ -2744,6 +2759,10 @@ def check_northstar(root, problems):
             f"changing this")
 
 
+# The registry, in run order. Both main() and the test suite iterate THIS —
+# a hand-copied second list is how three guardrails (reader bounds, guard
+# parity, lock parity) ended up running in the build but not in the test that
+# asserts a good tree is clean, which is the test most likely to be trusted.
 CHECKS = (
     check_northstar,
     check_manifests,

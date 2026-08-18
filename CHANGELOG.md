@@ -140,6 +140,76 @@ graph work now computes the answer that issue needs.
 
 ### Changed
 
+- **Round 3: resolution was per-task where it had to be per-token ([#66]).** One
+  root cause under three findings, including a **regression I introduced**. The
+  `if (dependsOn[j].length) continue;` guard added to silence a false
+  `outOfOrder` was per-task, so a task consuming one backward-resolved name *and*
+  one forward-only name was never reported — it landed in the same layer as a
+  producer it depends on, with p and the ceiling stating concurrency the
+  dependency forbids. `danglingConsumes` had the identical shape: one resolved
+  name hid every unresolved one in the same task. And the pair scan re-spread
+  `consumes` per ordered pair — 780 allocations on a 40-task plan for work an
+  index does once.
+
+  All three are now one forward-pass token index. Fixing the shape rather than
+  the three symptoms is what made the third disappear for free.
+
+- **`danglingConsumes` is now `consumesNoTaskProduces`, because the old name
+  claimed more than the data supports.** With per-token resolution the corpus
+  went from 0 hits to 7 — and every one is a pre-existing project symbol
+  (`hash_password`, `save_user`, `verify_password`, `locked_reason`). Correct
+  plans consume existing code; that is the normal case, not a defect. This
+  workflow never reads the codebase, so "no task here produces it" is the entire
+  claim it can make. [#73] was told this field answers the feasibility lens's
+  question "exact and free" — overstated in the direction that matters, since the
+  lens has `Read`/`Grep` and can tell a missing producer from an existing
+  function.
+
+- **A north star that was only a miss clause passed every gate.** `"Missed if:
+  any path still needs a support agent."` is 48 characters, clears the floor,
+  matches the clause, and names no goal — while the throw beside it promises "one
+  sentence naming what must be true, THEN a `Missed if:` clause". Nothing checked
+  the "then".
+
+- **The token rule's false-NEGATIVE class, which overstates the ceiling.**
+  Dropping bare capitals to kill `"The"` also killed `Mailer`, `User`, and
+  `POST /api/reset-password` — single-word type names and routes, two of the
+  three shapes `produces` documents. A plan whose contracts are type names
+  reported every edge unverified and every consume unresolved, computing p as if
+  fully parallel. For a number that is #66's whole deliverable, overstating is
+  the worse direction; the false positive merely understated. Now bounded by a
+  small closed stopword list, pinned in both directions.
+
+- **Two return shapes from one workflow.** The empty-decomposition early return
+  omitted `northStar`, `tasks`, `vetting` and `graph`, so a caller reading
+  `result.graph.layers` — or `result.northStar`, which the charter now tells the
+  operator to check spec coverage against — got a `TypeError` instead of an empty
+  graph.
+
+- **The statusline silence fixture was hermetic only by luck.** `statusline.sh`
+  walks *up* from `$PWD` for `.operator/`, stopping at a `.git` boundary or `/`.
+  With `TMPDIR` inside a scaffolded project — `TMPDIR=$GITHUB_WORKSPACE/tmp`, a
+  common CI pattern — all three "renders nothing" cases go red. Reproduced
+  directly, then bounded with a `.git` marker and a control.
+
+- **The corpus's own documentation is the answer key, and only the dispatch
+  read-bound keeps a seat out of it.** `missing-final-step/NOTES.md` states in
+  prose that nothing in the set writes `password_hash`; the leak scan covers
+  `project/` and cannot cover docs whose job is to say that. `MEASUREMENT.md` now
+  records the per-seat read-bound verbatim and a test pins that it still does —
+  an instrument whose neutralization lives in the habits of whoever ran it last
+  is not an instrument.
+
+  Also fixed: `dependsInsteadOn` filtered by id string while `dependsOn` is
+  index-keyed, so a duplicate id erased the real producer and restored the exact
+  false "buys nothing" reading the field was added to prevent; `check_northstar`
+  false-positived on the behaviour-identical `const { northStar } = A;` and now
+  discloses that it has no ordering awareness at all (moving the throws below the
+  dispatch keeps it green — only the agent-call counts catch that); `sed_brace`
+  missed `--expression=`, `-e"…"` and indented closing braces; and the registry
+  comment above `CHECKS` had been orphaned onto an unrelated function.
+
+
 - **A whole-branch review found the graph's token rule fabricating dependencies
   ([#66]).** `contractNames` accepted any token carrying an uppercase letter, so
   every capitalised word an English sentence opens with — `The`, `Nothing`,
@@ -160,9 +230,13 @@ graph work now computes the answer that issue needs.
   failure mode was *"one-directional — a missed match downgrades an edge to
   unverified"*. A spurious match is the other direction, and it is the one that
   makes the report wrong rather than merely incomplete. A token now qualifies on
-  an underscore, a digit, an **internal** capital, or a following `(` — which
-  restores the property the comment asserted. Pinned both ways: prose degrades to
-  `unverified`, and `create_token`/`ResetToken` still resolve.
+  an underscore, a digit, an internal capital, a following `(`, a `/`, or a
+  leading capital that is not a sentence-opener. The internal-capital-only form
+  shipped first and a later round measured the false NEGATIVE it created —
+  `Mailer`, `User`, `POST /api/reset-password`, all documented `produces` shapes,
+  matched nothing, so every edge read `unverified` and the ceiling was
+  OVERSTATED, the worse direction for a number that is the whole deliverable.
+  Pinned in both directions now, with a negative control each way.
 
   The corpus numbers are unchanged by the fix, and that is the explanation for
   how it survived — every `produces` in `tests/fixtures/plan-align/` is
