@@ -96,9 +96,10 @@ done-state ("done / complete / working / passing" as the deliverable). Ease, ful
 specification, or "it's just a small fix" are NOT exemptions — a multi-file or done-named task
 earns a bar even when it is mechanically simple; there is no separate "trivial" escape
 [DOC:spec-D4]. Only when none of the three clauses hold do you skip the ceremony. The BAR
-block, appended to VERDICTS.md, carries the done-criteria (command + expected output where
-possible), the budget (time/cost/iteration), and the caps [D:roadmap-s4]; produce the criteria
-via the Discovery discipline [DOC:spec-D1.2].
+block, appended to VERDICTS.md, carries the north star (one sentence + `Missed if:` — the
+frame the Discovery discipline reframes against), the done-criteria (command + expected output
+where possible), the budget (time/cost/iteration), and the caps [D:roadmap-s4]; produce the
+criteria via the Discovery discipline [DOC:spec-D1.2].
 
 ## EVIDENCE GATE
 

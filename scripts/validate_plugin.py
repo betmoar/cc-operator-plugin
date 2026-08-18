@@ -2626,7 +2626,64 @@ def check_release_gates_cover_validate(root, problems):
 # a hand-copied second list is how three guardrails (reader bounds, guard
 # parity, lock parity) ended up running in the build but not in the test that
 # asserts a good tree is clean, which is the test most likely to be trusted.
+def check_northstar(root, problems):
+    """`plan.js`'s north star stays REQUIRED, and stays out of the vet packets.
+
+    Two independent things, both measured, both quietly reversible:
+
+    ONE — required. Every other input to plan.js is guarded; the one naming what
+    the work is FOR fell back to a placeholder string that then got decomposed as
+    if it were a spec (#58). The demotion that would undo this is one character:
+    `A.northStar ?? "…"`. A fallback here does not fail any test that supplies a
+    goal, and every test supplies a goal, so nothing else would notice.
+
+    TWO — decompose only. Stage A measured what happens when the goal goes into
+    the PER-TASK vet packets: 6/6 feasibility seats raised goal-reachability
+    findings against the control column, the plan that reaches its goal. It is
+    noise bought at judgment tier. The natural "improvement" a later maintainer
+    makes is to pass the goal to the lenses too — it reads like an obvious
+    omission unless you know it was tried. So the interpolation site is counted:
+    exactly one, in the decompose prompt.
+
+    Pinning the COUNT rather than the absence from named prompts is deliberate:
+    a checker that looked only inside the two vet template literals would pass
+    the moment someone appended the goal via a variable instead.
+    """
+    f = root / "workflows" / "plan.js"
+    if not f.is_file():
+        problems.append("workflows/plan.js: missing")
+        return
+    src = f.read_text(encoding="utf-8")
+
+    if not re.search(r"const\s+northStar\s*=\s*A\.northStar\s*;", src):
+        problems.append(
+            "workflows/plan.js: no bare `const northStar = A.northStar;` — the goal "
+            "must be read without a default (#58: the fallback placeholder was the bug)")
+    if re.search(r"A\.northStar\s*\?\?", src) or re.search(r"A\.northStar\s*\|\|", src):
+        problems.append(
+            "workflows/plan.js: `A.northStar` has a `??`/`||` fallback — that silently "
+            "restores the #58 defect and no test supplying a goal would catch it")
+    if "args.northStar is required" not in src:
+        problems.append(
+            "workflows/plan.js: no throw naming `args.northStar is required` — the "
+            "field is only required if its absence refuses")
+    if "Missed if" not in src:
+        problems.append(
+            "workflows/plan.js: no `Missed if` falsification requirement — a goal with "
+            "no miss condition cannot fail, so it cannot align anything (#58)")
+
+    sites = src.count("${northStar}")
+    if sites != 1:
+        problems.append(
+            f"workflows/plan.js: `${{northStar}}` is interpolated {sites} time(s), "
+            f"expected exactly 1 (the decompose prompt). Stage A measured the goal in "
+            f"the per-task vet packets drawing goal findings from 6/6 seats against the "
+            f"CONTROL column — see tests/fixtures/plan-align/MEASUREMENT.md before "
+            f"changing this")
+
+
 CHECKS = (
+    check_northstar,
     check_manifests,
     check_statusline,
     check_changelog,

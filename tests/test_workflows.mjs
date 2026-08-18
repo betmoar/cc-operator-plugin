@@ -266,7 +266,8 @@ const planFixtures = {
   "test:info": { feasible: "yes", testable: "yes", issues: [] },
 };
 const BIG_SPEC = "SPEC_SENTINEL_" + "s".repeat(5000);
-const { result: plan, rt: planRt } = await run(WF("plan.js"), { spec: BIG_SPEC }, planFixtures);
+const NORTH_STAR = "A user who has forgotten their password can set a new one and sign in with it. Missed if: any path needs a support agent.";
+const { result: plan, rt: planRt } = await run(WF("plan.js"), { spec: BIG_SPEC, northStar: NORTH_STAR }, planFixtures);
 const planCalls = planRt.calls;
 const blockedIds = (plan.blocked ?? []).map((b) => b.taskId);
 const needsInfoIds = plan.needsInfo ?? [];
@@ -287,7 +288,7 @@ const nullFixtures = {
   // "feas:dead" deliberately absent → the stub returns null for that label.
   "test:dead": { feasible: "yes", testable: "yes", issues: [] },
 };
-const { result: nullPlan } = await run(WF("plan.js"), { spec: "s" }, nullFixtures);
+const { result: nullPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, nullFixtures);
 ok((nullPlan.vettingIncomplete ?? []).includes("dead"),
   "plan: a lens returning null → vettingIncomplete, NOT clear");
 ok(!(nullPlan.blocked ?? []).map((b) => b.taskId).includes("dead"),
@@ -303,6 +304,42 @@ ok(feasCalls.length === planFixtures.decompose.tasks.length &&
   "plan: feasibility vet prompt does NOT carry the full spec (F13)");
 ok(planCalls.find((c) => c.label === "decompose").prompt.includes(BIG_SPEC),
   "plan: decompose (once) is the only full-spec consumer");
+
+// ── plan: the north star is required, and a vague one is refused (#58) ───────
+console.log("-- Case: plan.js north star — required, falsifiable, decompose-only");
+// Every other input to this workflow is guarded; the one saying what the work is
+// FOR used to fall back to a placeholder string and be decomposed as if it were
+// a spec. Absent, too short, and no-miss-clause each have their own case,
+// because a single disjunction test passes when two of the three branches die.
+await throws(() => run(WF("plan.js"), { spec: "s" }, planFixtures),
+  "plan northStar: absent → refused, not decomposed as a placeholder", "required");
+await throws(() => run(WF("plan.js"), { spec: "s", northStar: 42 }, planFixtures),
+  "plan northStar: non-string → refused", "required");
+await throws(() => run(WF("plan.js"), { spec: "s", northStar: "   " }, planFixtures),
+  "plan northStar: whitespace-only → refused", "required");
+await throws(() => run(WF("plan.js"), { spec: "s", northStar: "Make the plugin better." }, planFixtures),
+  "plan northStar: a vague one-liner → refused (worse than none — it launders drift as alignment)",
+  "cannot be falsifiable");
+await throws(() => run(WF("plan.js"), {
+    spec: "s",
+    northStar: "Users can reset their password and sign in with the new one, end to end, unaided.",
+  }, planFixtures),
+  "plan northStar: long but with no miss clause → refused", "Missed if");
+
+// The measured decision (tests/fixtures/plan-align/MEASUREMENT.md, 2026-08-18):
+// the goal goes to DECOMPOSE and NOT to the per-task vet packets. Putting it
+// there drew goal-reachability findings from 6/6 seats against the CONTROL
+// column — a plan that reaches its goal — so it is noise bought at judgment
+// tier. This is the F13 assertion's shape: pin WHERE an input is spent, because
+// nothing else would notice it being spent everywhere.
+const nsCalls = planRt.calls;
+ok(nsCalls.find((c) => c.label === "decompose").prompt.includes(NORTH_STAR),
+  "plan northStar: decompose receives it");
+ok(nsCalls.filter((c) => c.label.startsWith("feas:") || c.label.startsWith("test:"))
+     .every((c) => !c.prompt.includes(NORTH_STAR)),
+  "plan northStar: NO vet lens receives it — measured to be undiscriminating (#58 Stage A)");
+ok(plan.northStar === NORTH_STAR,
+  "plan northStar: returned to the operator, so the spec-coverage check has a referent");
 
 // ── crawl: shard fan-out + merge ─────────────────────────────────────────────
 console.log("-- Case: crawl.js shard fan-out + merge");
@@ -616,7 +653,7 @@ await throws(() => run(WF("review.js"), { tiers: { MECHANICAL: "not routable" } 
   "review tier: charset-bad id rejected — the guard is applied, not merely present (#60)", "outside the");
 await throws(() => run(WF("crawl.js"), { tiers: { MECHANICAL: "not routable" }, shards: ["x"] }, {}),
   "crawl tier: charset-bad id rejected — the guard is applied, not merely present (#60)", "outside the");
-await throws(() => run(WF("plan.js"), { tiers: { MECHANICAL: "not routable" }, spec: "s" }, {}),
+await throws(() => run(WF("plan.js"), { tiers: { MECHANICAL: "not routable" }, spec: "s", northStar: NORTH_STAR }, {}),
   "plan tier: charset-bad id rejected — the guard is applied, not merely present (#60)", "outside the");
 
 // ── dispatch: one seat, one model (#55) ─────────────────────────────────────

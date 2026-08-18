@@ -59,6 +59,32 @@ unrelated to what they name.
   whether a finding counts as a detection is the judgment a measurement's author
   is worst placed to make afterwards.
 
+### Added
+
+- **`northStar` is a required, falsifiable input to `plan.js` (#58) — and it goes
+  to decompose only.** Every other input to the workflow was guarded (a typo'd
+  tier name throws, a non-object `args.tiers` throws) except the one saying what
+  the work is *for*, which fell back to a placeholder string and was then
+  decomposed as if it were a spec. Absent, non-string, whitespace-only, too
+  short, or carrying no `Missed if:` clause are each refused with their own
+  message and their own case — a goal with no miss condition cannot fail, so it
+  cannot align anything, and a vague one is worse than none because it launders
+  drift as alignment.
+
+  **It is not passed to the per-task vet lenses, and that is the measured
+  decision rather than an omission.** Stage A put it there and counted the
+  result: 6/6 feasibility seats raised goal-reachability findings against the
+  control column — the plan that reaches its goal. `check_northstar` therefore
+  pins the interpolation count at exactly one, because passing the goal to the
+  lenses too is the obvious-looking improvement a later maintainer makes unless
+  they know it was tried. Five mutations checked: both fallback forms, a
+  softened throw, a dropped miss-clause rule, and the goal reaching a second
+  prompt.
+
+  The charter's BAR block now carries the north star, which is what gives the
+  Discovery discipline's five goal-relative rules a referent — #58's headline
+  complaint. `templates/OPERATOR.md` is at 145/150 lines, 8949/9000 bytes.
+
 ### Changed
 
 - **#58 Stage A ran: 42 seats, and the answer is narrower than either option the

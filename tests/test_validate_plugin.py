@@ -389,6 +389,19 @@ def make_good_tree(root):
     for wname in ("review", "brainstorm"):
         write(root / "workflows" / f"{wname}.js",
               f'export const meta = {{ name: "{wname}", description: "d" }};\n' + WF_SHARED)
+    # plan.js is written separately because check_northstar REPORTS a missing
+    # plan.js rather than skipping — a check that goes inert when its target is
+    # absent is the vacuous-guard shape, and a "clean tree" of this plugin has a
+    # plan.js. So the fixture has to carry the #58 north-star shape: read without
+    # a fallback, refused when absent, refused without a `Missed if:` clause, and
+    # interpolated into EXACTLY ONE prompt (decompose, never a vet packet).
+    write(root / "workflows" / "plan.js",
+          'export const meta = { name: "plan", description: "d" };\n' + WF_SHARED +
+          'const northStar = A.northStar;\n'
+          'if (typeof northStar !== "string") {\n'
+          '  throw new Error("args.northStar is required: … then a `Missed if: …` clause");\n'
+          '}\n'
+          'const p = `NORTH STAR:\\n${northStar}\\n\\nSPEC:\\n${spec}`;\n')
 
 
 class ValidatorTest(unittest.TestCase):
@@ -1360,11 +1373,15 @@ class ValidatorTest(unittest.TestCase):
         # are trivially "in parity". Uniform drift is the REALISTIC failure —
         # the copy-paste convention tells a maintainer to edit one and copy it
         # to the rest. Only a canonical pin catches it.
-        for name in ("review.js", "brainstorm.js"):
-            write(self.dir / "workflows" / name,
-                  self._wf(name[:-3]).replace(
-                      "const BAD_CHARSET = /[^\\w./:@[\\]-]/;",
-                      "const BAD_CHARSET = /(?!)/;"))
+        # Derived from the tree, not a hardcoded pair: "uniform" means EVERY
+        # copy. Adding a third workflow to the fixture (plan.js, for #58) left
+        # this rewriting two of three, so the drift stopped being uniform and
+        # the parity assertion below started failing for the wrong reason —
+        # the test would have been measuring a partial rewrite it never meant.
+        for f in sorted((self.dir / "workflows").glob("*.js")):
+            write(f, f.read_text(encoding="utf-8").replace(
+                "const BAD_CHARSET = /[^\\w./:@[\\]-]/;",
+                "const BAD_CHARSET = /(?!)/;"))
         probs = []
         vp.check_workflow_parity(self.dir, probs)
         self.assertEqual(probs, [], "parity alone cannot see uniform drift")
@@ -2700,3 +2717,84 @@ class ReplayCharterLintTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NorthStarCheckTest(unittest.TestCase):
+    """#58's field must stay required, and must stay OUT of the vet packets.
+
+    Both are one-character reversals that no other test would notice: a `??`
+    fallback passes every test that supplies a goal (all of them do), and adding
+    the goal to a vet prompt reads like fixing an omission unless you know Stage
+    A measured it drawing findings from 6/6 seats against the control column.
+    """
+
+    GOOD = (
+        'const northStar = A.northStar;\n'
+        'if (typeof northStar !== "string") {\n'
+        '  throw new Error("args.northStar is required: … then a `Missed if: …` clause");\n'
+        '}\n'
+        'const p = `NORTH STAR:\\n${northStar}\\n\\nSPEC:\\n${spec}`;\n'
+    )
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = pathlib.Path(self.tmp.name)
+        (self.dir / "workflows").mkdir(parents=True)
+        self.addCleanup(self.tmp.cleanup)
+
+    def _run(self, src):
+        write(self.dir / "workflows" / "plan.js", src)
+        probs = []
+        vp.check_northstar(self.dir, probs)
+        return probs
+
+    def test_good_shape_is_accepted(self):
+        # The control. Without it every assertion below passes against a checker
+        # that flags everything, which is the same value as a checker that works.
+        self.assertEqual(self._run(self.GOOD), [])
+
+    def test_nullish_fallback_fires(self):
+        probs = self._run(self.GOOD.replace(
+            "const northStar = A.northStar;",
+            'const northStar = A.northStar ?? "(none)";'))
+        self.assertTrue(any("fallback" in p or "bare" in p for p in probs), probs)
+
+    def test_or_fallback_fires(self):
+        probs = self._run(self.GOOD.replace(
+            "const northStar = A.northStar;",
+            'const northStar = A.northStar || "(none)";'))
+        self.assertTrue(any("fallback" in p or "bare" in p for p in probs), probs)
+
+    def test_missing_required_throw_fires(self):
+        probs = self._run(self.GOOD.replace("args.northStar is required",
+                                            "args.northStar is suggested"))
+        self.assertTrue(any("is required" in p for p in probs), probs)
+
+    def test_missing_miss_clause_rule_fires(self):
+        probs = self._run(self.GOOD.replace("Missed if", "MissedXf"))
+        self.assertTrue(any("Missed if" in p for p in probs), probs)
+
+    def test_goal_interpolated_into_a_second_prompt_fires(self):
+        # The measured one: the goal reaching a per-task vet packet.
+        probs = self._run(self.GOOD + 'const v = `VET ${northStar} ${task}`;\n')
+        self.assertTrue(any("interpolated 2 time(s)" in p for p in probs), probs)
+
+    def test_goal_never_interpolated_fires(self):
+        # The other direction: required, guarded, and then never actually used.
+        probs = self._run(self.GOOD.replace("${northStar}", "${spec}"))
+        self.assertTrue(any("interpolated 0 time(s)" in p for p in probs), probs)
+
+    def test_missing_plan_js_is_reported_not_skipped(self):
+        probs = []
+        vp.check_northstar(self.dir, probs)
+        self.assertTrue(any("missing" in p for p in probs), probs)
+
+    def test_check_is_registered_in_CHECKS(self):
+        # Every test above calls the function directly, so a dropped registry
+        # entry runs in no build while all of them stay green.
+        self.assertIn(vp.check_northstar, vp.CHECKS)
+
+    def test_real_tree_northstar_clean(self):
+        probs = []
+        vp.check_northstar(ROOT, probs)
+        self.assertEqual(probs, [])

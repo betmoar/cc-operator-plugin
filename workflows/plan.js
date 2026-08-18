@@ -69,6 +69,54 @@ const MECHANICAL = TIERS.MECHANICAL;
 
 const spec = A.spec ?? "(no spec provided — the operator must pass args.spec)";
 const repoRoot = A.repoRoot ?? ".";
+
+// --- the north star (#58) ---------------------------------------------------
+// One sentence naming what must be true when this work is done, plus what we
+// would see if we had missed it. REQUIRED: every other input here is guarded
+// (a typo'd tier name throws, a non-object args.tiers throws) except the one
+// that says what the work is FOR, which used to fall back to a placeholder
+// string and get decomposed as if it were a spec.
+//
+// A vague one is REFUSED rather than accepted. "Make the plugin better" is
+// worse than no goal: it launders drift as alignment, and every later question
+// that cites the goal ("does this task set reach it?") then has a referent that
+// cannot answer. Same treatment testCycle already gets — falsifiable, or it is
+// not a criterion.
+//
+// It is passed to DECOMPOSE ONLY, and that is measured, not an oversight.
+// Stage A (tests/fixtures/plan-align/MEASUREMENT.md, run 2026-08-18) put the
+// goal in the PER-TASK vet packets and measured what came back: 6/6 feasibility
+// seats raised goal-reachability concerns against the CONTROL column — the plan
+// that does reach its goal — including one that called a task "the north-star
+// miss condition verbatim" when the sibling two entries later does exactly the
+// thing it said was missing. A per-task seat cannot see the set, so the goal
+// makes it speculate, at 100% on a correct plan. Adding it there buys noise at
+// judgment tier. The two shapes that WERE detected were both visible inside a
+// single task and needed no goal in the vet packet to be findable.
+const MISS_CLAUSE = /missed if\s*:/i;
+const NORTH_STAR_MIN_CHARS = 40;
+
+const northStar = A.northStar;
+if (typeof northStar !== "string" || !northStar.trim()) {
+  throw new Error(
+    "args.northStar is required: one sentence naming what must be true when this " +
+      "work is done, then a `Missed if: …` clause naming what we would see if we " +
+      "had missed it. Decomposing without a stated goal is what #58 measured.",
+  );
+}
+if (northStar.trim().length < NORTH_STAR_MIN_CHARS) {
+  throw new Error(
+    `args.northStar is ${northStar.trim().length} chars; a goal that short cannot ` +
+      "be falsifiable. Name the outcome and how you would know it was missed.",
+  );
+}
+if (!MISS_CLAUSE.test(northStar)) {
+  throw new Error(
+    "args.northStar has no `Missed if: …` clause. A goal with no miss condition " +
+      "cannot fail, so it cannot align anything — state what we would see if this " +
+      "work shipped and the goal was not reached.",
+  );
+}
 // Global constraints copied verbatim from the spec — version floors, naming
 // rules, limits. Every task inherits them. Optional.
 const globalConstraints = A.globalConstraints ?? "";
@@ -134,7 +182,10 @@ const DECOMP = {
 
 const decomp = await agent(
   `Decompose this spec into a TDD implementation plan. The implementer has zero codebase context, ` +
-    `so name every file, signature, and test command explicitly.\n\nSPEC:\n${spec}\n\n` +
+    `so name every file, signature, and test command explicitly.\n\n` +
+    `NORTH STAR (what must be true when this work is done — the task set as a whole has to ` +
+    `reach it, and a task that serves nothing in it does not belong in the plan):\n${northStar}\n\n` +
+    `SPEC:\n${spec}\n\n` +
     (globalConstraints ? `GLOBAL CONSTRAINTS (every task inherits):\n${globalConstraints}\n\n` : "") +
     `REPO ROOT: ${repoRoot}\n\n` +
     `Rules: each task is the smallest unit with its own test cycle. Fold setup/scaffolding into the ` +
@@ -256,6 +307,12 @@ log(
 );
 
 return {
+  // Returned so the operator's spec-coverage check has a referent to check
+  // AGAINST, and so a later reader of the plan can see what it was for. It is
+  // deliberately not a verdict: nothing here judges whether the task set reaches
+  // it (Stage A measured that per-task seats cannot, and the whole-set check
+  // that could is arithmetic over specExcerpt, not a lens — see #58, #66).
+  northStar,
   fileStructure: decomp?.fileStructure ?? "",
   globalConstraints: globalConstraints || null,
   tasks,
