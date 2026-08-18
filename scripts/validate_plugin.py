@@ -997,7 +997,15 @@ def check_platform_idioms(root, problems):
     # A brace group is only expandable when unquoted or double-quoted, so the
     # pattern requires the double quote. `[^"}]*` on both sides of the comma
     # keeps it inside one brace group rather than spanning two arguments.
-    sed_brace = re.compile(r"""sed\s+(?:-[a-zA-Z]+\s+)*"[^"]*\{[^"}]*,[^"}]*\}""")
+    # Anchored on a sed ADDRESS (`/…{$/` … `/^}…/`), not on any brace-comma-brace.
+    # The first version matched every double-quoted sed script containing
+    # `{…,…}`, which is also an ERE interval quantifier: `sed -E "s/[0-9]{2,4}/X/"`
+    # failed the build on correct, portable code. And `(?:-[a-zA-Z]+\s+)*` could
+    # not consume a long flag, so `sed --posix -n "/^f() {$/,/^}$/p"` — the real
+    # defect — slipped through. Both measured. A checker that fires on correct
+    # code is the one that gets disabled, which its own docstring says.
+    sed_brace = re.compile(
+        r"""sed\s+(?:--?[a-zA-Z-]+\s+)*"[^"]*/\^?[^"]*\{\\?\$?/\s*,\s*/\^?\\?\}""")
     bad = (
         (sed_brace,
          "a brace group inside a double-quoted sed script — bash 3.2 (every "
@@ -2664,7 +2672,22 @@ def check_northstar(root, problems):
     if not f.is_file():
         problems.append("workflows/plan.js: missing")
         return
-    src = f.read_text(encoding="utf-8")
+    raw = f.read_text(encoding="utf-8")
+
+    # A comment-stripped view, for the reason check_workflows already strips one
+    # (F48/F57): a guard moved into a comment must not satisfy the regex that
+    # asks whether the guard is there. Measured against THIS check by a review —
+    # prefixing every line of all three northStar guard blocks with `// ` left it
+    # reporting zero problems, so an unvalidated (possibly undefined) goal flowed
+    # into the decompose prompt with the build green. That is precisely the
+    # silent reversal the docstring above says this check exists to catch, and it
+    # was written without the strip the sibling check already had.
+    #
+    # `Missed if` needs the strip for a second reason: it appears in prose twice
+    # (meta.whenToUse and the throw text), so deleting ONLY the MISS_CLAUSE block
+    # also measured green.
+    src = re.sub(r"/\*.*?\*/", "", raw, flags=re.DOTALL)
+    src = "\n".join(ln for ln in src.split("\n") if not ln.lstrip().startswith("//"))
 
     if not re.search(r"const\s+northStar\s*=\s*A\.northStar\s*;", src):
         problems.append(
@@ -2678,10 +2701,38 @@ def check_northstar(root, problems):
         problems.append(
             "workflows/plan.js: no throw naming `args.northStar is required` — the "
             "field is only required if its absence refuses")
-    if "Missed if" not in src:
+    # Declared AND applied, the same shape check_workflows uses for BAD_CHARSET.
+    # A bare `"Missed if" in src` was measured green after deleting the entire
+    # miss-clause block, because the words survive in meta.whenToUse and in the
+    # other throw's text — both code lines, so comment-stripping does not help.
+    # Only the regex's declaration plus a call site distinguishes the rule from
+    # prose about the rule.
+    if not re.search(r"const\s+MISS_CLAUSE\s*=\s*/", src):
         problems.append(
-            "workflows/plan.js: no `Missed if` falsification requirement — a goal with "
-            "no miss condition cannot fail, so it cannot align anything (#58)")
+            "workflows/plan.js: no `const MISS_CLAUSE = /…/` — a goal with no miss "
+            "condition cannot fail, so it cannot align anything (#58)")
+    if not re.search(r"MISS_CLAUSE\.(exec|test)\s*\(", src):
+        problems.append(
+            "workflows/plan.js: MISS_CLAUSE is declared but never applied — the "
+            "falsifiability rule is prose unless something runs it")
+
+    # `A.spec` is the sibling guard added in the same diff and plan.js's own
+    # comment calls it "guarded for the same reason". Nothing pinned it: a review
+    # measured reverting it to the old placeholder fallback and the whole
+    # validator stayed green, so the cheaper-to-revert of the two guards was the
+    # unpinned one.
+    if not re.search(r"const\s+spec\s*=\s*A\.spec\s*;", src):
+        problems.append(
+            "workflows/plan.js: no bare `const spec = A.spec;` — the spec must be read "
+            "without a default, same rule as northStar (a placeholder ran a full "
+            "judgment-tier decompose plus every vet seat on nothing)")
+    if re.search(r"A\.spec\s*\?\?", src) or re.search(r"A\.spec\s*\|\|", src):
+        problems.append(
+            "workflows/plan.js: `A.spec` has a `??`/`||` fallback — that is the exact "
+            "placeholder shape #58 removed")
+    if "args.spec is required" not in src:
+        problems.append(
+            "workflows/plan.js: no throw naming `args.spec is required`")
 
     sites = src.count("${northStar}")
     if sites != 1:

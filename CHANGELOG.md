@@ -91,7 +91,12 @@ graph work now computes the answer that issue needs.
   edge marked `unverified` means the plan serialised B after A while B names
   nothing A produces — spurious serialisation, which is what actually caps
   wall-clock. Measured on this repo's own corpus, the **control** plan reports
-  3/5 declared edges real, so two of its orderings buy nothing.
+  3/5 declared edges real — and a later review caught the natural reading of that
+  ("two of its orderings buy nothing") being false: both unverified edges are
+  between tasks that genuinely depend on task 0, just not adjacently. An
+  unverified edge now carries `dependsInsteadOn`, naming the producer it does
+  depend on, because "not adjacent" and "spurious" are different findings and the
+  operator acts differently on each.
 
   `p = 1 - L/N` over unit-cost tasks, so the ceiling is `N/L` and a pure chain
   reports `p=0, 1.0x`. Every part ships its negative control, because a
@@ -144,6 +149,12 @@ graph work now computes the answer that issue needs.
   ceiling 1.0x instead of 4x, every edge stamped `real` on the evidence token
   `"The"`. It also silenced `danglingConsumes`, since a genuinely unresolved
   dependency matched the bogus shared token.
+
+  The follow-up review then caught the fix's own comment overclaiming in turn: it
+  said the new rule "restores the one-directional property", and it does not. Two
+  independent tasks whose prose shares `reset_token` still produce a `real` edge.
+  The rule removes the large spurious class and leaves a small one; the comment
+  now says that, because the claim was wrong twice.
 
   Worse than the wrong number: the comment beside it claimed the heuristic's
   failure mode was *"one-directional — a missed match downgrades an edge to

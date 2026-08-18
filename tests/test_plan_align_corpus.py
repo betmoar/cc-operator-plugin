@@ -31,7 +31,13 @@ SHARED_PREFIX = ("reset-token-store", "reset-request", "reset-email-copy",
 # A task reaches a lens as inline JSON, so no task object may name its own
 # column — that would tell the seat the answer, which is what the other two
 # corpora spend a whole neutralization step avoiding.
-LEAK_TOKENS = ("aligned", "misaligned", "fixture", "northstar", "north star")
+# Shape names and "column" are here because the README claims they are pinned
+# and they were not: a review measured a task titled "the last task of the
+# missing-final-step column" reaching a prompt with the guard silent. Naming
+# its own column by shape is the most direct way to hand a seat the answer.
+LEAK_TOKENS = ("aligned", "misaligned", "fixture", "northstar", "north star",
+               "column", "missing-final-step", "adjacent-deliverable",
+               "unverifiable-goal")
 # The vocabulary the tree scan uses. Module-level so the control below can pass
 # the SAME tuple the live assertion uses — a control with its own copy proves
 # nothing about the one that runs.
@@ -41,6 +47,27 @@ REQUIRED_NONEMPTY = ("id", "title", "files", "produces", "specExcerpt", "testCyc
 # An identifier a `consumes` may legitimately name: `foo(` in a produces string,
 # or a name defined in the fixture project.
 IDENT_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\b")
+
+
+def contract_names(text):
+    """Identifier-shaped tokens only — the same rule workflows/plan.js applies.
+
+    The previous version of the consumes check collected EVERY identifier,
+    including "the", "and", "it", so a genuinely dangling dependency resolved
+    against a stopword and was never flagged. A review measured it: planting
+    `consumes = "the frobnicate_widget helper from nowhere.py"` on the last task
+    passed, via "the". That is the defect the plan graph had just been fixed for,
+    reproduced inside the test written to police the corpus.
+    """
+    out = set()
+    src = str(text or "")
+    for m in re.finditer(r"[A-Za-z_][A-Za-z0-9_]{2,}", src):
+        tok = m.group(0)
+        follows_paren = src[m.end():m.end() + 1] == "("
+        if follows_paren or "_" in tok or any(c.isdigit() for c in tok) \
+                or re.search(r"[a-z][A-Z]", tok):
+            out.add(tok)
+    return out
 
 
 def columns():
@@ -109,11 +136,11 @@ class PlanAlignCorpusTest(unittest.TestCase):
             for task in col["tasks"]:
                 consumes = (task.get("consumes") or "").strip()
                 if consumes:
-                    named = set(IDENT_RE.findall(consumes))
+                    named = contract_names(consumes)
                     self.assertTrue(named & available,
                                     f"{label}/{task['id']}: consumes names nothing produced "
                                     f"earlier or present in project/: {consumes!r}")
-                available |= set(IDENT_RE.findall(task["produces"]))
+                available |= contract_names(task["produces"])
 
     def test_generated_columns_share_a_byte_identical_prefix_with_the_control(self):
         ctl = {t["id"]: t for t in json.loads(CONTROL.read_text(encoding="utf-8"))["tasks"]}
@@ -243,6 +270,13 @@ class PlanAlignCorpusTest(unittest.TestCase):
             # creates — is not UTF-8, and a bare read_text there raises
             # UnicodeDecodeError: the scan dies with a traceback instead of
             # returning a verdict, which is an exemption granted by crash.
+            # Compiled bytecode is not part of the tree a seat reads, and it
+            # embeds the absolute source path — which contains "plan-align" — so
+            # errors="replace" turned it into a guaranteed false hit the moment
+            # anyone imported the fixture package. Skipped by PATH, not by an
+            # exemption list: the file is not source.
+            if f.suffix == ".pyc" or "__pycache__" in f.parts:
+                continue
             text = f.read_text(encoding="utf-8", errors="replace").lower()
             hits += [(str(f), w) for w in vocab if w in text]
         return hits
@@ -293,7 +327,12 @@ class PlanAlignCorpusTest(unittest.TestCase):
             for task in col["tasks"]:
                 ex = re.sub(r"\s+", " ", task["specExcerpt"]).strip()
                 body = re.sub(r"^R\d\s*—\s*[^.]+\.\s*", "", ex)
-                if body and body[:70] not in spec:
+                # The WHOLE body, not a prefix: a review measured an excerpt
+                # that opens verbatim and then appends "AND the system MUST also
+                # email the admin a plaintext copy of the password" passing a
+                # 70-char prefix check — inventing a requirement past the cutoff
+                # is exactly what this test exists to catch.
+                if body and body not in spec:
                     offenders.append((label, task["id"]))
         self.assertEqual(sorted(set(offenders) - self.PARAPHRASED), [],
                          "new paraphrased excerpt(s); quote spec.md verbatim")

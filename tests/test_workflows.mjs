@@ -479,6 +479,55 @@ ok(keepPlan.graph.edges[0].via.includes("create_token") && keepPlan.graph.edges[
   ok(broken.length === 0, `plan graph fuzz: no invariant violated${broken.length ? " — " + broken[0] : ""}`);
 }
 
+// B4: outOfOrder. It shipped with no assertion anywhere, so flipping the scan
+// direction or dropping the log branch would leave the suite green while the
+// only signal that the concurrency numbers are untrustworthy stopped firing.
+{
+  const ooIds = ["late", "early"];
+  const oo = { decompose: { fileStructure: "f: r", tasks: [
+      gtask("late", "make_late() -> str", "make_early from early"),
+      gtask("early", "make_early() -> str", ""),
+    ] }, ...graphVet(ooIds) };
+  const { result: ooPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, oo);
+  const og = ooPlan.graph;
+  ok(og.outOfOrder.length === 1 && og.outOfOrder[0].taskId === "late",
+    "plan graph: a task consuming what a LATER task produces is reported outOfOrder");
+  ok(og.outOfOrder[0].producedLaterBy.includes("early"),
+    "plan graph: outOfOrder names the later producer, so the operator can fix the ordering");
+  ok((ooPlan.blocked ?? []).length === 0,
+    "plan graph: POLARITY — outOfOrder reports, it does not block");
+
+  // The guard the review measured: a LATER task reusing a produced name is
+  // benign when the real dependency already resolved backwards. Flagging it
+  // announced "p/ceiling understate the serial path" about a correct number.
+  const benignIds = ["A", "B", "C"];
+  const benign = { decompose: { fileStructure: "f: r", tasks: [
+      gtask("A", "make_x() -> str", ""),
+      gtask("B", "make_b() -> str", "make_x from A"),
+      gtask("C", "make_x() -> str", ""),
+    ] }, ...graphVet(benignIds) };
+  const { result: bPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, benign);
+  ok(bPlan.graph.outOfOrder.length === 0,
+    "plan graph: NEGATIVE CONTROL — a benign duplicate producer name later in the list is NOT outOfOrder");
+}
+
+// B5: an `unverified` edge must not imply "no dependency" when dependsOn found a
+// non-adjacent one. Measured on the repo's own control fixture, where two edges
+// read unverified while both tasks genuinely depend on task 0.
+{
+  const nonAdjIds = ["p0", "p1", "p2"];
+  const nonAdj = { decompose: { fileStructure: "f: r", tasks: [
+      gtask("p0", "make_root() -> str", ""),
+      gtask("p1", "make_one() -> str", "make_root from p0"),
+      gtask("p2", "make_two() -> str", "make_root from p0"),
+    ] }, ...graphVet(nonAdjIds) };
+  const { result: naPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, nonAdj);
+  const e = naPlan.graph.edges.find((x) => x.from === "p1" && x.to === "p2");
+  ok(e.status === "unverified", "plan graph: p1->p2 is not a real declared edge");
+  ok((e.dependsInsteadOn ?? []).includes("p0"),
+    "plan graph: an unverified edge names the producer it DOES depend on — 'buys nothing' would be false here");
+}
+
 // C: the dangling consumes #73 measured — a task naming a producer nobody ships.
 const dangIds = ["m", "n"];
 const dang = {

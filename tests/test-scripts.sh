@@ -1828,6 +1828,13 @@ check "untagged deviation → dev[1] for any session" \
 # through ambient state instead of a missing call site; the positive control
 # below is what keeps it non-vacuous.
 SLBARE="$(newproj)"
+# The setup must be verified BEFORE it is relied on. These three cases assert on
+# an EMPTY substitution, and `cd "$SLBARE" && …` inside `$( )` yields exactly
+# that when the cd fails — so a missing or unwritable dir reported ok, for a run
+# in which the renderer was never invoked at all. #21's class, reintroduced one
+# layer under the rewrite whose own comment says it was removing it.
+check "control: the statusline fixture dirs exist before the silence cases run" \
+  "$([ -d "$SLBARE" ] && echo 0 || echo 1)"
 check "garbage payload renders nothing" \
   "$([ -z "$(cd "$SLBARE" && printf 'NOT JSON{{' | "$BASH_ABS" "$SL" 2>&1)" ] && echo 0 || echo 1)"
 check "empty payload renders nothing" \
@@ -1839,11 +1846,21 @@ check "no parser and no external commands: silent, no stray output" \
   "$([ -z "$(cd "$SLBARE" && sljson SESS-A "$P" | PATH="$SLNONE" "$BASH_ABS" "$SL" 2>&1)" ] && echo 0 || echo 1)"
 # The positive control for all three: silence above must come from an empty
 # ledger, NOT from the renderer giving up on an unparseable payload. Same
-# garbage stdin, cwd switched to a project that HAS a sentinel this session
-# owns — the segment must appear. Without this, deleting the $PWD fallback
-# entirely would leave the three assertions above green.
+# garbage stdin, cwd switched to a project that HAS a pending sentinel — the
+# segment must appear. Without this, deleting the $PWD fallback entirely would
+# leave the three assertions above green.
+#
+# The sentinel's `session_id:` stamp is decorative HERE and the comment used to
+# claim otherwise: on an unparseable payload SESSION is empty, and
+# statusline.sh's FOREIGN branch needs a non-empty SESSION, so every sentinel
+# falls to the mine/unowned side. Measured — a `session_id: TOTALLY-FOREIGN`
+# stamp renders identically. This case validates the $PWD fallback only; the
+# ownership partition is exercised by the dev[N] cases above, which supply a
+# parseable payload.
 SLFB="$(newproj)"; ( cd "$SLFB" && bash "$INIT" >/dev/null 2>&1 )
 printf 'session_id: SESS-A\n' > "$SLFB/.operator/pending/fallback-probe"
+check "control: the fallback fixture has a sentinel to render" \
+  "$([ -f "$SLFB/.operator/pending/fallback-probe" ] && echo 0 || echo 1)"
 check "unparseable payload falls back to \$PWD, not to silence (statusline.sh:84)" \
   "$(cd "$SLFB" && printf 'NOT JSON{{' | "$BASH_ABS" "$SL" 2>/dev/null \
      | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g' \

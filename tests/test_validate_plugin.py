@@ -397,10 +397,14 @@ def make_good_tree(root):
     # interpolated into EXACTLY ONE prompt (decompose, never a vet packet).
     write(root / "workflows" / "plan.js",
           'export const meta = { name: "plan", description: "d" };\n' + WF_SHARED +
+          'const spec = A.spec;\n'
+          'if (typeof spec !== "string") { throw new Error("args.spec is required"); }\n'
+          'const MISS_CLAUSE = /\\bmissed\\s+if\\s*:\\s*(\\S.*)/is;\n'
           'const northStar = A.northStar;\n'
           'if (typeof northStar !== "string") {\n'
           '  throw new Error("args.northStar is required: … then a `Missed if: …` clause");\n'
           '}\n'
+          'if (!MISS_CLAUSE.exec(northStar)) { throw new Error("no miss clause"); }\n'
           'const p = `NORTH STAR:\\n${northStar}\\n\\nSPEC:\\n${spec}`;\n')
 
 
@@ -2725,10 +2729,14 @@ class NorthStarCheckTest(unittest.TestCase):
     """
 
     GOOD = (
+        'const spec = A.spec;\n'
+        'if (typeof spec !== "string") { throw new Error("args.spec is required"); }\n'
+        'const MISS_CLAUSE = /\\bmissed\\s+if\\s*:\\s*(\\S.*)/is;\n'
         'const northStar = A.northStar;\n'
         'if (typeof northStar !== "string") {\n'
         '  throw new Error("args.northStar is required: … then a `Missed if: …` clause");\n'
         '}\n'
+        'if (!MISS_CLAUSE.exec(northStar)) { throw new Error("no miss clause"); }\n'
         'const p = `NORTH STAR:\\n${northStar}\\n\\nSPEC:\\n${spec}`;\n'
     )
 
@@ -2766,9 +2774,30 @@ class NorthStarCheckTest(unittest.TestCase):
                                             "args.northStar is suggested"))
         self.assertTrue(any("is required" in p for p in probs), probs)
 
-    def test_missing_miss_clause_rule_fires(self):
-        probs = self._run(self.GOOD.replace("Missed if", "MissedXf"))
-        self.assertTrue(any("Missed if" in p for p in probs), probs)
+    def test_missing_miss_clause_declaration_fires(self):
+        # The pin moved from the WORDS to the regex: "Missed if" survives in
+        # meta.whenToUse and in the required-throw's own text, both code lines,
+        # so deleting the whole guard block measured green against a substring
+        # check even with comments stripped.
+        probs = self._run(self.GOOD.replace("const MISS_CLAUSE = ", "const OTHER = "))
+        self.assertTrue(any("MISS_CLAUSE" in p for p in probs), probs)
+
+    def test_miss_clause_declared_but_never_applied_fires(self):
+        probs = self._run(self.GOOD.replace("MISS_CLAUSE.exec(northStar)", "null"))
+        self.assertTrue(any("never applied" in p for p in probs), probs)
+
+    def test_guards_moved_into_comments_fire(self):
+        # The measured reversal: prefixing every guard line with `// ` left the
+        # check reporting zero problems, so an unvalidated goal flowed into the
+        # decompose prompt with the build green.
+        commented = "\n".join("// " + ln for ln in self.GOOD.split("\n"))
+        probs = self._run(commented)
+        self.assertTrue(probs, "commented-out guards must not satisfy the pins")
+
+    def test_spec_guard_pins_fire(self):
+        probs = self._run(self.GOOD.replace(
+            "const spec = A.spec;", 'const spec = A.spec ?? "(none)";'))
+        self.assertTrue(any("A.spec" in p or "const spec" in p for p in probs), probs)
 
     def test_goal_interpolated_into_a_second_prompt_fires(self):
         # The measured one: the goal reaching a per-task vet packet.

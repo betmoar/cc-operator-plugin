@@ -107,7 +107,12 @@ const repoRoot = A.repoRoot ?? ".";
 // makes it speculate, at 100% on a correct plan. Adding it there buys noise at
 // judgment tier. The two shapes that WERE detected were both visible inside a
 // single task and needed no goal in the vet packet to be findable.
-const MISS_CLAUSE = /missed if\s*:/i;
+// `\b` on the front, because without it "…should never be dismissed if: …"
+// satisfied the gate; and a capture on the tail, because "Missed if:" with
+// NOTHING after the colon also satisfied it. Both measured. A miss clause
+// that is empty or accidental is the same as none, which is the case this
+// gate exists to refuse.
+const MISS_CLAUSE = /\bmissed\s+if\s*:\s*(\S.*)/is;
 const NORTH_STAR_MIN_CHARS = 40;
 
 const northStar = A.northStar;
@@ -124,11 +129,13 @@ if (northStar.trim().length < NORTH_STAR_MIN_CHARS) {
       "be falsifiable. Name the outcome and how you would know it was missed.",
   );
 }
-if (!MISS_CLAUSE.test(northStar)) {
+const missClause = MISS_CLAUSE.exec(northStar);
+if (!missClause || missClause[1].trim().length < 10) {
   throw new Error(
-    "args.northStar has no `Missed if: …` clause. A goal with no miss condition " +
-      "cannot fail, so it cannot align anything — state what we would see if this " +
-      "work shipped and the goal was not reached.",
+    "args.northStar has no usable `Missed if: …` clause. A goal with no miss " +
+      "condition cannot fail, so it cannot align anything — state what we would see " +
+      "if this work shipped and the goal was not reached. An empty clause, or the " +
+      "words appearing inside another (\"dismissed if:\"), do not count.",
   );
 }
 // Global constraints copied verbatim from the spec — version floors, naming
@@ -339,13 +346,18 @@ log(
 // "The". It also silenced danglingConsumes, because a real unresolved
 // dependency resolved against the bogus shared token.
 //
-// That mattered beyond the wrong number: the comment here USED to claim the
-// heuristic's failure mode was "one-directional — a missed match downgrades an
-// edge to unverified". A spurious match is the other direction, and it is the
-// one that makes the report WRONG rather than merely incomplete. The rule below
-// restores the one-directional property that claim depends on: `User` alone no
-// longer qualifies, so a dependency named only by a bare capitalised type
-// degrades to `unverified` — reported, never blocking (#21).
+// What this rule does NOT do is make the failure mode one-directional, and an
+// earlier version of this comment claimed it did. It does not: two independent
+// tasks whose prose happens to share `reset_token` ("adds the reset_token column"
+// / "touches the reset_token column only") still produce a `real` edge via that
+// token, measured. Any identifier-shaped word carried by both sentences will.
+//
+// So the honest statement is narrower: the rule removes the LARGE spurious class
+// (every capitalised English word) and leaves a small one (a shared
+// identifier-shaped noun). A spurious edge remains possible, which is exactly
+// why `edges` is report-only and why the `unverified` side now names the real
+// producer when it has one. Do not restore the one-directional claim; it was
+// wrong twice.
 const NAMEY = /[A-Za-z_][A-Za-z0-9_]{2,}/g;
 function contractNames(text) {
   const out = new Set();
@@ -388,6 +400,13 @@ const dependsOn = names.map((b, j) =>
 // for what is really a two-task chain. So look forward once, purely to report.
 const outOfOrder = [];
 for (let j = 0; j < names.length; j++) {
+  // Only when the backward scan found NOTHING. A later task reusing a produced
+  // name is common and benign — measured on [A produces make_x, B consumes
+  // make_x, C produces make_x]: B resolves correctly against A, layers and p are
+  // exact, and the unguarded version still announced "1 task OUT OF ORDER,
+  // p/ceiling understate the serial path". Both halves of that were false, and a
+  // signal that cries wolf on a correct measurement is worse than silence.
+  if (dependsOn[j].length) continue;
   const later = names.slice(j + 1)
     .filter((a) => [...names[j].consumes].some((c) => a.produces.has(c)))
     .map((a) => a.id);
@@ -406,11 +425,19 @@ for (let i = 1; i < names.length; i++) {
   const prev = names[i - 1];
   const here = names[i];
   const shared = [...here.consumes].filter((c) => prev.produces.has(c));
+  // When the adjacent producer is not the real one, say so. `unverified` alone
+  // reads as "this ordering buys nothing", and a review measured that claim
+  // being false on this repo's own control fixture: reset-email-copy's edge is
+  // unverified against its predecessor while dependsOn shows it genuinely
+  // depending on task 0. The ordering is real, just not adjacent — a different
+  // statement from a spurious one, and the operator acts differently on each.
+  const earlier = dependsOn[i].map((d) => names[d].id).filter((id) => id !== prev.id);
   edges.push({
     from: prev.id,
     to: here.id,
     status: shared.length ? "real" : "unverified",
     via: shared,
+    ...(shared.length ? {} : { dependsInsteadOn: earlier }),
   });
 }
 
@@ -432,7 +459,7 @@ const danglingConsumes = names
 // the dependency by id then put a task in a layer before its real producer
 // (measured: layerAt [0,1,2,1] with `d` above its producer). Indices are exact
 // at both sites, and only both together are correct.
-const layerAt = new Array(names.length).fill(0);
+const layerAt = new Array(names.length);
 for (let i = 0; i < names.length; i++) {
   const deps = dependsOn[i];
   layerAt[i] = deps.length ? Math.max(...deps.map((d) => layerAt[d] + 1)) : 0;
@@ -447,9 +474,12 @@ for (let i = 0; i < names.length; i++) (layers[layerAt[i]] ??= []).push(names[i]
 // requires, and the reason a p-estimator that always answers "wide" is worse
 // than none: it launders a guess as a measurement.
 const N = names.length;
-const L = layers.length || 1;
-const p = N ? 1 - L / N : 0;
-const speedup = (k) => 1 / ((1 - p) + (k ? p / k : 0));
+// No `|| 1`: the workflow returned early when tasks was empty, so task 0 always
+// lands in layer 0 and layers.length >= 1. A guard that cannot fire is one a
+// later maintainer has to re-derive as unreachable.
+const L = layers.length;
+const p = 1 - L / N;
+const speedup = (k) => 1 / ((1 - p) + p / k);
 
 // The charter caps what any of this may be SPENT on: one implementer at a time;
 // read-only workers may run in parallel on disjoint inputs [D:CHART-r6]. Every
