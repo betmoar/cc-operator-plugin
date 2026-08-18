@@ -406,6 +406,42 @@ ok(wg.edges.length === 3 && wg.edges.every((e) => e.status === "unverified"),
 ok((widePlan.blocked ?? []).length === 0 && (widePlan.needsInfo ?? []).length === 0,
   "plan graph: POLARITY — unverified edges REPORT, they never block a plan (#21's class)");
 
+// B2: PROSE. The token rule must not treat ordinary capitalised English as a
+// contract name. A review measured the earlier rule (any uppercase letter)
+// reporting these four INDEPENDENT tasks as a strict chain — p=0, ceiling 1.0x,
+// every edge "real" via the token "The". The whole deliverable of #66 is the
+// number, so a spurious match is worse than a missed one, and it is also the
+// direction the comment claimed could not happen.
+const proseIds = ["pw", "px", "py", "pz"];
+const prose = {
+  decompose: { fileStructure: "f: r", tasks: proseIds.map((id) =>
+    gtask(id, `The ${id}() helper. Nothing else is produced.`, "The project layout only")) },
+  ...graphVet(proseIds),
+};
+const { result: prosePlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, prose);
+const pg = prosePlan.graph;
+ok(pg.edges.every((e) => !e.via.includes("The")),
+  "plan graph: 'The' is not a contract name — prose does not fabricate an edge");
+ok(pg.graphWidth === 4 && pg.p === 0.75,
+  "plan graph: four independent tasks with prose contracts still report width 4, p=0.75");
+ok(pg.edges.every((e) => e.status === "unverified"),
+  "plan graph: prose contracts degrade to unverified — the failure mode stays one-directional");
+
+// …and the rule must still admit the names it exists for.
+const keepIds = ["k1", "k2"];
+const keep = {
+  decompose: { fileStructure: "f: r", tasks: [
+    gtask("k1", "ResetToken dataclass; create_token(user_id) -> str", ""),
+    gtask("k2", "validate_token() -> bool", "create_token and ResetToken from k1"),
+  ] },
+  ...graphVet(keepIds),
+};
+const { result: keepPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, keep);
+ok(keepPlan.graph.edges[0].status === "real",
+  "plan graph: NEGATIVE CONTROL — snake_case and camelCase names are still matched");
+ok(keepPlan.graph.edges[0].via.includes("create_token") && keepPlan.graph.edges[0].via.includes("ResetToken"),
+  "plan graph: both underscore and internal-capital forms resolve, so the rule is not merely stricter");
+
 // C: the dangling consumes #73 measured — a task naming a producer nobody ships.
 const dangIds = ["m", "n"];
 const dang = {

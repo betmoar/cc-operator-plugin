@@ -193,6 +193,16 @@ class PlanAlignCorpusTest(unittest.TestCase):
             self.assertTrue(hits, "the scan must fire on a planted leak")
             self.assertTrue(any(w in ("misaligned", "column", "fixture") for _, w in hits), hits)
 
+    def test_tree_scan_survives_a_non_utf8_file(self):
+        # The scan claims no file is exempt; a file it cannot decode must not
+        # become exempt by taking the whole test down with it.
+        with tempfile.TemporaryDirectory() as td:
+            tree = pathlib.Path(td)
+            (tree / "stray.pyc").write_bytes(b"\x00\x01\xfe\xff not utf-8")
+            (tree / "leak.md").write_text("part of the corpus")
+            hits = self._scan_for_leaks(tree)
+            self.assertTrue(hits, "a decodable leak beside an undecodable file must still be found")
+
     def test_tree_scan_walks_more_than_python_files(self):
         # The original scan walked *.py and therefore could not see the file the
         # leak was actually in. Pin the walk, not just its result.
@@ -228,7 +238,12 @@ class PlanAlignCorpusTest(unittest.TestCase):
         vocab = LEAK_VOCAB if vocab is None else vocab
         hits = []
         for f in sorted(p for p in pathlib.Path(root).rglob("*") if p.is_file()):
-            text = f.read_text(encoding="utf-8").lower()
+            # errors="replace", because the docstring's claim is that NO file is
+            # exempt. A stray .pyc — which anyone importing the fixture package
+            # creates — is not UTF-8, and a bare read_text there raises
+            # UnicodeDecodeError: the scan dies with a traceback instead of
+            # returning a verdict, which is an exemption granted by crash.
+            text = f.read_text(encoding="utf-8", errors="replace").lower()
             hits += [(str(f), w) for w in vocab if w in text]
         return hits
 

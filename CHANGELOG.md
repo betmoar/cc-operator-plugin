@@ -135,6 +135,51 @@ graph work now computes the answer that issue needs.
 
 ### Changed
 
+- **A whole-branch review found the graph's token rule fabricating dependencies
+  ([#66]).** `contractNames` accepted any token carrying an uppercase letter, so
+  every capitalised word an English sentence opens with — `The`, `Nothing`,
+  `None` — counted as a contract name. Measured: four fully independent tasks
+  whose `produces`/`consumes` read *"The w() helper"* / *"The project layout
+  only"* came back as a strict four-layer chain, **p=0 instead of 0.75**,
+  ceiling 1.0x instead of 4x, every edge stamped `real` on the evidence token
+  `"The"`. It also silenced `danglingConsumes`, since a genuinely unresolved
+  dependency matched the bogus shared token.
+
+  Worse than the wrong number: the comment beside it claimed the heuristic's
+  failure mode was *"one-directional — a missed match downgrades an edge to
+  unverified"*. A spurious match is the other direction, and it is the one that
+  makes the report wrong rather than merely incomplete. A token now qualifies on
+  an underscore, a digit, an **internal** capital, or a following `(` — which
+  restores the property the comment asserted. Pinned both ways: prose degrades to
+  `unverified`, and `create_token`/`ResetToken` still resolve.
+
+  The corpus numbers are unchanged by the fix, and that is the explanation for
+  how it survived — every `produces` in `tests/fixtures/plan-align/` is
+  `snake_case` or `camelCase`, so the corpus never exercised prose at all. The
+  re-run did surface one new true signal: `adjacent-deliverable` reports
+  `outOfOrder 1`.
+
+- **`check_northstar`'s docstring claimed to close a hole it shares.** It argued
+  that counting `${northStar}` interpolations beats scanning the vet literals
+  because a variable could evade the latter — but `+ "…" + northStar` appended to
+  a vet prompt keeps the count at 1 and the check green, and `+`-concatenated
+  template literals are how both vet prompts are actually built. Verified by
+  mutation: the concatenated form is caught by the node assertion over the
+  captured prompts and **not** by the validator. The docstring and the `CLAUDE.md`
+  coupling row now say which guard is load-bearing; a checker whose docstring
+  overclaims is worse than none, because the next maintainer stops looking.
+
+- **Two test-hygiene defects.** `_scan_for_leaks` called `read_text(encoding=
+  "utf-8")` on every file it walked, so a stray `.pyc` — which anyone importing
+  the fixture package creates — killed the leak test with a `UnicodeDecodeError`
+  instead of returning a verdict: an exemption granted by crash, in the scan
+  whose whole claim is that nothing is exempt. And `SLBARE`/`SLFB` were never
+  removed, leaking two directories per run into `$TMPDIR`, one carrying a
+  scaffolded `.operator/` with a pending sentinel — one run's litter becoming the
+  next run's ambient state, which is what those very cases were rewritten to
+  escape.
+
+
 - **#58 Stage A ran: 42 seats, and the answer is narrower than either option the
   issue proposed.** The measurement is in
   `tests/fixtures/plan-align/MEASUREMENT.md` with predictions left exactly as

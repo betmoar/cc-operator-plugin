@@ -2645,9 +2645,20 @@ def check_northstar(root, problems):
     omission unless you know it was tried. So the interpolation site is counted:
     exactly one, in the decompose prompt.
 
-    Pinning the COUNT rather than the absence from named prompts is deliberate:
-    a checker that looked only inside the two vet template literals would pass
-    the moment someone appended the goal via a variable instead.
+    Pinning the COUNT rather than the absence from named prompts catches the
+    interpolation form. It does NOT catch every form, and the earlier version of
+    this docstring claimed otherwise — a review pointed out that
+    `+ "\n\nNORTH STAR:\n" + northStar` appended to a vet prompt leaves the count
+    at 1 and this check green, and that `+`-concatenated template literals are
+    exactly how both vet prompts in plan.js are built, i.e. the idiomatic way a
+    maintainer would actually add it.
+
+    So the guarantee here is narrow and the real enforcement is elsewhere: the
+    `no vet lens receives it` assertion in tests/test_workflows.mjs inspects the
+    prompts the stub runtime actually captured, which covers concatenation,
+    variables, and anything else. Stated plainly because a checker whose
+    docstring overclaims is worse than one that does not exist — the next
+    maintainer trusts it and stops looking.
     """
     f = root / "workflows" / "plan.js"
     if not f.is_file():

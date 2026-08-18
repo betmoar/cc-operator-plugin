@@ -1848,6 +1848,11 @@ check "unparseable payload falls back to \$PWD, not to silence (statusline.sh:84
   "$(cd "$SLFB" && printf 'NOT JSON{{' | "$BASH_ABS" "$SL" 2>/dev/null \
      | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g' \
      | grep -q 'op\[1\]' && echo 0 || echo 1)"
+# Removed like every other project dir in this suite. SLFB in particular carries
+# a scaffolded .operator/ with a PENDING sentinel, so leaving it behind seeds
+# $TMPDIR with exactly the ambient state these three cases were rewritten to
+# escape — one run's litter becoming the next run's environment.
+rm -rf "$SLBARE" "$SLFB"
 # ...and it must TERMINATE, not merely stay quiet. Slurping stdin with `cat`
 # under an empty PATH does not fail — it HANGS, waiting on a command that will
 # never run, which freezes the whole bar rather than dropping one segment.

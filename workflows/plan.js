@@ -327,13 +327,25 @@ log(
 //
 // TOKENS. `produces` is documented as "exact function/type/route names later
 // tasks depend on", so the contract names are what we match on, not English.
-// A token qualifies when it is >=3 chars AND (contains `_`, or contains an
-// uppercase letter, or is immediately followed by `(`) — which admits
-// create_token, ResetToken, validate_token and excludes "from", "the", "int",
-// "str", "app". The heuristic's failure mode is deliberate and one-directional:
-// a missed match downgrades an edge to `unverified`, which is REPORTED and never
-// blocks. A guard that fails a plan on a regex's opinion of English is the class
-// that gets disabled (#21).
+// A token qualifies when it is >=3 chars AND it carries a mark prose does not:
+// an underscore, a digit, an INTERNAL capital (camelCase), or a following `(`.
+//
+// The internal-capital rule is the whole correction. An earlier version accepted
+// ANY uppercase letter, which admits every capitalised word an English sentence
+// starts with — and a review measured what that does: four fully independent
+// tasks whose produces/consumes read "The w() helper" / "The project layout
+// only" came back as a strict four-layer chain, p=0 instead of 0.75, ceiling
+// 1.0x instead of 4x, with every edge stamped `real` on the evidence token
+// "The". It also silenced danglingConsumes, because a real unresolved
+// dependency resolved against the bogus shared token.
+//
+// That mattered beyond the wrong number: the comment here USED to claim the
+// heuristic's failure mode was "one-directional — a missed match downgrades an
+// edge to unverified". A spurious match is the other direction, and it is the
+// one that makes the report WRONG rather than merely incomplete. The rule below
+// restores the one-directional property that claim depends on: `User` alone no
+// longer qualifies, so a dependency named only by a bare capitalised type
+// degrades to `unverified` — reported, never blocking (#21).
 const NAMEY = /[A-Za-z_][A-Za-z0-9_]{2,}/g;
 function contractNames(text) {
   const out = new Set();
@@ -341,7 +353,8 @@ function contractNames(text) {
   for (const m of src.matchAll(NAMEY)) {
     const tok = m[0];
     const followedByParen = src[m.index + tok.length] === "(";
-    if (followedByParen || tok.includes("_") || /[A-Z]/.test(tok)) out.add(tok);
+    const internalCapital = /[a-z][A-Z]/.test(tok);
+    if (followedByParen || tok.includes("_") || /\d/.test(tok) || internalCapital) out.add(tok);
   }
   return out;
 }
