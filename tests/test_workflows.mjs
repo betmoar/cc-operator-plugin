@@ -442,6 +442,43 @@ ok(keepPlan.graph.edges[0].status === "real",
 ok(keepPlan.graph.edges[0].via.includes("create_token") && keepPlan.graph.edges[0].via.includes("ResetToken"),
   "plan graph: both underscore and internal-capital forms resolve, so the rule is not merely stricter");
 
+// B3: PROPERTIES over randomised plans. Seeded, so a failure is reproducible —
+// an unseeded fuzz reports a different bug every run and none of them twice.
+//
+// These are INVARIANTS, deliberately not a second implementation of the graph.
+// A differential oracle was written and run during review (400 plans, zero
+// disagreements) and is not shipped: a copied algorithm has to be updated in
+// lockstep, and two identically-wrong copies are trivially "in agreement" —
+// F30's shape, which this repo has already been bitten by. Properties cannot
+// drift into agreement with a bug because they never encode the algorithm.
+{
+  let seed = 20260818;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  const WORDS = ["The", "Nothing", "None", "make_a", "make_b", "ResetToken", "helper", "app", "x1"];
+  const word = () => WORDS[Math.floor(rnd() * WORDS.length)];
+  let checked = 0;
+  const broken = [];
+  for (let iter = 0; iter < 120; iter++) {
+    const n = 1 + Math.floor(rnd() * 5);
+    // Duplicate ids on purpose: they are what broke the layer assignment twice.
+    const tasks = Array.from({ length: n }, (_, i) =>
+      gtask(rnd() < 0.2 ? "dup" : `t${i}`, `${word()} ${word()}`, rnd() < 0.3 ? "" : `${word()} ${word()}`));
+    const fx = { decompose: { fileStructure: "f", tasks }, ...graphVet(tasks.map((t) => t.id)) };
+    let res;
+    try { ({ result: res } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, fx)); }
+    catch (e) { broken.push(`iter ${iter}: threw ${e.message.slice(0, 40)}`); continue; }
+    const g = res.graph; checked++;
+    if (g.layers.flat().length !== tasks.length) broken.push(`iter ${iter}: layers hold ${g.layers.flat().length}/${tasks.length} tasks`);
+    if (g.layers.some((l) => !Array.isArray(l))) broken.push(`iter ${iter}: sparse hole in layers`);
+    if (!(g.p >= 0 && g.p < 1)) broken.push(`iter ${iter}: p=${g.p} out of [0,1)`);
+    const expect = Number((tasks.length / g.layers.length).toFixed(2));
+    if (Math.abs(g.ceiling - expect) > 0.02) broken.push(`iter ${iter}: ceiling ${g.ceiling} != N/L ${expect}`);
+    if ((res.blocked ?? []).length || (res.needsInfo ?? []).length) broken.push(`iter ${iter}: graph reached a blocking bucket`);
+  }
+  ok(checked === 120, `plan graph fuzz: all 120 seeded plans produced a graph (got ${checked})`);
+  ok(broken.length === 0, `plan graph fuzz: no invariant violated${broken.length ? " — " + broken[0] : ""}`);
+}
+
 // C: the dangling consumes #73 measured — a task naming a producer nobody ships.
 const dangIds = ["m", "n"];
 const dang = {
