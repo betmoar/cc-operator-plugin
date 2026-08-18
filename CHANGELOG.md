@@ -61,6 +61,35 @@ unrelated to what they name.
 
 ### Added
 
+- **`plan.js` returns a graph: real/unverified edges, concurrency layers, and the
+  Amdahl ceiling ([#66]).** No new phase and no extra agent call — it is
+  arithmetic over `produces`/`consumes`, which the decomposition already carries.
+  A seat would be paying judgment-tier tokens to do string matching.
+
+  The **declared** edges are consecutive pairs, because the decomposer is told to
+  return tasks in dependency order and that is what it asserted; `dependsOn`
+  separately scans every earlier task. The gap between the two is the point: an
+  edge marked `unverified` means the plan serialised B after A while B names
+  nothing A produces — spurious serialisation, which is what actually caps
+  wall-clock. Measured on this repo's own corpus, the **control** plan reports
+  3/5 declared edges real, so two of its orderings buy nothing.
+
+  `p = 1 - L/N` over unit-cost tasks, so the ceiling is `N/L` and a pure chain
+  reports `p=0, 1.0x`. Every part ships its negative control, because a
+  p-estimator that always answers "wide" launders a guess as a measurement. The
+  worked numbers are computed rather than asserted, which caught an error in the
+  first assertion: p=0.75 at 16 workers is **3.37x**, not 16x — the serial tail is
+  the cap, which is the whole reason the issue wanted the number.
+
+  `graphWidth` is reported only alongside `dispatchBound`: `[D:CHART-r6]`
+  serialises implementer tasks, so the layers describe what the **graph** permits,
+  never what the operator may dispatch. Reporting width without that bound would
+  read as a licence for the unsafe fan-out the charter already forbids — the
+  opposite error from the worthless one this section exists to expose.
+
+  Everything here is **report-only**; a test pins that neither an unverified edge
+  nor a dangling `consumes` can reach `blocked` or `needsInfo`.
+
 - **`northStar` is a required, falsifiable input to `plan.js` (#58) — and it goes
   to decompose only.** Every other input to the workflow was guarded (a typo'd
   tier name throws, a non-object `args.tiers` throws) except the one saying what
@@ -1096,6 +1125,7 @@ BAR block lands, after decomposition.
 [#68]: https://github.com/betmoar/cc-operator-plugin/issues/68
 [#70]: https://github.com/betmoar/cc-operator-plugin/issues/70
 [#69]: https://github.com/betmoar/cc-operator-plugin/issues/69
+[#66]: https://github.com/betmoar/cc-operator-plugin/issues/66
 [#60]: https://github.com/betmoar/cc-operator-plugin/issues/60
 
 ## [0.7.1] - 2026-08-12

@@ -341,6 +341,89 @@ ok(nsCalls.filter((c) => c.label.startsWith("feas:") || c.label.startsWith("test
 ok(plan.northStar === NORTH_STAR,
   "plan northStar: returned to the operator, so the spec-coverage check has a referent");
 
+// ── plan: the graph — edges, layers, Amdahl (#66) ────────────────────────────
+console.log("-- Case: plan.js graph — real/unverified edges, concurrency, p + ceiling");
+// Arithmetic over produces/consumes, no agent call. EVERY part gets a negative
+// control: a check that reports "wide" on a chain launders a guess as a
+// measurement, which is worse than not reporting one.
+const graphVet = (ids) => Object.fromEntries(
+  ids.flatMap((id) => [[`feas:${id}`, { feasible: "yes", testable: "yes", issues: [] }],
+                       [`test:${id}`, { feasible: "yes", testable: "yes", issues: [] }]]));
+const gtask = (id, produces, consumes) => ({
+  id, title: "t", files: ["f.py"], produces, consumes, specExcerpt: "x",
+  testCycle: "run x → pass", steps: ["s"],
+});
+
+// A: a genuine CHAIN — each task consumes what the one before produces.
+const chainIds = ["a", "b", "c", "d"];
+const chain = {
+  decompose: { fileStructure: "f: r", tasks: [
+    gtask("a", "make_alpha() -> str", ""),
+    gtask("b", "make_beta() -> str", "make_alpha from a"),
+    gtask("c", "make_gamma() -> str", "make_beta from b"),
+    gtask("d", "make_delta() -> str", "make_gamma from c"),
+  ] },
+  ...graphVet(chainIds),
+};
+const { result: chainPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, chain);
+const cg = chainPlan.graph;
+ok(cg.edges.length === 3 && cg.edges.every((e) => e.status === "real"),
+  "plan graph: a real chain reports every declared edge real");
+ok(cg.layers.length === 4 && cg.graphWidth === 1,
+  "plan graph: NEGATIVE CONTROL — a chain has no concurrency (4 layers, width 1)");
+ok(cg.p === 0 && cg.ceiling === 1,
+  "plan graph: NEGATIVE CONTROL — a chain reports p=0 and a 1.0x ceiling, not 'wide'");
+ok(cg.danglingConsumes.length === 0,
+  "plan graph: a chain has no unresolved consumes");
+
+// B: FOUR INDEPENDENT tasks — same shape, none consuming anything.
+const wideIds = ["w", "x", "y", "z"];
+const wide = {
+  decompose: { fileStructure: "f: r", tasks: [
+    gtask("w", "make_w() -> str", ""), gtask("x", "make_x() -> str", ""),
+    gtask("y", "make_y() -> str", ""), gtask("z", "make_z() -> str", ""),
+  ] },
+  ...graphVet(wideIds),
+};
+const { result: widePlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, wide);
+const wg = widePlan.graph;
+ok(wg.layers.length === 1 && wg.graphWidth === 4,
+  "plan graph: four independent tasks collapse to one layer of width 4");
+ok(wg.p === 0.75 && wg.ceiling === 4,
+  "plan graph: p and the ceiling move with the graph (p=0.75, 4x), not a constant");
+ok(wg.edges.length === 3 && wg.edges.every((e) => e.status === "unverified"),
+  "plan graph: declared order with no named dependency → unverified, the spurious-serialisation signal");
+ok((widePlan.blocked ?? []).length === 0 && (widePlan.needsInfo ?? []).length === 0,
+  "plan graph: POLARITY — unverified edges REPORT, they never block a plan (#21's class)");
+
+// C: the dangling consumes #73 measured — a task naming a producer nobody ships.
+const dangIds = ["m", "n"];
+const dang = {
+  decompose: { fileStructure: "f: r", tasks: [
+    gtask("m", "make_m() -> str", ""),
+    gtask("n", "make_n() -> str", "never_produced_anywhere from q.py"),
+  ] },
+  ...graphVet(dangIds),
+};
+const { result: dangPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, dang);
+ok(dangPlan.graph.danglingConsumes.includes("n"),
+  "plan graph: a consumes naming nothing any earlier task produces is reported (#73's question, computed)");
+ok(!dangPlan.graph.danglingConsumes.includes("m"),
+  "plan graph: NEGATIVE CONTROL — an empty consumes is not a dangling one");
+ok((dangPlan.blocked ?? []).length === 0,
+  "plan graph: POLARITY — a dangling consumes reports, it does not block");
+
+// D: the arithmetic itself, against the issue's own worked numbers.
+// All three, because a single point passes against a table that is right once.
+// The k=16 value is the sobering one the issue is about: p=0.75 with 16 workers
+// buys 3.37x, not 16x, and the serial tail is the cap.
+ok(wg.speedupAt["2"] === 1.6 && wg.speedupAt["4"] === 2.29 && wg.speedupAt["16"] === 3.37,
+  "plan graph: S = 1/((1-p) + p/k) at k=2/4/16 → 1.6x / 2.29x / 3.37x, computed not asserted");
+ok(typeof cg.dispatchBound === "string" && cg.dispatchBound.includes("CHART-r6"),
+  "plan graph: the width is reported WITH the charter bound — one implementer at a time");
+ok(!planCalls.some((c) => c.label.startsWith("graph")),
+  "plan graph: no agent call — it is arithmetic over data the workflow already holds");
+
 // ── crawl: shard fan-out + merge ─────────────────────────────────────────────
 console.log("-- Case: crawl.js shard fan-out + merge");
 // The operator packs shards; the workflow dispatches one crawler per shard, then

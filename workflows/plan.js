@@ -306,6 +306,112 @@ log(
     (lost ? ` (${lost} task(s) LOST to dispatch failure)` : ""),
 );
 
+// --- The plan graph: edges, concurrency, and the ceiling (#66) --------------
+// No phase and no agent call. This is arithmetic over `produces`/`consumes`,
+// which the decomposition already carries — a seat would be paying judgment-tier
+// tokens to do string matching.
+//
+// TOKENS. `produces` is documented as "exact function/type/route names later
+// tasks depend on", so the contract names are what we match on, not English.
+// A token qualifies when it is >=3 chars AND (contains `_`, or contains an
+// uppercase letter, or is immediately followed by `(`) — which admits
+// create_token, ResetToken, validate_token and excludes "from", "the", "int",
+// "str", "app". The heuristic's failure mode is deliberate and one-directional:
+// a missed match downgrades an edge to `unverified`, which is REPORTED and never
+// blocks. A guard that fails a plan on a regex's opinion of English is the class
+// that gets disabled (#21).
+const NAMEY = /[A-Za-z_][A-Za-z0-9_]{2,}/g;
+function contractNames(text) {
+  const out = new Set();
+  const src = String(text ?? "");
+  for (const m of src.matchAll(NAMEY)) {
+    const tok = m[0];
+    const followedByParen = src[m.index + tok.length] === "(";
+    if (followedByParen || tok.includes("_") || /[A-Z]/.test(tok)) out.add(tok);
+  }
+  return out;
+}
+
+const names = tasks.map((t) => ({
+  id: t.id,
+  produces: contractNames(t.produces),
+  consumes: contractNames(t.consumes),
+}));
+
+// DEPENDS. B depends on A when B consumes a name A produces, for any A EARLIER
+// in the list — not merely the immediately preceding task.
+const dependsOn = names.map((b, j) =>
+  names.slice(0, j)
+    .filter((a) => [...b.consumes].some((c) => a.produces.has(c)))
+    .map((a) => a.id));
+
+// EDGES. The DECLARED ordering is the array order — the decomposer is told to
+// return tasks "in dependency order", so consecutive pairs are what it asserted.
+// An edge is `real` when the later task actually names something the earlier one
+// produces, `unverified` otherwise. Unverified is not "wrong": the decomposer may
+// mean a semantic dependency it did not name. It is the SPURIOUS serialisation
+// that costs wall-clock, so it is worth surfacing rather than silently obeying —
+// the same polarity as --expect-clean's ignored-state line.
+const edges = [];
+for (let i = 1; i < names.length; i++) {
+  const prev = names[i - 1];
+  const here = names[i];
+  const shared = [...here.consumes].filter((c) => prev.produces.has(c));
+  edges.push({
+    from: prev.id,
+    to: here.id,
+    status: shared.length ? "real" : "unverified",
+    via: shared,
+  });
+}
+
+// A consumes naming nothing any earlier task produces. This is the question
+// plan.js asks each feasibility seat while handing it exactly one task and never
+// its siblings — measured at 17/21 needs-info, including 5/6 of a correct plan
+// (#73). Computed here it is exact and free; the prompt-side fix is #73's.
+const danglingConsumes = names
+  .map((t, j) => ({ taskId: t.id, unresolved: t.consumes.size && !dependsOn[j].length }))
+  .filter((x) => x.unresolved)
+  .map((x) => x.taskId);
+
+// LAYERS. Layer 0 is every task depending on nothing else in the set; layer k
+// is every task all of whose dependencies sit in earlier layers. Each layer is
+// a set the GRAPH would permit to run at once.
+const layerOf = new Map();
+for (let i = 0; i < names.length; i++) {
+  const deps = dependsOn[i];
+  layerOf.set(names[i].id, deps.length ? Math.max(...deps.map((d) => layerOf.get(d) + 1)) : 0);
+}
+const layers = [];
+for (const [id, l] of layerOf) (layers[l] ??= []).push(id);
+
+// AMDAHL. Unit-cost tasks, so the critical path is the layer count L and the
+// ideal speedup with unlimited workers is N/L. Writing that as the standard form:
+// p = 1 - L/N, ceiling = 1/(1-p) = N/L, S(k) = 1/((1-p) + p/k). A pure chain
+// gives L === N, p === 0 and a ceiling of 1.0 — the negative control the issue
+// requires, and the reason a p-estimator that always answers "wide" is worse
+// than none: it launders a guess as a measurement.
+const N = names.length;
+const L = layers.length || 1;
+const p = N ? 1 - L / N : 0;
+const speedup = (k) => 1 / ((1 - p) + (k ? p / k : 0));
+
+// The charter caps what any of this may be SPENT on: one implementer at a time;
+// read-only workers may run in parallel on disjoint inputs [D:CHART-r6]. Every
+// task in a TDD decomposition writes files, so the layers below describe what
+// the GRAPH permits, not what the operator may dispatch. Reporting the width
+// without that bound would read as a licence to fan out implementers, which is
+// the unsafe fan-out the charter already forbids — the opposite error from the
+// worthless one this section exists to expose.
+const graphWidth = layers.reduce((w, l) => Math.max(w, l.length), 0);
+
+log(
+  `graph: ${edges.filter((e) => e.status === "real").length}/${edges.length} declared edges real, ` +
+    `${layers.length} layer(s), width ${graphWidth}, p=${p.toFixed(2)}, ` +
+    `ceiling ${speedup(Infinity).toFixed(1)}x` +
+    (danglingConsumes.length ? ` — ${danglingConsumes.length} unresolved consumes` : ""),
+);
+
 return {
   // Returned so the operator's spec-coverage check has a referent to check
   // AGAINST, and so a later reader of the plan can see what it was for. It is
@@ -327,4 +433,17 @@ return {
   //  4. A vetting-incomplete task is NOT a clear task: its lens failed to
   //     return, so nothing is known about it. Re-vet before dispatching it.
   vettingIncomplete: incomplete.map((v) => v.taskId),
+  //  5. The graph. REPORT ONLY — nothing here can block a task, by design (#66).
+  graph: {
+    edges,
+    danglingConsumes,
+    layers,
+    graphWidth,
+    // What the graph permits is not what the charter permits: one implementer at
+    // a time, read-only workers parallel on disjoint inputs [D:CHART-r6].
+    dispatchBound: "implementer tasks serialise under [D:CHART-r6]; layers describe the graph, not the dispatch",
+    p: Number(p.toFixed(4)),
+    ceiling: Number(speedup(Infinity).toFixed(2)),
+    speedupAt: { 2: Number(speedup(2).toFixed(2)), 4: Number(speedup(4).toFixed(2)), 16: Number(speedup(16).toFixed(2)) },
+  },
 };
