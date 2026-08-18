@@ -288,3 +288,29 @@ being re-read every session.
   reached through ambient state rather than a missing call site: if an assertion's
   verdict depends on anything outside its fixture, it is measuring the
   environment, and the environment is not under test.
+- **A measurement fixture that documents itself hands the seat the answer.** The
+  plan-alignment corpus (#58) ships a small synthetic project for the feasibility
+  lens to read. Being a good maintainer, its `README.md` explained the design —
+  including *"A plan that never writes that field cannot produce a user who signs
+  in"*, which is one fixture's defect stated outright, in the tree the lens reads.
+  Three module docstrings said "fixture". The corpus's pins were thorough about
+  the task JSON and silent about the codebase sitting beside it, because
+  neutralization had been reasoned about only for the artifact under test. Caught
+  by generating the prompts and grepping them, one step before 42 seats would have
+  scored a measurement whose answer was written down in its own input. The lesson
+  generalises past this corpus: **everything a seat can reach is input**, which
+  includes absolute paths (the first prompt generation put `plan-align` in every
+  one) and filenames (the first batch of prompt files was named
+  `<column>__<lens>__<task>.txt`). If a fixture needs a README — and it does —
+  keep it out of the tree the seat is handed, and pin that separation rather than
+  remembering it.
+- **Reasoning about degenerate input is not the same as running it.** The #66
+  graph work was argued to be cycle-proof by construction (`dependsOn` scans only
+  earlier tasks) — correct, and still worth nothing until a back-reference fixture
+  went through the shipped code and came out a DAG. Six degenerate shapes a
+  *model* can emit — duplicate ids, a task consuming its own output, a
+  back-reference, empty `produces`, punctuation-only contract text, a single task
+  — all ran without throwing and without reaching `blocked`. The argument would
+  have been right and unevidenced; the run costs a minute. This is the same
+  register as "a compile is not proof the feature works", applied to a report
+  nobody would think to fuzz because it is advisory.
