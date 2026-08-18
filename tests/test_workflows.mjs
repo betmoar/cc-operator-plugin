@@ -451,6 +451,30 @@ for (const [label, degen] of Object.entries({
     `plan graph: ${label} yields finite p and a ceiling >= 1`);
 }
 
+// The degenerate loop above asserts only "does not throw / does not block /
+// finite p", and a review measured what that cannot see: with layers keyed by
+// task ID, duplicate ids collapsed and a task VANISHED from the report while p
+// was still computed over the full N — 2 ids surfaced for 3 tasks. The no-throw
+// assertion passed throughout. Count what came out, not just that something did.
+{
+  const dupTasks = [gtask("x", "make_x() -> str", ""), gtask("y", "make_y() -> str", "make_x from x"),
+                    gtask("x", "make_z() -> str", "")];
+  const { result: dupRes } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR },
+    { decompose: { fileStructure: "f", tasks: dupTasks }, ...graphVet(["x", "y"]) });
+  const surfaced = dupRes.graph.layers.flat();
+  ok(surfaced.length === dupTasks.length,
+    "plan graph: duplicate ids — every task still surfaces in a layer, none silently dropped");
+  ok(dupRes.graph.layers.every((l) => Array.isArray(l)),
+    "plan graph: duplicate ids — no sparse hole in layers (a JSON null the operator would read as a layer)");
+}
+
+// args.spec is guarded like northStar: an absent spec used to run a full
+// judgment-tier decompose plus every vet seat against a placeholder string.
+await throws(() => run(WF("plan.js"), { northStar: NORTH_STAR }, planFixtures),
+  "plan spec: absent → refused before any dispatch is paid for", "args.spec is required");
+await throws(() => run(WF("plan.js"), { spec: "   ", northStar: NORTH_STAR }, planFixtures),
+  "plan spec: whitespace-only → refused", "args.spec is required");
+
 // ── crawl: shard fan-out + merge ─────────────────────────────────────────────
 console.log("-- Case: crawl.js shard fan-out + merge");
 // The operator packs shards; the workflow dispatches one crawler per shard, then

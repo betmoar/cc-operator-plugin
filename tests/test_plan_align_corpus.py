@@ -177,11 +177,18 @@ class PlanAlignCorpusTest(unittest.TestCase):
         """
         vocab = ("fixture", "corpus", "column", "aligned", "misaligned",
                  "north star", "plan-align", "lens")
-        for py in sorted((CORPUS / "project").rglob("*.py")):
-            text = py.read_text(encoding="utf-8").lower()
+        # EVERY file under project/, not just *.py. The first version of this
+        # scan walked `rglob("*.py")` and so could not see project/README.md,
+        # which is where the leak actually was — it stated one fixture's defect
+        # outright. The corpus README covered that by claiming the file is
+        # "excluded from the tree handed to the seats", and nothing pinned that
+        # claim, so the guard rested on a promise. Scanning everything removes
+        # the promise from the load path.
+        for f in sorted(p for p in (CORPUS / "project").rglob("*") if p.is_file()):
+            text = f.read_text(encoding="utf-8").lower()
             for word in vocab:
                 self.assertNotIn(word, text,
-                                 f"{py.relative_to(ROOT)} names {word!r} — a seat reads "
+                                 f"{f.relative_to(ROOT)} names {word!r} — a seat reads "
                                  f"this file and must not learn what it is part of")
 
     def test_that_scanner_would_notice_a_planted_leak(self):

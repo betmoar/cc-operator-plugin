@@ -301,9 +301,12 @@ being re-read every session.
   generalises past this corpus: **everything a seat can reach is input**, which
   includes absolute paths (the first prompt generation put `plan-align` in every
   one) and filenames (the first batch of prompt files was named
-  `<column>__<lens>__<task>.txt`). If a fixture needs a README — and it does —
-  keep it out of the tree the seat is handed, and pin that separation rather than
-  remembering it.
+  `<column>__<lens>__<task>.txt`). The first fix was itself the lesson repeating:
+  the scan walked `*.py`, exempted the README, and rested on a *promise* that a
+  dispatch excludes it — a review measured that nothing pinned the promise. The
+  README is now ordinary project documentation and the scan walks every file, so
+  there is no separation left to remember. When a guard's correctness depends on
+  a step someone must remember to take, widen the guard until it does not.
 - **Reasoning about degenerate input is not the same as running it.** The #66
   graph work was argued to be cycle-proof by construction (`dependsOn` scans only
   earlier tasks) — correct, and still worth nothing until a back-reference fixture

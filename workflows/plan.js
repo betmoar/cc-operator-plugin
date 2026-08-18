@@ -67,15 +67,26 @@ for (const [name, id] of Object.entries(TIERS)) {
 const JUDGMENT = TIERS.JUDGMENT;
 const MECHANICAL = TIERS.MECHANICAL;
 
-const spec = A.spec ?? "(no spec provided — the operator must pass args.spec)";
+// Guarded for the same reason northStar is, and the review that caught this was
+// reading the comment below: it claimed every other input was guarded while this
+// line kept the exact placeholder shape it condemns. Worse than untidy — an
+// absent spec ran a full judgment-tier decomposition and N vet dispatches on the
+// string "(no spec provided …)", so the cheapest possible mistake bought the
+// most expensive possible no-op.
+const spec = A.spec;
+if (typeof spec !== "string" || !spec.trim()) {
+  throw new Error(
+    "args.spec is required and must be a non-empty string — decomposing a " +
+      "placeholder burns a judgment-tier pass and every vet seat on nothing",
+  );
+}
 const repoRoot = A.repoRoot ?? ".";
 
 // --- the north star (#58) ---------------------------------------------------
 // One sentence naming what must be true when this work is done, plus what we
-// would see if we had missed it. REQUIRED: every other input here is guarded
-// (a typo'd tier name throws, a non-object args.tiers throws) except the one
-// that says what the work is FOR, which used to fall back to a placeholder
-// string and get decomposed as if it were a spec.
+// would see if we had missed it. REQUIRED, like `spec` and the tier names above:
+// this used to be the one input that fell back to a placeholder string and got
+// decomposed as if it were a spec.
 //
 // A vague one is REFUSED rather than accepted. "Make the plugin better" is
 // worse than no goal: it launders drift as alignment, and every later question
@@ -367,7 +378,7 @@ for (let i = 1; i < names.length; i++) {
 
 // A consumes naming nothing any earlier task produces. This is the question
 // plan.js asks each feasibility seat while handing it exactly one task and never
-// its siblings — measured at 17/21 needs-info, including 5/6 of a correct plan
+// its siblings — measured at 14/21 needs-info, including 5/6 of a correct plan
 // (#73). Computed here it is exact and free; the prompt-side fix is #73's.
 const danglingConsumes = names
   .map((t, j) => ({ taskId: t.id, unresolved: t.consumes.size && !dependsOn[j].length }))
@@ -377,13 +388,22 @@ const danglingConsumes = names
 // LAYERS. Layer 0 is every task depending on nothing else in the set; layer k
 // is every task all of whose dependencies sit in earlier layers. Each layer is
 // a set the GRAPH would permit to run at once.
-const layerOf = new Map();
+// Keyed by INDEX, never by id. A decomposer is a model and can emit the same id
+// twice; a Map keyed by id collapses them, so one task disappears from `layers`
+// while p and the ceiling are still computed over the full N — a report that
+// quietly describes a different plan than the one it was handed. Measured on
+// ids x,y,x: 2 ids surfaced for 3 tasks. dependsOn already resolves by id, so
+// a duplicate resolves to the FIRST match, which is the same rule the reader of
+// a dependency-ordered list would apply.
+const layerAt = new Array(names.length).fill(0);
 for (let i = 0; i < names.length; i++) {
   const deps = dependsOn[i];
-  layerOf.set(names[i].id, deps.length ? Math.max(...deps.map((d) => layerOf.get(d) + 1)) : 0);
+  layerAt[i] = deps.length
+    ? Math.max(...deps.map((d) => layerAt[names.findIndex((n) => n.id === d)] + 1))
+    : 0;
 }
 const layers = [];
-for (const [id, l] of layerOf) (layers[l] ??= []).push(id);
+for (let i = 0; i < names.length; i++) (layers[layerAt[i]] ??= []).push(names[i].id);
 
 // AMDAHL. Unit-cost tasks, so the critical path is the layer count L and the
 // ideal speedup with unlimited workers is N/L. Writing that as the standard form:

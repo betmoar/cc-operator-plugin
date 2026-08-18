@@ -69,9 +69,9 @@ graph work now computes the answer that issue needs.
   column name to a seat, an empty `produces` — all caught.
 
   `MEASUREMENT.md` carries the method, the scoring rule, and the predictions,
-  **fixed before the run**, with the results section empty and marked as such:
-  whether a finding counts as a detection is the judgment a measurement's author
-  is worst placed to make afterwards.
+  **fixed before the run** — whether a finding counts as a detection is the
+  judgment a measurement's author is worst placed to make afterwards. It shipped
+  with the results section empty and marked as such; the entry below filled it.
 
 ### Added
 
@@ -156,13 +156,14 @@ graph work now computes the answer that issue needs.
   asking which requirements no task claims — arithmetic over `specExcerpt`,
   belonging with #66's edge work.
 
-- **The run found a defect in `plan.js` that #58 did not ask about.** 17 of 21
+- **The run found a defect in `plan.js` that #58 did not ask about.** 14 of 21
   feasibility seats returned `needs-info` citing `dependency-missing`, in every
   column including the control. The shipped prompt asks *"Is the dependency it
   consumes actually produced by an earlier task?"* while handing the seat exactly
   one task and never its siblings — it cannot answer, and `plan.js` buckets
-  `needs-info` into `needsInfo`. On a well-formed plan roughly four fifths of
-  tasks would land in the bucket the operator is told to clear before dispatch.
+  `needs-info` into `needsInfo`. On the CONTROL column — a well-formed plan — that
+  was five of six tasks landing in the bucket the operator is told to clear before
+  dispatch.
   Filed separately; it is larger in blast radius than the north star.
 
 - **The corpus shipped two leaks and a defect, all found by running it.** Three

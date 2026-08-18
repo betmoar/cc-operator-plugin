@@ -20,8 +20,12 @@ is a success, not a failure: if the existing vet lenses catch these fixtures onc
 the goal is in the packet, the field alone closes #58.
 
 **Nothing here is wired into the plugin.** Inert files under `tests/fixtures/`;
-no `scripts/`, `hooks/`, `workflows/` or `agents/` file references any path here,
-and nothing carries an execute bit.
+nothing carries an execute bit and no shipped file *reads* any path here. Two do
+**cite** the corpus in comments — `workflows/plan.js` and
+`scripts/validate_plugin.py` both point a future maintainer at `MEASUREMENT.md`
+before changing the decompose-only rule — which is a reference, not a runtime
+dependency. Stated precisely because the earlier wording claimed no shipped file
+referenced any path here, and that was false the moment those comments landed.
 
 ## The shape, and why it differs from the other two corpora
 
@@ -54,15 +58,16 @@ lens never does. Two rules keep that true, and the suite pins both:
    object, which is not what gets serialized into a prompt.
 2. `project/` is byte-identical for both columns — it is one directory, shared —
    so nothing a lens reads from disk indicates which column it was handed.
-3. **`project/app/**` names neither the corpus nor the answer.** The first run
-   nearly shipped the answer: three docstrings said "fixture", and
-   `project/README.md` stated the discriminating property outright — *"A plan
-   that never writes that field cannot produce a user who signs in"*, which is
-   `missing-final-step`'s defect written down in the tree the lens reads. The
-   pins checked the task JSON and never the codebase beside it. Now pinned, with
-   `project/README.md` exempt **and excluded from the tree a dispatch hands the
-   seats** — it is documentation for a maintainer, not part of the project under
-   review.
+3. **Nothing under `project/` names the corpus or the answer — every file, not
+   just the code.** The first run nearly shipped the answer: three docstrings
+   said "fixture", and `project/README.md` stated the discriminating property
+   outright — *"A plan that never writes that field cannot produce a user who
+   signs in"*, which is `missing-final-step`'s defect written down in the tree
+   the lens reads. The first fix scanned only `*.py` and exempted the README on
+   the promise that a dispatch excludes it; a review pointed out that nothing
+   pinned the promise, so the guard rested on it. The README is now ordinary
+   project documentation and the scan walks **every file** under `project/`, which
+   takes the promise off the load path entirely.
 
 Dispatch with cwd = `project/`, so task paths (`app/reset.py`) resolve without
 naming the corpus.

@@ -2715,10 +2715,6 @@ class ReplayCharterLintTest(unittest.TestCase):
         self.assertEqual(probs, [])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class NorthStarCheckTest(unittest.TestCase):
     """#58's field must stay required, and must stay OUT of the vet packets.
 
@@ -2798,3 +2794,7 @@ class NorthStarCheckTest(unittest.TestCase):
         probs = []
         vp.check_northstar(ROOT, probs)
         self.assertEqual(probs, [])
+
+
+if __name__ == "__main__":
+    unittest.main()

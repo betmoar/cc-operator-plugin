@@ -172,7 +172,7 @@ discriminate. Neither is "the lens noticed the goal."
 
 ## What the run found that #58 did not ask about
 
-**17 of 21 feasibility seats returned `needs-info`, in every column, citing
+**14 of 21 feasibility seats returned `needs-info`, in every column, citing
 `dependency-missing`.** The cause is in the shipped prompt:
 
 > Is the dependency it consumes actually produced by an earlier task?
@@ -180,8 +180,9 @@ discriminate. Neither is "the lens noticed the goal."
 The seat is handed exactly one task and never its siblings, so it cannot answer.
 It correctly reports that it cannot confirm the producer — and `plan.js` buckets
 `needs-info` into `needsInfo`. On a real run of a **well-formed** plan, roughly
-four fifths of tasks would land in that bucket, which the operator is told to
-resolve before dispatch. A signal that fires on 5/6 tasks of a good plan is not a
+five of six tasks would land in that bucket — that is the CONTROL column's own
+rate, not the 14/21 across all columns — and the operator is told to resolve that
+bucket before dispatch. A signal that fires on 5/6 tasks of a good plan is not a
 signal.
 
 This is independent of the north star, larger in blast radius, and measured here
