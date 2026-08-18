@@ -242,6 +242,27 @@ The four bounds recorded before the run all stand. Two are now sharper:
    requirement makes this less likely, not impossible.
 4. **Nothing here measures a vague north star**, #58's second claim.
 
+**Found after the run, and left in place (5).** Four of
+`adjacent-deliverable`'s five excerpts paraphrase `spec.md` rather than quoting
+it, and `admin-audit-entry` cites *"R1 — a reset is single-use and
+**attributable**"* when R1 says nothing about attribution. That matters because
+the excerpt is what a vet seat sees instead of the spec, so the fixture's own
+prose was doing work the spec was not — in the column that produced the strongest
+detection (4/5).
+
+The direction is checkable rather than assumed, and it runs **against** the
+detection, not for it: the paraphrases strip R2's `request_reset(email)`, i.e.
+the self-service framing, out of the excerpts, and the fabricated attribution
+clause makes the audit task look *more* spec-grounded than it is. Both make the
+off-goal nature harder to see from the excerpt alone, so a seat that flagged the
+support-agent conflict had to get it from the north star. The detection stands;
+what it does not support is any claim that the excerpts were faithful.
+
+Not rewritten. The corpus hash above is what these numbers describe, and editing
+the measured artifact after the fact is precisely the [#69] defect. A pin now
+names the four offenders individually and fails on a fifth — and fails equally if
+one is fixed without leaving the list.
+
 And one new bound: the testability arm ran on a substituted model, so the single
 `unverifiable-goal` detection is a finding about a cheap seat in general, not
 about the seat this project actually dispatches.

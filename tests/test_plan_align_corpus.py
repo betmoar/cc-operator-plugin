@@ -266,6 +266,43 @@ class PlanAlignCorpusTest(unittest.TestCase):
         self.assertEqual(hits, [], f"a seat reads these files and must not learn "
                                    f"what they are part of: {hits}")
 
+    # Four excerpts in adjacent-deliverable PARAPHRASE the spec instead of quoting
+    # it, and one invents a requirement: admin-audit-entry cites "R1 — a reset is
+    # single-use and attributable", where R1 says nothing about attribution.
+    # Found after the 2026-08-18 run, and deliberately NOT rewritten: the corpus
+    # hash in MEASUREMENT.md is what those numbers describe, and silently editing
+    # the measured artifact is the #69 defect. Named individually rather than
+    # matched by a pattern, so the exemption cannot grow quietly.
+    PARAPHRASED = {
+        ("adjacent-deliverable", "admin-user-lookup"),
+        ("adjacent-deliverable", "admin-temp-password"),
+        ("adjacent-deliverable", "admin-audit-entry"),
+        ("adjacent-deliverable", "forced-password-change"),
+    }
+
+    def test_every_spec_excerpt_quotes_the_spec_verbatim(self):
+        """A task's excerpt is what a vet seat sees instead of the spec.
+
+        If it paraphrases, the fixture's own framing is doing work the spec is
+        not, and any detection scored against it is partly a reaction to prose
+        the corpus author wrote for the occasion.
+        """
+        spec = re.sub(r"\s+", " ", (CORPUS / "spec.md").read_text(encoding="utf-8"))
+        offenders = []
+        for label, col in columns():
+            for task in col["tasks"]:
+                ex = re.sub(r"\s+", " ", task["specExcerpt"]).strip()
+                body = re.sub(r"^R\d\s*—\s*[^.]+\.\s*", "", ex)
+                if body and body[:70] not in spec:
+                    offenders.append((label, task["id"]))
+        self.assertEqual(sorted(set(offenders) - self.PARAPHRASED), [],
+                         "new paraphrased excerpt(s); quote spec.md verbatim")
+        # The exemption must stay honest in the other direction too: if one of
+        # the four is fixed, it has to leave the list rather than sit there
+        # granting cover to nothing.
+        self.assertEqual(sorted(self.PARAPHRASED - set(offenders)), [],
+                         "PARAPHRASED lists a task that now quotes correctly — remove it")
+
     def test_corpus_is_inert(self):
         for p in sorted(CORPUS.rglob("*")):
             if p.is_file():
