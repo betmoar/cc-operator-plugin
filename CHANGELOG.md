@@ -9,7 +9,7 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
-## [0.9.0] - 2026-08-17
+## [0.9.0] - 2026-08-18
 
 A release whose headline is that a **measurement changed what got built**. #58
 asked for a north-star field, a refusal, and possibly an alignment pass over the
@@ -22,9 +22,9 @@ project has declined to build a seat on evidence (#24, #70), and the first time
 the evidence redirected a feature rather than cancelling one.
 
 Underneath that, the release's own precondition: a gate that is green on the
-machine that runs it most. Two assertions were passing for reasons unrelated to
-what they name, one of them a control that could not pass on macOS at all while
-CI stayed green.
+machine that runs it most. Four assertions were wrong: three statusline cases passing
+for reasons unrelated to what they name, and one control that could not pass on
+macOS at all while CI stayed green.
 
 The measurement also produced [#73] — a defect in `plan.js` larger in blast
 radius than the north star, found by accident and not yet fixed — and #66's
@@ -64,16 +64,16 @@ graph work now computes the answer that issue needs.
   column containing an infeasible task would measure what `plan.js` already
   blocks and score the existing gate firing as a detection. Two columns' shared
   prefixes are byte-identical to the control by construction and pinned as such.
-  Five mutations checked: a `testCycle` losing its expected output, a `consumes`
-  naming an unknown dependency, a shared prefix diverging, a task leaking its
-  column name to a seat, an empty `produces` — all caught.
+  Five mutations checked against the corpus and all caught: a `testCycle`
+  losing its expected output, a `consumes` naming an unknown dependency, a shared
+  prefix diverging, a task leaking its column name to a seat, an empty
+  `produces`. Three of the five are pinned by in-file controls; the other two
+  were verified by mutation at the time and are not re-checked by the suite.
 
   `MEASUREMENT.md` carries the method, the scoring rule, and the predictions,
   **fixed before the run** — whether a finding counts as a detection is the
   judgment a measurement's author is worst placed to make afterwards. It shipped
   with the results section empty and marked as such; the entry below filled it.
-
-### Added
 
 - **`plan.js` returns a graph: real/unverified edges, concurrency layers, and the
   Amdahl ceiling ([#66]).** No new phase and no extra agent call — it is
@@ -105,10 +105,10 @@ graph work now computes the answer that issue needs.
   nor a dangling `consumes` can reach `blocked` or `needsInfo`.
 
 - **`northStar` is a required, falsifiable input to `plan.js` (#58) — and it goes
-  to decompose only.** Every other input to the workflow was guarded (a typo'd
-  tier name throws, a non-object `args.tiers` throws) except the one saying what
-  the work is *for*, which fell back to a placeholder string and was then
-  decomposed as if it were a spec. Absent, non-string, whitespace-only, too
+  to decompose only.** `args.spec` is now guarded the same way, and a review caught
+  that this entry originally claimed every other input already was — while
+  `spec` two lines above `northStar` kept exactly the placeholder-fallback shape
+  the claim condemned. Both refuse before a single dispatch is paid for. Absent, non-string, whitespace-only, too
   short, or carrying no `Missed if:` clause are each refused with their own
   message and their own case — a goal with no miss condition cannot fail, so it
   cannot align anything, and a vague one is worse than none because it launders
@@ -171,8 +171,10 @@ graph work now computes the answer that issue needs.
   stated the discriminating property outright — *"A plan that never writes that
   field cannot produce a user who signs in"* — which is `missing-final-step`'s
   answer, written down in the tree a lens reads. The pins checked the task JSON
-  and never the codebase beside it. Now pinned, with the README exempt and
-  excluded from any dispatch. Separately a seat caught
+  and never the codebase beside it. Now pinned by a scan over EVERY file under
+  `project/` — a first fix scanned only `*.py` and excused the README on the
+  promise that a dispatch excludes it, which a review pointed out was pinned by
+  nothing; the README is now ordinary project documentation instead. Separately a seat caught
   `admin-temp-password` asserting a 12-character result from
   `secrets.token_urlsafe`, which returns 16 for that argument — a true positive
   against the fixture, the same shape #70's control column produced. Fixed after
@@ -207,8 +209,10 @@ graph work now computes the answer that issue needs.
 - **Three statusline assertions were measuring the maintainer's desk.** They
   claimed *"degenerate stdin renders nothing"* while running with cwd = this
   repository. An unparseable payload leaves no cwd to read, so
-  `statusline.sh:84` falls back to `$PWD` **deliberately** (documented at
-  :49-50 — the bar renders for where it stands); the repo had simply never had
+  `statusline.sh:84` falls back to `$PWD` — an explicit
+  `${CLAUDE_PROJECT_DIR:-$PWD}` default, so intended, though the file gives no
+  rationale for it (`:49-50` documents the preference *order*, payload first,
+  which is a different claim); the repo had simply never had
   `.operator/` scaffolded in it, so the fallback found no ledger and all three
   passed for a reason unrelated to what they name.
 

@@ -1816,8 +1816,11 @@ check "untagged deviation → dev[1] for any session" \
 #
 # Run from SLBARE — a temp dir with no `.operator/` at or above it. When the
 # payload cannot be parsed there is no cwd to read, so statusline.sh:84 falls
-# back to $PWD *deliberately* (documented at :49-50: the bar renders for where
-# it stands). These three used to run with cwd = THIS REPO, where the fallback
+# back to $PWD — an explicit `${CLAUDE_PROJECT_DIR:-$PWD}` default, so it is
+# intended, though the file states no rationale for it (:49-50 documents the
+# preference ORDER — payload first — which is a different claim; a review caught
+# this comment citing those lines as if they justified the fallback).
+# These three used to run with cwd = THIS REPO, where the fallback
 # found no ledger only because the repo has never had `.operator/` scaffolded in
 # it — so "renders nothing" was really asserting "the maintainer never dogfooded
 # the gate here". Opening one real task turned all three red at once, with the

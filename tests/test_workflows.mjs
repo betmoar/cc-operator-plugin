@@ -97,7 +97,17 @@ async function run(file, argsValue, agentReturns) {
     "args", "agent", "parallel", "pipeline", "phase", "log",
     `return (async () => {\n${source}\n})();`
   );
-  const result = await fn(argsValue, rt.agent, rt.parallel, rt.pipeline, rt.phase, rt.log);
+  let result;
+  try {
+    result = await fn(argsValue, rt.agent, rt.parallel, rt.pipeline, rt.phase, rt.log);
+  } catch (e) {
+    // Attach the runtime to the throw so a caller can assert what was SPENT
+    // before the workflow refused. Without this the natural assertion
+    // (`rt == null || rt.calls.length === 0`) is vacuous — rt is always null on
+    // a throw, so it passes whether the guard runs first or last.
+    if (e && typeof e === "object") e.rt = rt;
+    throw e;
+  }
   return { result, rt };
 }
 
@@ -471,9 +481,27 @@ for (const [label, degen] of Object.entries({
 // args.spec is guarded like northStar: an absent spec used to run a full
 // judgment-tier decompose plus every vet seat against a placeholder string.
 await throws(() => run(WF("plan.js"), { northStar: NORTH_STAR }, planFixtures),
-  "plan spec: absent → refused before any dispatch is paid for", "args.spec is required");
+  "plan spec: absent → refused", "args.spec is required");
 await throws(() => run(WF("plan.js"), { spec: "   ", northStar: NORTH_STAR }, planFixtures),
   "plan spec: whitespace-only → refused", "args.spec is required");
+
+// "Refused BEFORE any dispatch is paid for" is the entire justification for
+// these guards, and throws() cannot see it — it inspects e.message and never
+// rt.calls, so moving a guard below the decompose agent() call would leave every
+// assertion above green while the run still cost a judgment-tier pass and N vet
+// seats. Assert the spend, not the message.
+for (const [label, badArgs] of Object.entries({
+  "absent spec": { northStar: NORTH_STAR },
+  "absent northStar": { spec: "s" },
+  "vague northStar": { spec: "s", northStar: "Make it better." },
+  "northStar with no miss clause": { spec: "s", northStar: "Users can reset their password and sign in unaided, end to end." },
+})) {
+  let rt = null;
+  try { ({ rt } = await run(WF("plan.js"), badArgs, planFixtures)); }
+  catch (e) { rt = e?.rt ?? rt; }
+  ok(rt == null || (rt.calls ?? []).length === 0,
+    `plan guards: ${label} spends NOTHING — zero agent calls, not just a thrown message`);
+}
 
 // ── crawl: shard fan-out + merge ─────────────────────────────────────────────
 console.log("-- Case: crawl.js shard fan-out + merge");

@@ -3,7 +3,10 @@ export const meta = {
   description:
     "Decompose an approved spec into bite-sized TDD tasks, then vet each task in parallel — feasibility at judgment tier, testability at cheap tier. Returns a plan the operator reviews against the spec before any implementation.",
   whenToUse:
-    "After a spec/design is approved (by the brainstorm workflow or written directly). The operator owns the human-review gate and the spec-coverage check.",
+    "After a spec/design is approved (by the brainstorm workflow or written directly). " +
+    "REQUIRED args: `spec` (the approved spec) and `northStar` (one sentence naming what " +
+    "must be true when this is done, then a `Missed if: …` clause). Both refuse before any " +
+    "dispatch. The operator owns the human-review gate and the spec-coverage check.",
   phases: [
     { title: "Decompose", detail: "spec -> task list (judgment tier)" },
     { title: "Vet", detail: "per-task lenses: feasibility (judgment), testability (cheap)" },
@@ -351,10 +354,32 @@ const names = tasks.map((t) => ({
 
 // DEPENDS. B depends on A when B consumes a name A produces, for any A EARLIER
 // in the list — not merely the immediately preceding task.
+//
+// INDICES, not ids. A decomposer can emit the same id twice, and resolving a
+// dependency by id then takes the FIRST match: a review measured ids
+// [dup(produces make_a), b, dup(produces make_c), d(consumes make_c)] placing
+// `d` in layer 1 while its real producer sat in layer 2 — the report asserting
+// concurrency the dependency forbids, which is worse than the dropped task the
+// id-keying was fixed for, because it is wrong rather than absent.
 const dependsOn = names.map((b, j) =>
   names.slice(0, j)
-    .filter((a) => [...b.consumes].some((c) => a.produces.has(c)))
-    .map((a) => a.id));
+    .map((a, i) => ([...b.consumes].some((c) => a.produces.has(c)) ? i : -1))
+    .filter((i) => i >= 0));
+
+// OUT-OF-ORDER. `dependsOn` scans only earlier tasks, which is what makes the
+// relation a DAG whatever the text says — but the same property means a
+// decomposition NOT emitted in dependency order is silently mis-measured: a
+// strict chain written backwards reports as fully parallel, overstating p, the
+// ceiling and the width with nothing to say the ordering assumption was
+// violated. Measured on [a(consumes make_b), b(produces make_b)]: p=0.5, width 2
+// for what is really a two-task chain. So look forward once, purely to report.
+const outOfOrder = [];
+for (let j = 0; j < names.length; j++) {
+  const later = names.slice(j + 1)
+    .filter((a) => [...names[j].consumes].some((c) => a.produces.has(c)))
+    .map((a) => a.id);
+  if (later.length) outOfOrder.push({ taskId: names[j].id, producedLaterBy: later });
+}
 
 // EDGES. The DECLARED ordering is the array order — the decomposer is told to
 // return tasks "in dependency order", so consecutive pairs are what it asserted.
@@ -388,19 +413,16 @@ const danglingConsumes = names
 // LAYERS. Layer 0 is every task depending on nothing else in the set; layer k
 // is every task all of whose dependencies sit in earlier layers. Each layer is
 // a set the GRAPH would permit to run at once.
-// Keyed by INDEX, never by id. A decomposer is a model and can emit the same id
-// twice; a Map keyed by id collapses them, so one task disappears from `layers`
-// while p and the ceiling are still computed over the full N — a report that
-// quietly describes a different plan than the one it was handed. Measured on
-// ids x,y,x: 2 ids surfaced for 3 tasks. dependsOn already resolves by id, so
-// a duplicate resolves to the FIRST match, which is the same rule the reader of
-// a dependency-ordered list would apply.
+// Keyed by INDEX, never by id — in the layer array AND in the dependency lookup.
+// A Map keyed by id collapsed duplicates so a task vanished from `layers` while
+// p was still computed over the full N (measured: 2 ids for 3 tasks); resolving
+// the dependency by id then put a task in a layer before its real producer
+// (measured: layerAt [0,1,2,1] with `d` above its producer). Indices are exact
+// at both sites, and only both together are correct.
 const layerAt = new Array(names.length).fill(0);
 for (let i = 0; i < names.length; i++) {
   const deps = dependsOn[i];
-  layerAt[i] = deps.length
-    ? Math.max(...deps.map((d) => layerAt[names.findIndex((n) => n.id === d)] + 1))
-    : 0;
+  layerAt[i] = deps.length ? Math.max(...deps.map((d) => layerAt[d] + 1)) : 0;
 }
 const layers = [];
 for (let i = 0; i < names.length; i++) (layers[layerAt[i]] ??= []).push(names[i].id);
@@ -429,7 +451,8 @@ log(
   `graph: ${edges.filter((e) => e.status === "real").length}/${edges.length} declared edges real, ` +
     `${layers.length} layer(s), width ${graphWidth}, p=${p.toFixed(2)}, ` +
     `ceiling ${speedup(Infinity).toFixed(1)}x` +
-    (danglingConsumes.length ? ` — ${danglingConsumes.length} unresolved consumes` : ""),
+    (danglingConsumes.length ? ` — ${danglingConsumes.length} unresolved consumes` : "") +
+    (outOfOrder.length ? ` — ${outOfOrder.length} task(s) OUT OF ORDER, p/ceiling understate the serial path` : ""),
 );
 
 return {
@@ -457,6 +480,10 @@ return {
   graph: {
     edges,
     danglingConsumes,
+    // Non-empty means the p/ceiling/width below UNDERSTATE the serial path: the
+    // decomposition was not emitted in dependency order, so the backward scan
+    // that keeps the relation acyclic could not see those dependencies.
+    outOfOrder,
     layers,
     graphWidth,
     // What the graph permits is not what the charter permits: one implementer at

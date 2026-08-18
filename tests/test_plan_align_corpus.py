@@ -13,7 +13,9 @@ one claims. Every check carries a control, because a scanner that cannot see a
 violation reports every column clean — the same value that means correct.
 """
 import json
+import pathlib
 import re
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -30,6 +32,11 @@ SHARED_PREFIX = ("reset-token-store", "reset-request", "reset-email-copy",
 # column — that would tell the seat the answer, which is what the other two
 # corpora spend a whole neutralization step avoiding.
 LEAK_TOKENS = ("aligned", "misaligned", "fixture", "northstar", "north star")
+# The vocabulary the tree scan uses. Module-level so the control below can pass
+# the SAME tuple the live assertion uses — a control with its own copy proves
+# nothing about the one that runs.
+LEAK_VOCAB = ("fixture", "corpus", "column", "aligned", "misaligned",
+              "north star", "plan-align", "lens")
 REQUIRED_NONEMPTY = ("id", "title", "files", "produces", "specExcerpt", "testCycle")
 # An identifier a `consumes` may legitimately name: `foo(` in a produces string,
 # or a name defined in the fixture project.
@@ -148,6 +155,31 @@ class PlanAlignCorpusTest(unittest.TestCase):
         blob = json.dumps(planted).lower()
         self.assertTrue(any(t in blob for t in LEAK_TOKENS))
 
+    def test_tree_scan_control_actually_runs_the_scan(self):
+        # The real control for _scan_for_leaks: plant a file in a temp tree and
+        # require the SCAN — not a literal — to find it, using the SAME vocab the
+        # live assertion uses. Both halves matter: it must fire on a plant, and
+        # it must stay silent on a clean tree, or "no hits" is indistinguishable
+        # from "walked nothing".
+        with tempfile.TemporaryDirectory() as td:
+            tree = pathlib.Path(td)
+            (tree / "clean.py").write_text("def login():\n    return None\n")
+            self.assertEqual(self._scan_for_leaks(tree), [],
+                             "clean tree must produce no hits")
+            (tree / "leak.md").write_text("this is the misaligned column's fixture")
+            hits = self._scan_for_leaks(tree)
+            self.assertTrue(hits, "the scan must fire on a planted leak")
+            self.assertTrue(any(w in ("misaligned", "column", "fixture") for _, w in hits), hits)
+
+    def test_tree_scan_walks_more_than_python_files(self):
+        # The original scan walked *.py and therefore could not see the file the
+        # leak was actually in. Pin the walk, not just its result.
+        with tempfile.TemporaryDirectory() as td:
+            tree = pathlib.Path(td)
+            (tree / "notes.md").write_text("part of the corpus")
+            self.assertTrue(self._scan_for_leaks(tree),
+                            "a non-.py file must be reachable by the scan")
+
     def test_column_and_shape_keys_live_outside_the_task_objects(self):
         # The neutralization argument in the README depends on this: `column`
         # and `shape` are top-level keys, never task fields, because only the
@@ -160,8 +192,26 @@ class PlanAlignCorpusTest(unittest.TestCase):
                 self.assertNotIn("column", task, f"{label}/{task['id']}")
                 self.assertNotIn("shape", task, f"{label}/{task['id']}")
 
+    @staticmethod
+    def _scan_for_leaks(root, vocab=None):
+        """Return [(relpath, word)] for every corpus word found under `root`.
+
+        Extracted so the control below can RUN it. The previous control asserted
+        a hardcoded tuple against a string literal it defined two lines earlier —
+        it never invoked the scan and never referenced `vocab`, so emptying the
+        vocabulary or pointing the walk at nothing left it green. A control that
+        cannot fail is the defect this whole release has been about, and this one
+        was written while fixing three others.
+        """
+        vocab = LEAK_VOCAB if vocab is None else vocab
+        hits = []
+        for f in sorted(p for p in pathlib.Path(root).rglob("*") if p.is_file()):
+            text = f.read_text(encoding="utf-8").lower()
+            hits += [(str(f), w) for w in vocab if w in text]
+        return hits
+
     def test_seat_visible_tree_names_neither_the_corpus_nor_the_answer(self):
-        """project/app/** is the only part of the tree a seat reads.
+        """Nothing under project/ names the corpus or the answer.
 
         The 2026-08-18 run nearly shipped the answer to the seats. Three
         docstrings said "fixture", and project/README.md stated the
@@ -171,25 +221,13 @@ class PlanAlignCorpusTest(unittest.TestCase):
         corpus is the claim that nothing a seat can see identifies the column;
         the pins checked the task JSON and never the codebase beside it.
 
-        README.md is exempt because it is maintainer documentation and is
-        excluded from the tree handed to a dispatch — that exclusion is part of
-        the method in MEASUREMENT.md, not an afterthought.
+        No file is exempt. An earlier version scanned only `*.py` and excused
+        project/README.md on the promise that a dispatch excludes it; nothing
+        pinned the promise, so the guard rested on it.
         """
-        vocab = ("fixture", "corpus", "column", "aligned", "misaligned",
-                 "north star", "plan-align", "lens")
-        # EVERY file under project/, not just *.py. The first version of this
-        # scan walked `rglob("*.py")` and so could not see project/README.md,
-        # which is where the leak actually was — it stated one fixture's defect
-        # outright. The corpus README covered that by claiming the file is
-        # "excluded from the tree handed to the seats", and nothing pinned that
-        # claim, so the guard rested on a promise. Scanning everything removes
-        # the promise from the load path.
-        for f in sorted(p for p in (CORPUS / "project").rglob("*") if p.is_file()):
-            text = f.read_text(encoding="utf-8").lower()
-            for word in vocab:
-                self.assertNotIn(word, text,
-                                 f"{f.relative_to(ROOT)} names {word!r} — a seat reads "
-                                 f"this file and must not learn what it is part of")
+        hits = self._scan_for_leaks(CORPUS / "project")
+        self.assertEqual(hits, [], f"a seat reads these files and must not learn "
+                                   f"what they are part of: {hits}")
 
     def test_that_scanner_would_notice_a_planted_leak(self):
         # Control: the scan is over file TEXT, so a single word anywhere trips
