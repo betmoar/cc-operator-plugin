@@ -3,10 +3,7 @@ export const meta = {
   description:
     "Decompose an approved spec into bite-sized TDD tasks, then vet each task in parallel — feasibility at judgment tier, testability at cheap tier. Returns a plan the operator reviews against the spec before any implementation.",
   whenToUse:
-    "After a spec/design is approved (by the brainstorm workflow or written directly). " +
-    "REQUIRED args: `spec` (the approved spec) and `northStar` (one sentence naming what " +
-    "must be true when this is done, then a `Missed if: …` clause). Both refuse before any " +
-    "dispatch. The operator owns the human-review gate and the spec-coverage check.",
+    "After a spec/design is approved (by the brainstorm workflow or written directly). REQUIRED args: `spec` (the approved spec) and `northStar` (one sentence naming what must be true when this is done, then a `Missed if: …` clause). Both refuse before any dispatch. The operator owns the human-review gate and the spec-coverage check.",
   phases: [
     { title: "Decompose", detail: "spec -> task list (judgment tier)" },
     { title: "Vet", detail: "per-task lenses: feasibility (judgment), testability (cheap)" },

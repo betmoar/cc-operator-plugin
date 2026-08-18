@@ -1836,6 +1836,14 @@ SLBARE="$(newproj)"
 # The fixture is now hermetic by construction rather than by where $TMPDIR
 # happens to point.
 mkdir -p "$SLBARE/.git"
+# CLAUDE_PROJECT_DIR is unset at each invocation below. statusline.sh:84 resolves
+# `${CLAUDE_PROJECT_DIR:-$PWD}`, so when the harness exports it — Claude Code
+# does — it OVERRIDES the cwd these cases carefully set, and they measure the
+# ambient project instead of the fixture. Measured both ways: bare cwd with the
+# var pointing at a scaffolded project renders op[1] (turning the three silence
+# cases red), and a scaffolded cwd with the var pointing at a bare dir renders
+# nothing (turning the positive control red). The `.git` bound above fixes the
+# upward walk; this fixes the entry point.
 # The setup must be verified BEFORE it is relied on. These three cases assert on
 # an EMPTY substitution, and `cd "$SLBARE" && …` inside `$( )` yields exactly
 # that when the cd fails — so a missing or unwritable dir reported ok, for a run
@@ -1846,14 +1854,14 @@ check "control: the statusline fixture dirs exist before the silence cases run" 
 check "control: the silence fixture bounds the upward .operator walk (hermetic under any TMPDIR)" \
   "$([ -d "$SLBARE/.git" ] && echo 0 || echo 1)"
 check "garbage payload renders nothing" \
-  "$([ -z "$(cd "$SLBARE" && printf 'NOT JSON{{' | "$BASH_ABS" "$SL" 2>&1)" ] && echo 0 || echo 1)"
+  "$([ -z "$(cd "$SLBARE" && printf 'NOT JSON{{' | env -u CLAUDE_PROJECT_DIR "$BASH_ABS" "$SL" 2>&1)" ] && echo 0 || echo 1)"
 check "empty payload renders nothing" \
-  "$([ -z "$(cd "$SLBARE" && printf '' | "$BASH_ABS" "$SL" 2>&1)" ] && echo 0 || echo 1)"
+  "$([ -z "$(cd "$SLBARE" && printf '' | env -u CLAUDE_PROJECT_DIR "$BASH_ABS" "$SL" 2>&1)" ] && echo 0 || echo 1)"
 # No jq AND no python3: PATH_NONE is an empty dir, so even `cat` is gone. This
 # is why the segment slurps stdin with the `read` builtin — an external command
 # here printed a bash error INTO the statusline (caught in review, pre-release).
 check "no parser and no external commands: silent, no stray output" \
-  "$([ -z "$(cd "$SLBARE" && sljson SESS-A "$P" | PATH="$SLNONE" "$BASH_ABS" "$SL" 2>&1)" ] && echo 0 || echo 1)"
+  "$([ -z "$(cd "$SLBARE" && sljson SESS-A "$P" | env -u CLAUDE_PROJECT_DIR PATH="$SLNONE" "$BASH_ABS" "$SL" 2>&1)" ] && echo 0 || echo 1)"
 # The positive control for all three: silence above must come from an empty
 # ledger, NOT from the renderer giving up on an unparseable payload. Same
 # garbage stdin, cwd switched to a project that HAS a pending sentinel — the
@@ -1872,7 +1880,7 @@ printf 'session_id: SESS-A\n' > "$SLFB/.operator/pending/fallback-probe"
 check "control: the fallback fixture has a sentinel to render" \
   "$([ -f "$SLFB/.operator/pending/fallback-probe" ] && echo 0 || echo 1)"
 check "unparseable payload falls back to \$PWD, not to silence (statusline.sh:84)" \
-  "$(cd "$SLFB" && printf 'NOT JSON{{' | "$BASH_ABS" "$SL" 2>/dev/null \
+  "$(cd "$SLFB" && printf 'NOT JSON{{' | env -u CLAUDE_PROJECT_DIR "$BASH_ABS" "$SL" 2>/dev/null \
      | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g' \
      | grep -q 'op\[1\]' && echo 0 || echo 1)"
 # Removed like every other project dir in this suite. SLFB in particular carries

@@ -1738,6 +1738,21 @@ def check_workflows(root, problems):
         # meta is rejected at launch. Check the anchor, not the object body (the
         # runtime validates phases/whenToUse).
         #
+        # …and the literal must not be COMPUTED. `whenToUse: "a" + "b"` is a
+        # concatenation expression, not a literal, and the harness rejects a
+        # computed meta AT LAUNCH — the workflow simply does not run, which no
+        # suite here would notice because none of them launches one. plan.js
+        # briefly shipped this while documenting its new required args, and it
+        # was the only workflow of five to do so; a review flagged it as
+        # unverifiable from inside the repo, which is exactly why it needs a pin
+        # rather than a convention.
+        meta_block = re.search(r"export const meta\s*=\s*\{.*?\n\};", text, re.S)
+        if meta_block and re.search(r'"\s*\+|\+\s*"', meta_block.group(0)):
+            problems.append(
+                f"workflows/{f.name}: `meta` contains a concatenation — the harness "
+                f"requires a PURE LITERAL and rejects a computed meta at launch, so "
+                f"the workflow would fail to run with every gate here green")
+
         # No `node --check` here: it is too lenient to gate on (measured
         # 2026-07-30 — returns exit 0 on redeclared consts, unclosed parens,
         # and dangling expressions; only structural nonsense like a stray `}`
