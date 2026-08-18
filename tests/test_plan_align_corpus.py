@@ -138,14 +138,36 @@ class PlanAlignCorpusTest(unittest.TestCase):
         self.assertNotEqual(json.dumps(mutated, sort_keys=True),
                             json.dumps(ctl["reset-request"], sort_keys=True))
 
+    @staticmethod
+    def _task_leaks(task):
+        """Tokens leaked by ONE task object, via the exact serialization a
+        dispatch performs. Extracted so the control below runs this, not a
+        paraphrase of it."""
+        blob = json.dumps(task).lower()
+        return [t for t in LEAK_TOKENS if t in blob]
+
     def test_no_task_object_leaks_its_column(self):
         for label, col in columns():
             for task in col["tasks"]:
-                blob = json.dumps(task).lower()
-                for token in LEAK_TOKENS:
-                    self.assertNotIn(token, blob,
-                                     f"{label}/{task['id']}: leaks {token!r} to a seat — the "
-                                     f"task object is what gets serialized into the prompt")
+                leaks = self._task_leaks(task)
+                self.assertEqual(leaks, [],
+                                 f"{label}/{task['id']}: leaks {leaks} to a seat — the "
+                                 f"task object is what gets serialized into the prompt")
+
+    def test_task_leak_scan_fires_on_a_planted_task(self):
+        # Control that RUNS the scan. The version this replaces asserted a
+        # hardcoded tuple against a literal it defined two lines earlier, so
+        # emptying LEAK_TOKENS or mis-serializing the task left it green.
+        self.assertEqual(self._task_leaks({"id": "x", "title": "a clean task"}), [],
+                         "a clean task must produce no leaks")
+        planted = {"id": "x", "title": "reconcile the MISALIGNED set", "files": ["a"]}
+        self.assertTrue(self._task_leaks(planted),
+                        "the scan must fire on a task naming its column")
+
+    def test_task_leak_scan_reaches_nested_fields(self):
+        # It serializes the whole object, so a leak in a nested list — where a
+        # field-by-field scan would miss it — must still trip.
+        self.assertTrue(self._task_leaks({"id": "x", "files": ["docs/misaligned.md"]}))
 
     def test_leak_scanner_would_notice_a_planted_token(self):
         # Control: the scanner reads json.dumps(task), so a token in ANY field
@@ -228,12 +250,6 @@ class PlanAlignCorpusTest(unittest.TestCase):
         hits = self._scan_for_leaks(CORPUS / "project")
         self.assertEqual(hits, [], f"a seat reads these files and must not learn "
                                    f"what they are part of: {hits}")
-
-    def test_that_scanner_would_notice_a_planted_leak(self):
-        # Control: the scan is over file TEXT, so a single word anywhere trips
-        # it. Without this, a scan pointed at the wrong files reports clean.
-        planted = "# this module is part of the misaligned column".lower()
-        self.assertTrue(any(w in planted for w in ("misaligned", "column")))
 
     def test_corpus_is_inert(self):
         for p in sorted(CORPUS.rglob("*")):

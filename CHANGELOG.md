@@ -67,8 +67,13 @@ graph work now computes the answer that issue needs.
   Five mutations checked against the corpus and all caught: a `testCycle`
   losing its expected output, a `consumes` naming an unknown dependency, a shared
   prefix diverging, a task leaking its column name to a seat, an empty
-  `produces`. Three of the five are pinned by in-file controls; the other two
-  were verified by mutation at the time and are not re-checked by the suite.
+  `produces`. Two of the five carry in-file controls that run the real check
+  (the byte-identical prefix, and the column-leak scan); the other three were
+  verified by mutation at the time and the suite does not re-check them. Stated
+  that precisely because an earlier draft of this line said three, and because
+  two of the "controls" in that file turned out to assert hardcoded literals
+  against themselves — they never invoked the scan they claimed to control, so
+  emptying its vocabulary left them green. Both now run the code path.
 
   `MEASUREMENT.md` carries the method, the scoring rule, and the predictions,
   **fixed before the run** — whether a finding counts as a detection is the
