@@ -166,9 +166,17 @@ graph work now computes the answer that issue needs.
 
   The corpus numbers are unchanged by the fix, and that is the explanation for
   how it survived — every `produces` in `tests/fixtures/plan-align/` is
-  `snake_case` or `camelCase`, so the corpus never exercised prose at all. The
-  re-run did surface one new true signal: `adjacent-deliverable` reports
-  `outOfOrder 1`.
+  `snake_case` or `camelCase`, so the corpus never exercised prose at all.
+
+  This entry originally added that the re-run "surfaced one new true signal:
+  `adjacent-deliverable` reports `outOfOrder 1`". It was not a true signal, and
+  it no longer fires: that flag came from `outOfOrder` not consulting
+  `dependsOn`, so a later task reusing a produced name was reported while the
+  real dependency had already resolved. The guard added a round later removed it,
+  correctly, and all four columns now report `outOfOrder []`. Confirmed by two
+  independent derivations and a bisect. Recorded rather than deleted because a
+  changelog quietly dropping a number it once published is the same failure as
+  publishing the wrong one.
 
 - **`check_northstar`'s docstring claimed to close a hole it shares.** It argued
   that counting `${northStar}` interpolations beats scanning the vet literals

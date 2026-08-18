@@ -227,13 +227,14 @@ spec-coverage check asking which requirements no task claims. That is arithmetic
 over `specExcerpt`, not judgment, and it belongs with [#66]'s edge work rather
 than in a sixth seat.
 
-## What this measurement still does not settle
+## What this measurement still does not settle (revisited after the run)
 
-The four bounds recorded before the run all stand. Two are now sharper:
+The four bounds recorded before the run — the section at the end of this file,
+written before any seat was dispatched — all stand. Two are now sharper:
 
 1. **Three fixtures is not a rate**, and one of the three detections came from a
    single seat.
-2. **The corpus is one small plan against a five-file project.** Every seat read
+2. **The corpus is one small plan against four code modules.** Every seat read
    the entire codebase in three tool calls. Detection here is not attention on a
    real decomposition.
 3. **`adjacent-deliverable` still cannot separate goal-reading from
@@ -267,14 +268,14 @@ And one new bound: the testability arm ran on a substituted model, so the single
 `unverifiable-goal` detection is a finding about a cheap seat in general, not
 about the seat this project actually dispatches.
 
-## What this measurement will not settle
+## What this measurement will not settle (recorded BEFORE the run)
 
 Recorded now, for the same reason [#70]'s corpus recorded its bound before its
 conclusion was written:
 
 1. **Three fixtures is not a rate.** Three shapes chosen by the author of the fix
    is an existence test, not coverage of the misalignment class.
-2. **The corpus is one small plan against a four-module project.** A real
+2. **The corpus is one small plan against four code modules.** A real
    decomposition runs to dozens of tasks against a codebase no lens can hold.
    Detection here is not attention there — the same bound #70 hit.
 3. **`adjacent-deliverable` cannot separate reading the goal from topic-matching.**
