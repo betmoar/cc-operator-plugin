@@ -1,6 +1,5 @@
-"""In-memory persistence. One dict, no migrations — a plan targeting this repo
-has somewhere concrete to add a table without the fixture shipping a database.
-"""
+"""In-memory persistence: one dict per index, no migrations. A new table is a
+new dict."""
 from .models import User
 
 _USERS: dict[int, User] = {}

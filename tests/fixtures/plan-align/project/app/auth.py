@@ -1,8 +1,7 @@
 """Password hashing, verification, and sign-in.
 
-`login` is the only way a session comes into existence, and it reads
-`User.password_hash` and nothing else. Any plan claiming a user can "sign in
-with the new password" has to end up writing that field.
+`login` is the only place a session is created, and the only credential field it
+consults is `User.password_hash`.
 """
 import hashlib
 import secrets

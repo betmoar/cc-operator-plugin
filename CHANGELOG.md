@@ -59,6 +59,56 @@ unrelated to what they name.
   whether a finding counts as a detection is the judgment a measurement's author
   is worst placed to make afterwards.
 
+### Changed
+
+- **#58 Stage A ran: 42 seats, and the answer is narrower than either option the
+  issue proposed.** The measurement is in
+  `tests/fixtures/plan-align/MEASUREMENT.md` with predictions left exactly as
+  they were fixed beforehand. Two held, one did not.
+
+  **Putting the goal in the packet does not let per-task lenses discriminate.**
+  The control column — a plan that reaches the goal — drew goal-reachability
+  concerns from **6 of 6** feasibility seats, including *"a locked-out account
+  completes every shipped step and still cannot sign in — the north-star miss
+  condition verbatim"* against a task whose sibling two entries later clears
+  exactly that lockout. The seat cannot see the sibling. Goal-talk at 100% on the
+  good plan is noise, not detection.
+
+  What did discriminate was narrower: naming the *clause* a plan violates
+  (`adjacent-deliverable`, 4/5 vs control 0/6), and naming a criterion as a
+  *proxy* for the goal (`unverifiable-goal`, caught by the cheap testability seat
+  predicted to be blind to it, against a clean control counterpart). Both are
+  visible inside a single task. `missing-final-step` — the one shape that truly
+  needs a view of the set — was missed exactly as predicted, and no per-task lens
+  can catch it.
+
+  So: **ship the field, do not ship a per-task alignment lens.** For the absence
+  shape the cheapest instrument is not a lens at all but a spec-coverage check
+  asking which requirements no task claims — arithmetic over `specExcerpt`,
+  belonging with #66's edge work.
+
+- **The run found a defect in `plan.js` that #58 did not ask about.** 17 of 21
+  feasibility seats returned `needs-info` citing `dependency-missing`, in every
+  column including the control. The shipped prompt asks *"Is the dependency it
+  consumes actually produced by an earlier task?"* while handing the seat exactly
+  one task and never its siblings — it cannot answer, and `plan.js` buckets
+  `needs-info` into `needsInfo`. On a well-formed plan roughly four fifths of
+  tasks would land in the bucket the operator is told to clear before dispatch.
+  Filed separately; it is larger in blast radius than the north star.
+
+- **The corpus shipped two leaks and a defect, all found by running it.** Three
+  of the fixture project's docstrings said "fixture", and `project/README.md`
+  stated the discriminating property outright — *"A plan that never writes that
+  field cannot produce a user who signs in"* — which is `missing-final-step`'s
+  answer, written down in the tree a lens reads. The pins checked the task JSON
+  and never the codebase beside it. Now pinned, with the README exempt and
+  excluded from any dispatch. Separately a seat caught
+  `admin-temp-password` asserting a 12-character result from
+  `secrets.token_urlsafe`, which returns 16 for that argument — a true positive
+  against the fixture, the same shape #70's control column produced. Fixed after
+  the run; `MEASUREMENT.md` records the pre-fix corpus hash, because comparing
+  later numbers to that table without it is the error #69 exists to prevent.
+
 ### Fixed
 
 - **A control assertion that could not pass, and a CI runner that could not see

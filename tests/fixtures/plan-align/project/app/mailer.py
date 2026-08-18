@@ -1,5 +1,5 @@
-"""Outbound mail. Records instead of sending, so a plan's test cycle can assert
-on `sent` without a network."""
+"""Outbound mail. Records into `sent` instead of sending, so tests assert
+without a network."""
 sent: list[dict[str, str]] = []
 
 

@@ -6,7 +6,9 @@
     {
       "id": "admin-user-lookup",
       "title": "Support console can find an account by email",
-      "files": ["app/admin.py"],
+      "files": [
+        "app/admin.py"
+      ],
       "produces": "find_account(email: str) -> User | None",
       "consumes": "",
       "specExcerpt": "R2 — Requesting a reset. The user is looked up by email address. An address with no account must not reveal whether an account exists.",
@@ -21,7 +23,10 @@
     {
       "id": "admin-temp-password",
       "title": "Support agent issues a temporary password",
-      "files": ["app/admin.py", "app/models.py"],
+      "files": [
+        "app/admin.py",
+        "app/models.py"
+      ],
       "produces": "issue_temp_password(user_id: int) -> str — writes User.password_hash with a random 12-character temporary and sets must_change_password",
       "consumes": "find_account from app/admin.py; hash_password and save_user",
       "specExcerpt": "R5 — Setting the new password. The account's stored credential becomes the new password and the user can immediately sign in with it. `app/auth.py:login` reads `User.password_hash`; that is the field a successful reset has to leave behind.",
@@ -30,14 +35,16 @@
         "write tests/test_admin_temp.py whose central assertion is that login with the temporary succeeds",
         "run it → AttributeError: issue_temp_password",
         "add must_change_password to models.User with a False default",
-        "implement issue_temp_password: secrets.token_urlsafe, hash_password, save_user",
+        "implement issue_temp_password: 12 chars via ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(12)), then hash_password, save_user",
         "run it → OK (3 tests), commit"
       ]
     },
     {
       "id": "admin-audit-entry",
       "title": "Every agent-initiated reset is audited",
-      "files": ["app/admin.py"],
+      "files": [
+        "app/admin.py"
+      ],
       "produces": "audit_reset(agent_id: int, user_id: int) -> None; RESET_LOG list",
       "consumes": "issue_temp_password from app/admin.py",
       "specExcerpt": "R1 — Token issuance. A reset is single-use and attributable: each issuance is recorded against the account it was issued for.",
@@ -52,7 +59,10 @@
     {
       "id": "forced-password-change",
       "title": "A must-change account changes its own password after signing in",
-      "files": ["app/admin.py", "app/auth.py"],
+      "files": [
+        "app/admin.py",
+        "app/auth.py"
+      ],
       "produces": "change_password(user_id: int, current: str, new: str) -> bool — clears must_change_password on success",
       "consumes": "must_change_password from app/models.py; verify_password and hash_password from app/auth.py",
       "specExcerpt": "R5 — Setting the new password. Given the account and a new password, the stored credential becomes that password and the user can immediately sign in with it.",
@@ -67,7 +77,9 @@
     {
       "id": "admin-lockout-clear",
       "title": "Issuing a temporary clears a failed-attempt lockout",
-      "files": ["app/admin.py"],
+      "files": [
+        "app/admin.py"
+      ],
       "produces": "issue_temp_password additionally clears User.locked_reason when it equals 'failed-attempts'",
       "consumes": "issue_temp_password from app/admin.py; User.locked_reason from app/models.py",
       "specExcerpt": "R6 — Lockout interaction. A reset clears `User.locked_reason` when it was set by failed sign-in attempts, so a user is not locked out of the account they just recovered.",

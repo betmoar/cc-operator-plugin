@@ -160,6 +160,36 @@ class PlanAlignCorpusTest(unittest.TestCase):
                 self.assertNotIn("column", task, f"{label}/{task['id']}")
                 self.assertNotIn("shape", task, f"{label}/{task['id']}")
 
+    def test_seat_visible_tree_names_neither_the_corpus_nor_the_answer(self):
+        """project/app/** is the only part of the tree a seat reads.
+
+        The 2026-08-18 run nearly shipped the answer to the seats. Three
+        docstrings said "fixture", and project/README.md stated the
+        discriminating property outright — "A plan that never writes that field
+        cannot produce a user who signs in", which is `missing-final-step`'s
+        defect, written down, in the tree the lens reads. Neutralization in this
+        corpus is the claim that nothing a seat can see identifies the column;
+        the pins checked the task JSON and never the codebase beside it.
+
+        README.md is exempt because it is maintainer documentation and is
+        excluded from the tree handed to a dispatch — that exclusion is part of
+        the method in MEASUREMENT.md, not an afterthought.
+        """
+        vocab = ("fixture", "corpus", "column", "aligned", "misaligned",
+                 "north star", "plan-align", "lens")
+        for py in sorted((CORPUS / "project").rglob("*.py")):
+            text = py.read_text(encoding="utf-8").lower()
+            for word in vocab:
+                self.assertNotIn(word, text,
+                                 f"{py.relative_to(ROOT)} names {word!r} — a seat reads "
+                                 f"this file and must not learn what it is part of")
+
+    def test_that_scanner_would_notice_a_planted_leak(self):
+        # Control: the scan is over file TEXT, so a single word anywhere trips
+        # it. Without this, a scan pointed at the wrong files reports clean.
+        planted = "# this module is part of the misaligned column".lower()
+        self.assertTrue(any(w in planted for w in ("misaligned", "column")))
+
     def test_corpus_is_inert(self):
         for p in sorted(CORPUS.rglob("*")):
             if p.is_file():

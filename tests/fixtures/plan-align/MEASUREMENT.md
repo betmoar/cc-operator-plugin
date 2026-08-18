@@ -6,10 +6,10 @@ individually sound and collectively misses the goal? If they do, the field alone
 closes #58 and no alignment pass is built — the outcome [#24] and [#70] both
 reached, and a success rather than a failure.
 
-**Status: instrument built, not yet run.** Nothing below the method section is
-filled in. That is deliberate: this file exists in the same commit as the corpus
-so the decision has one home, and a results table invented ahead of the dispatch
-is the failure mode this whole corpus exists to prevent.
+**Status: run 2026-08-18. 42 seats, 21 tasks x 2 lenses, both columns.**
+Predictions below were fixed before the dispatch and are left exactly as written;
+two held, one did not, and the run surfaced a defect in the corpus itself and a
+larger defect in `plan.js` that is not what #58 asked about.
 
 ## Method
 
@@ -70,11 +70,180 @@ field closes the shapes a single task can reveal, and an alignment pass earns it
 cost only for the absence shape. That is a narrower and more useful answer than
 either "build it" or "don't".
 
+## Run identity
+
+| | |
+| --- | --- |
+| date | 2026-08-18 |
+| corpus content hash, as measured | `e5fef3fa0dae7f41` (17 files, tree at `fb30b2a`) |
+| codebase tree handed to the seats | `a1dfdeb1abd6eda6` (5 files) |
+| seats | 42 = 21 tasks x 2 lenses |
+| feasibility model | `claude-opus-5` (JUDGMENT, as bound) |
+| testability model | `claude-haiku-4-5` (**substitution** — see deviations) |
+
+The corpus hash is recorded because a fix landed *after* this run: the corpus at
+`e5fef3fa0dae7f41` is the one these numbers describe. Re-running against a later
+tree and comparing to this table is exactly the error [#69] exists to prevent.
+
+### Deviations from the shipped workflow
+
+Four, none silent:
+
+1. **The cheap lens ran on `claude-haiku-4-5`, not `glm-5-turbo`.** The Agent
+   tool's `model` parameter is enum-locked to Anthropic aliases — the seam [#55]
+   describes — so the bound MECHANICAL id is not reachable without the dispatch
+   workflow. The testability arm is therefore a different model at the same
+   tier. The feasibility arm, which carries the decisive result, is exact.
+2. **Each feasibility seat was told the codebase root explicitly.** The shipped
+   workflow inherits the operator's cwd; a hand dispatch has no cwd to inherit.
+   The added line names the tree and forbids reading outside it, which also
+   keeps the corpus directories out of reach.
+3. **The project was copied to a neutral path.** The absolute path
+   `tests/fixtures/plan-align/project` names the corpus in every prompt, and
+   three of the tree's own docstrings said "fixture" while `project/README.md`
+   stated the discriminating property outright — *"A plan that never writes that
+   field cannot produce a user who signs in"*. That is the answer to
+   `missing-final-step`, in the tree, addressed to the reader. The README is
+   excluded from the seats' tree and the docstrings were rewritten as ordinary
+   code documentation. Both are leaks the corpus shipped with and neither was
+   caught by the pins.
+4. **Prompt files were renamed to opaque ids** (`p01`…`p42`) after the first
+   generation put the column name in every filename.
+
 ## Results
 
-Not yet run. To be filled in with, per fixture per column: each lens's
-`feasible`/`testable` verdict, every issue raised verbatim, and its score under
-the rule above.
+### Feasibility (judgment tier, 21 seats)
+
+| column | n | `feasible` verdicts | raised goal-talk | **named the violated clause** |
+| --- | --- | --- | --- | --- |
+| `aligned` (CONTROL) | 6 | 1 yes, 5 needs-info | **6/6** | **0/6** |
+| `missing-final-step` | 4 | 1 yes, 3 needs-info | 3/4 | **0/4** |
+| `adjacent-deliverable` | 5 | 1 yes, 3 no, 1 needs-info | 5/5 | **4/5** |
+| `unverifiable-goal` | 6 | 1 yes, 5 needs-info | 6/6 | **0/6** |
+
+### Testability (cheap tier, 21 seats)
+
+`testable: "yes"` on **21/21**, every task, every column — the predicted and
+correct answer, since every `testCycle` in the corpus does name a command and an
+expected output. One seat raised a goal-level issue anyway, and it is the
+decisive one below.
+
+### Scored under the rule fixed before the run
+
+| fixture | prediction | result | scored |
+| --- | --- | --- | --- |
+| `missing-final-step` | MISS | goal-talk on 3/4, but the control produced the same talk on 6/6 | **MISS**, as predicted |
+| `adjacent-deliverable` | CATCH plausible | 4/5 seats name *without contacting support* and say this task's deliverable violates it; control 0/6 | **DETECTED** |
+| `unverifiable-goal` | CATCH plausible, feasibility only | feasibility missed it; the **cheap testability seat** caught it on `reset-confirm` | **DETECTED, by the wrong lens** |
+
+The `unverifiable-goal` detection is worth quoting, because it is the only
+finding in 42 seats that does exactly what the scoring rule asks and comes from
+the seat predicted to be blind:
+
+> testCycle verifies password_hash is stored correctly but does not verify login
+> integration. […] The North Star requires a user to 'sign in with it' — add a
+> test: auth.login(user, new_password) returns True after confirm_reset completes.
+
+Its control counterpart — the same task with the goal-level assertion restored —
+returned `{"feasible":"yes","testable":"yes","issues":[]}`. Clean discrimination,
+one seat each way. The prediction that testability *should* answer `yes` and be
+right to was correct; the prediction that it could not see the gap was wrong. It
+answered `yes` to the question it was asked and raised the goal gap as a `risk`
+alongside it.
+
+### The control column is the result
+
+**6/6 feasibility seats raised goal-reachability concerns against the plan that
+reaches the goal.** Verbatim, from the control:
+
+> a locked-out account completes every shipped step and still cannot sign in —
+> the north-star miss condition verbatim
+
+That is `aligned`'s `reset-confirm` — a task whose sibling, two entries later in
+the same set, clears exactly that lockout. The seat cannot see the sibling, so it
+reports the miss. Under the pre-registered rule every one of these is a false
+positive, and they are what makes goal-talk useless as a signal: it appears at
+100% on the good plan.
+
+What survived that filter was narrow and specific: naming the *clause* the plan
+violates (`adjacent-deliverable`, 4/5 vs control 0/6), and naming a criterion as
+a *proxy* for the goal (`unverifiable-goal`, 1 seat vs a clean control). Both
+discriminate. Neither is "the lens noticed the goal."
+
+## What the run found that #58 did not ask about
+
+**17 of 21 feasibility seats returned `needs-info`, in every column, citing
+`dependency-missing`.** The cause is in the shipped prompt:
+
+> Is the dependency it consumes actually produced by an earlier task?
+
+The seat is handed exactly one task and never its siblings, so it cannot answer.
+It correctly reports that it cannot confirm the producer — and `plan.js` buckets
+`needs-info` into `needsInfo`. On a real run of a **well-formed** plan, roughly
+four fifths of tasks would land in that bucket, which the operator is told to
+resolve before dispatch. A signal that fires on 5/6 tasks of a good plan is not a
+signal.
+
+This is independent of the north star, larger in blast radius, and measured here
+by accident. It wants its own issue.
+
+## The corpus defect this run found
+
+`adjacent-deliverable/admin-temp-password` claimed a test asserting
+`issue_temp_password` returns a 12-character string while its steps prescribed
+`secrets.token_urlsafe`. A seat caught it:
+
+> token_urlsafe(n) returns ~ceil(4n/3) base64url chars (token_urlsafe(12) -> 16
+> chars) […] The test as written fails against the prescribed implementation.
+
+True positive against the fixture, and the same shape [#70] hit — a corpus's
+"correct" column carrying an error of its own, found by a lens and confirmed. It
+contributed to that task's `feasible: "no"`, which the pre-registered rule flags
+as a corpus defect rather than a detection, so the rule worked. Fixed after this
+run; the hash above is the pre-fix tree.
+
+## Conclusion
+
+**The field alone does not close #58, and the alignment pass is not obviously
+worth building either.** Both halves are measured:
+
+- Putting the goal in the packet does *not* let per-task lenses distinguish a
+  plan that reaches it from one that does not. It makes them discuss the goal
+  constantly — 6/6 on the control — which is noise, not detection.
+- Two shapes were nonetheless caught, and both were caught **inside a single
+  task**: a task whose own description contradicts a goal clause
+  (`adjacent-deliverable`), and a task whose own criterion is a proxy for the
+  goal (`unverifiable-goal`). Neither needed a view of the set.
+- The one shape that genuinely requires a view of the set —
+  `missing-final-step`, where the columns differ by an absence — was missed
+  exactly as predicted, and no per-task lens can ever catch it.
+
+So the honest recommendation is narrower than either option in #58: **ship the
+field, and do not ship a per-task alignment lens** — per-task is where the goal
+already fails to discriminate. If anything is built for the absence shape, it has
+to see the whole set, and the cheapest thing that does is not a lens at all: a
+spec-coverage check asking which requirements no task claims. That is arithmetic
+over `specExcerpt`, not judgment, and it belongs with [#66]'s edge work rather
+than in a sixth seat.
+
+## What this measurement still does not settle
+
+The four bounds recorded before the run all stand. Two are now sharper:
+
+1. **Three fixtures is not a rate**, and one of the three detections came from a
+   single seat.
+2. **The corpus is one small plan against a five-file project.** Every seat read
+   the entire codebase in three tool calls. Detection here is not attention on a
+   real decomposition.
+3. **`adjacent-deliverable` still cannot separate goal-reading from
+   topic-matching** — the control has no admin tasks, so a lens keying on
+   "admin" near "password" scores 4/5 without holding a goal. The clause-naming
+   requirement makes this less likely, not impossible.
+4. **Nothing here measures a vague north star**, #58's second claim.
+
+And one new bound: the testability arm ran on a substituted model, so the single
+`unverifiable-goal` detection is a finding about a cheap seat in general, not
+about the seat this project actually dispatches.
 
 ## What this measurement will not settle
 
@@ -97,5 +266,8 @@ conclusion was written:
    separate question from this one.
 
 [#24]: https://github.com/betmoar/cc-operator-plugin/issues/24
+[#55]: https://github.com/betmoar/cc-operator-plugin/issues/55
+[#66]: https://github.com/betmoar/cc-operator-plugin/issues/66
+[#69]: https://github.com/betmoar/cc-operator-plugin/issues/69
 [#58]: https://github.com/betmoar/cc-operator-plugin/issues/58
 [#70]: https://github.com/betmoar/cc-operator-plugin/issues/70

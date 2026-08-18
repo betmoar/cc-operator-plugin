@@ -54,6 +54,15 @@ lens never does. Two rules keep that true, and the suite pins both:
    object, which is not what gets serialized into a prompt.
 2. `project/` is byte-identical for both columns — it is one directory, shared —
    so nothing a lens reads from disk indicates which column it was handed.
+3. **`project/app/**` names neither the corpus nor the answer.** The first run
+   nearly shipped the answer: three docstrings said "fixture", and
+   `project/README.md` stated the discriminating property outright — *"A plan
+   that never writes that field cannot produce a user who signs in"*, which is
+   `missing-final-step`'s defect written down in the tree the lens reads. The
+   pins checked the task JSON and never the codebase beside it. Now pinned, with
+   `project/README.md` exempt **and excluded from the tree a dispatch hands the
+   seats** — it is documentation for a maintainer, not part of the project under
+   review.
 
 Dispatch with cwd = `project/`, so task paths (`app/reset.py`) resolve without
 naming the corpus.
@@ -73,7 +82,7 @@ fixtures make this checkable rather than asserted: their first four tasks are
 **byte-identical to the control's**, generated from `aligned.json`, so any
 per-task verdict is identical across columns by construction.
 
-`tests/test-scripts.sh` pins the property mechanically — every task in every
+`tests/test_plan_align_corpus.py` pins the property mechanically — every task in every
 column has non-empty `files`, `produces`, `specExcerpt`, and a `testCycle`
 naming both a command and an expected output; every `consumes` is satisfied
 within its own set; the shared tasks are byte-identical; no task leaks a column
