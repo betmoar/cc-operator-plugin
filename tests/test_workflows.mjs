@@ -424,6 +424,33 @@ ok(typeof cg.dispatchBound === "string" && cg.dispatchBound.includes("CHART-r6")
 ok(!planCalls.some((c) => c.label.startsWith("graph")),
   "plan graph: no agent call — it is arithmetic over data the workflow already holds");
 
+// E: degenerate shapes. The graph runs on whatever the decomposer returned, and
+// a decomposer is a model — duplicate ids, a task consuming its own output, and
+// a back-reference are all things it can emit. None may throw (that would take
+// down a plan over a report) and none may reach blocked/needsInfo. Cycles are
+// impossible BY CONSTRUCTION, not by a check: dependsOn scans only tasks EARLIER
+// in the list, so the relation is a DAG whatever the text says — the
+// back-reference case is what proves that rather than asserting it.
+for (const [label, degen] of Object.entries({
+  "a single task": [gtask("solo", "make_solo() -> str", "")],
+  "duplicate task ids": [gtask("dup", "make_x() -> str", ""), gtask("dup", "make_y() -> str", "make_x from dup")],
+  "a task consuming its own output": [gtask("s", "make_s() -> str", "make_s from s")],
+  "a back-reference to a later task": [gtask("p", "make_p() -> str", "make_q from q"),
+                                       gtask("q", "make_q() -> str", "make_p from p")],
+  "no produces anywhere": [gtask("n1", "", ""), gtask("n2", "", "")],
+  "punctuation-only contract text": [gtask("u", "→ ✓ ---", "→ ✓ ---")],
+})) {
+  const fx = { decompose: { fileStructure: "f", tasks: degen }, ...graphVet(degen.map((t) => t.id)) };
+  let res = null, threw = null;
+  try { ({ result: res } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, fx)); }
+  catch (e) { threw = e; }
+  ok(!threw && res?.graph, `plan graph: ${label} does not throw`);
+  ok((res?.blocked ?? []).length === 0 && (res?.needsInfo ?? []).length === 0,
+    `plan graph: ${label} reaches neither blocked nor needsInfo (report-only holds)`);
+  ok(Number.isFinite(res?.graph?.p) && Number.isFinite(res?.graph?.ceiling) && res.graph.ceiling >= 1,
+    `plan graph: ${label} yields finite p and a ceiling >= 1`);
+}
+
 // ── crawl: shard fan-out + merge ─────────────────────────────────────────────
 console.log("-- Case: crawl.js shard fan-out + merge");
 // The operator packs shards; the workflow dispatches one crawler per shard, then
