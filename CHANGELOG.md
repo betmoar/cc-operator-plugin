@@ -140,6 +140,40 @@ graph work now computes the answer that issue needs.
 
 ### Changed
 
+- **`produces`/`consumes` are arrays of exact names, not prose ([#66]).** This is
+  the fix that ends a defect class rather than patching its next instance. While
+  those fields were sentences, every rule for extracting names from them had both
+  a false-positive and a false-negative class, and four review rounds each closed
+  one and opened another: `The` matched as a contract name; dropping bare
+  capitals lost `Mailer`; a stopword list lost `HTTPClient`; a non-string coerced
+  to `"[object Object]"` and joined every task to every other. There is no
+  correct way to parse a dependency graph out of model-written English, so the
+  schema stopped asking anyone to.
+
+  The schema always said "exact names". Saying it in the **type** removes the
+  parsing step instead of improving it, which is the difference between a number
+  measured and a number estimated.
+
+  The prose path still exists, because a decomposer can ignore a schema — but it
+  is now **recorded, not silent**. `graph.contractsInferred` names every task and
+  field that arrived as prose, the log line says `ESTIMATED` when it is
+  non-empty, and a test pins that a mixed plan flags exactly the guessed half.
+  Keeping the fallback and hiding it would have preserved the property this
+  change exists to remove.
+
+  `check_northstar` pins both fields as `array` and the presence of
+  `contractsInferred`; all three mutations are caught. Reverting either type is
+  otherwise silent, since the fallback keeps working and every suite keeps
+  passing.
+
+  The `tests/fixtures/plan-align/` corpus stays prose deliberately. Stage A
+  measured the **vet lenses**, which never read these fields, so the seat
+  measurement is untouched — and `MEASUREMENT.md` records a content hash of the
+  tree its numbers describe. Rewriting the fixtures would invalidate that hash to
+  improve nothing that was measured, and the corpus now doubles as the only
+  realistic exercise of the fallback.
+
+
 - **Round 3: resolution was per-task where it had to be per-token ([#66]).** One
   root cause under three findings, including a **regression I introduced**. The
   `if (dependsOn[j].length) continue;` guard added to silence a false

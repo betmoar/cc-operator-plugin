@@ -359,7 +359,15 @@ console.log("-- Case: plan.js graph — real/unverified edges, concurrency, p + 
 const graphVet = (ids) => Object.fromEntries(
   ids.flatMap((id) => [[`feas:${id}`, { feasible: "yes", testable: "yes", issues: [] }],
                        [`test:${id}`, { feasible: "yes", testable: "yes", issues: [] }]]));
-const gtask = (id, produces, consumes) => ({
+// Arrays: the shipped contract since produces/consumes became structured. A
+// second builder keeps the PROSE fallback exercised by name rather than by
+// accident — it is still reachable when a decomposer ignores the schema, and a
+// fallback nothing tests is a fallback nobody knows is broken.
+const gtask = (id, produces = [], consumes = []) => ({
+  id, title: "t", files: ["f.py"], produces, consumes, specExcerpt: "x",
+  testCycle: "run x → pass", steps: ["s"],
+});
+const gtaskProse = (id, produces, consumes) => ({
   id, title: "t", files: ["f.py"], produces, consumes, specExcerpt: "x",
   testCycle: "run x → pass", steps: ["s"],
 });
@@ -368,10 +376,10 @@ const gtask = (id, produces, consumes) => ({
 const chainIds = ["a", "b", "c", "d"];
 const chain = {
   decompose: { fileStructure: "f: r", tasks: [
-    gtask("a", "make_alpha() -> str", ""),
-    gtask("b", "make_beta() -> str", "make_alpha from a"),
-    gtask("c", "make_gamma() -> str", "make_beta from b"),
-    gtask("d", "make_delta() -> str", "make_gamma from c"),
+    gtask("a", ["make_alpha"], []),
+    gtask("b", ["make_beta"], ["make_alpha"]),
+    gtask("c", ["make_gamma"], ["make_beta"]),
+    gtask("d", ["make_delta"], ["make_gamma"]),
   ] },
   ...graphVet(chainIds),
 };
@@ -390,8 +398,8 @@ ok(cg.consumesNoTaskProduces.length === 0,
 const wideIds = ["w", "x", "y", "z"];
 const wide = {
   decompose: { fileStructure: "f: r", tasks: [
-    gtask("w", "make_w() -> str", ""), gtask("x", "make_x() -> str", ""),
-    gtask("y", "make_y() -> str", ""), gtask("z", "make_z() -> str", ""),
+    gtask("w", ["make_w"], []), gtask("x", ["make_x"], []),
+    gtask("y", ["make_y"], []), gtask("z", ["make_z"], []),
   ] },
   ...graphVet(wideIds),
 };
@@ -415,7 +423,7 @@ ok((widePlan.blocked ?? []).length === 0 && (widePlan.needsInfo ?? []).length ==
 const proseIds = ["pw", "px", "py", "pz"];
 const prose = {
   decompose: { fileStructure: "f: r", tasks: proseIds.map((id) =>
-    gtask(id, `The ${id}() helper. Nothing else is produced.`, "The project layout only")) },
+    gtaskProse(id, `The ${id}() helper. Nothing else is produced.`, "The project layout only")) },
   ...graphVet(proseIds),
 };
 const { result: prosePlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, prose);
@@ -431,8 +439,8 @@ ok(pg.edges.every((e) => e.status === "unverified"),
 const keepIds = ["k1", "k2"];
 const keep = {
   decompose: { fileStructure: "f: r", tasks: [
-    gtask("k1", "ResetToken dataclass; create_token(user_id) -> str", ""),
-    gtask("k2", "validate_token() -> bool", "create_token and ResetToken from k1"),
+    gtask("k1", ["ResetToken", "create_token"], []),
+    gtask("k2", ["validate_token"], ["create_token", "ResetToken"]),
   ] },
   ...graphVet(keepIds),
 };
@@ -462,7 +470,7 @@ ok(keepPlan.graph.edges[0].via.includes("create_token") && keepPlan.graph.edges[
     const n = 1 + Math.floor(rnd() * 5);
     // Duplicate ids on purpose: they are what broke the layer assignment twice.
     const tasks = Array.from({ length: n }, (_, i) =>
-      gtask(rnd() < 0.2 ? "dup" : `t${i}`, `${word()} ${word()}`, rnd() < 0.3 ? "" : `${word()} ${word()}`));
+      gtaskProse(rnd() < 0.2 ? "dup" : `t${i}`, `${word()} ${word()}`, rnd() < 0.3 ? "" : `${word()} ${word()}`));
     const fx = { decompose: { fileStructure: "f", tasks }, ...graphVet(tasks.map((t) => t.id)) };
     let res;
     try { ({ result: res } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, fx)); }
@@ -497,8 +505,8 @@ ok(keepPlan.graph.edges[0].via.includes("create_token") && keepPlan.graph.edges[
 {
   const ooIds = ["late", "early"];
   const oo = { decompose: { fileStructure: "f: r", tasks: [
-      gtask("late", "make_late() -> str", "make_early from early"),
-      gtask("early", "make_early() -> str", ""),
+      gtask("late", ["make_late"], ["make_early"]),
+      gtask("early", ["make_early"], []),
     ] }, ...graphVet(ooIds) };
   const { result: ooPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, oo);
   const og = ooPlan.graph;
@@ -514,9 +522,9 @@ ok(keepPlan.graph.edges[0].via.includes("create_token") && keepPlan.graph.edges[
   // announced "p/ceiling understate the serial path" about a correct number.
   const benignIds = ["A", "B", "C"];
   const benign = { decompose: { fileStructure: "f: r", tasks: [
-      gtask("A", "make_x() -> str", ""),
-      gtask("B", "make_b() -> str", "make_x from A"),
-      gtask("C", "make_x() -> str", ""),
+      gtask("A", ["make_x"], []),
+      gtask("B", ["make_b"], ["make_x"]),
+      gtask("C", ["make_x"], []),
     ] }, ...graphVet(benignIds) };
   const { result: bPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, benign);
   ok(bPlan.graph.outOfOrder.length === 0,
@@ -529,9 +537,9 @@ ok(keepPlan.graph.edges[0].via.includes("create_token") && keepPlan.graph.edges[
 {
   const nonAdjIds = ["p0", "p1", "p2"];
   const nonAdj = { decompose: { fileStructure: "f: r", tasks: [
-      gtask("p0", "make_root() -> str", ""),
-      gtask("p1", "make_one() -> str", "make_root from p0"),
-      gtask("p2", "make_two() -> str", "make_root from p0"),
+      gtask("p0", ["make_root"], []),
+      gtask("p1", ["make_one"], ["make_root"]),
+      gtask("p2", ["make_two"], ["make_root"]),
     ] }, ...graphVet(nonAdjIds) };
   const { result: naPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, nonAdj);
   const e = naPlan.graph.edges.find((x) => x.from === "p1" && x.to === "p2");
@@ -554,6 +562,50 @@ ok(keepPlan.graph.edges[0].via.includes("create_token") && keepPlan.graph.edges[
     ok(Array.isArray(emptyPlan[k]), `plan: empty decomposition still returns ${k} as an array`);
 }
 
+// B0: STRUCTURED vs INFERRED. The reason produces/consumes became arrays: while
+// they were prose, every extraction rule had both a false-positive and a
+// false-negative class, and four review rounds each closed one and opened
+// another. Declared names need no rule. What must never come back is the silent
+// mixing of the two — a number estimated from English presented as one measured
+// from declarations.
+{
+  const decl = { decompose: { fileStructure: "f: r", tasks: [
+      gtask("d0", ["The", "Object"], []),          // names that a parser would have refused
+      gtask("d1", ["done"], ["The"]),               // …and that resolve exactly when DECLARED
+    ] }, ...graphVet(["d0", "d1"]) };
+  const { result: dPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, decl);
+  ok(dPlan.graph.contractsInferred.length === 0,
+    "plan graph: declared arrays are not inferred — contractsInferred is empty");
+  ok(dPlan.graph.edges[0].status === "real" && dPlan.graph.edges[0].via.includes("The"),
+    "plan graph: a DECLARED name matches literally, even one no heuristic would accept");
+  ok(dPlan.graph.p === 0 && dPlan.graph.ceiling === 1,
+    "plan graph: …and the resulting chain is measured, not estimated");
+}
+{
+  // A decomposer ignoring the schema still gets a graph — flagged, never silent.
+  const prose = { decompose: { fileStructure: "f: r", tasks: [
+      gtaskProse("p1", "make_thing() -> str", ""),
+      gtaskProse("p2", "make_other() -> str", "make_thing from p1"),
+    ] }, ...graphVet(["p1", "p2"]) };
+  const { result: pPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, prose);
+  ok(pPlan.graph.contractsInferred.length > 0,
+    "plan graph: a PROSE contract is recorded in contractsInferred, not silently parsed");
+  ok(pPlan.graph.contractsInferred.includes("p1.produces"),
+    "plan graph: …naming the task and field, so the operator knows which numbers are estimates");
+  ok(pPlan.graph.edges[0].status === "real",
+    "plan graph: the fallback still works — it is flagged, not disabled");
+}
+{
+  // Mixed input must flag only the prose half.
+  const mixed = { decompose: { fileStructure: "f: r", tasks: [
+      gtask("x1", ["make_x"], []),
+      gtaskProse("x2", "make_y() -> str", "make_x from x1"),
+    ] }, ...graphVet(["x1", "x2"]) };
+  const { result: mPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, mixed);
+  ok(mPlan.graph.contractsInferred.every((f) => f.startsWith("x2.")),
+    "plan graph: only the prose task is flagged — a mixed plan reports exactly which half was guessed");
+}
+
 // B7: the round-4 regressions, each pinned by the property that would have
 // caught it. The fuzz missed all of them because its ceiling check derives L
 // from the output under test — internal consistency, not correctness.
@@ -561,10 +613,10 @@ ok(keepPlan.graph.edges[0].via.includes("create_token") && keepPlan.graph.edges[
   // NEAREST producer, not earliest: a re-produced name used to layer the
   // consumer above a producer the same result stamps `real`.
   const rp = { decompose: { fileStructure: "f: r", tasks: [
-      gtask("t0", "make_alpha() -> str", ""),
-      gtask("t1", "make_beta() -> str", "make_alpha from t0"),
-      gtask("t2", "make_alpha() -> str", "make_beta from t1"),
-      gtask("t3", "make_final() -> str", "make_alpha from t2"),
+      gtask("t0", ["make_alpha"], []),
+      gtask("t1", ["make_beta"], ["make_alpha"]),
+      gtask("t2", ["make_alpha"], ["make_beta"]),
+      gtask("t3", ["make_final"], ["make_alpha"]),
     ] }, ...graphVet(["t0", "t1", "t2", "t3"]) };
   const { result: rpPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, rp);
   const g = rpPlan.graph;
@@ -592,7 +644,7 @@ ok(keepPlan.graph.edges[0].via.includes("create_token") && keepPlan.graph.edges[
 {
   // A token the task produces itself is not "produced by no task".
   const selfP = { decompose: { fileStructure: "f: r", tasks: [
-      gtask("s1", "make_s() -> str", "make_s from s1"),
+      gtask("s1", ["make_s"], ["make_s"]),
     ] }, ...graphVet(["s1"]) };
   const { result: spPlan2 } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, selfP);
   ok(spPlan2.graph.consumesNoTaskProduces.length === 0,
@@ -618,8 +670,8 @@ await throws(() => run(WF("plan.js"), { spec: "s",
 {
   const tnIds = ["ty1", "ty2"];
   const tn = { decompose: { fileStructure: "f: r", tasks: [
-      gtask("ty1", "class Mailer; POST /api/reset-password", ""),
-      gtask("ty2", "send() -> bool", "Mailer and the /api/reset-password route from ty1"),
+      gtaskProse("ty1", "class Mailer; POST /api/reset-password", ""),
+      gtaskProse("ty2", "send() -> bool", "Mailer and the /api/reset-password route from ty1"),
     ] }, ...graphVet(tnIds) };
   const { result: tnPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, tn);
   ok(tnPlan.graph.edges[0].status === "real",
@@ -632,8 +684,8 @@ await throws(() => run(WF("plan.js"), { spec: "s",
 {
   const spIds = ["s1", "s2"];
   const sp = { decompose: { fileStructure: "f: r", tasks: [
-      gtask("s1", "The helper. Nothing else is produced.", ""),
-      gtask("s2", "Another thing entirely.", "The project layout only"),
+      gtaskProse("s1", "The helper. Nothing else is produced.", ""),
+      gtaskProse("s2", "Another thing entirely.", "The project layout only"),
     ] }, ...graphVet(spIds) };
   const { result: spPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, sp);
   ok(spPlan.graph.edges[0].status === "unverified",
@@ -650,8 +702,8 @@ await throws(() => run(WF("plan.js"), {
 const dangIds = ["m", "n"];
 const dang = {
   decompose: { fileStructure: "f: r", tasks: [
-    gtask("m", "make_m() -> str", ""),
-    gtask("n", "make_n() -> str", "never_produced_anywhere from q.py"),
+    gtask("m", ["make_m"], []),
+    gtask("n", ["make_n"], ["never_produced_anywhere"]),
   ] },
   ...graphVet(dangIds),
 };
@@ -670,8 +722,8 @@ ok(dangPlan.graph.consumesNoTaskProduces[0].tokens.includes("never_produced_anyw
 {
   const mixIds = ["m1", "m2"];
   const mix = { decompose: { fileStructure: "f: r", tasks: [
-      gtask("m1", "make_a() -> str", ""),
-      gtask("m2", "make_b() -> str", "make_a from m1, make_ghost from nowhere"),
+      gtask("m1", ["make_a"], []),
+      gtask("m2", ["make_b"], ["make_a", "make_ghost"]),
     ] }, ...graphVet(mixIds) };
   const { result: mixPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, mix);
   const d = mixPlan.graph.consumesNoTaskProduces.find((x) => x.taskId === "m2");
@@ -685,9 +737,9 @@ ok(dangPlan.graph.consumesNoTaskProduces[0].tokens.includes("never_produced_anyw
 {
   const ooIds2 = ["a1", "b1", "c1"];
   const oo2 = { decompose: { fileStructure: "f: r", tasks: [
-      gtask("a1", "make_early() -> str", ""),
-      gtask("b1", "make_mid() -> str", "make_early from a1, make_late from c1"),
-      gtask("c1", "make_late() -> str", ""),
+      gtask("a1", ["make_early"], []),
+      gtask("b1", ["make_mid"], ["make_early", "make_late"]),
+      gtask("c1", ["make_late"], []),
     ] }, ...graphVet(ooIds2) };
   const { result: oo2Plan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, oo2);
   const rec = oo2Plan.graph.outOfOrder.find((x) => x.taskId === "b1");

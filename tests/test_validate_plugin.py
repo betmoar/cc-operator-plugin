@@ -397,6 +397,11 @@ def make_good_tree(root):
     # interpolated into EXACTLY ONE prompt (decompose, never a vet packet).
     write(root / "workflows" / "plan.js",
           'export const meta = { name: "plan", description: "d" };\n' + WF_SHARED +
+          'const TASK = { properties: {\n'
+          '    produces: {\n      type: "array",\n      items: { type: "string" },\n    },\n'
+          '    consumes: {\n      type: "array",\n      items: { type: "string" },\n    },\n'
+          '} };\n'
+          'const g = { contractsInferred: [] };\n'
           'const spec = A.spec;\n'
           'if (typeof spec !== "string") { throw new Error("args.spec is required"); }\n'
           'const MISS_CLAUSE = /\\bmissed\\s+if\\s*:\\s*(\\S.*)/is;\n'
@@ -2728,7 +2733,18 @@ class NorthStarCheckTest(unittest.TestCase):
     A measured it drawing findings from 6/6 seats against the control column.
     """
 
+    # The schema block too: check_northstar now pins produces/consumes as ARRAYS
+    # and the presence of contractsInferred, because reverting either restores
+    # prose contracts silently — the fallback still works, so nothing else fails.
+    # A fixture that models only the guards would make those pins report
+    # "cannot locate" instead of checking anything.
     GOOD = (
+        'const TASK = { properties: {\n'
+        '    produces: {\n      type: "array",\n      items: { type: "string" },\n    },\n'
+        '    consumes: {\n      type: "array",\n      items: { type: "string" },\n    },\n'
+        '} };\n'
+        'const g = { contractsInferred: [] };\n'
+
         'const spec = A.spec;\n'
         'if (typeof spec !== "string") { throw new Error("args.spec is required"); }\n'
         'const MISS_CLAUSE = /\\bmissed\\s+if\\s*:\\s*(\\S.*)/is;\n'

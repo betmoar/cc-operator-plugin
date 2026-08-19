@@ -2764,6 +2764,25 @@ def check_northstar(root, problems):
         problems.append(
             "workflows/plan.js: no throw naming `args.spec is required`")
 
+    # produces/consumes must stay ARRAYS. Reverting either to `type: "string"`
+    # restores prose input and with it every parsing defect four review rounds
+    # removed — and nothing else would notice, because the fallback still works
+    # and the suite would go on passing with `contractsInferred` quietly filling.
+    for field in ("produces", "consumes"):
+        m = re.search(rf'{field}:\s*\{{\s*\n\s*type:\s*"([a-z]+)"', src)
+        if not m:
+            problems.append(f"workflows/plan.js: cannot locate the `{field}` schema type")
+        elif m.group(1) != "array":
+            problems.append(
+                f'workflows/plan.js: `{field}` is type "{m.group(1)}", must be "array" — '
+                f"prose contracts are what the graph's parsing defects came from, and the "
+                f"prose fallback still works, so a revert here is silent")
+    if "contractsInferred" not in src:
+        problems.append(
+            "workflows/plan.js: no `contractsInferred` — a prose contract must be RECORDED, "
+            "or an estimate over English is indistinguishable from a measurement over "
+            "declared names")
+
     sites = src.count("${northStar}")
     if sites != 1:
         problems.append(

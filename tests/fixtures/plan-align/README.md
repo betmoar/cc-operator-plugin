@@ -124,6 +124,21 @@ Each `NOTES.md` states what a *generic* finding would be — one equally true of
 control column, and therefore a false positive if raised there. Any detection-rate
 claim from this corpus must report both columns or it is not a rate.
 
+## A note on the corpus after the contract change
+
+`produces`/`consumes` in these fixtures are **prose sentences**, because that is
+what the schema asked for when the corpus was built and measured. The schema now
+asks for arrays of exact names, so every column here takes `plan.js`'s *inferred*
+path and its graph output arrives with `contractsInferred` populated — correctly
+labelled as estimated rather than measured.
+
+They are deliberately not rewritten. `MEASUREMENT.md` records a content hash of
+the tree these numbers describe, and Stage A measured the **vet lenses**, which
+never read `produces`/`consumes` at all — so the seat measurement stands
+unchanged. Rewriting the fixtures would invalidate the recorded hash to improve
+nothing that was measured. What the corpus now additionally provides, for free,
+is the only realistic exercise of the prose fallback.
+
 ## Reproducing
 
 The measurement dispatches `plan.js`'s two vet prompts **verbatim** — the same
