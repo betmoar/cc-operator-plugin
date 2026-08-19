@@ -832,6 +832,15 @@ class ValidatorTest(unittest.TestCase):
                               capture_output=True, text=True)
 
     def _init_repo(self, *tracked):
+        # SKIP, not error, when git is absent. Measured on python:3.11-slim,
+        # which ships no git: both callers died on `git init` with a traceback,
+        # so a machine without git reported two ERRORS that read like defects in
+        # the code under test. Every other environment dependency in this project
+        # announces a skip instead — root for the chmod cases, a missing
+        # .operator/bin for the #24 exec-bit control — and the reason is the
+        # same: an unrunnable case must say it did not run.
+        if shutil.which("git") is None:
+            self.skipTest("git is not installed; the tracked-files path cannot be exercised")
         self._git("init", "-q")
         self._git("config", "user.email", "t@example.invalid")
         self._git("config", "user.name", "t")
