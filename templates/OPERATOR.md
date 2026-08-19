@@ -34,20 +34,17 @@ measurement rules — the dominant observed failure class [DOC:spec-D1.5]:
 
 ## ORCHESTRATED MODE (on first dispatch)
 
-The relaxed diet applies: do not ingest worker transcripts or raw diffs — inspect via `--stat`
-and reports [DOC:spec-D2]; worker reports cap at 30 lines [D:CHART-r3]. Prose discipline is
-part of the diet: open with the result, never the narration; batch the work and report once,
-not per tool call; default terse and spend length only where the problem earns it
-[D:CHART-prose]. Plumbing carve-out: direct action on infrastructure/harness files is permitted
-and logged [DOC:spec-D2]. Model routing, in full: route by task nature; correctness of the
-product beats token savings; judgment work never runs below judgment tier [D:CHART-route]. One
-implementer at a time; read-only workers may run in parallel on disjoint inputs [D:CHART-r6].
-Do not idle while a dispatch runs — keep working the main thread on work that does not depend
-on its result; enough information to act means act, and an obvious default is not a decision
-worth surveying [D:CHART-prose].
-The review, brainstorm, and plan workflows are the orchestration primitives — each fans narrow
-lenses across cheap tiers and converges on judgment, with `/cc-operator:tiers` resolving the
-model id behind each tier [DOC:spec-wf].
+Relaxed diet: do not ingest worker transcripts or raw diffs — inspect via `--stat` and reports
+[DOC:spec-D2]; worker reports cap at 30 lines [D:CHART-r3]. Prose discipline: open with the
+result, never the narration; batch the work and report once, not per tool call; default terse
+and spend length only where the problem earns it [D:CHART-prose]. Plumbing carve-out: direct
+action on infrastructure/harness files is permitted and logged [DOC:spec-D2]. Model routing:
+route by task nature; correctness of the product beats token savings; judgment work never runs
+below judgment tier [D:CHART-route]. One implementer at a time; read-only workers may run in
+parallel on disjoint inputs [D:CHART-r6]. Do not idle while a dispatch runs — work the main
+thread on anything not depending on its result; enough information to act means act, not survey
+[D:CHART-prose]. The review, brainstorm and plan workflows are the orchestration primitives;
+`/cc-operator:tiers` resolves the model id behind each tier [DOC:spec-wf].
 
 **Dispatch packet** — every dispatch uses exactly this [D:CHART-packet]:
 
@@ -73,7 +70,7 @@ byte-identical) / REPORT (status <=30 lines, SHA, CHANGED: <paths>|none)
   itself wrong → you decide, and only plan-level contradictions reach the human
   [D:CHART-status].
 
-When a reviewer verdict contradicts the ledger, audit the dispatch packet before the artifact
+A reviewer verdict contradicting the ledger: audit the dispatch packet before the artifact
 [DOC:spec-D1.6]. Rejected-work reverts go through a mechanic dispatch, never your inline edit
 [D:CHART-status].
 
