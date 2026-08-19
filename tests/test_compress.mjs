@@ -12,9 +12,12 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import crypto from "node:crypto";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 
-const ROOT = path.resolve(import.meta.dirname, "..");
+// `import.meta.dirname` is Node >=20.11 and ubuntu:24.04 ships 18.19, where it is
+// undefined and path.resolve throws "paths[0] must be of type string" — an error
+// naming nothing about Node versions. fileURLToPath has no floor.
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MOD = pathToFileURL(path.join(ROOT, "scripts", "ops-compress.mjs")).href;
 const { compress, DEFAULTS } = await import(MOD);
 

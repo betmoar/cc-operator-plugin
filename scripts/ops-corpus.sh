@@ -209,13 +209,31 @@ realpath_of() {
   fi
 }
 
-# repo_toplevel — the git worktree ops-corpus.sh itself lives in, if any.
-# Resolved from the script's OWN location, not the caller's cwd, so `--out`
-# is checked against the source repo regardless of where the maintainer runs
-# this from.
+# repo_toplevel — the tree ops-corpus.sh itself lives in. Resolved from the
+# script's OWN location, not the caller's cwd, so `--out` is checked against the
+# source repo regardless of where the maintainer runs this from.
+#
+# NEVER EMPTY, and that is the fix. This used to return git's answer or nothing,
+# and the caller guarded the containment check with `if [ -n "$toplevel" ]` — so
+# with no git on PATH the check did not fail, it VANISHED, and the build wrote
+# the derived corpus straight into the repo worktree. Measured 2026-08-19 in a
+# bare ubuntu container: 5 files, "built /w/derived-in-repo", no refusal. That is
+# the exact outcome the check exists to prevent ("a copy living in the repo means
+# the panel reviews the repo"), reached by the guard failing OPEN.
+#
+# It matters where it was found: a minimal container has no git and is the normal
+# way to reproduce CI, so the guard disappeared precisely where someone is most
+# likely to be building a corpus for a panel.
+#
+# The fallback needs no git: this script lives in <repo>/scripts/, so its parent
+# IS the tree to stay out of. git is still preferred — it is correct for a
+# worktree, a submodule, or a script symlinked elsewhere — but its absence now
+# degrades to a stricter answer instead of no answer.
 repo_toplevel() {
   script_dir="$(cd "$(dirname "$0")" && pwd -P)"
-  (cd "$script_dir" && git rev-parse --show-toplevel 2>/dev/null) || true
+  _top="$( (cd "$script_dir" && git rev-parse --show-toplevel 2>/dev/null) || true )"
+  [ -n "$_top" ] || _top="$(cd "$script_dir/.." && pwd -P)"
+  printf '%s\n' "$_top"
 }
 
 # --- build --------------------------------------------------------------

@@ -12,10 +12,13 @@
 // Run:  node tests/test_workflows.mjs   (exit 0 iff all pass)
 // CI:   added as a step in .github/workflows/validate.yml (node ships on the runner).
 
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 import path from "node:path";
 
-const ROOT = path.resolve(import.meta.dirname, "..");
+// `import.meta.dirname` is Node >=20.11 and ubuntu:24.04 ships 18.19, where it is
+// undefined and path.resolve throws "paths[0] must be of type string" — an error
+// naming nothing about Node versions. fileURLToPath has no floor.
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WF = (f) => pathToFileURL(path.join(ROOT, "workflows", f)).href;
 
 let pass = 0, fail = 0;

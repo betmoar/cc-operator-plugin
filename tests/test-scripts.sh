@@ -875,8 +875,16 @@ check "premise: ledger exists" "$([ -f "$P/.operator/VERDICTS.md" ] && echo 0 ||
 chmod 000 "$P/.operator/VERDICTS.md"
 ROUT="$( cd "$P" && bash "$VERDICT" --reconcile 2>&1 )"; RRC=$?
 chmod 600 "$P/.operator/VERDICTS.md"
-check "--reconcile exits NON-ZERO on an unreadable VERDICTS.md" "$([ "$RRC" -ne 0 ] && echo 0 || echo 1)"
-check "--reconcile does NOT report '0 restored' success on grep failure" "$(! printf '%s' "$ROUT" | grep -q '0 row(s) restored' && echo 0 || echo 1)"
+# root reads a 000 file, so the premise of this case cannot hold there — the same
+# reason the holder-read control is skipped for root. ANNOUNCED, because a
+# container running as root is the normal way to reproduce CI locally, and four
+# silent passes would be worse than four honest skips.
+if [ "$(id -u)" = "0" ]; then
+  echo "  skip 12c: running as root, a 000 ledger is still readable"
+else
+  check "--reconcile exits NON-ZERO on an unreadable VERDICTS.md" "$([ "$RRC" -ne 0 ] && echo 0 || echo 1)"
+  check "--reconcile does NOT report '0 restored' success on grep failure" "$(! printf '%s' "$ROUT" | grep -q '0 row(s) restored' && echo 0 || echo 1)"
+fi
 rm -rf "$P"
 
 ########################################################################
@@ -4102,12 +4110,19 @@ printf '# cc-operator gitignore (v1)\nbin/\n!my-own-rule.md\n' > "$MIGW/.operato
 chmod 500 "$MIGW/.operator"
 MIGWOUT="$(sed "s|<tmp>|$MIGW|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
 chmod 700 "$MIGW/.operator"
-check "unwritable dir: the v1 rule survives (cp failed, so no overwrite)" \
-  "$(grep -q 'my-own-rule' "$MIGW/.operator/.gitignore" && echo 0 || echo 1)"
-check "unwritable dir: no MIGRATED claim over a backup that does not exist" \
-  "$(printf '%s' "$MIGWOUT" | grep -q 'MIGRATED' && echo 1 || echo 0)"
-check "unwritable dir: no .v1.bak was left behind" \
-  "$([ -e "$MIGW/.operator/.gitignore.v1.bak" ] && echo 1 || echo 0)"
+# Same root caveat: chmod 500 does not stop root writing, so the copy this case
+# needs to FAIL succeeds and the migration proceeds correctly — a pass would be
+# measuring the wrong thing.
+if [ "$(id -u)" = "0" ]; then
+  echo "  skip unwritable-dir migration: running as root, chmod 500 does not refuse a write"
+else
+  check "unwritable dir: the v1 rule survives (cp failed, so no overwrite)" \
+    "$(grep -q 'my-own-rule' "$MIGW/.operator/.gitignore" && echo 0 || echo 1)"
+  check "unwritable dir: no MIGRATED claim over a backup that does not exist" \
+    "$(printf '%s' "$MIGWOUT" | grep -q 'MIGRATED' && echo 1 || echo 0)"
+  check "unwritable dir: no .v1.bak was left behind" \
+    "$([ -e "$MIGW/.operator/.gitignore.v1.bak" ] && echo 1 || echo 0)"
+fi
 rm -rf "$MIGW"
 
 echo "-- Case: ops-init refuses the same migration it cannot back up"
@@ -5165,6 +5180,32 @@ else
       "$([ "$_RC" -ne 0 ] && echo 0 || echo 1)"
     check "#69 control: the refused in-repo build left nothing in the worktree" \
       "$([ ! -d "$REPO/derived-in-repo" ] && echo 0 || echo 1)"
+    # …and the refusal must survive git being unavailable. repo_toplevel used to
+    # return git's answer or NOTHING, and the caller guarded the whole check with
+    # `[ -n "$toplevel" ]` — so with no git on PATH the containment check did not
+    # fail, it vanished, and the build wrote the corpus into the repo. Found in a
+    # bare ubuntu container (5 files, no refusal), which is the normal way to
+    # reproduce CI and therefore exactly where the guard was absent.
+    #
+    # A git STUB that fails, not an emptied PATH. Emptying PATH also removes find
+    # and shasum, so the build refuses for an unrelated reason and the case
+    # measures nothing — which the third assertion below caught on its first run.
+    # repo_toplevel swallows git's failure with `2>/dev/null || true`, so a git
+    # that exits non-zero reproduces the empty-toplevel path exactly while the
+    # rest of the script keeps working.
+    _NOGIT="$(newproj)"
+    printf '#!/bin/sh\nexit 1\n' > "$_NOGIT/git"
+    chmod 755 "$_NOGIT/git"
+    _NGOUT="$( cd "$REPO" && PATH="$_NOGIT:$PATH" "$BASH_ABS" "$CORPUS" build \
+                 --corpus "$SECDIR" --out "$REPO/derived-nogit" 2>&1 )"
+    _NGRC=$?
+    check "#69 the in-repo refusal survives git being unavailable (guard fails CLOSED)" \
+      "$([ "$_NGRC" -ne 0 ] && echo 0 || echo 1)"
+    check "#69 control: no git, no build — nothing was written into the worktree" \
+      "$([ ! -d "$REPO/derived-nogit" ] && echo 0 || echo 1)"
+    check "#69 control: the no-git refusal is the CONTAINMENT one, not an unrelated error" \
+      "$(printf '%s' "$_NGOUT" | grep -q "resolves inside this repo's worktree" && echo 0 || echo 1)"
+    rm -rf "$_NOGIT" "$REPO/derived-nogit"
     bash "$CORPUS" build --corpus "$SECDIR" --out "$_CTMP/probe1-nonempty" >/dev/null 2>&1
     bash "$CORPUS" build --corpus "$SECDIR" --out "$_CTMP/probe1-nonempty" >/dev/null 2>&1
     _RC=$?
