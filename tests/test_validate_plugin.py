@@ -49,11 +49,10 @@ GOOD_CHARTER = "# OPERATOR.md\n\n" + "\n".join(
 GOOD_STATUSLINE = (
     "#!/usr/bin/env bash\n"
     "[ ! -L \"$1\" ] || exit 0\n"
-    "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
     "# deviation-gate mirror: counts DEVIATION|ESCALATION|GATE-EXCEPTION (HANDOFF-MARK)\n"
     "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
-    "sentinel_owner() {\n"
-    "  case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) owner=\"\" ;; esac\n"
+    "sentinel_owner_of_name() {\n"
+    "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) printf '\\n'; return 0 ;; esac\n"
     "}\n")
 
 # A json_get() whose python3 branch carries the bool coercion. The three hooks
@@ -230,18 +229,18 @@ def make_good_tree(root):
     # every sentinel touchpoint carries the -L symlink rejection (F65/F66)
     nolink = "[ ! -L \"$1\" ] || exit 0\n"
     write(root / "scripts" / "ops-stop-hook.sh",
-          "#!/usr/bin/env bash\n" + nolink + bounded + JSON_GET +
+          "#!/usr/bin/env bash\n" + nolink + JSON_GET +
           "# deviation gate: counts DEVIATION|ESCALATION|GATE-EXCEPTION (HANDOFF-MARK)\n"
           "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
-          "sentinel_owner() {\n"
-    "  case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) owner=\"\" ;; esac\n"
+          "sentinel_owner_of_name() {\n"
+    "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) printf '\\n'; return 0 ;; esac\n"
     "}\n")
     write(root / "scripts" / "ops-task.sh",
           "#!/usr/bin/env bash\n" + guards + nolink)
     write(root / "scripts" / "ops-verdict.sh",
-          "#!/usr/bin/env bash\n" + guards + nolink + bounded +
-          "sentinel_owner() {\n"
-          "  case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) return 0 ;; esac\n"
+          "#!/usr/bin/env bash\n" + guards + nolink +
+          "sentinel_owner_of_name() {\n"
+          "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) printf '\\n'; return 0 ;; esac\n"
           "}\n" +
           "# F2: refuse a symlink fragment before the write + skip on both reads\n"
           '[ -L "$FRAGDIR/$who.md" ] && exit 1\n'
@@ -253,7 +252,7 @@ def make_good_tree(root):
           "# --mark-handoff writes a HANDOFF-MARK line under the lock\n" +
           GOOD_LOCK_BLOCK + GOOD_SOURCE_STAMP)
     write(root / "scripts" / "ops-adopt.sh",
-          "#!/usr/bin/env bash\n" + guards + nolink + bounded +
+          "#!/usr/bin/env bash\n" + guards + nolink +
           "# PREV reject-set (F15): carries *.exempt like the sentinel_owner parsers\n"
           'case "${PREV:-}" in */* | .* | *"|"* | *[[:space:]]* | *[[:cntrl:]]* | *.exempt) PREV="<invalid>" ;; esac\n'
           + GOOD_LOCK_BLOCK)
@@ -1066,21 +1065,20 @@ class ValidatorTest(unittest.TestCase):
         """Install minimal but realistic reader scripts into the fixture tree."""
         good_hook = (
             "#!/usr/bin/env bash\n"
-            "[ ! -L \"$1\" ] || exit 0\n"
-            "while IFS= read -r -n 512 line; do :; done < \"$1\"\n" + JSON_GET +
-            "# deviation gate: second bounded read of DECISIONS.md (HANDOFF-MARK)\n"
+            "[ ! -L \"$1\" ] || exit 0\n" + JSON_GET +
+            "# deviation gate: the ONLY bounded read left — ownership is the\n"
+            "# sentinel filename, so no sentinel is opened.\n"
             "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
-            "sentinel_owner() {\n"
-    "  case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) owner=\"\" ;; esac\n"
+            "sentinel_owner_of_name() {\n"
+    "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) printf '\\n'; return 0 ;; esac\n"
     "}\n")
         good_verdict = (
             "#!/usr/bin/env bash\n"
             "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
             "check_owner_name() { :; }\n"
             "[ ! -L \"$f\" ] || exit 0\n"
-            "while IFS= read -r -n 512 line; do :; done < \"$f\"\n"
-            "sentinel_owner() {\n"
-          "  case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) return 0 ;; esac\n"
+            "sentinel_owner_of_name() {\n"
+          "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) printf '\\n'; return 0 ;; esac\n"
           "}\n"
             "# F2: refuse a symlink fragment before the write + skip on both reads\n"
             '[ -L "$FRAGDIR/$who.md" ] && exit 1\n'
@@ -1094,8 +1092,8 @@ class ValidatorTest(unittest.TestCase):
             "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
             "check_owner_name() { :; }\n"
             "[ ! -L \"$F\" ] || exit 0\n"
-            "while IFS= read -r -n 512 line; do :; done < \"$F\"\n"
-            # PREV reject-set (F15): carries *.exempt (check_guard_parity pin)
+            # PREV reject-set (F15): the owner now arrives in the sentinel NAME,
+            # so the sanitisation moved with it — adoption reads no file at all.
             'case "${PREV:-}" in */* | .* | *"|"* | *[[:space:]]* | *[[:cntrl:]]* | *.exempt) PREV="<invalid>" ;; esac\n')
         write(self.dir / "scripts" / "ops-stop-hook.sh", hook_body or good_hook)
         write(self.dir / "scripts" / "ops-verdict.sh", verdict_body or good_verdict)
@@ -2362,19 +2360,22 @@ class GuardParityVacuityTest(unittest.TestCase):
 
     # (script, the guard's code line, the comment-safe replacement that removes it)
     CASES = (
+        # All three readers now share ONE shape: ownership is the filename, so
+        # the reject set guards a name split rather than a body parse. The pin
+        # is unchanged in purpose — a planted name must not pose as an owner.
         ("ops-stop-hook.sh",
-         '*[[:space:]]* | *.exempt) owner="" ;;',
-         '*[[:space:]]*) owner="" ;;',
+         r'''"" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) printf '\n'; return 0 ;;''',
+         r'''"" | */* | .* | *"|"* | *[[:space:]]*) printf '\n'; return 0 ;;''',
          "*.exempt"),
         ("ops-verdict.sh",
-         '*[[:space:]]* | *.exempt) return 0 ;;',
-         '*[[:space:]]*) return 0 ;;',
+         r'''"" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) printf '\n'; return 0 ;;''',
+         r'''"" | */* | .* | *"|"* | *[[:space:]]*) printf '\n'; return 0 ;;''',
          "*.exempt"),
         # The statusline is the fourth sentinel reader and the third *.exempt
         # parser; it renders the same partition the Stop hook gates on.
         ("statusline.sh",
-         '*[[:space:]]* | *.exempt) owner="" ;;',
-         '*[[:space:]]*) owner="" ;;',
+         r'''"" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) printf '\n'; return 0 ;;''',
+         r'''"" | */* | .* | *"|"* | *[[:space:]]*) printf '\n'; return 0 ;;''',
          "*.exempt"),
         # F15's PREV set — the fifth copy, and the one whose pin was file-wide
         # until this round. ops-adopt.sh carries *.exempt at the WRITER too, so
@@ -2387,8 +2388,8 @@ class GuardParityVacuityTest(unittest.TestCase):
         # that can never equal a real session id cannot make a task permanently
         # non-blocking. Different literal, same vacuity shape.
         ("ops-stop-hook.sh",
-         '*"|"* | *[[:space:]]* | *.exempt) owner="" ;;',
-         '*"|"* | *.exempt) owner="" ;;',
+         r'''"" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) printf '\n'; return 0 ;;''',
+         r'''"" | */* | .* | *"|"* | *.exempt) printf '\n'; return 0 ;;''',
          "[[:space:]]"),
         # The leading-dot rule, one per writer CLI: a dotfile sentinel is
         # invisible to the Stop hook's glob, so the gate never sees the task.

@@ -140,6 +140,57 @@ graph work now computes the answer that issue needs.
 
 ### Changed
 
+- **Sentinel ownership moved into the filename, deleting three parsers ([#76]).**
+  `pending/<session-id>__<task-id>` when owned, `pending/<task-id>` when not.
+  The body carried three fields and exactly one was load-bearing — `cwd` was
+  "forensics only" by its own comment and nothing read `opened_at` — yet
+  recovering that one field cost **184 lines of hand-written parser** across
+  three files, each a byte-bounded reader of what the code itself called
+  untrusted input.
+
+  A filename needs no parser and no read. Gone with the body: the 512-byte read
+  caps, the `LC_ALL=C` byte counting, the NUL pre-scan, and the symlink-degrade
+  in each of the three readers — all of which existed to make an untrusted file
+  safe to parse. `ops-stop-hook.sh` −81 lines, `ops-adopt.sh` −41,
+  `statusline.sh` −35. Adoption is now `mv`: atomic by the filesystem, with no
+  temp file outside `pending/` and nothing to clean up after a crash.
+
+  **What did not move is what the change is judged on.** Three properties were
+  re-established rather than assumed, and two of them I broke first:
+
+  - *No-takeover under concurrency.* `O_EXCL` only arbitrates openers of the
+    same path, and the owner is now part of the path — so two sessions opening
+    one task each created their own name and both won. The concurrency loop
+    caught it immediately. Fixed by claiming the **unowned** name first, which
+    both racers contend for and the kernel decides, then renaming to carry the
+    owner. A crash between the two steps leaves an unowned sentinel: fail-closed.
+  - *F15 display sanitisation.* The hostile owner used to arrive in a body and
+    was sanitised before being echoed; it now arrives in a **name**, and a
+    planted `evil<ESC>]0;pwned<BEL>__t1` printed its OSC sequence straight to the
+    operator's terminal until the same reject set was applied to the name.
+  - *F1 grant protection.* A planted `<something>.exempt__<task>` would pose as
+    the owner of a G3 grant. The reject set moved onto the name reader in all
+    three files; a planted one degrades to unowned, which blocks everyone.
+
+  Unowned still fails closed, `check_bare_name` gains one rule (`__` is refused
+  in both halves, at construction) and loses four agreeing copies, and the
+  SessionStart hook renames legacy body-stamped sentinels — refusing any whose
+  stamp our writers could not have produced, and leaving genuinely unowned ones
+  alone.
+
+  `check_guard_parity` and `check_reader_bounds` did exactly what they were built
+  for: they **reported** that their locator had nothing left to find rather than
+  passing silently, which is how the deletion stayed honest. Their pins now point
+  at the name reader, and three reader-bound counts drop — correct only because a
+  reader was deleted rather than unbounded, a distinction the number cannot make
+  and which is therefore written down beside it.
+
+  Verified on both platforms: 719/0 bash locally and on ubuntu as non-root,
+  253 unittest, 211/0 + 98/0 node, validator exit 0, and the CI-pinned linter
+  (v0.10.0) clean — it caught an `ls | grep` in the new test that v0.11.0 let
+  pass.
+
+
 - **`produces`/`consumes` are arrays of exact names, not prose ([#66]).** This is
   the fix that ends a defect class rather than patching its next instance. While
   those fields were sentences, every rule for extracting names from them had both
@@ -1322,6 +1373,7 @@ BAR block lands, after decomposition.
 [#70]: https://github.com/betmoar/cc-operator-plugin/issues/70
 [#69]: https://github.com/betmoar/cc-operator-plugin/issues/69
 [#73]: https://github.com/betmoar/cc-operator-plugin/issues/73
+[#76]: https://github.com/betmoar/cc-operator-plugin/issues/76
 [#66]: https://github.com/betmoar/cc-operator-plugin/issues/66
 [#60]: https://github.com/betmoar/cc-operator-plugin/issues/60
 

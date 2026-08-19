@@ -99,6 +99,32 @@ fi
 # serves precisely the projects that fail this gate.
 [ -d "$cwd/.operator" ] || exit 0
 
+# --- legacy sentinel migration (ownership moved into the filename) -----------
+# A sentinel written before this change carries `session_id: <id>` in its BODY
+# and a bare task-id as its NAME, which every reader now interprets as UNOWNED —
+# it blocks every session instead of only its owner. That is fail-closed, so the
+# gate stays sound either way, but it strands the owner behind a block it cannot
+# distinguish from someone else's.
+#
+# Rename what we can read, leave what we cannot. An unmigrated sentinel keeps the
+# unowned (blocking) reading, which is the safe direction, and `ops-adopt.sh`
+# remains the deliberate way out.
+if [ -d "$cwd/.operator/pending" ]; then
+  for _s in "$cwd/.operator/pending"/*; do
+    [ -f "$_s" ] || continue                      # symlinks/dirs are not ours
+    case "${_s##*/}" in *__*) continue ;; esac    # already migrated
+    _sid=""
+    while IFS= read -r _l || [ -n "$_l" ]; do
+      case "$_l" in session_id:\ *) _sid="${_l#session_id: }"; break ;; esac
+    done < "$_s"
+    [ -n "$_sid" ] || continue                    # genuinely unowned: leave it
+    case "$_sid" in
+      "" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) continue ;;
+    esac
+    mv "$_s" "$cwd/.operator/pending/${_sid}__${_s##*/}" 2>/dev/null || true
+  done
+fi
+
 # --- automated upgrade path (version-gated) ----------------------------------
 # A target project's .operator/bin/ holds COPIES of the plugin's gate CLIs
 # (the model's shell has no ${CLAUDE_PLUGIN_ROOT}), refreshed by ops-init on

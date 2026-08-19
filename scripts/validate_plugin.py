@@ -867,15 +867,20 @@ def check_reader_bounds(root, problems):
     still applied to one of four readers. Now it fails the build instead.
     """
     readers = {
-        "ops-stop-hook.sh": 2,   # sentinel_owner + the DECISIONS.md deviation scan
-        "ops-verdict.sh": 2,     # sentinel_owner + the --reconcile fragment loop
-        "ops-adopt.sh": 1,       # the inline sentinel parse
+        # Ownership moved into the sentinel's FILENAME, so three body parsers —
+        # and the bounded reads that made an untrusted file safe to parse — are
+        # gone rather than unbounded. Lowering a count is only ever correct
+        # because the READER was deleted; that distinction is invisible to the
+        # number, which is why it is written here.
+        "ops-stop-hook.sh": 1,   # the DECISIONS.md deviation scan
+        "ops-verdict.sh": 1,     # the --reconcile fragment loop
+        # ops-adopt no longer reads a sentinel at all: adoption is a rename.
         # The statusline segment renders on a ~300ms timer, which makes it the
         # hottest reader here by three orders of magnitude — the others run once
         # per turn-end or per command. Measured on one 64MB newline-less
         # sentinel: 0.014s bounded vs 6.20s per parse unbounded, i.e. a
         # permanently wedged status bar rather than a slow one.
-        "statusline.sh": 2,      # sentinel_owner + the dev[N] reverse-tail scan
+        "statusline.sh": 1,      # the dev[N] reverse-tail scan
         # The tier-config resolver reads a file under .operator/ (untrusted — a
         # merge or checkout can produce it). Same hazard class as the others:
         # a newline-less multi-MB tiers.env is one "line" to an unbounded read.
@@ -1100,7 +1105,7 @@ def check_guard_parity(root, problems):
                 f"planted symlink in pending/, laundering an entry our CLIs "
                 f"never wrote into a trusted sentinel (F65/F66; the guard "
                 f"must live at every reader, see docs/PLAYBOOK.md)")
-    # sentinel_owner()'s reject-set must include *.exempt in all three body
+    # sentinel_owner_of_name()'s reject-set must include *.exempt in all three body
     # parsers, mirroring check_owner_name's reject of the reserved G3 grant
     # namespace — else a corrupted body "session_id: victim.exempt" parses as
     # a valid owner and recompute_arm_marker deletes another session's grant
@@ -1118,16 +1123,16 @@ def check_guard_parity(root, problems):
         p = root / "scripts" / name
         if not p.is_file():
             continue
-        text = _function_body(shell_code(p), "sentinel_owner")
+        text = _function_body(shell_code(p), "sentinel_owner_of_name")
         if text is None:
             problems.append(
-                f"scripts/{name}: cannot locate sentinel_owner() — the F1 "
+                f"scripts/{name}: cannot locate sentinel_owner_of_name() — the F1 "
                 f"reject-set pin has nothing to check. Renaming or reshaping "
                 f"the parser must update this locator, not silently skip it")
             continue
         if "*.exempt" not in text:
             problems.append(
-                f"scripts/{name}: sentinel_owner()'s reject-set is missing "
+                f"scripts/{name}: sentinel_owner_of_name()'s reject-set is missing "
                 f"*.exempt — a sentinel body naming a G3 grant parses as a "
                 f"valid owner, letting recompute_arm_marker delete another "
                 f"session's exemption (F1)")

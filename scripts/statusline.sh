@@ -97,67 +97,32 @@ while [ -n "$walk" ]; do
   walk="${walk%/*}"; [ -n "$walk" ] || walk="/"
 done
 [ -n "$OPDIR" ] || exit 0          # not an operator project -> render nothing
-
-# --- read a sentinel's stamped owner (builtins only) --------------------------
-# A deliberate copy of ops-stop-hook.sh:sentinel_owner, minus the opened_at field
-# the bar has no room for. Sanitizing happens HERE, at the parser, so every
-# consumer is covered by construction.
-#
-# The byte bound matters more here than anywhere else in the plugin: this is the
-# only reader that runs on a 300ms timer. `read -r` is bounded by LINES, and one
-# newline-less line is a single line — a 256MB merge artifact measured 8.5s in
-# the Stop hook, which fires once per turn-end. On this timer it would stall the
-# whole bar continuously. `read -r -n 512` stops at 512 chars OR the newline.
-# Never `read -N` (capital): it ignores newlines and returned an empty chunk
-# here, which would silently make every sentinel parse as unowned.
-sentinel_owner() { # sentinel_owner <path> → owner ("" = unowned)
-  local line owner="" n=0
-  # LC_ALL=C so the byte-bounded read + ${#} count BYTES not characters (a
-  # multibyte-locale pad would otherwise smuggle a foreign owner past the cap
-  # guard — review finding 2026-08-04). Safe: this runs in a $(...) subshell.
-  LC_ALL=C
-  # A symlink is never a sentinel our CLIs wrote (F65): `-f` alone FOLLOWS it,
-  # so a planted link would read its target's session_id: and render as
-  # foreign. Degrade to unowned → counted as MINE-blocking — the bar mirrors
-  # the Stop hook's partition, and the hook blocks on this entry.
-  [ ! -L "$1" ] || return 0
-  [ -f "$1" ] || return 0
-  # A NUL is checked BEFORE the loop: bash cannot hold one in a variable (it
-  # drops them silently), so no test on $line can ever see one — the
-  # plausible-looking `case "$line" in *$'\0'*)` is vacuously TRUE, because
-  # $'\0' is the empty string and the pattern degenerates to `**`. That mistake
-  # was written and caught here (2026-08-02). `read -d ''` returns 0 only if it
-  # truly reached a NUL. It matters because bash 3.2's `read -n` stops AT a NUL,
-  # so a NUL-padded chunk passes the length guard and its tail is matched as a
-  # fresh line — smuggling an owner. Degrade to unowned = blocks. (F46)
-  # Whole-file NUL probe in a LC_ALL=C subshell (F55): the single-shot form
-  # missed a NUL past byte 512, smuggling a foreign owner that flips the bar
-  # from blocking to foreign. Bytes for both -n and ${#}, EOF exits non-zero so
-  # the trailing partial chunk never false-positives. Mirror of the Stop hook.
-  if ! (LC_ALL=C _np=0
-        while IFS= read -r -d '' -n 512 _nulprobe; do
-          _np=$((_np + 1)); [ "$_np" -le 40 ] || exit 1
-          [ "${#_nulprobe}" -eq 512 ] || exit 1
-        done < "$1") 2>/dev/null; then
-    printf '%s' ""
-    return 0
-  fi
-  while IFS= read -r -n 512 line || [ -n "$line" ]; do
-    n=$((n+1)); [ "$n" -le 20 ] || break     # owner is line 1 by construction
-    # Cap-filling chunk → truncated mid-line; its tail would be matched as a
-    # fresh line and smuggle an owner. Mirrors ops-stop-hook.sh (F45): unset
-    # owner = unowned = counted as MINE-blocking, not waved through as foreign.
-    [ "${#line}" -lt 512 ] || { owner=""; break; }
-    case "$line" in "session_id: "*) owner="${line#session_id: }"; break ;; esac
-  done < "$1" 2>/dev/null
-  owner="${owner%$'\r'}"                     # a CRLF checkout must not misclassify
-  owner="${owner%"${owner##*[![:space:]]}"}"
-  # Mirror check_bare_name's rejects across the three CLIs: a value our writers
-  # could never have produced is not a claim of ownership. Degrade to "" —
-  # unowned, which counts as blocking. Fail toward the honest warning.
-  # *.exempt is reserved for G3 exemption grant names (F1).
-  case "$owner" in */* | .* | *"|"* | *[[:space:]]* | *.exempt) owner="" ;; esac
-  printf '%s' "$owner"
+# Ownership is the sentinel's NAME: pending/<owner>__<task>, unowned when there
+# is no `__`. Nothing is opened, so the byte-bounded read, the NUL pre-scan, the
+# LC_ALL=C byte counting and the symlink-degrade are gone with the body they
+# guarded — they existed to make an untrusted file safe to parse, and there is
+# no longer a file to parse. A planted entry cannot smuggle an owner.
+sentinel_owner_of_name() { # <basename> → owner ("" when unowned or unwritable-by-us)
+  case "$1" in
+    *__*) : ;;
+    *) printf '\n'; return 0 ;;
+  esac
+  _o="${1%%__*}"
+  # The F1 reject set, moved with the attack surface rather than deleted with the
+  # body parser. Our CLIs can never write these shapes (check_bare_name refuses
+  # them at construction), so a name carrying one was PLANTED — and the
+  # grant-suffix arm in particular would let a planted sentinel pose as the owner
+  # of a G3 grant and get another session's exemption deleted by
+  # recompute_arm_marker. Degrade to unowned, which blocks everyone: fails
+  # CLOSED, the safe direction.
+  #
+  # The literals live ONLY in the case below, never in this prose: the vacuity
+  # test mutates raw text, so a comment repeating a pinned literal absorbs the
+  # mutation and the pin stops proving anything.
+  case "$_o" in
+    "" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) printf '\n'; return 0 ;;
+  esac
+  printf '%s\n' "$_o"
 }
 
 # --- find the session's newest LIVE workflow journal -------------------------
@@ -296,7 +261,7 @@ FOREIGN=0
 shopt -s nullglob
 for f in "$OPDIR/pending"/*; do
   [ -f "$f" ] || continue                    # a directory here is not a task
-  owner="$(sentinel_owner "$f")"
+  owner="$(sentinel_owner_of_name "${f##*/}")"
   if [ -n "$owner" ] && [ -n "$SESSION" ] && [ "$owner" != "$SESSION" ]; then
     FOREIGN=$((FOREIGN + 1))
   else

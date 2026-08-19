@@ -553,65 +553,58 @@ lock_release() {
 # checkout, or a hand-edit can supply, and it is not written only by our CLIs.
 # A stamped owner becomes a fragment FILENAME, so an unvalidated one re-opens
 # the 2026-07-10 traversal through a new door (`session_id: ../../../tmp/x`
-# appended a real ledger row to /tmp/x.md — found in review of this branch).
-# Sanitize at the parser, not at each call site: every consumer is then covered
-# by construction. A malformed owner degrades to "" = unowned, which fails
-# CLOSED (blocks everyone) — the safe direction.
-# `read -r -n 512`, not plain `read -r`: a line cap is not a byte cap, because one
-# newline-less line is a single "line" and gets slurped whole first. Measured on a
-# 256MB single-line sentinel: 13.51s here vs 0.17s in the byte-bounded Stop hook.
-# The owner is a short token by construction. (Audit F02 — the first fix reached
-# only the Stop hook; this reader and two others kept the unbounded form.)
-sentinel_owner() { # sentinel_owner <id> → stamped session_id ("" if none/invalid)
-  local f="$OPDIR/pending/$1" line owner="" n=0
-  # LC_ALL=C so the byte-bounded read + ${#} count BYTES not characters (a
-  # multibyte-locale pad would otherwise smuggle a foreign owner past the cap
-  # guard — review finding 2026-08-04). Safe: this runs in a $(...) subshell.
-  LC_ALL=C
-  # A symlink is never a sentinel our CLIs wrote (F65): `-f` alone FOLLOWS it,
-  # so a link planted in pending/ would read its target's session_id: as a
-  # valid owner. Degrade to unowned — fails closed, like every other
-  # malformed body. The mutating paths additionally refuse outright below.
-  [ ! -L "$f" ] || return 0
-  [ -f "$f" ] || return 0
-  # NUL pre-scan, same rationale as ops-stop-hook.sh (F46): bash cannot see a
-  # NUL in a variable, and `read -n` stops at one on bash 3.2, so a NUL-padded
-  # chunk passes the length guard and its tail smuggles an owner. Degrade to
-  # unowned rather than dying — this is a reader.
-  # Whole-file NUL probe in a LC_ALL=C subshell (F55): a single-shot probe left
-  # a NUL past byte 512 undetected, letting a padded sentinel smuggle a foreign
-  # owner. Bytes for both -n and ${#}; EOF exits non-zero so the trailing
-  # partial chunk never false-positives. Mirror of the Stop hook's parser.
-  if ! (LC_ALL=C _np=0
-        while IFS= read -r -d '' -n 512 _nulprobe; do
-          _np=$((_np + 1)); [ "$_np" -le 40 ] || exit 1
-          [ "${#_nulprobe}" -eq 512 ] || exit 1
-        done < "$f") 2>/dev/null; then
-    printf '%s' ""
-    return 0
-  fi
-  while IFS= read -r -n 512 line || [ -n "$line" ]; do
-    n=$((n+1)); [ "$n" -le 20 ] || break   # owner is line 1 by construction
-    # Cap-filling chunk → truncated mid-line; its tail would be matched as a
-    # fresh line and smuggle an owner. Mirrors ops-stop-hook.sh (F45).
-    [ "${#line}" -lt 512 ] || { owner=""; break; }
-    case "$line" in
-      "session_id: "*) owner="${line#session_id: }"; break ;;
-    esac
-  done < "$f"
-  # A CRLF checkout would otherwise leave a trailing \r, making a session's OWN
-  # task compare unequal to its id — a fail-OPEN in the central invariant.
-  owner="${owner%$'\r'}"
-  owner="${owner%"${owner##*[![:space:]]}"}"
-  # Unusable → unowned → fails closed. The `*.exempt` arm mirrors the writer's
-  # check_owner_name: G3 grant names are reserved (F1). Kept on its own line,
-  # NOT as a trailing comment — validate_plugin's shell_code() strips whole-line
-  # comments only, so a trailing one sits in the "code" it searches and would
-  # keep the F1 pin green after the arm itself was deleted (measured).
-  case "$owner" in
-    "" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) return 0 ;;
+# The name-guard reject set still applies, now at construction rather than at
+# every reader: an owner that our CLIs could never have written cannot appear in
+# a filename they create. A name with no `__` is unowned, which fails CLOSED
+# (blocks everyone) — the safe direction, unchanged.
+# Ownership is in the sentinel's NAME: pending/<owner>__<task>, or pending/<task>
+# when unowned. No file is opened, so the byte-bounded read, the LC_ALL=C byte
+# counting, the NUL pre-scan and the symlink-degrade that guarded the old body
+# parser all go with it — 51 lines here, 84 in the Stop hook, 49 in the
+# statusline, for one field the writer already had in hand.
+#
+# What those guards defended against is gone rather than re-implemented: a
+# planted file cannot smuggle an owner, because nothing reads its contents. What
+# remains is a string split, and `__` is refused in both halves at construction.
+sentinel_path() { # sentinel_path <task-id> → path of its sentinel, or empty
+  local _t="$1" _f
+  shopt -s nullglob
+  for _f in "$OPDIR/pending/$_t" "$OPDIR/pending"/*__"$_t"; do
+    # -e OR -L: `-e` is FALSE for a dangling symlink, so a planted broken link
+    # went unseen and a second sentinel was created beside it for the same task.
+    # A planted entry must be found and refused, not stepped around.
+    { [ -e "$_f" ] || [ -L "$_f" ]; } && { printf '%s\n' "$_f"; break; }
+  done
+  shopt -u nullglob
+}
+
+sentinel_owner_of_name() { # <basename> → owner ("" when unowned or unwritable-by-us)
+  case "$1" in
+    *__*) : ;;
+    *) printf '\n'; return 0 ;;
   esac
-  printf '%s' "$owner"
+  _o="${1%%__*}"
+  # The F1 reject set, moved with the attack surface rather than deleted with the
+  # body parser. Our CLIs can never write these shapes (check_bare_name refuses
+  # them at construction), so a name carrying one was PLANTED — and the
+  # grant-suffix arm in particular would let a planted sentinel pose as the owner
+  # of a G3 grant and get another session's exemption deleted by
+  # recompute_arm_marker. Degrade to unowned, which blocks everyone: fails
+  # CLOSED, the safe direction.
+  #
+  # The literals live ONLY in the case below, never in this prose: the vacuity
+  # test mutates raw text, so a comment repeating a pinned literal absorbs the
+  # mutation and the pin stops proving anything.
+  case "$_o" in
+    "" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) printf '\n'; return 0 ;;
+  esac
+  printf '%s\n' "$_o"
+}
+
+sentinel_owner() { # sentinel_owner <task-id> → owner ("" if unowned/absent)
+  local _p; _p="$(sentinel_path "$1")"
+  [ -n "$_p" ] || { printf '\n'; return 0; }
+  sentinel_owner_of_name "${_p##*/}"
 }
 
 # row_is_conformant <line> — true iff the line is EXACTLY the 4-cell ledger row
@@ -948,13 +941,15 @@ ownership_gate() {
   # outright — the parser's degrade-to-unowned is not enough here, because an
   # unowned sentinel is closable by design. Runs under the lock in BOTH the
   # defer and verdict paths, so this is the single choke point.
-  [ ! -L "$OPDIR/pending/$ID" ] || die "sentinel at $OPDIR/pending/$ID is a symlink — not a sentinel our CLIs wrote; refusing (remove it and open the task with ops-task.sh)"
+  SPATH="$(sentinel_path "$ID")"
+  [ -n "$SPATH" ] || SPATH="$OPDIR/pending/$ID"
+  [ ! -L "$SPATH" ] || die "sentinel at $SPATH is a symlink — not a sentinel our CLIs wrote; refusing (remove it and open the task with ops-task.sh)"
   # …and neither is a directory or a device. Refuse BEFORE the row is written,
   # not at `rm` time: the old order appended the row, then failed to clear, so
   # the CLI exited non-zero with the ledger already mutated. Same regular-file
   # contract as ops-task.sh's opener and every sentinel reader.
-  if [ -e "$OPDIR/pending/$ID" ] && [ ! -f "$OPDIR/pending/$ID" ]; then
-    die "sentinel at $OPDIR/pending/$ID is not a regular file — not a sentinel our CLIs wrote; refusing before writing any row (remove it and open the task with ops-task.sh)"
+  if [ -e "$SPATH" ] && [ ! -f "$SPATH" ]; then
+    die "sentinel at $SPATH is not a regular file — not a sentinel our CLIs wrote; refusing before writing any row (remove it and open the task with ops-task.sh)"
   fi
   SOWNER="$(sentinel_owner "$ID")"
   if [ -n "$SOWNER" ]; then
@@ -968,7 +963,7 @@ ownership_gate() {
   FRAG_OWNER="${OWNER:-$SOWNER}"
 }
 
-clear_sentinel() { rm -f "$OPDIR/pending/$ID"; }
+clear_sentinel() { [ -n "${SPATH:-}" ] && rm -f "$SPATH"; return 0; }
 
 # --- arm-marker recompute (G2.1) --------------------------------------------
 # The PreToolUse arm gate reads .operator/.armed/<sid> — a DERIVED cache of
@@ -1017,7 +1012,7 @@ recompute_arm_marker() { # recompute_arm_marker <session-id>
     # CLIs wrote; sentinel_owner rejects both and returns "" (unowned), which
     # is not this session either way.
     [ -f "$f" ] || continue
-    if [ "$(sentinel_owner "${f##*/}")" = "$sid" ]; then still=0; break; fi
+    if [ "$(sentinel_owner_of_name "${f##*/}")" = "$sid" ]; then still=0; break; fi
   done
   shopt -u nullglob
   if [ "$still" -eq 0 ]; then
@@ -1052,7 +1047,7 @@ retro_gate() {
   # CLI exited non-zero having already written an unaudited row (measured
   # 2026-08-12; Copilot review of PR #12). Anything non-regular at this path was
   # never written by our CLIs, so it must not silence the audit line.
-  if [ -f "$OPDIR/pending/$ID" ] && [ ! -L "$OPDIR/pending/$ID" ]; then
+  if [ -n "${SPATH:-}" ] && [ -f "$SPATH" ] && [ ! -L "$SPATH" ]; then
     return 0
   fi
 
