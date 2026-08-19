@@ -59,7 +59,15 @@ fi
 PASS=0
 FAIL=0
 pass() { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
-fail() { FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; }
+# Names are ACCUMULATED, not just printed. A failure scrolls past 5000 lines of
+# ok, and the summary line is what anyone actually reads — so on 2026-08-19 a run
+# reported 3 of 714 failed, did not reproduce in five re-runs, and the three case
+# names were gone because nobody had captured them before re-running. An
+# intermittent failure you cannot name is one you cannot fix; repeating it at the
+# end costs one variable.
+FAILED_NAMES=""
+fail() { FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  $1"; printf '  FAIL %s\n' "$1"; }
 check() { # check <desc> <0|1 condition-result>
   if [ "$2" -eq 0 ]; then pass "$1"; else fail "$1"; fi
 }
@@ -5299,5 +5307,9 @@ else
 fi
 
 ########################################################################
+if [ "$FAIL" -ne 0 ]; then
+  echo "== failed cases =="
+  printf '%s\n' "$FAILED_NAMES" | sed '/^$/d'
+fi
 echo "== summary: $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]
