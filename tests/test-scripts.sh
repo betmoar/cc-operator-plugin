@@ -516,8 +516,8 @@ check "the v2 migration is idempotent (a second fire is a no-op)" \
 # original owner and stay foreign-but-visible to everyone else.
 MIG="$(newproj)"; ( cd "$MIG" && bash "$INIT" >/dev/null 2>&1 )
 mkdir -p "$MIG/.operator/pending"
-printf 'cwd: %s\nsession_id: OLD-SESS\nopened_at: 2026-08-01T00:00:00Z\n' > "$MIG/.operator/pending/legacy-task"
-printf 'cwd: %s\nopened_at: 2026-08-01T00:00:00Z\n'                  > "$MIG/.operator/pending/unowned-task"
+printf 'cwd: %s\nsession_id: OLD-SESS\nopened_at: 2026-08-01T00:00:00Z\n' "$MIG" > "$MIG/.operator/pending/legacy-task"
+printf 'cwd: %s\nopened_at: 2026-08-01T00:00:00Z\n' "$MIG"           > "$MIG/.operator/pending/unowned-task"
 printf 'session_id: bad__sid\n'                                       > "$MIG/.operator/pending/badsep-task"
 printf 'session_id: OLD-SESS\n'                                       > "$MIG/.operator/pending/deep-task"   # under the line bound
 { for _i in $(seq 1 30); do echo filler; done; echo 'session_id: OLD-SESS'; } > "$MIG/.operator/pending/long-task"
