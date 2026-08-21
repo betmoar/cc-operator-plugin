@@ -188,11 +188,14 @@ def make_good_tree(root):
     # Both writers must DETECT a v1 file as well as emit the v2 body, and must
     # refuse to overwrite it without a backup they verified. Emitting alone used
     # to satisfy the check; a stub that only emits would now (correctly) fail.
-    # Both writers declare the .operator/bin install set, and check_install_set_parity
-    # now REPORTS a writer whose set it cannot locate rather than skipping it —
-    # so a stub without one is a fixture that models a shape the check rejects.
-    _install_loop = ("for _tool in ops-verdict.sh ops-task.sh ops-adopt.sh "
-                     "ops-claims.sh ops-backlog.sh; do :; done\n")
+    # The install set lives in ONE manifest (#76 step 3): both writer stubs
+    # source it and iterate $_OPS_TOOLS, exactly what check_install_set_parity
+    # now pins (source line + loop var + no inline literal).
+    write(root / "scripts" / "ops-install-set.sh",
+          '_OPS_TOOLS="ops-verdict.sh ops-task.sh ops-adopt.sh '
+          'ops-claims.sh ops-backlog.sh"\n')
+    _install_loop = ('. "$SCRIPT_DIR/ops-install-set.sh"\n'
+                     "for _tool in $_OPS_TOOLS; do :; done\n")
     write(root / "scripts" / "ops-init.sh",
           "#!/usr/bin/env bash\nset -eu\n" + _install_loop +
           "_GI_MARK='# cc-operator gitignore v2 (allowlist)'\n"
@@ -2145,72 +2148,87 @@ class ClaimsGuardTest(unittest.TestCase):
 
 
 class InstallSetParityTest(unittest.TestCase):
-    """check_install_set_parity: the .operator/bin install set is declared in
-    ops-init.sh AND ops-sessionstart-hook.sh. A CLI in one and not the other
-    means upgraded projects never receive it (CR4). Each test mutates the real
-    ops-init.sh install loop and asserts the check fires.
+    """check_install_set_parity after #76 step 3: the install set has ONE
+    declaration (scripts/ops-install-set.sh) and both writers must source it
+    and iterate $_OPS_TOOLS. The old two-literal parity comparison died with
+    the second literal; what must fire now is any shape that lets the drift
+    come back — a writer with its own list, a writer not sourcing the
+    manifest, a manifest the regex cannot read. Tests run against the REAL
+    writers so a shipped regression cannot hide behind a conforming stub.
     """
 
     def setUp(self):
         self.dir = pathlib.Path(tempfile.mkdtemp())
         make_good_tree(self.dir)
-        self._real_init = (pathlib.Path(__file__).resolve().parent.parent /
-                           "scripts" / "ops-init.sh").read_text(encoding="utf-8")
-        # check_install_set_parity reads BOTH install files; make_good_tree's
-        # ops-sessionstart-hook.sh stub lacks the upgrade loop, so write the real
-        # one (the check only inspects the install-loop literal, not behavior).
-        self._real_ssh = (pathlib.Path(__file__).resolve().parent.parent /
-                          "scripts" / "ops-sessionstart-hook.sh").read_text(encoding="utf-8")
+        root = pathlib.Path(__file__).resolve().parent.parent
+        self._real_init = (root / "scripts" / "ops-init.sh").read_text(encoding="utf-8")
+        self._real_ssh = (root / "scripts" / "ops-sessionstart-hook.sh").read_text(encoding="utf-8")
+        self._real_manifest = (root / "scripts" / "ops-install-set.sh").read_text(encoding="utf-8")
+        write(self.dir / "scripts" / "ops-init.sh", self._real_init)
         write(self.dir / "scripts" / "ops-sessionstart-hook.sh", self._real_ssh)
+        write(self.dir / "scripts" / "ops-install-set.sh", self._real_manifest)
 
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)
 
-    def _probs(self, mutated_init):
-        write(self.dir / "scripts" / "ops-init.sh", mutated_init)
+    def _probs(self):
         probs = []
         vp.check_install_set_parity(self.dir, probs)
         return probs
 
-    def test_good_parity_is_clean(self):
-        self.assertEqual(self._probs(self._real_init), [])
+    def test_real_writers_and_manifest_are_clean(self):
+        self.assertEqual(self._probs(), [])
 
-    def test_init_adds_a_cli_not_in_sessionstart_fires(self):
-        # Add a fifth CLI to ops-init's install loop that sessionstart lacks.
+    def test_missing_manifest_fires(self):
+        (self.dir / "scripts" / "ops-install-set.sh").unlink()
+        self.assertTrue(any("ops-install-set.sh: missing" in p for p in self._probs()),
+                        self._probs())
+
+    def test_unreadable_manifest_assignment_fires(self):
+        # A reshape the regex cannot read (array form) must be REPORTED, not
+        # silently accepted — the fail-open the pre-#34 version had.
+        write(self.dir / "scripts" / "ops-install-set.sh",
+              '_OPS_TOOLS=(ops-verdict.sh ops-task.sh)\n')
+        self.assertTrue(any("no plain `_OPS_TOOLS" in p for p in self._probs()),
+                        self._probs())
+
+    def test_manifest_without_verdict_fires(self):
+        # An install set omitting the ledger's single writer is corruption.
+        write(self.dir / "scripts" / "ops-install-set.sh",
+              '_OPS_TOOLS="ops-task.sh ops-adopt.sh"\n')
+        self.assertTrue(any("omits" in p and "ops-verdict.sh" in p
+                            for p in self._probs()), self._probs())
+
+    def test_writer_regrowing_inline_literal_fires(self):
+        # The drift coming back: a writer declares its own _OPS_TOOLS beside
+        # the source line. The check reads code, so the manifest still parses,
+        # but the writer's local copy shadows it — two lists again (CR4).
         src = self._real_init.replace(
-            "ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh",
-            "ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh ops-future.sh", 1)
-        self.assertTrue(any("install-set drift" in p for p in self._probs(src)),
-                        self._probs(src))
+            '. "$SCRIPT_DIR/ops-install-set.sh"',
+            '. "$SCRIPT_DIR/ops-install-set.sh"\n'
+            '_OPS_TOOLS="ops-verdict.sh ops-task.sh"', 1)
+        self.assertNotEqual(src, self._real_init)  # the mutation landed
+        write(self.dir / "scripts" / "ops-init.sh", src)
+        self.assertTrue(any("declares its own _OPS_TOOLS literal" in p
+                            for p in self._probs()), self._probs())
 
-    def test_unlocatable_install_set_is_reported_not_skipped(self):
-        # The check used to return None for a writer it could not parse and then
-        # guard with `if a and b`, so refactoring ONE writer's loop to a variable
-        # silently reduced the comparison to nothing — green while pinning zero.
-        # Measured 2026-08-12 while fixing #34: ops-sessionstart-hook.sh moved to
-        # `for _tool in $_OPS_TOOLS` and the parity check went quiet.
-        src = self._real_init.replace("for tool in ops-verdict.sh", "for tool in $NOPE", 1) \
-            if "for tool in ops-verdict.sh" in self._real_init else \
-            self._real_init.replace("for _tool in ops-verdict.sh", "for _tool in $NOPE", 1)
-        probs = self._probs(src)
-        self.assertTrue(any("cannot locate the .operator/bin install set" in p
-                            for p in probs), probs)
+    def test_writer_not_sourcing_manifest_fires(self):
+        src = self._real_init.replace('. "$SCRIPT_DIR/ops-install-set.sh"',
+                                      ': no-source-here', 1)
+        self.assertNotEqual(src, self._real_init)
+        write(self.dir / "scripts" / "ops-init.sh", src)
+        self.assertTrue(any("does not source ops-install-set.sh" in p
+                            for p in self._probs()), self._probs())
 
-    def test_declared_but_uniterated_tool_list_fires(self):
-        # A variable spelling only helps if the copy loop iterates it. Declaring
-        # _OPS_TOOLS and looping over a hand-written list means the declared set
-        # and the installed set are two different lists (F30) — and the variable
-        # is what this check reads, so it would report the one nobody runs.
-        # Built from a synthetic writer rather than by mutating the real
-        # ops-init.sh, whose loop is spelled `for tool in` (no underscore); an
-        # earlier draft keyed off `for _tool in`, matched nothing, and SKIPPED —
-        # a test that proves nothing while reading as present.
-        src = ('#!/usr/bin/env bash\n'
-               '_OPS_TOOLS="ops-verdict.sh ops-task.sh ops-adopt.sh '
-               'ops-claims.sh ops-backlog.sh"\n'
-               'for _tool in ops-verdict.sh ops-task.sh; do :; done\n')
-        probs = self._probs(src)
-        self.assertTrue(any("does not iterate it" in p for p in probs), probs)
+    def test_writer_looping_inline_list_fires(self):
+        # Sourcing the manifest but looping a hand-written list: the declared
+        # set and the installed set are two different lists (F30).
+        src = self._real_init.replace("for tool in $_OPS_TOOLS",
+                                      "for tool in ops-verdict.sh ops-task.sh", 1)
+        self.assertNotEqual(src, self._real_init)
+        write(self.dir / "scripts" / "ops-init.sh", src)
+        self.assertTrue(any("does not iterate $_OPS_TOOLS" in p
+                            for p in self._probs()), self._probs())
 
 
 class GitignoreParityTest(unittest.TestCase):

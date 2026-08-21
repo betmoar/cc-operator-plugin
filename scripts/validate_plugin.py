@@ -1364,57 +1364,70 @@ def check_claims(root, problems):
 
 
 def check_install_set_parity(root, problems):
-    r"""The .operator/bin install set is now declared in TWO files: ops-init.sh
-    (the authoritative install on /cc-operator:start) and ops-sessionstart-hook.sh
-    (the automated upgrade path). A fifth CLI added to one and not the other ships
-    green — every upgraded project silently never receives it (CR4, code-review
-    2026-08-04). This is the F30 shape the repo's check_claims docstring argues
-    against. Pin the two literals equal.
+    r"""The .operator/bin install set has ONE declaration (#76 step 3):
+    scripts/ops-install-set.sh, sourced by both writers — ops-init.sh (the
+    authoritative install) and ops-sessionstart-hook.sh (the upgrade path).
+    Until 0.9.0 each writer carried its own copy and this check pinned them
+    equal (CR4: a fifth CLI added to one and not the other shipped green).
+    One declaration removes the drift; what this check now holds:
 
-    Either writer may spell the set inline (`for _tool in ops-verdict.sh …`) or
-    via a variable it assigns (`_OPS_TOOLS="…"` / `for _tool in $_OPS_TOOLS`);
-    ops-sessionstart-hook.sh needs the variable because its staleness probe and
-    its copy loop must iterate the SAME set, and a second inline copy would be
-    one more place to drift. Both spellings resolve to the same list here.
+    (1) the manifest exists, is a plain single `_OPS_TOOLS="…"` assignment this
+        regex can read, and names ops-verdict.sh (the gate's single writer —
+        an empty or garbled set is a broken install, not a smaller one);
+    (2) each writer SOURCES the manifest (`. "$…/ops-install-set.sh"`) and
+        iterates `$_OPS_TOOLS` in its copy loop — a writer that re-grew an
+        inline list beside the source line is the drift coming back with the
+        check green (F30: declared-but-not-applied);
+    (3) no writer declares its own `_OPS_TOOLS="…"` literal any more.
 
-    A writer whose set cannot be located is REPORTED, not skipped. The earlier
-    version returned None for an unmatched file and then guarded with
-    `if a and b`, so refactoring one writer to a variable silently reduced the
-    comparison to nothing — the check passed while pinning zero (measured
-    2026-08-12 while fixing #34). A parity check that goes quiet when it stops
-    understanding its input is worse than no parity check.
+    Every failure is REPORTED, never skipped — the earlier version compared
+    `if a and b` and went quiet when one side was unreadable (measured
+    2026-08-12 while fixing #34).
     """
-    inline = re.compile(r'for _?tool in (ops-verdict\.sh ops-task\.sh ops-adopt\.sh[^;]*)')
-    via_var = re.compile(r'^_OPS_TOOLS="([^"]*)"', re.MULTILINE)
-    sets = {}
+    manifest = root / "scripts" / "ops-install-set.sh"
+    if not manifest.is_file():
+        problems.append(
+            "scripts/ops-install-set.sh: missing — the single install-set "
+            "declaration both writers source (#76 step 3); without it ops-init "
+            "dies and the SessionStart upgrade path skips every session")
+        return
+    m = re.search(r'^_OPS_TOOLS="([^"]+)"\s*$',
+                  manifest.read_text(encoding="utf-8"), re.MULTILINE)
+    if not m:
+        problems.append(
+            "scripts/ops-install-set.sh: no plain `_OPS_TOOLS=\"…\"` assignment "
+            "found — both writers source this file expecting that variable; a "
+            "reshape (array, computed value) must update this locator AND both "
+            "writers, not silence the pin")
+        return
+    tools = m.group(1).split()
+    if "ops-verdict.sh" not in tools:
+        problems.append(
+            f"scripts/ops-install-set.sh: install set {tools} omits "
+            f"ops-verdict.sh — the single writer to VERDICTS.md is the one CLI "
+            f"the charter cannot function without; an install set without it is "
+            f"corruption, not configuration")
     for name in ("ops-init.sh", "ops-sessionstart-hook.sh"):
         p = root / "scripts" / name
         if not p.is_file():
-            continue
-        text = p.read_text(encoding="utf-8")
-        m = inline.search(text) or via_var.search(text)
-        if not m:
+            continue  # missing writer is check_scripts' finding
+        code = shell_code(p)
+        if not re.search(r'\.\s+"\$[A-Za-z_{}]+[^"]*/ops-install-set\.sh"', code):
             problems.append(
-                f"scripts/{name}: cannot locate the .operator/bin install set "
-                f"(neither `for _tool in ops-verdict.sh …` nor `_OPS_TOOLS=\"…\"`) "
-                f"— check_install_set_parity is reporting rather than skipping, "
-                f"because a parity check that cannot read one side pins nothing "
-                f"(CR4)")
-            continue
-        sets[name] = " ".join(m.group(1).split())
-        # A variable spelling only helps if it is what the copy loop iterates.
-        if via_var.search(text) and not re.search(r'for _?tool in \$_OPS_TOOLS', text):
+                f"scripts/{name}: does not source ops-install-set.sh — the "
+                f"install set must come from the one shared declaration, or the "
+                f"two writers drift again (CR4)")
+        if not re.search(r'for _?tool in \$_OPS_TOOLS', code):
             problems.append(
-                f"scripts/{name}: declares _OPS_TOOLS but its copy loop does not "
-                f"iterate it — the declared set and the installed set are then "
-                f"two different lists (F30: declared-but-not-applied)")
-    a, b = sets.get("ops-init.sh"), sets.get("ops-sessionstart-hook.sh")
-    if a and b and a != b:
-        problems.append(
-            f"install-set drift: ops-init.sh installs [{a}] but "
-            f"ops-sessionstart-hook.sh upgrades [{b}] — a CLI in one and not the "
-            f"other means upgraded projects never receive it (CR4; the two lists "
-            f"must stay equal)")
+                f"scripts/{name}: copy loop does not iterate $_OPS_TOOLS — "
+                f"sourcing the manifest while looping an inline list is the "
+                f"drift coming back with this check green (F30: "
+                f"declared-but-not-applied)")
+        if re.search(r'^_OPS_TOOLS="[^"]+"', code, re.MULTILINE):
+            problems.append(
+                f"scripts/{name}: declares its own _OPS_TOOLS literal — the "
+                f"declaration lives in ops-install-set.sh alone (#76 step 3); "
+                f"a second copy is the CR4 drift this file exists to end")
 
 
 def check_gitignore_parity(root, problems):

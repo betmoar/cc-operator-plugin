@@ -214,12 +214,23 @@ fi
 # paths resolve in any project, not only the plugin repo (the model's shell has
 # no ${CLAUDE_PLUGIN_ROOT}). Unlike the ledgers these are always refreshed:
 # they are generated artifacts tracking the installed plugin version.
+#
+# The set comes from ONE declaration (#76 step 3) shared with the SessionStart
+# upgrade path. A missing manifest fails LOUD before any copy: installing a
+# partial or guessed set silently is the CR4 failure the shared file exists to
+# end, and this writer runs interactively where a die is visible and fixable.
+[ -f "$SCRIPT_DIR/ops-install-set.sh" ] || {
+  echo "ops-init: $SCRIPT_DIR/ops-install-set.sh is missing — cannot install the gate CLIs (the install set is declared there; a partial install would break the charter's .operator/bin/ paths)" >&2
+  exit 1
+}
+# shellcheck source=/dev/null
+. "$SCRIPT_DIR/ops-install-set.sh"
 mkdir -p "$OPDIR/bin"
-for tool in ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh ops-backlog.sh; do
+for tool in $_OPS_TOOLS; do
   cp "$SCRIPT_DIR/$tool" "$OPDIR/bin/$tool"
   chmod +x "$OPDIR/bin/$tool"
 done
-echo "installed $OPDIR/bin/{ops-verdict.sh,ops-task.sh,ops-adopt.sh,ops-claims.sh,ops-backlog.sh}"
+echo "installed $OPDIR/bin/{$(printf '%s' "$_OPS_TOOLS" | tr ' ' ',')}"
 
 # Stamp the installed plugin version. SessionStart compares this to the running
 # plugin's version and auto-refreshes bin/ when it differs — the automated

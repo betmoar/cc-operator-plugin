@@ -173,9 +173,24 @@ _stamp="$cwd/.operator/.version"
 _oldver=""
 [ -f "$_stamp" ] && _oldver="$(cat "$_stamp" 2>/dev/null)"
 
-# The install set, declared once — the loop below and the staleness probe must
-# agree, or a CLI is checked for freshness and never copied (or vice versa).
-_OPS_TOOLS="ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh ops-backlog.sh"
+# The install set, from the ONE shared declaration (#76 step 3) — the same
+# file ops-init.sh sources, so the two writers cannot drift (CR4). The loop
+# below and the staleness probe iterate the same variable.
+#
+# Polarity on a missing manifest: fail OPEN — skip the upgrade, keep the old
+# bin/, warn on stderr, and let the next session retry. This hook runs
+# unattended at every session start; a die here bricks session startup over a
+# packaging defect, while a skipped upgrade merely leaves yesterday's CLIs
+# (exactly the pre-#34 steady state). The interactive writer (ops-init) is the
+# one that dies loud.
+_OPS_TOOLS=""
+if [ -f "$_ssdir/ops-install-set.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$_ssdir/ops-install-set.sh"
+fi
+if [ -z "$_OPS_TOOLS" ]; then
+  echo "cc-operator sessionstart: scripts/ops-install-set.sh missing or empty — skipping the bin/ upgrade this session (installed CLIs left as-is; reinstall the plugin or run /cc-operator:start to repair)" >&2
+fi
 
 # Is any installed CLI older than the plugin's copy? A version-string test alone
 # is NOT enough, and this is issue #34, measured live by the replay charter on
@@ -203,7 +218,10 @@ _bin_stale() {
 # when the shipped CLIs are simply newer than what is installed. The second
 # clause is what makes a hotfix — and any development tree, where the version
 # legitimately does not move between commits — actually reach the project.
-if [ -n "$_newver" ] && { [ "$_newver" != "$_oldver" ] || _bin_stale; }; then
+# `-n "$_OPS_TOOLS"` is load-bearing: with an empty set the block would copy
+# NOTHING and then re-stamp the new version — an upgrade recorded as done that
+# installed zero files, unretried forever because the stamp now matches.
+if [ -n "$_OPS_TOOLS" ] && [ -n "$_newver" ] && { [ "$_newver" != "$_oldver" ] || _bin_stale; }; then
   # Refresh the bin/ CLIs the way ops-init does (always-refresh: generated
   # artifacts tracking the installed plugin version). mkdir the bin/ dir first
   # (ops-init does; without it a project whose .operator/bin was never created
