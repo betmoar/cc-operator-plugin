@@ -40,9 +40,9 @@ Recurring judgement call — three CLIs validate names, and they must agree.
    justification names session ids, it does not belong in `check_bare_name`.
 3. **Apply it in all three CLIs** (`ops-task.sh`, `ops-verdict.sh`,
    `ops-adopt.sh`) — and if the rule concerns owners, **also** in the `case`
-   filter of **all three** `sentinel_owner_of_name` parsers (`ops-verdict.sh`,
-   `ops-stop-hook.sh`, `statusline.sh`) and `ops-adopt.sh`'s inline `PREV`
-   reject-set. Refusing at the CLI alone leaves hand-written and
+   filter of both `sentinel_owner_of_name` parsers (`ops-verdict.sh` —
+   standalone, Zone B — and `scripts/lib/partition.sh`, sourced by the Stop
+   hook and the statusline) plus `ops-adopt.sh`'s inline `PREV` reject-set. Refusing at the CLI alone leaves hand-written and
    merged-in sentinels unguarded, which is exactly the input class that is not
    ours.
 4. **Write the migration test before the guard.** Take a value that was legal
@@ -54,14 +54,13 @@ Recurring judgement call — three CLIs validate names, and they must agree.
 
 Any new code that reads a sentinel, a fragment, a ledger, or DECISIONS.md.
 
-> **DECISIONS.md (stage 2 deviation gate)** is now a parsed ledger too: the Stop
-> hook's `scan_deviations` and the statusline's `scan_deviations_bar` both read
-> it whole-file, byte-bounded per line, fail per the polarity split documented
-> in `ops-stop-hook.sh` (hook fails CLOSED on cap/corrupt; the bar fails toward
-> SILENCE — a bar never blocks). A new DECISIONS.md reader inherits every rule
-> below PLUS the position-based mark-clears-deviation scan. Both readers are
-> re-implementations (the sandbox-free statusline and the hook cannot share
-> code); change the partition in one and the other must move with it.
+> **DECISIONS.md (stage 2 deviation gate)** is a parsed ledger: the shared
+> `scan_deviations` in `scripts/lib/partition.sh` (sourced by the Stop hook)
+> reads it whole-file, byte-bounded, failing CLOSED on cap/corrupt; the
+> statusline's inline tail-window scanner approximates the same count and
+> fails toward SILENCE (a bar never blocks; CR5's 300ms budget is why it does
+> not call the whole-file scan). A new DECISIONS.md reader inherits every rule
+> below PLUS the position-based mark-clears-deviation scan.
 
 1. **Treat the content as untrusted.** These are ordinary files. `git merge`,
    `git checkout`, a hand-edit, a truncated write, and a stray binary can all
@@ -407,8 +406,7 @@ state), so it is neither a sentinel reader nor a `check_guard_parity` site.
    only YOUR Stop; untagged (legacy) ones block EVERY session (the unowned =
    blocks-all rule, mirroring sentinels). Presenting a handoff clears them via
    `.operator/bin/ops-verdict.sh --mark-handoff --owner <sid>` — a HANDOFF-MARK
-   positioned in the file AFTER the deviations it clears. The Stop hook's
-   `scan_deviations` and the statusline's `scan_deviations_bar` re-implement the
-   same mine/unowned-vs-foreign partition; the hook fails CLOSED on cap/corrupt,
-   the bar fails toward SILENCE (different strategies by design — the bar uses a
-   reverse-tail scan for the 300ms budget, the hook whole-file for accuracy).
+   positioned in the file AFTER the deviations it clears. The shared
+   `scan_deviations` (lib/partition.sh, sourced by the hook) and the statusline's
+   inline tail scanner implement the same mine/unowned-vs-foreign partition;
+   the hook fails CLOSED on cap/corrupt, the bar fails toward SILENCE.
