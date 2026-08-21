@@ -109,17 +109,37 @@ fi
 # Rename what we can read, leave what we cannot. An unmigrated sentinel keeps the
 # unowned (blocking) reading, which is the safe direction, and `ops-adopt.sh`
 # remains the deliberate way out.
+#
+# pending/ entries are UNTRUSTED: this loop reads a body our CLIs have never
+# validated, so the read is BOUNDED (a multi-MB newline-less planted file must
+# not stall SessionStart behind an unbounded `read`) and symlinks are refused
+# BEFORE `-f` (which follows them — a link to a huge regular file reads the
+# target; a link is never a sentinel our CLIs wrote, same F65 rule as every
+# other reader). PR #77 review (Copilot + test-analyzer), both findings on the
+# same ten lines.
+_MIG_MAX_LINES=20
+_MIG_MAX_BYTES=4096
 if [ -d "$cwd/.operator/pending" ]; then
   for _s in "$cwd/.operator/pending"/*; do
-    [ -f "$_s" ] || continue                      # symlinks/dirs are not ours
+    [ ! -L "$_s" ] || continue                    # a symlink is never ours (F65)
+    [ -f "$_s" ] || continue                      # dirs etc. are not ours
     case "${_s##*/}" in *__*) continue ;; esac    # already migrated
+    # byte bound first: `read` has no total-size cap, a 4 GiB single-line file
+    # would be read to its end even under a line counter
+    [ "$(wc -c < "$_s" 2>/dev/null || echo 999999)" -le "$_MIG_MAX_BYTES" ] || continue
     _sid=""
+    _n=0
     while IFS= read -r _l || [ -n "$_l" ]; do
+      _n=$((_n+1)); [ "$_n" -le "$_MIG_MAX_LINES" ] || break
       case "$_l" in session_id:\ *) _sid="${_l#session_id: }"; break ;; esac
     done < "$_s"
     [ -n "$_sid" ] || continue                    # genuinely unowned: leave it
+    # the SAME reject-set the writers enforce (check_owner_name) plus the
+    # migration's own separators: a `__` in a stamped sid would build the
+    # ambiguous name the writers now refuse, and control chars have no honest
+    # source in a body our CLIs wrote
     case "$_sid" in
-      "" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) continue ;;
+      "" | */* | .* | *"|"* | *[[:space:]]* | *[[:cntrl:]]* | *__* | *.exempt) continue ;;
     esac
     mv "$_s" "$cwd/.operator/pending/${_sid}__${_s##*/}" 2>/dev/null || true
   done

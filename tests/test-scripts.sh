@@ -507,6 +507,53 @@ cp "$GIP/.operator/.gitignore" "$GIP/gi.before"
 sed "s|<tmp>|$GIP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
 check "the v2 migration is idempotent (a second fire is a no-op)" \
   "$(cmp -s "$GIP/gi.before" "$GIP/.operator/.gitignore" && echo 0 || echo 1)"
+# --- legacy sentinel migration (0.9.0: ownership moved into the filename) ----
+# A pre-0.9.0 sentinel carries `session_id: <id>` in its BODY under a bare
+# task-id name. SessionStart renames it to `<sid>__<task>` — and the EFFECT
+# must be asserted, not just the non-firing on already-migrated names (PR #77
+# review: only the empty-body case was tested; a regression that silently
+# drops the mv shipped green). The renamed sentinel must re-block exactly its
+# original owner and stay foreign-but-visible to everyone else.
+MIG="$(newproj)"; ( cd "$MIG" && bash "$INIT" >/dev/null 2>&1 )
+mkdir -p "$MIG/.operator/pending"
+printf 'cwd: %s\nsession_id: OLD-SESS\nopened_at: 2026-08-01T00:00:00Z\n' > "$MIG/.operator/pending/legacy-task"
+printf 'cwd: %s\nopened_at: 2026-08-01T00:00:00Z\n'                  > "$MIG/.operator/pending/unowned-task"
+printf 'session_id: bad__sid\n'                                       > "$MIG/.operator/pending/badsep-task"
+printf 'session_id: OLD-SESS\n'                                       > "$MIG/.operator/pending/deep-task"   # under the line bound
+{ for _i in $(seq 1 30); do echo filler; done; echo 'session_id: OLD-SESS'; } > "$MIG/.operator/pending/long-task"
+{ printf 'session_id: OLD-SESS\n'; head -c 8192 /dev/zero | tr '\0' 'x'; } > "$MIG/.operator/pending/fat-task"     # over the byte cap
+ln -s "$MIG/.operator/pending/legacy-task" "$MIG/.operator/pending/link-task"
+sed "s|<tmp>|$MIG|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
+check "migration renames a body-stamped sentinel to <sid>__<task>" \
+  "$([ -f "$MIG/.operator/pending/OLD-SESS__legacy-task" ] && [ ! -e "$MIG/.operator/pending/legacy-task" ] && echo 0 || echo 1)"
+run_hook_session() { # <cwd> <session-id> → HRC/HSUM via a stop payload on stdin
+  local _o; _o="$(mktemp)"
+  printf '{"hook_event_name":"Stop","stop_hook_active":false,"cwd":"%s","session_id":"%s"}' "$1" "$2" \
+    | "$BASH_ABS" "$HOOK" >"$_o" 2>&1; HRC=$?
+  HSUM="$(cat "$_o")"; rm -f "$_o"
+}
+run_hook_session "$MIG" OLD-SESS
+check "renamed sentinel blocks its original owner again (Stop hook rc=2 for OLD-SESS)" \
+  "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+run_hook_session "$MIG" OTHER
+# rc is 2 either way here — the unowned-task sentinel blocks EVERY session by
+# design — so the discriminator is the REPORT: the migrated sentinel must read
+# as OLD-SESS's (foreign, "not blocking"), never as a second unowned blocker.
+check "renamed sentinel is reported as OLD-SESS's foreign task, not unowned" \
+  "$(printf '%s' "$HSUM" | grep -q 'legacy-task owned by OLD-SESS' && printf '%s' "$HSUM" | grep -q 'not blocking' && echo 0 || echo 1)"
+check "an unowned legacy sentinel is left in place (still blocks everyone)" \
+  "$([ -f "$MIG/.operator/pending/unowned-task" ] && echo 0 || echo 1)"
+check "a __-carrying stamped sid is NOT migrated (would build the ambiguous name)" \
+  "$([ -f "$MIG/.operator/pending/badsep-task" ] && [ ! -e "$MIG/.operator/pending/bad__sid__badsep-task" ] && echo 0 || echo 1)"
+check "a sid past the 20-line bound is not read (bound holds)" \
+  "$([ -f "$MIG/.operator/pending/deep-task" ] || [ -f "$MIG/.operator/pending/OLD-SESS__deep-task" ] && echo 0 || echo 1)"
+check "a 30-line body leaves its sid unmigrated (line cap fires)" \
+  "$([ -f "$MIG/.operator/pending/long-task" ] && [ ! -e "$MIG/.operator/pending/OLD-SESS__long-task" ] && echo 0 || echo 1)"
+check "an over-4KiB body is skipped by the byte cap (no unbounded read)" \
+  "$([ -f "$MIG/.operator/pending/fat-task" ] && [ ! -e "$MIG/.operator/pending/OLD-SESS__fat-task" ] && echo 0 || echo 1)"
+check "a symlink pending/ entry is never followed by the migration (F65)" \
+  "$([ -L "$MIG/.operator/pending/link-task" ] && { [ -f "$MIG/.operator/pending/legacy-task" ] || [ -f "$MIG/.operator/pending/OLD-SESS__legacy-task" ]; } && echo 0 || echo 1)"
+rm -rf "$MIG"
 rm -rf "$Q" "$P" "$GIP"
 
 # --- automated upgrade path (version-gated bin/ refresh, 2026-08-04) ----------
