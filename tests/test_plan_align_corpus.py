@@ -44,6 +44,11 @@ LEAK_TOKENS = ("aligned", "misaligned", "fixture", "northstar", "north star",
 LEAK_VOCAB = ("fixture", "corpus", "column", "aligned", "misaligned",
               "north star", "plan-align", "lens")
 REQUIRED_NONEMPTY = ("id", "title", "files", "produces", "specExcerpt", "testCycle")
+# `consumes` is deliberately ABSENT from REQUIRED_NONEMPTY: every column's first
+# task consumes nothing (nothing is upstream of task 1), and an empty consumes
+# is what makes that true — requiring it non-empty would force a fabricated
+# dependency into the sound control. plan.js's own schema allows empty consumes
+# for the same reason. (PR #77 review asked why the tuple omits it.)
 # An identifier a `consumes` may legitimately name: `foo(` in a produces string,
 # or a name defined in the fixture project.
 IDENT_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\b")

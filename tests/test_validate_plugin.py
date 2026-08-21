@@ -223,7 +223,7 @@ def make_good_tree(root):
           "echo ok\n")
     # The readers/CLIs need bodies that satisfy the byte-bound, guard-parity and
     # lock-parity checks — a bare `echo ok` stub fails all three.
-    guards = ("check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
+    guards = ("check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
               "check_owner_name() { :; }\n")
     bounded = "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
     # every sentinel touchpoint carries the -L symlink rejection (F65/F66)
@@ -1074,7 +1074,7 @@ class ValidatorTest(unittest.TestCase):
     "}\n")
         good_verdict = (
             "#!/usr/bin/env bash\n"
-            "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
+            "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
             "check_owner_name() { :; }\n"
             "[ ! -L \"$f\" ] || exit 0\n"
             "sentinel_owner_of_name() {\n"
@@ -1089,7 +1089,7 @@ class ValidatorTest(unittest.TestCase):
             "while IFS= read -r -n 1048576 line; do :; done < \"$frag\"\n")
         good_adopt = (
             "#!/usr/bin/env bash\n"
-            "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
+            "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
             "check_owner_name() { :; }\n"
             "[ ! -L \"$F\" ] || exit 0\n"
             # PREV reject-set (F15): the owner now arrives in the sentinel NAME,
@@ -1100,7 +1100,7 @@ class ValidatorTest(unittest.TestCase):
         write(self.dir / "scripts" / "ops-adopt.sh", adopt_body or good_adopt)
         write(self.dir / "scripts" / "ops-task.sh",
               "#!/usr/bin/env bash\n"
-              "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
+              "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
               "check_owner_name() { :; }\n"
               "[ ! -L \"$F\" ] || exit 0\n")
         write(self.dir / "scripts" / "statusline.sh", GOOD_STATUSLINE)
@@ -1118,7 +1118,7 @@ class ValidatorTest(unittest.TestCase):
     def test_unbounded_read_fires(self):
         self._write_readers(verdict_body=(
             "#!/usr/bin/env bash\n"
-            "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
+            "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
             "check_owner_name() { :; }\n"
             "while IFS= read -r line; do :; done < \"$f\"\n"
             "while IFS= read -r -n 512 row; do :; done < \"$frag\"\n"))
@@ -1215,7 +1215,7 @@ class ValidatorTest(unittest.TestCase):
             "#!/usr/bin/env bash\n"
             "# `read -r` is bounded by LINES, not bytes — discussion only.\n"
             "#    a plain read -r would slurp the whole line first\n"
-            "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
+            "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
             "check_owner_name() { :; }\n"
             "[ ! -L \"$F\" ] || exit 0\n"
             "while IFS= read -r -n 512 line; do :; done < \"$F\"\n"
@@ -1226,7 +1226,7 @@ class ValidatorTest(unittest.TestCase):
     def test_missing_guard_in_one_cli_fires(self):
         self._write_readers()
         write(self.dir / "scripts" / "ops-task.sh",
-              "#!/usr/bin/env bash\ncheck_bare_name() { case \"$2\" in .*) die x ;; esac; }\n")
+              "#!/usr/bin/env bash\ncheck_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n")
         probs = self.bounds_problems()
         self.assertTrue(any("missing check_owner_name()" in p for p in probs), probs)
 

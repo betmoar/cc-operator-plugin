@@ -808,6 +808,33 @@ for (const [label, degen] of Object.entries({
   ok(dupRes.graph.layers.every((l) => Array.isArray(l)),
     "plan graph: duplicate ids — no sparse hole in layers (a JSON null the operator would read as a layer)");
 }
+// The same depth for the OTHER degenerate shapes (PR #77 review: the dup-id
+// block was the only shape with a count check — a back-reference silently
+// vanishing from layers would ship green). Every task surfaces exactly once,
+// in exactly one layer, whatever the shape.
+{
+  const shapes = {
+    "solo": [gtask("solo", "make_solo() -> str", "")],
+    "self-consume": [gtask("s", "make_s() -> str", "make_s from s")],
+    "back-reference": [gtask("p", "make_p() -> str", "make_q from q"),
+                       gtask("q", "make_q() -> str", "make_p from p")],
+    "no-produces": [gtask("n1", "", ""), gtask("n2", "", "")],
+    "punctuation": [gtask("u", "→ ✓ ---", "→ ✓ ---")],
+  };
+  for (const [label, tasks] of Object.entries(shapes)) {
+    const { result } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR },
+      { decompose: { fileStructure: "f", tasks }, ...graphVet(tasks.map((t) => t.id)) });
+    const flat = result.graph.layers.flat();
+    ok(flat.length === tasks.length && new Set(flat).size === flat.length,
+      `plan graph: ${label} — every task surfaces exactly once, no duplicates, no drops`);
+    // a back-reference must NOT fabricate a real edge: p consumes make_q which
+    // only a LATER task produces, so the forward resolution stays unverified
+    if (label === "back-reference") {
+      ok(result.graph.edges.every((e) => e.kind !== "real" || e.from !== "q" || e.to !== "p"),
+        "plan graph: back-reference produces no real edge (dependsOn scans earlier tasks only)");
+    }
+  }
+}
 
 // args.spec is guarded like northStar: an absent spec used to run a full
 // judgment-tier decompose plus every vet seat against a placeholder string.

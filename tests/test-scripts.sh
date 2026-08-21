@@ -1365,9 +1365,14 @@ rm -rf "$P"
 echo "-- Case 18: every sentinel/fragment reader is byte-bounded [F02/F03]"
 # INVARIANT: `read -r` is bounded by LINES, not bytes — one newline-less line is
 # a single "line" and gets slurped whole. The 0.4.0 fix applied `read -r -n 512`
-# to the Stop hook only; ops-verdict.sh, ops-adopt.sh and the --reconcile
+# to the Stop hook only; ops-verdict.sh and the --reconcile
 # fragment reader kept plain `read -r`. Measured on one 256MB line: hook 0.17s
-# vs verdict 13.51s, adopt 16.77s, reconcile 32.56s. (Audit F02, P2.)
+# vs verdict 13.51s, reconcile 32.56s. (Audit F02, P2.) 0.9.0 note: ops-adopt.sh
+# no longer reads sentinel CONTENT at all (adoption is a rename; only the
+# filename is inspected), so its sub-assertion below now measures the wall
+# clock of an `mv` — kept as a tripwire against a reintroduced unbounded read
+# in any adopt code path, not as proof one is absent; that proof is
+# check_reader_bounds, which asserts "ops-adopt no longer reads a sentinel".
 #
 # The 32.56s number is why this is not merely slow: --reconcile holds the lock
 # across that read, and the budget presuming a crashed holder is 30s — so a
@@ -1388,7 +1393,7 @@ check "ops-verdict reads a huge-line sentinel in bounded time (<3s)" "$([ "$((S1
 ( cd "$P" && bash "$TASK" T-HUGE2 --owner SESS-A >/dev/null 2>&1 )
 bigline "$P/.operator/pending/T-HUGE2"
 S0=$(date +%s); ( cd "$P" && bash "$ADOPT" --owner SESS-B T-HUGE2 >/dev/null 2>&1 ); S1=$(date +%s)
-check "ops-adopt reads a huge-line sentinel in bounded time (<3s)" "$([ "$((S1 - S0))" -lt 3 ] && echo 0 || echo 1)"
+check "ops-adopt handles a huge-line sentinel in bounded time (<3s, mv-only since 0.9.0)" "$([ "$((S1 - S0))" -lt 3 ] && echo 0 || echo 1)"
 bigline "$P/.operator/verdicts.d/huge.md"
 S0=$(date +%s); ( cd "$P" && bash "$VERDICT" --reconcile >/dev/null 2>&1 ); S1=$(date +%s)
 check "--reconcile reads a huge-line fragment in bounded time (<3s)" "$([ "$((S1 - S0))" -lt 3 ] && echo 0 || echo 1)"
