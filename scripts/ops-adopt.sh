@@ -415,6 +415,14 @@ check_bare_name() { # check_bare_name <label> <value>
     */*) die "$1 must be a bare name (no '/')" ;;
     .*) die "$1 must not start with '.' — a dotfile sentinel is invisible to the Stop hook's glob" ;;
     *"|"* | *"$NL"*) die "$1 must not contain '|' or newlines" ;;
+    # `__` separates owner from task in the sentinel NAME, so it cannot appear
+    # in either half or every reader's first-`__` split parses a name our own
+    # writers could never have built. ops-task.sh had this arm and the other
+    # two writers did not (PR #77 review): a session adopting as
+    # `sessA__evilB` created `sessA__evilB__T1`, every reader parsed owner
+    # `sessA`, the real adopter was locked out and `sessA` — a session that
+    # adopted nothing — could close the task.
+    *__*) die "$1 must not contain '__' (it separates owner from task in the sentinel name)" ;;
   esac
 }
 
@@ -477,8 +485,21 @@ done
 # validate-then-rewrite must be indivisible against a concurrent ops-verdict.sh.
 lock_acquire
 
+# The sentinel's NAME carries its owner, so find it by task id under any owner.
+sentinel_path() { # <task-id> → path, or empty
+  local _t="$1" _f
+  shopt -s nullglob
+  for _f in "$OPDIR/pending/$_t" "$OPDIR/pending"/*__"$_t"; do
+    # -e OR -L: `-e` is FALSE for a dangling symlink, so a planted broken link
+    # went unseen and a second sentinel was created beside it for the same task.
+    # A planted entry must be found and refused, not stepped around.
+    { [ -e "$_f" ] || [ -L "$_f" ]; } && { printf '%s\n' "$_f"; break; }
+  done
+  shopt -u nullglob
+}
+
 for ID in ${IDS+"${IDS[@]}"}; do
-  F="$OPDIR/pending/$ID"
+  F="$(sentinel_path "$ID")"; [ -n "$F" ] || F="$OPDIR/pending/$ID"
   # -L BEFORE -f: `-f` FOLLOWS a symlink, so a link planted in pending/ reads
   # as a real sentinel — and the rewrite below would then replace the link with
   # a genuine regular-file sentinel, LAUNDERING an entry that never went
@@ -490,92 +511,38 @@ for ID in ${IDS+"${IDS[@]}"}; do
 done
 
 for ID in ${IDS+"${IDS[@]}"}; do
-  F="$OPDIR/pending/$ID"
-  PREV=""
-  OPENED=""
-  CWDLINE=""
-  # `read -r -n 512` + a 20-line cap, matching every other reader: a plain
-  # `read -r` is bounded by LINES, not bytes, so one newline-less line is a
-  # single "line" and gets slurped whole — measured 16.77s on a 256MB sentinel.
-  # (Audit F02.)
-  #
-  # Trailing \r is stripped from the fields we COPY FORWARD. session_id is
-  # regenerated clean below, but cwd:/opened_at: were passed through verbatim,
-  # and opened_at is echoed into the Stop hook's foreign-task report — where a
-  # bare CR carriage-returns the terminal mid-line and eats the operator's
-  # guidance. A CRLF sentinel is an ordinary checkout artifact. (Audit F04.)
-  # NUL pre-scan (F46): bash drops NULs so no $line test can see one, and bash
-  # 3.2's `read -n` stops AT a NUL — a padded chunk passes the length guard and
-  # its tail is matched as a fresh line, smuggling a prior owner. Treat the
-  # whole body as unusable; the fields below stay empty and are regenerated.
-  # Probe the WHOLE file in a LC_ALL=C subshell (F55): a single-shot probe left
-  # a NUL past byte 512 undetected. Bytes for both -n and ${#}; EOF exits
-  # non-zero so the trailing partial chunk never false-positives.
-  if ! (LC_ALL=C _np=0
-        while IFS= read -r -d '' -n 512 _nulprobe; do
-          _np=$((_np + 1)); [ "$_np" -le 40 ] || exit 1
-          [ "${#_nulprobe}" -eq 512 ] || exit 1
-        done < "$F") 2>/dev/null; then
-    PREV=""; OPENED=""; CWDLINE=""
-  else
-  n=0
-  while IFS= read -r -n 512 line || [ -n "$line" ]; do
-    n=$((n+1)); [ "$n" -le 20 ] || break
-    # Cap-filling chunk → truncated mid-line; its tail would be matched as a
-    # fresh line and smuggle a prior owner. Mirrors ops-stop-hook.sh (F45).
-    [ "${#line}" -lt 512 ] || { PREV=""; break; }
-    line="${line%$'\r'}"
-    case "$line" in
-      "session_id: "*) PREV="${line#session_id: }" ;;
-      "opened_at: "*)  OPENED="$line" ;;
-      "cwd: "*)        CWDLINE="$line" ;;
-    esac
-  done < "$F"
-  fi
-
-  # PREV is captured from the sentinel BODY — untrusted input (a merge, a
-  # hand-edit, an attacker plant can supply it). It is echoed to stdout (the
-  # adoption report), so apply the SAME reject-set the three sentinel_owner
-  # parsers apply to an owner: a NON-EMPTY PREV carrying a slash, a leading
-  # dot, a pipe, whitespace, or the reserved .exempt suffix degrades to
-  # <invalid> rather than being echoed verbatim (F15 — stdout/log-injection-
-  # adjacent; the NEW owner $OWNER is already guarded by check_owner_name and
-  # is unaffected). An EMPTY PREV is the normal state of a legitimately
-  # UNOWNED sentinel (ops-task.sh omits session_id: with no --owner) — it must
-  # fall through to the <unowned> fallback at the echo, NOT read as <invalid>
-  # (which would conflate 'never owned' with 'tampered'). (review follow-up.)
-  # Also reject CONTROL CHARACTERS (final-review #6): a PREV carrying an ANSI/
-  # OSC escape (ESC ]0; ...) passes the owner-shape set but rewrites the
-  # operator's terminal title when echoed. The owner set mirrors the gate's
-  # name rules; this is a DISPLAY-sanitization concern, so [:cntrl:] (which
-  # includes ESC and all C0 controls) is added here, not to the owner set.
+  F="$(sentinel_path "$ID")"; [ -n "$F" ] || F="$OPDIR/pending/$ID"
+  NAME="${F##*/}"
+  case "$NAME" in *__*) PREV="${NAME%%__*}" ;; *) PREV="" ;; esac
+  # F15 moved, it did not disappear. The previous owner used to come from an
+  # untrusted BODY and was sanitised before being echoed; it now comes from an
+  # untrusted NAME, and a planted file can carry anything a filename allows —
+  # measured: `evil<ESC>]0;pwned<BEL>__t1` printed its OSC sequence straight to
+  # the operator's terminal after the body parser was deleted. Our own writers
+  # can never produce these (check_bare_name refuses them at construction), so a
+  # name carrying one was planted by something else and is displayed as such.
   case "${PREV:-}" in
     */* | .* | *"|"* | *[[:space:]]* | *[[:cntrl:]]* | *.exempt) PREV="<invalid>" ;;
   esac
+  DEST="$OPDIR/pending/${OWNER}__$ID"
 
-  # Rewrite via a temp file + mv so a crash mid-write cannot leave a sentinel
-  # that parses as unowned (which would silently widen the block to everyone).
+  # Adoption is now a RENAME. The old form read the body under a 512-byte cap
+  # with a 20-line ceiling, re-sanitised the previous owner for display, wrote a
+  # temp file outside pending/ (so a crash could not leave a phantom task) and
+  # moved it into place — all to change one field. rename(2) changes that field
+  # atomically, cannot half-write, and leaves nothing to clean up on a crash.
   #
-  # The temp file lives OUTSIDE pending/: the Stop hook globs that directory and
-  # treats every entry as a task id, so a crashed adopt would leave a phantom
-  # pending task ("T-1.adopt.4242") that blocks the session and can be closed
-  # into the ledger as a garbage row. Found in review of this branch.
-  TMP="$OPDIR/.adopt.$$.$ID"
-  {
-    printf 'session_id: %s\n' "$OWNER"
-    if [ -n "$CWDLINE" ]; then printf '%s\n' "$CWDLINE"; else printf 'cwd: %s\n' "$PWD"; fi
-    if [ -n "$OPENED" ]; then printf '%s\n' "$OPENED"; fi
-    printf 'adopted_at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  } > "$TMP"
-  # Belt and braces: the lock already excludes a concurrent ops-verdict.sh, so
-  # this can only fire if the lock was reclaimed from a crashed holder. Keep it
-  # — resurrecting a sentinel for a task that already has a verdict row is the
-  # exact ledger-damaging trap this branch exists to remove.
+  # The closed-while-adopting guard stays: the lock already excludes a concurrent
+  # ops-verdict.sh, so this only fires if the lock was reclaimed from a crashed
+  # holder, and resurrecting a sentinel for a task that already has a verdict row
+  # is the ledger-damaging trap this branch exists to remove.
   if [ ! -f "$F" ]; then
-    rm -f "$TMP"
     die "task '$ID' was closed while adopting — not resurrecting its sentinel"
   fi
-  mv "$TMP" "$F"
+  if [ "$F" != "$DEST" ]; then
+    mv "$F" "$DEST"
+  fi
+  F="$DEST"
 
   # --- arm marker (G2.1) -----------------------------------------------------
   # AFTER the sentinel carries the new owner, under the lock this loop already

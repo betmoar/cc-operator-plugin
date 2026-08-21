@@ -12,9 +12,12 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import crypto from "node:crypto";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 
-const ROOT = path.resolve(import.meta.dirname, "..");
+// `import.meta.dirname` is Node >=20.11 and ubuntu:24.04 ships 18.19, where it is
+// undefined and path.resolve throws "paths[0] must be of type string" — an error
+// naming nothing about Node versions. fileURLToPath has no floor.
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MOD = pathToFileURL(path.join(ROOT, "scripts", "ops-compress.mjs")).href;
 const { compress, DEFAULTS } = await import(MOD);
 
@@ -282,11 +285,25 @@ console.log("-- Case: ephemera are self-ignoring and never materialize .operator
 
   // Modes: the spill holds UNREDACTED tool output, so no group/other bits on
   // any segment or on the file itself.
+  // lstat only what exists. When the tempdir root is HOSTILE — pre-planted as a
+  // symlink by another local user, which is the attack the uid scoping and the
+  // 0700 modes exist for — ephemeralRoot correctly returns null and no segment
+  // is created. Verified on Linux with a real world-writable /tmp: /etc was
+  // untouched. But this loop then lstat'd a path that rightly did not exist and
+  // the whole suite died on a raw ENOENT stack trace instead of reporting a
+  // verdict, which is the "raw error as operator guidance" class in JS. Say what
+  // happened; a refused hostile root is a legitimate environment, not a crash.
   for (const p of [tmpBase, path.join(tmpBase, key),
                    path.join(tmpBase, key, ".compress-spill")]) {
+    if (!fs.existsSync(p)) {
+      ok(false, `tempdir segment absent (hostile or unwritable ${os.tmpdir()}?): ${path.basename(p)}`);
+      continue;
+    }
     ok((fs.lstatSync(p).mode & 0o077) === 0, `tempdir segment is 0700-tight: ${path.basename(p)}`);
   }
-  if (vm) ok((fs.lstatSync(vm[1]).mode & 0o077) === 0, "the spill FILE is 0600 — pre-scrub output is not world-readable");
+  if (vm && fs.existsSync(vm[1])) {
+    ok((fs.lstatSync(vm[1]).mode & 0o077) === 0, "the spill FILE is 0600 — pre-scrub output is not world-readable");
+  }
 
   // A hijacked root must not be written through. Point the keyed segment at a
   // symlink and assert the compressor declines rather than following it.

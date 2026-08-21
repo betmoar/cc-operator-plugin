@@ -59,13 +59,37 @@ fi
 PASS=0
 FAIL=0
 pass() { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
-fail() { FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; }
+# Names are ACCUMULATED, not just printed. A failure scrolls past 5000 lines of
+# ok, and the summary line is what anyone actually reads — so on 2026-08-19 a run
+# reported 3 of 714 failed, did not reproduce in five re-runs, and the three case
+# names were gone because nobody had captured them before re-running. An
+# intermittent failure you cannot name is one you cannot fix; repeating it at the
+# end costs one variable.
+FAILED_NAMES=""
+fail() { FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  $1"; printf '  FAIL %s\n' "$1"; }
 check() { # check <desc> <0|1 condition-result>
   if [ "$2" -eq 0 ]; then pass "$1"; else fail "$1"; fi
 }
 
 # Fresh temp project; return its path.
 newproj() { mktemp -d "${TMPDIR:-/tmp}/opstest.XXXXXX"; }
+
+# Ownership lives in the sentinel's NAME (<owner>__<task>, or bare <task> when
+# unowned), so the on-disk path is derived, never spelled out at 125 call sites.
+# One helper means the convention can change again without a sweep.
+sentinel_any() { # sentinel_any <proj> <task> → 0 when a sentinel exists under any owner
+  local _f
+  for _f in "$1/.operator/pending/$2" "$1"/.operator/pending/*__"$2"; do
+    { [ -e "$_f" ] || [ -L "$_f" ]; } && return 0
+  done
+  return 1
+}
+
+sentinel() { # sentinel <proj> <task> [<owner>] → path
+  if [ -n "${3:-}" ]; then printf '%s\n' "$1/.operator/pending/$3__$2"
+  else printf '%s\n' "$1/.operator/pending/$2"; fi
+}
 
 # Kill a backgrounded job's CHILDREN, then the job itself (#68).
 #
@@ -159,7 +183,7 @@ if [ -f "$P/.operator/VERDICTS.md" ]; then
 else N2=0; fi
 check "empty-evidence verdict exits non-zero" "$([ "$ERC" -ne 0 ] && echo 0 || echo 1)"
 check "empty-evidence appends no row" "$([ "$N2" = "0" ] && echo 0 || echo 1)"
-check "empty-evidence leaves sentinel intact" "$([ -e "$P/.operator/pending/T-2" ] && echo 0 || echo 1)"
+check "empty-evidence leaves sentinel intact" "$(sentinel_any "$P" T-2 && echo 0 || echo 1)"
 rm -rf "$P"
 
 ########################################################################
@@ -243,7 +267,7 @@ printf '#!/usr/bin/env bash\necho stale\n' > "$P/.operator/bin/ops-verdict.sh"
 check "second init refreshes bin copy to plugin version" "$(cmp -s "$P/.operator/bin/ops-verdict.sh" "$VERDICT" && echo 0 || echo 1)"
 # ops-task opens the sentinel; the installed CLIs work from the project cwd
 ( cd "$P" && ./.operator/bin/ops-task.sh T-6 >/dev/null 2>&1 ); TRC=$?
-check "ops-task exits 0 and drops sentinel" "$([ "$TRC" -eq 0 ] && [ -e "$P/.operator/pending/T-6" ] && echo 0 || echo 1)"
+check "ops-task exits 0 and drops sentinel" "$([ "$TRC" -eq 0 ] && sentinel_any "$P" T-6 && echo 0 || echo 1)"
 run_hook stop-basic.json "$P"
 check "hook blocks (exit 2) on ops-task-opened sentinel" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
 check "block message names .operator/bin/ops-verdict.sh" "$(printf '%s' "$HERR" | grep -q '\.operator/bin/ops-verdict\.sh' && echo 0 || echo 1)"
@@ -389,7 +413,7 @@ ROWS_BEFORE="$(wc -l < "$P/.operator/VERDICTS.md")"
 : > "$P/.operator/pending/T-P"
 ( cd "$P" && bash "$VERDICT" T-P "crit" "out: 3 | 0 failed" PASS >/dev/null 2>&1 ); PRC=$?
 check "pipe in evidence → refused (exit != 0)" "$([ "$PRC" -ne 0 ] && echo 0 || echo 1)"
-check "pipe in evidence → no row, sentinel intact" "$([ "$(wc -l < "$P/.operator/VERDICTS.md")" = "$ROWS_BEFORE" ] && [ -e "$P/.operator/pending/T-P" ] && echo 0 || echo 1)"
+check "pipe in evidence → no row, sentinel intact" "$([ "$(wc -l < "$P/.operator/VERDICTS.md")" = "$ROWS_BEFORE" ] && sentinel_any "$P" T-P && echo 0 || echo 1)"
 ( cd "$P" && bash "$VERDICT" T-P "crit" "$(printf 'l1\nl2')" PASS >/dev/null 2>&1 ); NRC=$?
 check "newline in evidence → refused" "$([ "$NRC" -ne 0 ] && echo 0 || echo 1)"
 ( cd "$P" && bash "$VERDICT" T-P "crit" "evidence" MAYBE >/dev/null 2>&1 ); MRC=$?
@@ -416,7 +440,8 @@ echo "-- Case 8: sentinel ownership — block your own, report the other session
 # session B's task, and its only escapes both disarmed B's gate.
 P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
 ( cd "$P" && bash "$TASK" T-A --owner SESS-A >/dev/null 2>&1 )
-check "sentinel stamps its owner" "$(grep -q '^session_id: SESS-A$' "$P/.operator/pending/T-A" && echo 0 || echo 1)"
+check "the sentinel NAME carries its owner" "$([ -f "$(sentinel "$P" T-A SESS-A)" ] && echo 0 || echo 1)"
+check "…and no body field is required for that" "$(! grep -q 'session_id:' "$(sentinel "$P" T-A SESS-A)" && echo 0 || echo 1)"
 # 8a: the owning session is blocked
 run_hook stop-session-a.json "$P"
 check "owner's Stop → exit 2 on its own task" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
@@ -425,11 +450,13 @@ check "owner's block message names T-A" "$(printf '%s' "$HERR" | grep -q 'T-A' &
 run_hook stop-session-b.json "$P"
 check "foreign session's Stop → exit 0 (not trapped)" "$([ "$HRC" -eq 0 ] && echo 0 || echo 1)"
 check "foreign session is told, not blocked" "$(printf '%s' "$HERR" | grep -q 'owned by another session' && echo 0 || echo 1)"
-# The report must name the OWNER and when it was opened, not just the task id:
-# with three or more sessions a bystander otherwise cannot tell whom to chase.
-# The doc's §4.1 example always showed this; the code did not until 0.4.0.
+# The report must name the OWNER, not just the task id: with three or more
+# sessions a bystander otherwise cannot tell whom to chase.
 check "foreign report names the owning session id" "$(printf '%s' "$HERR" | grep -q 'owned by SESS-A' && echo 0 || echo 1)"
-check "foreign report carries opened_at" "$(printf '%s' "$HERR" | grep -q 'opened 20' && echo 0 || echo 1)"
+# The opened-at stamp is gone with the body parser. It was the only field that
+# required opening a file, and task+owner is what makes the report actionable —
+# the trade is recorded here rather than left as a silently dropped assertion.
+check "foreign report names the task" "$(printf '%s' "$HERR" | grep -q 'T-A owned by' && echo 0 || echo 1)"
 # 8c: mixed — block, and name ONLY the caller's own task
 ( cd "$P" && bash "$TASK" T-B --owner SESS-B >/dev/null 2>&1 )
 run_hook stop-session-a.json "$P"
@@ -480,6 +507,53 @@ cp "$GIP/.operator/.gitignore" "$GIP/gi.before"
 sed "s|<tmp>|$GIP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
 check "the v2 migration is idempotent (a second fire is a no-op)" \
   "$(cmp -s "$GIP/gi.before" "$GIP/.operator/.gitignore" && echo 0 || echo 1)"
+# --- legacy sentinel migration (0.9.0: ownership moved into the filename) ----
+# A pre-0.9.0 sentinel carries `session_id: <id>` in its BODY under a bare
+# task-id name. SessionStart renames it to `<sid>__<task>` — and the EFFECT
+# must be asserted, not just the non-firing on already-migrated names (PR #77
+# review: only the empty-body case was tested; a regression that silently
+# drops the mv shipped green). The renamed sentinel must re-block exactly its
+# original owner and stay foreign-but-visible to everyone else.
+MIG="$(newproj)"; ( cd "$MIG" && bash "$INIT" >/dev/null 2>&1 )
+mkdir -p "$MIG/.operator/pending"
+printf 'cwd: %s\nsession_id: OLD-SESS\nopened_at: 2026-08-01T00:00:00Z\n' "$MIG" > "$MIG/.operator/pending/legacy-task"
+printf 'cwd: %s\nopened_at: 2026-08-01T00:00:00Z\n' "$MIG"           > "$MIG/.operator/pending/unowned-task"
+printf 'session_id: bad__sid\n'                                       > "$MIG/.operator/pending/badsep-task"
+printf 'session_id: OLD-SESS\n'                                       > "$MIG/.operator/pending/deep-task"   # under the line bound
+{ for _i in $(seq 1 30); do echo filler; done; echo 'session_id: OLD-SESS'; } > "$MIG/.operator/pending/long-task"
+{ printf 'session_id: OLD-SESS\n'; head -c 8192 /dev/zero | tr '\0' 'x'; } > "$MIG/.operator/pending/fat-task"     # over the byte cap
+ln -s "$MIG/.operator/pending/legacy-task" "$MIG/.operator/pending/link-task"
+sed "s|<tmp>|$MIG|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
+check "migration renames a body-stamped sentinel to <sid>__<task>" \
+  "$([ -f "$MIG/.operator/pending/OLD-SESS__legacy-task" ] && [ ! -e "$MIG/.operator/pending/legacy-task" ] && echo 0 || echo 1)"
+run_hook_session() { # <cwd> <session-id> → HRC/HSUM via a stop payload on stdin
+  local _o; _o="$(mktemp)"
+  printf '{"hook_event_name":"Stop","stop_hook_active":false,"cwd":"%s","session_id":"%s"}' "$1" "$2" \
+    | "$BASH_ABS" "$HOOK" >"$_o" 2>&1; HRC=$?
+  HSUM="$(cat "$_o")"; rm -f "$_o"
+}
+run_hook_session "$MIG" OLD-SESS
+check "renamed sentinel blocks its original owner again (Stop hook rc=2 for OLD-SESS)" \
+  "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+run_hook_session "$MIG" OTHER
+# rc is 2 either way here — the unowned-task sentinel blocks EVERY session by
+# design — so the discriminator is the REPORT: the migrated sentinel must read
+# as OLD-SESS's (foreign, "not blocking"), never as a second unowned blocker.
+check "renamed sentinel is reported as OLD-SESS's foreign task, not unowned" \
+  "$(printf '%s' "$HSUM" | grep -q 'legacy-task owned by OLD-SESS' && printf '%s' "$HSUM" | grep -q 'not blocking' && echo 0 || echo 1)"
+check "an unowned legacy sentinel is left in place (still blocks everyone)" \
+  "$([ -f "$MIG/.operator/pending/unowned-task" ] && echo 0 || echo 1)"
+check "a __-carrying stamped sid is NOT migrated (would build the ambiguous name)" \
+  "$([ -f "$MIG/.operator/pending/badsep-task" ] && [ ! -e "$MIG/.operator/pending/bad__sid__badsep-task" ] && echo 0 || echo 1)"
+check "a sid past the 20-line bound is not read (bound holds)" \
+  "$([ -f "$MIG/.operator/pending/deep-task" ] || [ -f "$MIG/.operator/pending/OLD-SESS__deep-task" ] && echo 0 || echo 1)"
+check "a 30-line body leaves its sid unmigrated (line cap fires)" \
+  "$([ -f "$MIG/.operator/pending/long-task" ] && [ ! -e "$MIG/.operator/pending/OLD-SESS__long-task" ] && echo 0 || echo 1)"
+check "an over-4KiB body is skipped by the byte cap (no unbounded read)" \
+  "$([ -f "$MIG/.operator/pending/fat-task" ] && [ ! -e "$MIG/.operator/pending/OLD-SESS__fat-task" ] && echo 0 || echo 1)"
+check "a symlink pending/ entry is never followed by the migration (F65)" \
+  "$([ -L "$MIG/.operator/pending/link-task" ] && { [ -f "$MIG/.operator/pending/legacy-task" ] || [ -f "$MIG/.operator/pending/OLD-SESS__legacy-task" ]; } && echo 0 || echo 1)"
+rm -rf "$MIG"
 rm -rf "$Q" "$P" "$GIP"
 
 # --- automated upgrade path (version-gated bin/ refresh, 2026-08-04) ----------
@@ -579,9 +653,9 @@ P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
 ROWS_BEFORE="$(wc -l < "$P/.operator/VERDICTS.md")"
 ( cd "$P" && bash "$VERDICT" T-A "crit" "evidence" PASS --owner SESS-B >/dev/null 2>&1 ); XRC=$?
 check "foreign --owner → verdict refused" "$([ "$XRC" -ne 0 ] && echo 0 || echo 1)"
-check "foreign --owner → no row, sentinel intact" "$([ "$(wc -l < "$P/.operator/VERDICTS.md")" = "$ROWS_BEFORE" ] && [ -e "$P/.operator/pending/T-A" ] && echo 0 || echo 1)"
+check "foreign --owner → no row, sentinel intact" "$([ "$(wc -l < "$P/.operator/VERDICTS.md")" = "$ROWS_BEFORE" ] && sentinel_any "$P" T-A && echo 0 || echo 1)"
 ( cd "$P" && bash "$VERDICT" T-A --defer "not mine" --owner SESS-B >/dev/null 2>&1 ); DXRC=$?
-check "foreign --owner → --defer also refused" "$([ "$DXRC" -ne 0 ] && [ -e "$P/.operator/pending/T-A" ] && echo 0 || echo 1)"
+check "foreign --owner → --defer also refused" "$([ "$DXRC" -ne 0 ] && sentinel_any "$P" T-A && echo 0 || echo 1)"
 # the owner itself closes fine
 ( cd "$P" && bash "$VERDICT" T-A "crit" "evidence" PASS --owner SESS-A >/dev/null 2>&1 ); ORC=$?
 check "matching --owner → verdict accepted" "$([ "$ORC" -eq 0 ] && [ ! -e "$P/.operator/pending/T-A" ] && echo 0 || echo 1)"
@@ -592,8 +666,11 @@ check "missing --owner → warns but proceeds" "$([ "$WRC" -eq 0 ] && printf '%s
 # adopt: the /clear recovery path
 ( cd "$P" && bash "$TASK" T-C --owner SESS-A >/dev/null 2>&1 )
 ( cd "$P" && bash "$ADOPT" --owner SESS-B T-C >/dev/null 2>&1 ); ARC=$?
-check "ops-adopt exits 0 and re-stamps the owner" "$([ "$ARC" -eq 0 ] && grep -q '^session_id: SESS-B$' "$P/.operator/pending/T-C" && echo 0 || echo 1)"
-check "ops-adopt preserves opened_at" "$(grep -q '^opened_at: ' "$P/.operator/pending/T-C" && echo 0 || echo 1)"
+check "ops-adopt exits 0 and renames to the new owner" "$([ "$ARC" -eq 0 ] && [ -f "$(sentinel "$P" T-C SESS-B)" ] && echo 0 || echo 1)"
+check "ops-adopt leaves no sentinel under the OLD owner" "$([ ! -e "$(sentinel "$P" T-C SESS-A)" ] && echo 0 || echo 1)"
+# Adoption is a rename, so the body it never touches is still the one ops-task
+# wrote — opened_at survives because nothing rewrites the file at all.
+check "ops-adopt preserves the original body (opened_at intact)" "$(grep -q '^opened_at: ' "$(sentinel "$P" T-C SESS-B)" && echo 0 || echo 1)"
 run_hook stop-session-b.json "$P"
 check "after adopt, the new owner is blocked" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
 ( cd "$P" && bash "$VERDICT" T-C "crit" "evidence" PASS --owner SESS-B >/dev/null 2>&1 ); CRC=$?
@@ -612,8 +689,12 @@ check "ops-adopt refuses an id with no open sentinel" "$([ "$NORC" -ne 0 ] && ec
 # A malicious body (traversal/pipe/whitespace/.exempt) must be sanitized to
 # <invalid>, not echoed verbatim — stdout/log-injection-adjacent. The NEW
 # owner is guarded by check_owner_name and is unaffected.
-( cd "$P" && bash "$TASK" T-PREV --owner SESS-A >/dev/null 2>&1 )
-printf 'session_id: ../../evil path|with pipe\n' > "$P/.operator/pending/T-PREV"
+# The hostile owner arrives in the NAME, and PLANTING is the only way it can:
+# check_bare_name refuses these shapes at construction, so ops-task can never
+# produce one. Do NOT open the task first — that would leave two sentinels for
+# one id, and which one a glob finds is collation-dependent (measured: macOS
+# picked the planted one, Linux the real one, from the same suite).
+printf 'cwd: /x\n' > "$P/.operator/pending/evil path|with pipe__T-PREV"
 PREVOUT="$( cd "$P" && bash "$ADOPT" --owner SESS-B T-PREV 2>/dev/null )"; PREVRC=$?
 check "F15 ops-adopt sanitizes a malicious PREV body to <invalid>" \
   "$(printf '%s' "$PREVOUT" | grep -q 'adopted T-PREV: <invalid> -> SESS-B' && echo 0 || echo 1)"
@@ -624,7 +705,7 @@ check "F15 ops-adopt does not echo the raw malicious body" \
 # F15/#6: a PREV carrying an ANSI/OSC terminal-control escape (ESC ]0; ...)
 # passes the owner-shape reject-set but would rewrite the terminal title when
 # echoed. The [:cntrl:] arm must catch it -> <invalid>. (final-review #6.)
-printf 'session_id: \033]0;PWNED\007FAKEOWNER\n' > "$P/.operator/pending/T-PREV"
+printf 'cwd: /x\n' > "$P/.operator/pending/$(printf '\033]0;PWNED\007FAKEOWNER')__T-PREV"
 ESCOUT="$( cd "$P" && bash "$ADOPT" --owner SESS-B T-PREV 2>/dev/null )"
 check "F15 ops-adopt sanitizes a PREV with an ANSI/OSC escape to <invalid>" \
   "$(printf '%s' "$ESCOUT" | grep -q 'adopted T-PREV: <invalid> -> SESS-B' && echo 0 || echo 1)"
@@ -643,7 +724,7 @@ check "ops-task refuses '/' in --owner" "$([ "$OTRC" -ne 0 ] && echo 0 || echo 1
 # re-opening an open task never silently takes it over
 ( cd "$P" && bash "$TASK" T-R --owner SESS-A >/dev/null 2>&1 )
 ( cd "$P" && bash "$TASK" T-R --owner SESS-B >/dev/null 2>&1 )
-check "re-open does not steal ownership" "$(grep -q '^session_id: SESS-A$' "$P/.operator/pending/T-R" && echo 0 || echo 1)"
+check "re-open does not steal ownership" "$([ -f "$(sentinel "$P" T-R SESS-A)" ] && echo 0 || echo 1)"
 rm -rf "$P"
 
 ########################################################################
@@ -659,7 +740,7 @@ P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
 ROWS_BEFORE="$(wc -l < "$P/.operator/VERDICTS.md")"
 ( cd "$P" && bash "$VERDICT" T-TYPO "crit" "evid" PASS --ownr SESS-B junk >/dev/null 2>&1 ); TYRC=$?
 check "typo'd --owner on a foreign task is refused, not warned" "$([ "$TYRC" -ne 0 ] && echo 0 || echo 1)"
-check "typo'd --owner writes no row and leaves the sentinel" "$([ "$(wc -l < "$P/.operator/VERDICTS.md")" = "$ROWS_BEFORE" ] && [ -e "$P/.operator/pending/T-TYPO" ] && echo 0 || echo 1)"
+check "typo'd --owner writes no row and leaves the sentinel" "$([ "$(wc -l < "$P/.operator/VERDICTS.md")" = "$ROWS_BEFORE" ] && sentinel_any "$P" T-TYPO && echo 0 || echo 1)"
 # The worse half, also measured: in the EVIDENCE slot the typo'd flag was not
 # merely dropped, it was written into the ledger as the evidence cell.
 ( cd "$P" && bash "$VERDICT" T-TYPO "crit" --ownr=SESS-B PASS >/dev/null 2>&1 ); TYRC2=$?
@@ -677,7 +758,7 @@ check "a surplus positional is refused" "$([ "$SPRC" -ne 0 ] && echo 0 || echo 1
 DLBEFORE="$(wc -l < "$P/.operator/DECISIONS.md")"
 ( cd "$P" && bash "$VERDICT" T-DEFX --defer "a real reason" STRAY --owner SESS-A >/dev/null 2>&1 ); DFXRC=$?
 check "a surplus positional on the DEFER form is refused too" "$([ "$DFXRC" -ne 0 ] && echo 0 || echo 1)"
-check "the refused defer writes no DECISIONS line and leaves the sentinel" "$([ "$(wc -l < "$P/.operator/DECISIONS.md")" = "$DLBEFORE" ] && [ -e "$P/.operator/pending/T-DEFX" ] && echo 0 || echo 1)"
+check "the refused defer writes no DECISIONS line and leaves the sentinel" "$([ "$(wc -l < "$P/.operator/DECISIONS.md")" = "$DLBEFORE" ] && sentinel_any "$P" T-DEFX && echo 0 || echo 1)"
 # CONTROL: the legitimate three-positional defer form still works, or the
 # per-form ceiling has simply broken defer.
 ( cd "$P" && bash "$VERDICT" T-DEFX --defer "a real reason" --owner SESS-A >/dev/null 2>&1 ); DFOKRC=$?
@@ -756,7 +837,7 @@ mkdir "$P/.operator/.lock"
 ( cd "$P" && bash "$VERDICT" T-LOCK "crit" "locked-out" PASS >/dev/null 2>&1 ) &
 LOCKPID=$!
 sleep 1
-check "held lock blocks a concurrent writer" "$(! grep -q 'locked-out' "$P/.operator/VERDICTS.md" && [ -e "$P/.operator/pending/T-LOCK" ] && echo 0 || echo 1)"
+check "held lock blocks a concurrent writer" "$(! grep -q 'locked-out' "$P/.operator/VERDICTS.md" && sentinel_any "$P" T-LOCK && echo 0 || echo 1)"
 rmdir "$P/.operator/.lock"
 wait "$LOCKPID" 2>/dev/null || true
 check "releasing the lock lets the waiter through" "$(grep -q 'locked-out' "$P/.operator/VERDICTS.md" && [ ! -e "$P/.operator/pending/T-LOCK" ] && echo 0 || echo 1)"
@@ -808,6 +889,29 @@ check "ops-task refuses a repeated --owner" "$([ "$DUPRC" -ne 0 ] && [ ! -e "$P/
 # same trap as above: assert the reason, not merely a non-zero exit
 ADOUT2="$( cd "$P" && bash "$ADOPT" --owner SESS-A --owner SESS-B T-X 2>&1 )"; ADRC=$?
 check "ops-adopt refuses a repeated --owner (by reason)" "$([ "$ADRC" -ne 0 ] && printf '%s' "$ADOUT2" | grep -q 'more than once' && echo 0 || echo 1)"
+# `__` separates owner from task in the sentinel NAME (0.9.0). A `__` inside
+# either half builds a filename every reader's first-`__` split parses as a
+# DIFFERENT (owner, task) pair than the writer intended — ops-task.sh carried
+# this arm alone through 0.9.0 and the other two writers did not (PR #77
+# review, reproduced): adopting as `sessA__evilB` created
+# `sessA__evilB__T1`, readers parsed owner `sessA`, the real adopter was
+# locked out and bare `sessA` — which adopted nothing — CLOSED the task.
+# Assert the REASON (the adopt refusal would otherwise fire for the unrelated
+# "no such open task"; the verdict one for "task not open").
+( cd "$P" && bash "$TASK" T-SEP --owner SESS-A >/dev/null 2>&1 )
+TSEP1="$( cd "$P" && bash "$ADOPT" --owner "sessA__evilB" T-SEP 2>&1 )"; SEP1=$?
+check "ops-adopt refuses a '__' owner (by reason)" "$([ "$SEP1" -ne 0 ] && printf '%s' "$TSEP1" | grep -q "must not contain '__'" && echo 0 || echo 1)"
+check "no ambiguous sentinel was created" "$([ ! -e "$P/.operator/pending/sessA__evilB__T-SEP" ] && echo 0 || echo 1)"
+TSEP2="$( cd "$P" && bash "$VERDICT" T-SEP c e PASS --owner "sessA__evilB" 2>&1 )"; SEP2=$?
+check "ops-verdict refuses a '__' owner (by reason)" "$([ "$SEP2" -ne 0 ] && printf '%s' "$TSEP2" | grep -q "must not contain '__'" && echo 0 || echo 1)"
+TSEP3="$( cd "$P" && bash "$TASK" "bad__id" --owner SESS-A 2>&1 )"; SEP3=$?
+check "ops-task still refuses a '__' task-id (by reason)" "$([ "$SEP3" -ne 0 ] && printf '%s' "$TSEP3" | grep -q "must not contain '__'" && echo 0 || echo 1)"
+# and the spoof itself must now fail end-to-end: bare sessA cannot close T-SEP
+# because the ambiguous adoption never happened
+( cd "$P" && bash "$VERDICT" T-SEP c e PASS --owner SESS-A >/dev/null 2>&1 )
+check "the pre-fix spoof path closes the task only via its REAL owner" "$(grep -q 'T-SEP' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
+( cd "$P" && bash "$TASK" T-SEP2 --owner SESS-A >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" T-SEP2 c e PASS --owner SESS-A >/dev/null 2>&1 )
 # --reconcile is a WRITE to the ledger of record: it must enforce the same
 # 4-cell schema as the direct writer. A fragment is an ordinary file that a
 # merge or hand-edit can corrupt.
@@ -867,8 +971,16 @@ check "premise: ledger exists" "$([ -f "$P/.operator/VERDICTS.md" ] && echo 0 ||
 chmod 000 "$P/.operator/VERDICTS.md"
 ROUT="$( cd "$P" && bash "$VERDICT" --reconcile 2>&1 )"; RRC=$?
 chmod 600 "$P/.operator/VERDICTS.md"
-check "--reconcile exits NON-ZERO on an unreadable VERDICTS.md" "$([ "$RRC" -ne 0 ] && echo 0 || echo 1)"
-check "--reconcile does NOT report '0 restored' success on grep failure" "$(! printf '%s' "$ROUT" | grep -q '0 row(s) restored' && echo 0 || echo 1)"
+# root reads a 000 file, so the premise of this case cannot hold there — the same
+# reason the holder-read control is skipped for root. ANNOUNCED, because a
+# container running as root is the normal way to reproduce CI locally, and four
+# silent passes would be worse than four honest skips.
+if [ "$(id -u)" = "0" ]; then
+  echo "  skip 12c: running as root, a 000 ledger is still readable"
+else
+  check "--reconcile exits NON-ZERO on an unreadable VERDICTS.md" "$([ "$RRC" -ne 0 ] && echo 0 || echo 1)"
+  check "--reconcile does NOT report '0 restored' success on grep failure" "$(! printf '%s' "$ROUT" | grep -q '0 row(s) restored' && echo 0 || echo 1)"
+fi
 rm -rf "$P"
 
 ########################################################################
@@ -964,7 +1076,7 @@ done
 # The guard must not break the path it sits on: a GENUINE foreign sentinel is
 # still reported and still non-blocking.
 rm -f "$P"/.operator/pending/*
-printf 'session_id: OTHER\ncwd: /x\nopened_at: 2026-08-02T00:00:00Z\n' > "$P/.operator/pending/T-FGN"
+printf 'cwd: /x\n' > "$P/.operator/pending/OTHER__T-FGN"
 run_hook stop-session-a.json "$P"
 check "a genuine foreign sentinel still does NOT block (guard did not overreach)" \
   "$([ "$HRC" -eq 0 ] && echo 0 || echo 1)"
@@ -1060,7 +1172,7 @@ echo "-- Case 15: ownership transitions are atomic under concurrency"
 P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
 BOTH=0
 for _i in $(seq 1 40); do
-  rm -f "$P/.operator/pending/T-RACE"
+  rm -f "$P"/.operator/pending/*T-RACE "$P/.operator/pending/T-RACE"
   OUT="$( ( cd "$P" && bash "$TASK" T-RACE --owner SESS-A 2>&1 ) & \
           ( cd "$P" && bash "$TASK" T-RACE --owner SESS-B 2>&1 ) & wait )"
   [ "$(printf '%s\n' "$OUT" | grep -c '^opened ')" -gt 1 ] && BOTH=$((BOTH+1))
@@ -1071,8 +1183,35 @@ check "concurrent open: exactly one winner every time (no takeover)" "$([ "$BOTH
 rm -f "$P/.operator/pending/T-RACE"
 ( cd "$P" && bash "$TASK" T-RACE --owner SESS-A >/dev/null 2>&1 ) & \
 ( cd "$P" && bash "$TASK" T-RACE --owner SESS-B >/dev/null 2>&1 ) & wait
-OWNLINES="$(grep -c '^session_id: ' "$P/.operator/pending/T-RACE" 2>/dev/null || true)"
-check "concurrent open: sentinel has exactly one owner line" "$([ "$OWNLINES" = "1" ] && echo 0 || echo 1)"
+# Exactly ONE sentinel for the task, whichever session won — the no-takeover
+# guarantee. Ownership is the name now, so "one owner line" became "one file".
+SENTN=0
+for _s in "$P"/.operator/pending/*T-RACE "$P"/.operator/pending/T-RACE; do
+  [ -e "$_s" ] && SENTN=$((SENTN + 1))
+done
+check "concurrent open: exactly one sentinel for the task (no second owner)" "$([ "$SENTN" = "1" ] && echo 0 || echo 1)"
+# The post-rename re-check: the mv re-opens the window the O_EXCL claim closed
+# (the bare claim path is free again the instant the winner's rename lands), so
+# a second opener interleaving across it mints a SECOND sentinel. We cannot
+# force that interleave deterministically at real speed (a 6-way stress, 10
+# rounds, hit it 0 times — PR #77 review needed an injected sleep), so the
+# re-check fires in the LOSING-leg posture: our sentinel already exists, a
+# foreign one lands beside it. sentinel_for's scan sees EITHER sentinel (glob
+# order) and returns "already open" — so the load-bearing property at this
+# site is not the die; it is that a second, foreign sentinel for the id can
+# never be created THROUGH ops-task while one exists under any owner: the
+# bare claim path stays occupied (EEXIST) or the scan finds the id first.
+rm -f "$P"/.operator/pending/*T-RACE "$P/.operator/pending/T-RACE"
+( cd "$P" && bash "$TASK" T-RACE --owner SESS-A >/dev/null 2>&1 )
+: > "$P/.operator/pending/SESS-X__T-RACE"
+DUPMSG="$( cd "$P" && bash "$TASK" T-RACE --owner SESS-B 2>&1 )"; DUPRC=$?
+SENTN2=0
+for _s in "$P"/.operator/pending/*__T-RACE; do [ -e "$_s" ] && SENTN2=$((SENTN2+1)); done
+check "open beside a foreign sentinel for the same id never adds a third" \
+  "$([ "$SENTN2" = "2" ] && echo 0 || echo 1)"
+check "the racing owner is refused or told already-open, never a silent win" \
+  "$([ "$DUPRC" -ne 0 ] || printf '%s' "$DUPMSG" | grep -q 'already open' && echo 0 || echo 1)"
+rm -f "$P/.operator/pending/SESS-X__T-RACE"
 
 # adopt vs verdict: whoever wins the lock, the loser must not damage the ledger.
 # HONESTY NOTE: unlike the open-race above (which fails ~155/200 on the unfixed
@@ -1114,7 +1253,7 @@ mkdir -p "$P/.operator/.lock" "$P/.operator/.lock.reclaim"
 ( cd "$P" && bash "$VERDICT" T-RC crit ev PASS --owner SESS-A >/dev/null 2>&1 ) &
 RCPID=$!
 sleep 2
-check "a held reclaim-claim blocks another writer from reclaiming" "$([ -d "$P/.operator/.lock" ] && [ -e "$P/.operator/pending/T-RC" ] && echo 0 || echo 1)"
+check "a held reclaim-claim blocks another writer from reclaiming" "$([ -d "$P/.operator/.lock" ] && sentinel_any "$P" T-RC && echo 0 || echo 1)"
 rmdir "$P/.operator/.lock.reclaim" "$P/.operator/.lock" 2>/dev/null || true
 wait "$RCPID" 2>/dev/null || true
 check "writer proceeds once the stale lock is gone" "$([ ! -e "$P/.operator/pending/T-RC" ] && echo 0 || echo 1)"
@@ -1226,9 +1365,14 @@ rm -rf "$P"
 echo "-- Case 18: every sentinel/fragment reader is byte-bounded [F02/F03]"
 # INVARIANT: `read -r` is bounded by LINES, not bytes — one newline-less line is
 # a single "line" and gets slurped whole. The 0.4.0 fix applied `read -r -n 512`
-# to the Stop hook only; ops-verdict.sh, ops-adopt.sh and the --reconcile
+# to the Stop hook only; ops-verdict.sh and the --reconcile
 # fragment reader kept plain `read -r`. Measured on one 256MB line: hook 0.17s
-# vs verdict 13.51s, adopt 16.77s, reconcile 32.56s. (Audit F02, P2.)
+# vs verdict 13.51s, reconcile 32.56s. (Audit F02, P2.) 0.9.0 note: ops-adopt.sh
+# no longer reads sentinel CONTENT at all (adoption is a rename; only the
+# filename is inspected), so its sub-assertion below now measures the wall
+# clock of an `mv` — kept as a tripwire against a reintroduced unbounded read
+# in any adopt code path, not as proof one is absent; that proof is
+# check_reader_bounds, which asserts "ops-adopt no longer reads a sentinel".
 #
 # The 32.56s number is why this is not merely slow: --reconcile holds the lock
 # across that read, and the budget presuming a crashed holder is 30s — so a
@@ -1249,7 +1393,7 @@ check "ops-verdict reads a huge-line sentinel in bounded time (<3s)" "$([ "$((S1
 ( cd "$P" && bash "$TASK" T-HUGE2 --owner SESS-A >/dev/null 2>&1 )
 bigline "$P/.operator/pending/T-HUGE2"
 S0=$(date +%s); ( cd "$P" && bash "$ADOPT" --owner SESS-B T-HUGE2 >/dev/null 2>&1 ); S1=$(date +%s)
-check "ops-adopt reads a huge-line sentinel in bounded time (<3s)" "$([ "$((S1 - S0))" -lt 3 ] && echo 0 || echo 1)"
+check "ops-adopt handles a huge-line sentinel in bounded time (<3s, mv-only since 0.9.0)" "$([ "$((S1 - S0))" -lt 3 ] && echo 0 || echo 1)"
 bigline "$P/.operator/verdicts.d/huge.md"
 S0=$(date +%s); ( cd "$P" && bash "$VERDICT" --reconcile >/dev/null 2>&1 ); S1=$(date +%s)
 check "--reconcile reads a huge-line fragment in bounded time (<3s)" "$([ "$((S1 - S0))" -lt 3 ] && echo 0 || echo 1)"
@@ -1448,7 +1592,7 @@ SEC0=$(date +%s)
 ( cd "$P" && bash "$VERDICT" T-FH c e PASS --owner SESS-A >/dev/null 2>&1 ) &
 FHPID=$!
 sleep 3
-check "foreign-host holder is not judged dead (no instant reclaim)" "$([ -e "$P/.operator/pending/T-FH" ] && echo 0 || echo 1)"
+check "foreign-host holder is not judged dead (no instant reclaim)" "$(sentinel_any "$P" T-FH && echo 0 || echo 1)"
 # Kill the GRANDCHILD too, not just the subshell (#68). `$!` names the subshell;
 # the `bash "$VERDICT"` inside it is its child, and killing the subshell alone
 # ORPHANS that child — it keeps spinning on a lock in a directory this suite is
@@ -1813,15 +1957,81 @@ check "untagged deviation → dev[1] for any session" \
 # Hostile/degenerate stdin must render nothing rather than spray errors onto
 # the bar. Includes the no-parser case: unlike the Stop hook, which warns on
 # stderr, a statusline has nowhere to warn — silence IS the correct behavior.
+#
+# Run from SLBARE — a temp dir with no `.operator/` at or above it. When the
+# payload cannot be parsed there is no cwd to read, so statusline.sh:84 falls
+# back to $PWD — an explicit `${CLAUDE_PROJECT_DIR:-$PWD}` default, so it is
+# intended, though the file states no rationale for it (:49-50 documents the
+# preference ORDER — payload first — which is a different claim; a review caught
+# this comment citing those lines as if they justified the fallback).
+# These three used to run with cwd = THIS REPO, where the fallback
+# found no ledger only because the repo has never had `.operator/` scaffolded in
+# it — so "renders nothing" was really asserting "the maintainer never dogfooded
+# the gate here". Opening one real task turned all three red at once, with the
+# renderer behaving exactly as designed. Vacuous-guard class (#21), reached
+# through ambient state instead of a missing call site; the positive control
+# below is what keeps it non-vacuous.
+SLBARE="$(newproj)"
+# `.git` bounds the upward walk. statusline.sh:86-95 climbs from $PWD looking for
+# .operator/, stopping only at a .git boundary or /, so "a temp dir with no
+# .operator/" was asserted in a comment and true only by luck: with TMPDIR set
+# inside a scaffolded project — TMPDIR=$GITHUB_WORKSPACE/tmp is a common CI
+# pattern — the walk finds an ancestor ledger and all three silence cases go red.
+# The fixture is now hermetic by construction rather than by where $TMPDIR
+# happens to point.
+mkdir -p "$SLBARE/.git"
+# CLAUDE_PROJECT_DIR is unset at each invocation below. statusline.sh:84 resolves
+# `${CLAUDE_PROJECT_DIR:-$PWD}`, so when the harness exports it — Claude Code
+# does — it OVERRIDES the cwd these cases carefully set, and they measure the
+# ambient project instead of the fixture. Measured both ways: bare cwd with the
+# var pointing at a scaffolded project renders op[1] (turning the three silence
+# cases red), and a scaffolded cwd with the var pointing at a bare dir renders
+# nothing (turning the positive control red). The `.git` bound above fixes the
+# upward walk; this fixes the entry point.
+# The setup must be verified BEFORE it is relied on. These three cases assert on
+# an EMPTY substitution, and `cd "$SLBARE" && …` inside `$( )` yields exactly
+# that when the cd fails — so a missing or unwritable dir reported ok, for a run
+# in which the renderer was never invoked at all. #21's class, reintroduced one
+# layer under the rewrite whose own comment says it was removing it.
+check "control: the statusline fixture dirs exist before the silence cases run" \
+  "$([ -d "$SLBARE" ] && echo 0 || echo 1)"
+check "control: the silence fixture bounds the upward .operator walk (hermetic under any TMPDIR)" \
+  "$([ -d "$SLBARE/.git" ] && echo 0 || echo 1)"
 check "garbage payload renders nothing" \
-  "$([ -z "$(printf 'NOT JSON{{' | "$BASH_ABS" "$SL" 2>&1)" ] && echo 0 || echo 1)"
+  "$([ -z "$(cd "$SLBARE" && printf 'NOT JSON{{' | env -u CLAUDE_PROJECT_DIR "$BASH_ABS" "$SL" 2>&1)" ] && echo 0 || echo 1)"
 check "empty payload renders nothing" \
-  "$([ -z "$(printf '' | "$BASH_ABS" "$SL" 2>&1)" ] && echo 0 || echo 1)"
+  "$([ -z "$(cd "$SLBARE" && printf '' | env -u CLAUDE_PROJECT_DIR "$BASH_ABS" "$SL" 2>&1)" ] && echo 0 || echo 1)"
 # No jq AND no python3: PATH_NONE is an empty dir, so even `cat` is gone. This
 # is why the segment slurps stdin with the `read` builtin — an external command
 # here printed a bash error INTO the statusline (caught in review, pre-release).
 check "no parser and no external commands: silent, no stray output" \
-  "$([ -z "$(sljson SESS-A "$P" | PATH="$SLNONE" "$BASH_ABS" "$SL" 2>&1)" ] && echo 0 || echo 1)"
+  "$([ -z "$(cd "$SLBARE" && sljson SESS-A "$P" | env -u CLAUDE_PROJECT_DIR PATH="$SLNONE" "$BASH_ABS" "$SL" 2>&1)" ] && echo 0 || echo 1)"
+# The positive control for all three: silence above must come from an empty
+# ledger, NOT from the renderer giving up on an unparseable payload. Same
+# garbage stdin, cwd switched to a project that HAS a pending sentinel — the
+# segment must appear. Without this, deleting the $PWD fallback entirely would
+# leave the three assertions above green.
+#
+# The sentinel's `session_id:` stamp is decorative HERE and the comment used to
+# claim otherwise: on an unparseable payload SESSION is empty, and
+# statusline.sh's FOREIGN branch needs a non-empty SESSION, so every sentinel
+# falls to the mine/unowned side. Measured — a `session_id: TOTALLY-FOREIGN`
+# stamp renders identically. This case validates the $PWD fallback only; the
+# ownership partition is exercised by the dev[N] cases above, which supply a
+# parseable payload.
+SLFB="$(newproj)"; ( cd "$SLFB" && bash "$INIT" >/dev/null 2>&1 )
+printf 'session_id: SESS-A\n' > "$SLFB/.operator/pending/fallback-probe"
+check "control: the fallback fixture has a sentinel to render" \
+  "$([ -f "$SLFB/.operator/pending/fallback-probe" ] && echo 0 || echo 1)"
+check "unparseable payload falls back to \$PWD, not to silence (statusline.sh:84)" \
+  "$(cd "$SLFB" && printf 'NOT JSON{{' | env -u CLAUDE_PROJECT_DIR "$BASH_ABS" "$SL" 2>/dev/null \
+     | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g' \
+     | grep -q 'op\[1\]' && echo 0 || echo 1)"
+# Removed like every other project dir in this suite. SLFB in particular carries
+# a scaffolded .operator/ with a PENDING sentinel, so leaving it behind seeds
+# $TMPDIR with exactly the ambient state these three cases were rewritten to
+# escape — one run's litter becoming the next run's environment.
+rm -rf "$SLBARE" "$SLFB"
 # ...and it must TERMINATE, not merely stay quiet. Slurping stdin with `cat`
 # under an empty PATH does not fail — it HANGS, waiting on a command that will
 # never run, which freezes the whole bar rather than dropping one segment.
@@ -4028,12 +4238,19 @@ printf '# cc-operator gitignore (v1)\nbin/\n!my-own-rule.md\n' > "$MIGW/.operato
 chmod 500 "$MIGW/.operator"
 MIGWOUT="$(sed "s|<tmp>|$MIGW|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
 chmod 700 "$MIGW/.operator"
-check "unwritable dir: the v1 rule survives (cp failed, so no overwrite)" \
-  "$(grep -q 'my-own-rule' "$MIGW/.operator/.gitignore" && echo 0 || echo 1)"
-check "unwritable dir: no MIGRATED claim over a backup that does not exist" \
-  "$(printf '%s' "$MIGWOUT" | grep -q 'MIGRATED' && echo 1 || echo 0)"
-check "unwritable dir: no .v1.bak was left behind" \
-  "$([ -e "$MIGW/.operator/.gitignore.v1.bak" ] && echo 1 || echo 0)"
+# Same root caveat: chmod 500 does not stop root writing, so the copy this case
+# needs to FAIL succeeds and the migration proceeds correctly — a pass would be
+# measuring the wrong thing.
+if [ "$(id -u)" = "0" ]; then
+  echo "  skip unwritable-dir migration: running as root, chmod 500 does not refuse a write"
+else
+  check "unwritable dir: the v1 rule survives (cp failed, so no overwrite)" \
+    "$(grep -q 'my-own-rule' "$MIGW/.operator/.gitignore" && echo 0 || echo 1)"
+  check "unwritable dir: no MIGRATED claim over a backup that does not exist" \
+    "$(printf '%s' "$MIGWOUT" | grep -q 'MIGRATED' && echo 1 || echo 0)"
+  check "unwritable dir: no .v1.bak was left behind" \
+    "$([ -e "$MIGW/.operator/.gitignore.v1.bak" ] && echo 1 || echo 0)"
+fi
 rm -rf "$MIGW"
 
 echo "-- Case: ops-init refuses the same migration it cannot back up"
@@ -4396,9 +4613,19 @@ eval "$(sed -n '/^lock_holder_read() {$/,/^}$/p' "$2")"
 printf 'someone 1 2\n' > "$LOCKDIR/holder"
 chmod 000 "$LOCKDIR/holder" 2>/dev/null || true
 lock_holder_read
+# Report the record on STDOUT so the control below attests to THIS run — the run
+# whose stderr the first assertion reads. It used to re-extract the function in a
+# separate one-liner, which meant the two assertions could exercise different
+# code and, on bash 3.2, one of them exercised none at all (see the caller).
+printf 'REC=[%s]\n' "$LOCK_HOLDER_REC"
 chmod 644 "$LOCKDIR/holder" 2>/dev/null || true
 HOLDPROBE
-HOLDERR="$( bash "$P/probe.sh" "$P/.operator/.lock" "$VERDICT" 2>&1 >/dev/null )"
+# Separate files rather than `2>&1 >/dev/null`: the two streams answer two
+# different questions (did a raw bash error reach the operator; did the read
+# actually fail) and both come from the SAME run.
+bash "$P/probe.sh" "$P/.operator/.lock" "$VERDICT" >"$P/holder.out" 2>"$P/holder.err" || true
+HOLDERR="$(cat "$P/holder.err")"
+HOLDREC="$(cat "$P/holder.out")"
 # root can read a 000 file, so the redirection never fails there — skip rather
 # than assert a property the environment cannot exhibit.
 if [ "$(id -u)" = "0" ]; then
@@ -4409,8 +4636,17 @@ else
   # The control: the guard is only meaningful if the probe REACHED the read.
   # An empty record is what a failed read must leave behind — the documented
   # "cannot judge this holder" input the caller already handles.
+  #
+  # This reads the probe's own stdout. The earlier form re-extracted the function
+  # inside `bash -c '… eval "$(sed -n "/^…{\$/,/^}\$/p" …)" …'`, and under bash 3.2
+  # the nested double quotes inside `"$( … )"` do not survive: the `{…,…}` in the
+  # sed address became a BRACE EXPANSION, sed got a mangled script ("invalid
+  # command code $"), the function was never defined, and the assertion failed on
+  # every darwin run while ubuntu's bash 5 parsed it correctly and stayed green.
+  # A control that cannot pass is worse than no control — it is #21's class with
+  # the polarity inverted. check_platform_idioms now bans the shape.
   check "control: the probe's read actually failed (guard was exercised)" \
-    "$(bash -c 'set -u; LOCKDIR="'"$P/.operator/.lock"'"; eval "$(sed -n "/^lock_holder_read() {\$/,/^}\$/p" "'"$VERDICT"'")"; chmod 000 "$LOCKDIR/holder" 2>/dev/null; lock_holder_read; chmod 644 "$LOCKDIR/holder" 2>/dev/null; [ -z "$LOCK_HOLDER_REC" ]' && echo 0 || echo 1)"
+    "$([ "$HOLDREC" = "REC=[]" ] && echo 0 || echo 1)"
 fi
 rm -rf "$P"
 
@@ -5072,6 +5308,32 @@ else
       "$([ "$_RC" -ne 0 ] && echo 0 || echo 1)"
     check "#69 control: the refused in-repo build left nothing in the worktree" \
       "$([ ! -d "$REPO/derived-in-repo" ] && echo 0 || echo 1)"
+    # …and the refusal must survive git being unavailable. repo_toplevel used to
+    # return git's answer or NOTHING, and the caller guarded the whole check with
+    # `[ -n "$toplevel" ]` — so with no git on PATH the containment check did not
+    # fail, it vanished, and the build wrote the corpus into the repo. Found in a
+    # bare ubuntu container (5 files, no refusal), which is the normal way to
+    # reproduce CI and therefore exactly where the guard was absent.
+    #
+    # A git STUB that fails, not an emptied PATH. Emptying PATH also removes find
+    # and shasum, so the build refuses for an unrelated reason and the case
+    # measures nothing — which the third assertion below caught on its first run.
+    # repo_toplevel swallows git's failure with `2>/dev/null || true`, so a git
+    # that exits non-zero reproduces the empty-toplevel path exactly while the
+    # rest of the script keeps working.
+    _NOGIT="$(newproj)"
+    printf '#!/bin/sh\nexit 1\n' > "$_NOGIT/git"
+    chmod 755 "$_NOGIT/git"
+    _NGOUT="$( cd "$REPO" && PATH="$_NOGIT:$PATH" "$BASH_ABS" "$CORPUS" build \
+                 --corpus "$SECDIR" --out "$REPO/derived-nogit" 2>&1 )"
+    _NGRC=$?
+    check "#69 the in-repo refusal survives git being unavailable (guard fails CLOSED)" \
+      "$([ "$_NGRC" -ne 0 ] && echo 0 || echo 1)"
+    check "#69 control: no git, no build — nothing was written into the worktree" \
+      "$([ ! -d "$REPO/derived-nogit" ] && echo 0 || echo 1)"
+    check "#69 control: the no-git refusal is the CONTAINMENT one, not an unrelated error" \
+      "$(printf '%s' "$_NGOUT" | grep -q "resolves inside this repo's worktree" && echo 0 || echo 1)"
+    rm -rf "$_NOGIT" "$REPO/derived-nogit"
     bash "$CORPUS" build --corpus "$SECDIR" --out "$_CTMP/probe1-nonempty" >/dev/null 2>&1
     bash "$CORPUS" build --corpus "$SECDIR" --out "$_CTMP/probe1-nonempty" >/dev/null 2>&1
     _RC=$?
@@ -5214,5 +5476,9 @@ else
 fi
 
 ########################################################################
+if [ "$FAIL" -ne 0 ]; then
+  echo "== failed cases =="
+  printf '%s\n' "$FAILED_NAMES" | sed '/^$/d'
+fi
 echo "== summary: $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]

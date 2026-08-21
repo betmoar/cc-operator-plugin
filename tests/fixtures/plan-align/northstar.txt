@@ -1,0 +1,5 @@
+A user who has forgotten their password can set a new one and sign in with it,
+without contacting support.
+
+Missed if: any path to a working new password requires a support agent, or a user
+who completes every step the plan ships still cannot sign in.

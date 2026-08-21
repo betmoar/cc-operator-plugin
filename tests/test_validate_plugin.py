@@ -49,11 +49,10 @@ GOOD_CHARTER = "# OPERATOR.md\n\n" + "\n".join(
 GOOD_STATUSLINE = (
     "#!/usr/bin/env bash\n"
     "[ ! -L \"$1\" ] || exit 0\n"
-    "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
     "# deviation-gate mirror: counts DEVIATION|ESCALATION|GATE-EXCEPTION (HANDOFF-MARK)\n"
     "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
-    "sentinel_owner() {\n"
-    "  case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) owner=\"\" ;; esac\n"
+    "sentinel_owner_of_name() {\n"
+    "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) printf '\\n'; return 0 ;; esac\n"
     "}\n")
 
 # A json_get() whose python3 branch carries the bool coercion. The three hooks
@@ -224,24 +223,24 @@ def make_good_tree(root):
           "echo ok\n")
     # The readers/CLIs need bodies that satisfy the byte-bound, guard-parity and
     # lock-parity checks — a bare `echo ok` stub fails all three.
-    guards = ("check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
+    guards = ("check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
               "check_owner_name() { :; }\n")
     bounded = "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
     # every sentinel touchpoint carries the -L symlink rejection (F65/F66)
     nolink = "[ ! -L \"$1\" ] || exit 0\n"
     write(root / "scripts" / "ops-stop-hook.sh",
-          "#!/usr/bin/env bash\n" + nolink + bounded + JSON_GET +
+          "#!/usr/bin/env bash\n" + nolink + JSON_GET +
           "# deviation gate: counts DEVIATION|ESCALATION|GATE-EXCEPTION (HANDOFF-MARK)\n"
           "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
-          "sentinel_owner() {\n"
-    "  case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) owner=\"\" ;; esac\n"
+          "sentinel_owner_of_name() {\n"
+    "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) printf '\\n'; return 0 ;; esac\n"
     "}\n")
     write(root / "scripts" / "ops-task.sh",
           "#!/usr/bin/env bash\n" + guards + nolink)
     write(root / "scripts" / "ops-verdict.sh",
-          "#!/usr/bin/env bash\n" + guards + nolink + bounded +
-          "sentinel_owner() {\n"
-          "  case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) return 0 ;; esac\n"
+          "#!/usr/bin/env bash\n" + guards + nolink +
+          "sentinel_owner_of_name() {\n"
+          "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) printf '\\n'; return 0 ;; esac\n"
           "}\n" +
           "# F2: refuse a symlink fragment before the write + skip on both reads\n"
           '[ -L "$FRAGDIR/$who.md" ] && exit 1\n'
@@ -253,7 +252,7 @@ def make_good_tree(root):
           "# --mark-handoff writes a HANDOFF-MARK line under the lock\n" +
           GOOD_LOCK_BLOCK + GOOD_SOURCE_STAMP)
     write(root / "scripts" / "ops-adopt.sh",
-          "#!/usr/bin/env bash\n" + guards + nolink + bounded +
+          "#!/usr/bin/env bash\n" + guards + nolink +
           "# PREV reject-set (F15): carries *.exempt like the sentinel_owner parsers\n"
           'case "${PREV:-}" in */* | .* | *"|"* | *[[:space:]]* | *[[:cntrl:]]* | *.exempt) PREV="<invalid>" ;; esac\n'
           + GOOD_LOCK_BLOCK)
@@ -389,6 +388,28 @@ def make_good_tree(root):
     for wname in ("review", "brainstorm"):
         write(root / "workflows" / f"{wname}.js",
               f'export const meta = {{ name: "{wname}", description: "d" }};\n' + WF_SHARED)
+    # plan.js is written separately because check_northstar REPORTS a missing
+    # plan.js rather than skipping — a check that goes inert when its target is
+    # absent is the vacuous-guard shape, and a "clean tree" of this plugin has a
+    # plan.js. So the fixture has to carry the #58 north-star shape: read without
+    # a fallback, refused when absent, refused without a `Missed if:` clause, and
+    # interpolated into EXACTLY ONE prompt (decompose, never a vet packet).
+    write(root / "workflows" / "plan.js",
+          'export const meta = { name: "plan", description: "d" };\n' + WF_SHARED +
+          'const TASK = { properties: {\n'
+          '    produces: {\n      type: "array",\n      items: { type: "string" },\n    },\n'
+          '    consumes: {\n      type: "array",\n      items: { type: "string" },\n    },\n'
+          '} };\n'
+          'const g = { contractsInferred: [] };\n'
+          'const spec = A.spec;\n'
+          'if (typeof spec !== "string") { throw new Error("args.spec is required"); }\n'
+          'const MISS_CLAUSE = /\\bmissed\\s+if\\s*:\\s*(\\S.*)/is;\n'
+          'const northStar = A.northStar;\n'
+          'if (typeof northStar !== "string") {\n'
+          '  throw new Error("args.northStar is required: … then a `Missed if: …` clause");\n'
+          '}\n'
+          'if (!MISS_CLAUSE.exec(northStar)) { throw new Error("no miss clause"); }\n'
+          'const p = `NORTH STAR:\\n${northStar}\\n\\nSPEC:\\n${spec}`;\n')
 
 
 class ValidatorTest(unittest.TestCase):
@@ -810,6 +831,15 @@ class ValidatorTest(unittest.TestCase):
                               capture_output=True, text=True)
 
     def _init_repo(self, *tracked):
+        # SKIP, not error, when git is absent. Measured on python:3.11-slim,
+        # which ships no git: both callers died on `git init` with a traceback,
+        # so a machine without git reported two ERRORS that read like defects in
+        # the code under test. Every other environment dependency in this project
+        # announces a skip instead — root for the chmod cases, a missing
+        # .operator/bin for the #24 exec-bit control — and the reason is the
+        # same: an unrunnable case must say it did not run.
+        if shutil.which("git") is None:
+            self.skipTest("git is not installed; the tracked-files path cannot be exercised")
         self._git("init", "-q")
         self._git("config", "user.email", "t@example.invalid")
         self._git("config", "user.name", "t")
@@ -1035,21 +1065,20 @@ class ValidatorTest(unittest.TestCase):
         """Install minimal but realistic reader scripts into the fixture tree."""
         good_hook = (
             "#!/usr/bin/env bash\n"
-            "[ ! -L \"$1\" ] || exit 0\n"
-            "while IFS= read -r -n 512 line; do :; done < \"$1\"\n" + JSON_GET +
-            "# deviation gate: second bounded read of DECISIONS.md (HANDOFF-MARK)\n"
+            "[ ! -L \"$1\" ] || exit 0\n" + JSON_GET +
+            "# deviation gate: the ONLY bounded read left — ownership is the\n"
+            "# sentinel filename, so no sentinel is opened.\n"
             "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
-            "sentinel_owner() {\n"
-    "  case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) owner=\"\" ;; esac\n"
+            "sentinel_owner_of_name() {\n"
+    "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) printf '\\n'; return 0 ;; esac\n"
     "}\n")
         good_verdict = (
             "#!/usr/bin/env bash\n"
-            "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
+            "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
             "check_owner_name() { :; }\n"
             "[ ! -L \"$f\" ] || exit 0\n"
-            "while IFS= read -r -n 512 line; do :; done < \"$f\"\n"
-            "sentinel_owner() {\n"
-          "  case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) return 0 ;; esac\n"
+            "sentinel_owner_of_name() {\n"
+          "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) printf '\\n'; return 0 ;; esac\n"
           "}\n"
             "# F2: refuse a symlink fragment before the write + skip on both reads\n"
             '[ -L "$FRAGDIR/$who.md" ] && exit 1\n'
@@ -1060,18 +1089,18 @@ class ValidatorTest(unittest.TestCase):
             "while IFS= read -r -n 1048576 line; do :; done < \"$frag\"\n")
         good_adopt = (
             "#!/usr/bin/env bash\n"
-            "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
+            "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
             "check_owner_name() { :; }\n"
             "[ ! -L \"$F\" ] || exit 0\n"
-            "while IFS= read -r -n 512 line; do :; done < \"$F\"\n"
-            # PREV reject-set (F15): carries *.exempt (check_guard_parity pin)
+            # PREV reject-set (F15): the owner now arrives in the sentinel NAME,
+            # so the sanitisation moved with it — adoption reads no file at all.
             'case "${PREV:-}" in */* | .* | *"|"* | *[[:space:]]* | *[[:cntrl:]]* | *.exempt) PREV="<invalid>" ;; esac\n')
         write(self.dir / "scripts" / "ops-stop-hook.sh", hook_body or good_hook)
         write(self.dir / "scripts" / "ops-verdict.sh", verdict_body or good_verdict)
         write(self.dir / "scripts" / "ops-adopt.sh", adopt_body or good_adopt)
         write(self.dir / "scripts" / "ops-task.sh",
               "#!/usr/bin/env bash\n"
-              "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
+              "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
               "check_owner_name() { :; }\n"
               "[ ! -L \"$F\" ] || exit 0\n")
         write(self.dir / "scripts" / "statusline.sh", GOOD_STATUSLINE)
@@ -1089,7 +1118,7 @@ class ValidatorTest(unittest.TestCase):
     def test_unbounded_read_fires(self):
         self._write_readers(verdict_body=(
             "#!/usr/bin/env bash\n"
-            "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
+            "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
             "check_owner_name() { :; }\n"
             "while IFS= read -r line; do :; done < \"$f\"\n"
             "while IFS= read -r -n 512 row; do :; done < \"$frag\"\n"))
@@ -1186,7 +1215,7 @@ class ValidatorTest(unittest.TestCase):
             "#!/usr/bin/env bash\n"
             "# `read -r` is bounded by LINES, not bytes — discussion only.\n"
             "#    a plain read -r would slurp the whole line first\n"
-            "check_bare_name() { case \"$2\" in .*) die x ;; esac; }\n"
+            "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
             "check_owner_name() { :; }\n"
             "[ ! -L \"$F\" ] || exit 0\n"
             "while IFS= read -r -n 512 line; do :; done < \"$F\"\n"
@@ -1197,7 +1226,7 @@ class ValidatorTest(unittest.TestCase):
     def test_missing_guard_in_one_cli_fires(self):
         self._write_readers()
         write(self.dir / "scripts" / "ops-task.sh",
-              "#!/usr/bin/env bash\ncheck_bare_name() { case \"$2\" in .*) die x ;; esac; }\n")
+              "#!/usr/bin/env bash\ncheck_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n")
         probs = self.bounds_problems()
         self.assertTrue(any("missing check_owner_name()" in p for p in probs), probs)
 
@@ -1360,11 +1389,15 @@ class ValidatorTest(unittest.TestCase):
         # are trivially "in parity". Uniform drift is the REALISTIC failure —
         # the copy-paste convention tells a maintainer to edit one and copy it
         # to the rest. Only a canonical pin catches it.
-        for name in ("review.js", "brainstorm.js"):
-            write(self.dir / "workflows" / name,
-                  self._wf(name[:-3]).replace(
-                      "const BAD_CHARSET = /[^\\w./:@[\\]-]/;",
-                      "const BAD_CHARSET = /(?!)/;"))
+        # Derived from the tree, not a hardcoded pair: "uniform" means EVERY
+        # copy. Adding a third workflow to the fixture (plan.js, for #58) left
+        # this rewriting two of three, so the drift stopped being uniform and
+        # the parity assertion below started failing for the wrong reason —
+        # the test would have been measuring a partial rewrite it never meant.
+        for f in sorted((self.dir / "workflows").glob("*.js")):
+            write(f, f.read_text(encoding="utf-8").replace(
+                "const BAD_CHARSET = /[^\\w./:@[\\]-]/;",
+                "const BAD_CHARSET = /(?!)/;"))
         probs = []
         vp.check_workflow_parity(self.dir, probs)
         self.assertEqual(probs, [], "parity alone cannot see uniform drift")
@@ -1677,6 +1710,42 @@ class RenderTemplateTest(unittest.TestCase):
         write(self.dir / "scripts" / "statusline.sh",
               GOOD_STATUSLINE +
               '# never write: stat -f %m F || stat -c %Y F  (see the CI failure)\n')
+        probs = []
+        vp.check_platform_idioms(self.dir, probs)
+        self.assertEqual(probs, [])
+
+    # --- a brace group in a double-quoted sed script (fixed 2026-08-17) -------
+    # Under bash 3.2 — still /bin/bash on macOS — `sed -n "/^f() {$/,/^}$/p"`
+    # inside `"$( … )"` loses the nested quoting and `{$/,/^}` brace-expands, so
+    # sed gets a split script and the extraction yields nothing. bash 5 parses it
+    # correctly, which is why CI reported green while the local suite was red on
+    # a CONTROL assertion — a control that cannot pass, #21 inverted.
+
+    def test_double_quoted_sed_brace_group_fires(self):
+        write(self.dir / "scripts" / "statusline.sh",
+              GOOD_STATUSLINE +
+              'eval "$(sed -n "/^f() {$/,/^}$/p" "$SRC")"\n')
+        probs = []
+        vp.check_platform_idioms(self.dir, probs)
+        self.assertTrue(any("brace group inside a double-quoted sed" in p
+                            for p in probs), probs)
+
+    def test_single_quoted_sed_brace_group_is_accepted(self):
+        # The control that makes the check a rule and not a ban on sed: the fix
+        # this check exists to push people toward must itself pass.
+        write(self.dir / "scripts" / "statusline.sh",
+              GOOD_STATUSLINE +
+              "eval \"$(sed -n '/^f() {$/,/^}$/p' \"$SRC\")\"\n")
+        probs = []
+        vp.check_platform_idioms(self.dir, probs)
+        self.assertEqual(probs, [])
+
+    def test_double_quoted_sed_without_brace_group_is_accepted(self):
+        # A double-quoted sed script is not itself the defect — only an
+        # expandable brace group inside one is. Firing on every quoted sed
+        # would make the check noise and get it disabled.
+        write(self.dir / "scripts" / "statusline.sh",
+              GOOD_STATUSLINE + 'x="$(sed -n "/^foo$/p" "$SRC")"\n')
         probs = []
         vp.check_platform_idioms(self.dir, probs)
         self.assertEqual(probs, [])
@@ -2291,19 +2360,22 @@ class GuardParityVacuityTest(unittest.TestCase):
 
     # (script, the guard's code line, the comment-safe replacement that removes it)
     CASES = (
+        # All three readers now share ONE shape: ownership is the filename, so
+        # the reject set guards a name split rather than a body parse. The pin
+        # is unchanged in purpose — a planted name must not pose as an owner.
         ("ops-stop-hook.sh",
-         '*[[:space:]]* | *.exempt) owner="" ;;',
-         '*[[:space:]]*) owner="" ;;',
+         r'''"" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) printf '\n'; return 0 ;;''',
+         r'''"" | */* | .* | *"|"* | *[[:space:]]*) printf '\n'; return 0 ;;''',
          "*.exempt"),
         ("ops-verdict.sh",
-         '*[[:space:]]* | *.exempt) return 0 ;;',
-         '*[[:space:]]*) return 0 ;;',
+         r'''"" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) printf '\n'; return 0 ;;''',
+         r'''"" | */* | .* | *"|"* | *[[:space:]]*) printf '\n'; return 0 ;;''',
          "*.exempt"),
         # The statusline is the fourth sentinel reader and the third *.exempt
         # parser; it renders the same partition the Stop hook gates on.
         ("statusline.sh",
-         '*[[:space:]]* | *.exempt) owner="" ;;',
-         '*[[:space:]]*) owner="" ;;',
+         r'''"" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) printf '\n'; return 0 ;;''',
+         r'''"" | */* | .* | *"|"* | *[[:space:]]*) printf '\n'; return 0 ;;''',
          "*.exempt"),
         # F15's PREV set — the fifth copy, and the one whose pin was file-wide
         # until this round. ops-adopt.sh carries *.exempt at the WRITER too, so
@@ -2316,8 +2388,8 @@ class GuardParityVacuityTest(unittest.TestCase):
         # that can never equal a real session id cannot make a task permanently
         # non-blocking. Different literal, same vacuity shape.
         ("ops-stop-hook.sh",
-         '*"|"* | *[[:space:]]* | *.exempt) owner="" ;;',
-         '*"|"* | *.exempt) owner="" ;;',
+         r'''"" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) printf '\n'; return 0 ;;''',
+         r'''"" | */* | .* | *"|"* | *.exempt) printf '\n'; return 0 ;;''',
          "[[:space:]]"),
         # The leading-dot rule, one per writer CLI: a dotfile sentinel is
         # invisible to the Stop hook's glob, so the gate never sees the task.
@@ -2659,6 +2731,123 @@ class ReplayCharterLintTest(unittest.TestCase):
     def test_real_charter_is_clean(self):
         probs = []
         vp.check_replay_charter(ROOT, probs)
+        self.assertEqual(probs, [])
+
+
+class NorthStarCheckTest(unittest.TestCase):
+    """#58's field must stay required, and must stay OUT of the vet packets.
+
+    Both are one-character reversals that no other test would notice: a `??`
+    fallback passes every test that supplies a goal (all of them do), and adding
+    the goal to a vet prompt reads like fixing an omission unless you know Stage
+    A measured it drawing findings from 6/6 seats against the control column.
+    """
+
+    # The schema block too: check_northstar now pins produces/consumes as ARRAYS
+    # and the presence of contractsInferred, because reverting either restores
+    # prose contracts silently — the fallback still works, so nothing else fails.
+    # A fixture that models only the guards would make those pins report
+    # "cannot locate" instead of checking anything.
+    GOOD = (
+        'const TASK = { properties: {\n'
+        '    produces: {\n      type: "array",\n      items: { type: "string" },\n    },\n'
+        '    consumes: {\n      type: "array",\n      items: { type: "string" },\n    },\n'
+        '} };\n'
+        'const g = { contractsInferred: [] };\n'
+
+        'const spec = A.spec;\n'
+        'if (typeof spec !== "string") { throw new Error("args.spec is required"); }\n'
+        'const MISS_CLAUSE = /\\bmissed\\s+if\\s*:\\s*(\\S.*)/is;\n'
+        'const northStar = A.northStar;\n'
+        'if (typeof northStar !== "string") {\n'
+        '  throw new Error("args.northStar is required: … then a `Missed if: …` clause");\n'
+        '}\n'
+        'if (!MISS_CLAUSE.exec(northStar)) { throw new Error("no miss clause"); }\n'
+        'const p = `NORTH STAR:\\n${northStar}\\n\\nSPEC:\\n${spec}`;\n'
+    )
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = pathlib.Path(self.tmp.name)
+        (self.dir / "workflows").mkdir(parents=True)
+        self.addCleanup(self.tmp.cleanup)
+
+    def _run(self, src):
+        write(self.dir / "workflows" / "plan.js", src)
+        probs = []
+        vp.check_northstar(self.dir, probs)
+        return probs
+
+    def test_good_shape_is_accepted(self):
+        # The control. Without it every assertion below passes against a checker
+        # that flags everything, which is the same value as a checker that works.
+        self.assertEqual(self._run(self.GOOD), [])
+
+    def test_nullish_fallback_fires(self):
+        probs = self._run(self.GOOD.replace(
+            "const northStar = A.northStar;",
+            'const northStar = A.northStar ?? "(none)";'))
+        self.assertTrue(any("fallback" in p or "bare" in p for p in probs), probs)
+
+    def test_or_fallback_fires(self):
+        probs = self._run(self.GOOD.replace(
+            "const northStar = A.northStar;",
+            'const northStar = A.northStar || "(none)";'))
+        self.assertTrue(any("fallback" in p or "bare" in p for p in probs), probs)
+
+    def test_missing_required_throw_fires(self):
+        probs = self._run(self.GOOD.replace("args.northStar is required",
+                                            "args.northStar is suggested"))
+        self.assertTrue(any("is required" in p for p in probs), probs)
+
+    def test_missing_miss_clause_declaration_fires(self):
+        # The pin moved from the WORDS to the regex: "Missed if" survives in
+        # meta.whenToUse and in the required-throw's own text, both code lines,
+        # so deleting the whole guard block measured green against a substring
+        # check even with comments stripped.
+        probs = self._run(self.GOOD.replace("const MISS_CLAUSE = ", "const OTHER = "))
+        self.assertTrue(any("MISS_CLAUSE" in p for p in probs), probs)
+
+    def test_miss_clause_declared_but_never_applied_fires(self):
+        probs = self._run(self.GOOD.replace("MISS_CLAUSE.exec(northStar)", "null"))
+        self.assertTrue(any("never applied" in p for p in probs), probs)
+
+    def test_guards_moved_into_comments_fire(self):
+        # The measured reversal: prefixing every guard line with `// ` left the
+        # check reporting zero problems, so an unvalidated goal flowed into the
+        # decompose prompt with the build green.
+        commented = "\n".join("// " + ln for ln in self.GOOD.split("\n"))
+        probs = self._run(commented)
+        self.assertTrue(probs, "commented-out guards must not satisfy the pins")
+
+    def test_spec_guard_pins_fire(self):
+        probs = self._run(self.GOOD.replace(
+            "const spec = A.spec;", 'const spec = A.spec ?? "(none)";'))
+        self.assertTrue(any("A.spec" in p or "const spec" in p for p in probs), probs)
+
+    def test_goal_interpolated_into_a_second_prompt_fires(self):
+        # The measured one: the goal reaching a per-task vet packet.
+        probs = self._run(self.GOOD + 'const v = `VET ${northStar} ${task}`;\n')
+        self.assertTrue(any("interpolated 2 time(s)" in p for p in probs), probs)
+
+    def test_goal_never_interpolated_fires(self):
+        # The other direction: required, guarded, and then never actually used.
+        probs = self._run(self.GOOD.replace("${northStar}", "${spec}"))
+        self.assertTrue(any("interpolated 0 time(s)" in p for p in probs), probs)
+
+    def test_missing_plan_js_is_reported_not_skipped(self):
+        probs = []
+        vp.check_northstar(self.dir, probs)
+        self.assertTrue(any("missing" in p for p in probs), probs)
+
+    def test_check_is_registered_in_CHECKS(self):
+        # Every test above calls the function directly, so a dropped registry
+        # entry runs in no build while all of them stay green.
+        self.assertIn(vp.check_northstar, vp.CHECKS)
+
+    def test_real_tree_northstar_clean(self):
+        probs = []
+        vp.check_northstar(ROOT, probs)
         self.assertEqual(probs, [])
 
 

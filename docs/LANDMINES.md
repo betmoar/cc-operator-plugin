@@ -252,3 +252,68 @@ being re-read every session.
   scaffold creates and was caught only because a case asserts a healthy project
   stays quiet. The two calls in `ops-init.sh` are load-bearing; the comment
   there says so.
+- **A control assertion that cannot pass, and CI that cannot see it.** A control
+  drove `sed -n "/^f() {$/,/^}$/p"` inside `"$( … )"` to extract a function and
+  `eval` it. Under bash 5 that is correct. Under bash 3.2 — still `/bin/bash` on
+  every macOS — the nested double quotes do not survive the parse, `{$/,/^}`
+  becomes a **brace expansion**, sed receives a split script (`invalid command
+  code $`), the function is never defined, and the assertion fails on every run.
+  So the local suite was red on the maintainer's own machine while ubuntu's bash
+  5 parsed it fine and CI reported green — the one signal anyone actually looks
+  at. Note which assertion it was: the *control*, the thing whose whole job is to
+  prove the guard beside it was exercised. That is #21's class with the polarity
+  inverted — not a guard that cannot fail, a control that cannot pass — and the
+  inverted form is harder to notice, because a red local run reads as flakiness
+  while a green CI run reads as truth. Two fixes, and both were needed: the
+  extraction is single-quoted (nothing in a sed address needs interpolation, and
+  a single-quoted script is immune at every nesting depth), and
+  `check_platform_idioms` now bans the shape statically, which is the only way
+  the ban reaches CI at all — a bash-5 runner can never reproduce the bug it is
+  meant to catch. Prefer a heredoc probe script over a nested `bash -c` one-liner
+  when a test needs to run extracted code; the sibling assertion twenty lines
+  above had done exactly that and was always green.
+- **A statusline assertion that was really an assertion about the maintainer's
+  desk.** Three cases claimed *"degenerate stdin renders nothing"* while running
+  with cwd = **this repository**. When the payload cannot be parsed there is no
+  cwd to read, so `statusline.sh:84` falls back to `$PWD` deliberately (the bar
+  renders for where it stands). The repo had never had `.operator/` scaffolded in
+  it, so the fallback found no ledger and the three cases passed — for a reason
+  nothing to do with degenerate stdin. Opening one real task in the plugin's own
+  tree turned all three red at once with the renderer behaving exactly as
+  designed, which is how it was found: the gate cannot be dogfooded in its own
+  repo without tripping its own suite. They now run from a temp dir with no
+  `.operator/` at or above it, **and** a positive control pins the fallback from a
+  cwd that does have a pending sentinel — without that control, deleting the
+  `$PWD` fallback outright would leave all three green. Vacuous-guard class
+  reached through ambient state rather than a missing call site: if an assertion's
+  verdict depends on anything outside its fixture, it is measuring the
+  environment, and the environment is not under test.
+- **A measurement fixture that documents itself hands the seat the answer.** The
+  plan-alignment corpus (#58) ships a small synthetic project for the feasibility
+  lens to read. Being a good maintainer, its `README.md` explained the design —
+  including *"A plan that never writes that field cannot produce a user who signs
+  in"*, which is one fixture's defect stated outright, in the tree the lens reads.
+  Three module docstrings said "fixture". The corpus's pins were thorough about
+  the task JSON and silent about the codebase sitting beside it, because
+  neutralization had been reasoned about only for the artifact under test. Caught
+  by generating the prompts and grepping them, one step before 42 seats would have
+  scored a measurement whose answer was written down in its own input. The lesson
+  generalises past this corpus: **everything a seat can reach is input**, which
+  includes absolute paths (the first prompt generation put `plan-align` in every
+  one) and filenames (the first batch of prompt files was named
+  `<column>__<lens>__<task>.txt`). The first fix was itself the lesson repeating:
+  the scan walked `*.py`, exempted the README, and rested on a *promise* that a
+  dispatch excludes it — a review measured that nothing pinned the promise. The
+  README is now ordinary project documentation and the scan walks every file, so
+  there is no separation left to remember. When a guard's correctness depends on
+  a step someone must remember to take, widen the guard until it does not.
+- **Reasoning about degenerate input is not the same as running it.** The #66
+  graph work was argued to be cycle-proof by construction (`dependsOn` scans only
+  earlier tasks) — correct, and still worth nothing until a back-reference fixture
+  went through the shipped code and came out a DAG. Six degenerate shapes a
+  *model* can emit — duplicate ids, a task consuming its own output, a
+  back-reference, empty `produces`, punctuation-only contract text, a single task
+  — all ran without throwing and without reaching `blocked`. The argument would
+  have been right and unevidenced; the run costs a minute. This is the same
+  register as "a compile is not proof the feature works", applied to a report
+  nobody would think to fuzz because it is advisory.

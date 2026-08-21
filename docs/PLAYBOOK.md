@@ -40,8 +40,9 @@ Recurring judgement call — three CLIs validate names, and they must agree.
    justification names session ids, it does not belong in `check_bare_name`.
 3. **Apply it in all three CLIs** (`ops-task.sh`, `ops-verdict.sh`,
    `ops-adopt.sh`) — and if the rule concerns owners, **also** in the `case`
-   filter of **both** `sentinel_owner` parsers (`ops-verdict.sh`,
-   `ops-stop-hook.sh`). Refusing at the CLI alone leaves hand-written and
+   filter of **all three** `sentinel_owner_of_name` parsers (`ops-verdict.sh`,
+   `ops-stop-hook.sh`, `statusline.sh`) and `ops-adopt.sh`'s inline `PREV`
+   reject-set. Refusing at the CLI alone leaves hand-written and
    merged-in sentinels unguarded, which is exactly the input class that is not
    ours.
 4. **Write the migration test before the guard.** Take a value that was legal

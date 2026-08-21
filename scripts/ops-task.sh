@@ -4,12 +4,18 @@
 # (verdict row or --defer). Idempotent: re-opening an open id is a no-op —
 # including its ownership, so re-opening can never be a silent takeover.
 #
-# The sentinel body stamps who opened it, so the Stop hook can block only the
+# The sentinel's NAME carries who opened it, so the Stop hook can block only the
 # OWNING session and merely report everyone else's open tasks:
 #
-#   session_id: <id>     omitted when unknown → unowned → blocks every session
-#   cwd: <path>          forensics only (the hook enumerates by payload cwd)
-#   opened_at: <ISO8601>
+#   pending/<session-id>__<task-id>   owned
+#   pending/<task-id>                 unowned → blocks every session (fail-closed)
+#
+# In the name, not the body, because the body needed three hand-written parsers
+# (184 lines across ops-verdict, ops-stop-hook and statusline), each a byte-bounded
+# reader of what the code itself called untrusted input, to recover one field the
+# writer already had. A filename needs no parser and no read: ownership is a glob.
+# The body survives as forensics a human can `cat` — cwd and opened_at — and
+# NOTHING parses it for a decision.
 #
 # The agent learns its session id from the SessionStart hook's injected context;
 # CLAUDE_SESSION_ID is NOT set in the Bash tool environment.
@@ -37,6 +43,11 @@ check_bare_name() { # check_bare_name <label> <value>
     */*) die "$1 must be a bare name (no '/')" ;;
     .*) die "$1 must not start with '.' — a dotfile sentinel is invisible to the Stop hook's glob" ;;
     *"|"* | *"$NL"*) die "$1 must not contain '|' or newlines" ;;
+    # `__` separates owner from task in the sentinel NAME, so it cannot appear
+    # in either half or the split is ambiguous. Validated where the name is
+    # CONSTRUCTED, which is why the old five agreeing copies of this guard
+    # could shrink: a reader of a filename has nothing left to validate.
+    *__*) die "$1 must not contain '__' (it separates owner from task in the sentinel name)" ;;
   esac
 }
 
@@ -191,6 +202,45 @@ if [ -n "$OWNER" ]; then check_owner_name "$OWNER"; fi
 
 mkdir -p "$OPDIR/pending"
 
+# ONE sentinel per task-id, whoever owns it — the pre-existing invariant, kept.
+# The name now carries the owner, so a second session opening the same task would
+# otherwise create a SECOND file beside the first instead of hitting O_EXCL, and
+# "re-opening an open id is a no-op, including its ownership" would quietly stop
+# being true. Look for the task under any owner first; O_EXCL below still
+# arbitrates the race between two openers of the SAME name.
+sentinel_for() { # sentinel_for <task-id> → path, or empty
+  local _t="$1" _f
+  shopt -s nullglob
+  for _f in "$OPDIR/pending/$_t" "$OPDIR/pending"/*__"$_t"; do
+    # -e OR -L: `-e` is FALSE for a dangling symlink, so a planted broken link
+    # went unseen and a second sentinel was created beside it for the same task.
+    # A planted entry must be found and refused, not stepped around.
+    { [ -e "$_f" ] || [ -L "$_f" ]; } && { printf '%s\n' "$_f"; break; }
+  done
+  shopt -u nullglob
+}
+EXISTING="$(sentinel_for "$ID")"
+if [ -n "$EXISTING" ]; then
+  if [ -f "$EXISTING" ] && [ ! -L "$EXISTING" ]; then
+    echo "already open: $ID (ownership unchanged — use ops-adopt.sh to re-stamp)"
+    exit 0
+  fi
+  die "cannot open $ID: $EXISTING is not a regular file (a non-regular entry, symlink, or unwritable path already exists there) — remove it or choose another id"
+fi
+
+# CLAIM FIRST, THEN NAME THE OWNER. O_EXCL only arbitrates between openers of
+# the SAME path, and the owner is now part of the path — so two sessions opening
+# one task would each create their own name and both "win", silently breaking the
+# no-takeover guarantee. Measured: the concurrency loop caught it immediately.
+#
+# So the claim is the UNOWNED name, which both openers race for and the kernel
+# decides, and the winner renames it to carry its owner. A loser sees EEXIST and
+# reports the task already open, exactly as before. A crash between the two steps
+# leaves an unowned sentinel, which blocks every session — fail-closed, the safe
+# direction.
+CLAIM="$OPDIR/pending/$ID"
+SENTINEL="$OPDIR/pending/${OWNER:+${OWNER}__}$ID"
+
 # Create the sentinel ATOMICALLY. A test-then-write (`[ -e ] || > file`) is a
 # TOCTOU: two sessions opening the same id both pass the check, both truncate,
 # and the later write silently replaces the earlier session's ownership —
@@ -205,12 +255,35 @@ set -C
 # scope of any `2>/dev/null` on the compound body — the "a raw bash error as
 # operator guidance" landmine (review-pilot finding #3). Redirect the whole
 # test's fd 2 to silence bash's message; we emit our own precise one below.
-if { { if [ -n "$OWNER" ]; then printf 'session_id: %s\n' "$OWNER"; fi
-     printf 'cwd: %s\n' "$PWD"
+if { { printf 'cwd: %s\n' "$PWD"
      printf 'opened_at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-   } > "$OPDIR/pending/$ID"
+   } > "$CLAIM"
    } 2>/dev/null; then
   set +C
+  # The claim is ours; stamp the owner into the name.
+  if [ "$CLAIM" != "$SENTINEL" ]; then mv "$CLAIM" "$SENTINEL"; fi
+  # POST-RENAME RE-CHECK. The mv above re-opens the exact window the O_EXCL
+  # claim closed: the bare claim path is FREE again the moment the winner's
+  # rename lands, so a second opener whose sentinel_for() scan ran before our
+  # O_EXCL create — and whose own create lands after our rename — wins a
+  # SECOND claim and mints a second sentinel for one task-id, silently
+  # breaking "ONE sentinel per task-id" (PR #77 review; the reviewer's repro
+  # needed an injected sleep, and a 6-way real-speed stress did not hit it in
+  # 10 rounds — the window is scheduler-wide, not just instruction-adjacent).
+  # We cannot prevent that interleave from here; we CAN refuse to be the one
+  # who silently completes it. Our own SENTINEL is on disk by now, so this
+  # glob finds any OTHER owner's sentinel for the same id: that is the race's
+  # fingerprint, and it is a die, not a cleanup — which sentinel is legit is
+  # not ours to decide, and deleting either half would destroy the other
+  # opener's gate.
+  if [ -n "$OWNER" ]; then
+    shopt -s nullglob
+    for _dup in "$OPDIR/pending"/*__"$ID"; do
+      [ "$_dup" = "$SENTINEL" ] && continue
+      die "duplicate sentinel detected: $_dup exists beside $SENTINEL — two sessions raced the same task-id; resolve in .operator/pending/ by hand (keep the intended owner's sentinel)"
+    done
+    shopt -u nullglob
+  fi
 else
   _rc=$?; set +C
   # The redirection failed. O_EXCL makes this EEXIST when a real sentinel
@@ -231,11 +304,11 @@ else
   # is read-side laundering: a reader that follows the link treats a file our
   # CLIs never wrote as a sentinel; every reader now carries this same -L
   # rejection.) A symlink is never a sentinel we wrote.
-  if [ -f "$OPDIR/pending/$ID" ] && [ ! -L "$OPDIR/pending/$ID" ]; then
+  if [ -f "$CLAIM" ] && [ ! -L "$CLAIM" ]; then
     echo "already open: $ID (ownership unchanged — use ops-adopt.sh to re-stamp)"
     exit 0
   else
-    die "cannot create sentinel $OPDIR/pending/$ID (a non-regular entry, symlink, or unwritable path already exists there) — remove it or choose another id"
+    die "cannot create sentinel $CLAIM (a non-regular entry, symlink, or unwritable path already exists there) — remove it or choose another id"
   fi
 fi
 
@@ -268,7 +341,7 @@ arm_marker() { # arm_marker <session-id>
 
 if [ -n "$OWNER" ]; then
   arm_marker "$OWNER" || true
-  echo "opened $ID owned by $OWNER (sentinel $OPDIR/pending/$ID — cleared only by ops-verdict.sh)"
+  echo "opened $ID owned by $OWNER (sentinel $SENTINEL — cleared only by ops-verdict.sh)"
 else
   echo "opened $ID UNOWNED — blocks every session's Stop; pass --owner <sid> to scope it"
 fi

@@ -12,10 +12,13 @@
 // Run:  node tests/test_workflows.mjs   (exit 0 iff all pass)
 // CI:   added as a step in .github/workflows/validate.yml (node ships on the runner).
 
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 import path from "node:path";
 
-const ROOT = path.resolve(import.meta.dirname, "..");
+// `import.meta.dirname` is Node >=20.11 and ubuntu:24.04 ships 18.19, where it is
+// undefined and path.resolve throws "paths[0] must be of type string" — an error
+// naming nothing about Node versions. fileURLToPath has no floor.
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WF = (f) => pathToFileURL(path.join(ROOT, "workflows", f)).href;
 
 let pass = 0, fail = 0;
@@ -97,7 +100,17 @@ async function run(file, argsValue, agentReturns) {
     "args", "agent", "parallel", "pipeline", "phase", "log",
     `return (async () => {\n${source}\n})();`
   );
-  const result = await fn(argsValue, rt.agent, rt.parallel, rt.pipeline, rt.phase, rt.log);
+  let result;
+  try {
+    result = await fn(argsValue, rt.agent, rt.parallel, rt.pipeline, rt.phase, rt.log);
+  } catch (e) {
+    // Attach the runtime to the throw so a caller can assert what was SPENT
+    // before the workflow refused. Without this the natural assertion
+    // (`rt == null || rt.calls.length === 0`) is vacuous — rt is always null on
+    // a throw, so it passes whether the guard runs first or last.
+    if (e && typeof e === "object") e.rt = rt;
+    throw e;
+  }
   return { result, rt };
 }
 
@@ -266,7 +279,8 @@ const planFixtures = {
   "test:info": { feasible: "yes", testable: "yes", issues: [] },
 };
 const BIG_SPEC = "SPEC_SENTINEL_" + "s".repeat(5000);
-const { result: plan, rt: planRt } = await run(WF("plan.js"), { spec: BIG_SPEC }, planFixtures);
+const NORTH_STAR = "A user who has forgotten their password can set a new one and sign in with it. Missed if: any path needs a support agent.";
+const { result: plan, rt: planRt } = await run(WF("plan.js"), { spec: BIG_SPEC, northStar: NORTH_STAR }, planFixtures);
 const planCalls = planRt.calls;
 const blockedIds = (plan.blocked ?? []).map((b) => b.taskId);
 const needsInfoIds = plan.needsInfo ?? [];
@@ -287,7 +301,7 @@ const nullFixtures = {
   // "feas:dead" deliberately absent → the stub returns null for that label.
   "test:dead": { feasible: "yes", testable: "yes", issues: [] },
 };
-const { result: nullPlan } = await run(WF("plan.js"), { spec: "s" }, nullFixtures);
+const { result: nullPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, nullFixtures);
 ok((nullPlan.vettingIncomplete ?? []).includes("dead"),
   "plan: a lens returning null → vettingIncomplete, NOT clear");
 ok(!(nullPlan.blocked ?? []).map((b) => b.taskId).includes("dead"),
@@ -303,6 +317,549 @@ ok(feasCalls.length === planFixtures.decompose.tasks.length &&
   "plan: feasibility vet prompt does NOT carry the full spec (F13)");
 ok(planCalls.find((c) => c.label === "decompose").prompt.includes(BIG_SPEC),
   "plan: decompose (once) is the only full-spec consumer");
+
+// ── plan: the north star is required, and a vague one is refused (#58) ───────
+console.log("-- Case: plan.js north star — required, falsifiable, decompose-only");
+// Every other input to this workflow is guarded; the one saying what the work is
+// FOR used to fall back to a placeholder string and be decomposed as if it were
+// a spec. Absent, too short, and no-miss-clause each have their own case,
+// because a single disjunction test passes when two of the three branches die.
+await throws(() => run(WF("plan.js"), { spec: "s" }, planFixtures),
+  "plan northStar: absent → refused, not decomposed as a placeholder", "required");
+await throws(() => run(WF("plan.js"), { spec: "s", northStar: 42 }, planFixtures),
+  "plan northStar: non-string → refused", "required");
+await throws(() => run(WF("plan.js"), { spec: "s", northStar: "   " }, planFixtures),
+  "plan northStar: whitespace-only → refused", "required");
+await throws(() => run(WF("plan.js"), { spec: "s", northStar: "Make the plugin better." }, planFixtures),
+  "plan northStar: a vague one-liner → refused (worse than none — it launders drift as alignment)",
+  "cannot be falsifiable");
+await throws(() => run(WF("plan.js"), {
+    spec: "s",
+    northStar: "Users can reset their password and sign in with the new one, end to end, unaided.",
+  }, planFixtures),
+  "plan northStar: long but with no miss clause → refused", "Missed if");
+
+// The measured decision (tests/fixtures/plan-align/MEASUREMENT.md, 2026-08-18):
+// the goal goes to DECOMPOSE and NOT to the per-task vet packets. Putting it
+// there drew goal-reachability findings from 6/6 seats against the CONTROL
+// column — a plan that reaches its goal — so it is noise bought at judgment
+// tier. This is the F13 assertion's shape: pin WHERE an input is spent, because
+// nothing else would notice it being spent everywhere.
+const nsCalls = planRt.calls;
+ok(nsCalls.find((c) => c.label === "decompose").prompt.includes(NORTH_STAR),
+  "plan northStar: decompose receives it");
+ok(nsCalls.filter((c) => c.label.startsWith("feas:") || c.label.startsWith("test:"))
+     .every((c) => !c.prompt.includes(NORTH_STAR)),
+  "plan northStar: NO vet lens receives it — measured to be undiscriminating (#58 Stage A)");
+ok(plan.northStar === NORTH_STAR,
+  "plan northStar: returned to the operator, so the spec-coverage check has a referent");
+
+// ── plan: the graph — edges, layers, Amdahl (#66) ────────────────────────────
+console.log("-- Case: plan.js graph — real/unverified edges, concurrency, p + ceiling");
+// Arithmetic over produces/consumes, no agent call. EVERY part gets a negative
+// control: a check that reports "wide" on a chain launders a guess as a
+// measurement, which is worse than not reporting one.
+const graphVet = (ids) => Object.fromEntries(
+  ids.flatMap((id) => [[`feas:${id}`, { feasible: "yes", testable: "yes", issues: [] }],
+                       [`test:${id}`, { feasible: "yes", testable: "yes", issues: [] }]]));
+// Arrays: the shipped contract since produces/consumes became structured. A
+// second builder keeps the PROSE fallback exercised by name rather than by
+// accident — it is still reachable when a decomposer ignores the schema, and a
+// fallback nothing tests is a fallback nobody knows is broken.
+const gtask = (id, produces = [], consumes = []) => ({
+  id, title: "t", files: ["f.py"], produces, consumes, specExcerpt: "x",
+  testCycle: "run x → pass", steps: ["s"],
+});
+const gtaskProse = (id, produces, consumes) => ({
+  id, title: "t", files: ["f.py"], produces, consumes, specExcerpt: "x",
+  testCycle: "run x → pass", steps: ["s"],
+});
+
+// A: a genuine CHAIN — each task consumes what the one before produces.
+const chainIds = ["a", "b", "c", "d"];
+const chain = {
+  decompose: { fileStructure: "f: r", tasks: [
+    gtask("a", ["make_alpha"], []),
+    gtask("b", ["make_beta"], ["make_alpha"]),
+    gtask("c", ["make_gamma"], ["make_beta"]),
+    gtask("d", ["make_delta"], ["make_gamma"]),
+  ] },
+  ...graphVet(chainIds),
+};
+const { result: chainPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, chain);
+const cg = chainPlan.graph;
+ok(cg.edges.length === 3 && cg.edges.every((e) => e.status === "real"),
+  "plan graph: a real chain reports every declared edge real");
+ok(cg.layers.length === 4 && cg.graphWidth === 1,
+  "plan graph: NEGATIVE CONTROL — a chain has no concurrency (4 layers, width 1)");
+ok(cg.p === 0 && cg.ceiling === 1,
+  "plan graph: NEGATIVE CONTROL — a chain reports p=0 and a 1.0x ceiling, not 'wide'");
+ok(cg.consumesNoTaskProduces.length === 0,
+  "plan graph: a chain has no unresolved consumes");
+
+// B: FOUR INDEPENDENT tasks — same shape, none consuming anything.
+const wideIds = ["w", "x", "y", "z"];
+const wide = {
+  decompose: { fileStructure: "f: r", tasks: [
+    gtask("w", ["make_w"], []), gtask("x", ["make_x"], []),
+    gtask("y", ["make_y"], []), gtask("z", ["make_z"], []),
+  ] },
+  ...graphVet(wideIds),
+};
+const { result: widePlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, wide);
+const wg = widePlan.graph;
+ok(wg.layers.length === 1 && wg.graphWidth === 4,
+  "plan graph: four independent tasks collapse to one layer of width 4");
+ok(wg.p === 0.75 && wg.ceiling === 4,
+  "plan graph: p and the ceiling move with the graph (p=0.75, 4x), not a constant");
+ok(wg.edges.length === 3 && wg.edges.every((e) => e.status === "unverified"),
+  "plan graph: declared order with no named dependency → unverified, the spurious-serialisation signal");
+ok((widePlan.blocked ?? []).length === 0 && (widePlan.needsInfo ?? []).length === 0,
+  "plan graph: POLARITY — unverified edges REPORT, they never block a plan (#21's class)");
+
+// B2: PROSE. The token rule must not treat ordinary capitalised English as a
+// contract name. A review measured the earlier rule (any uppercase letter)
+// reporting these four INDEPENDENT tasks as a strict chain — p=0, ceiling 1.0x,
+// every edge "real" via the token "The". The whole deliverable of #66 is the
+// number, so a spurious match is worse than a missed one, and it is also the
+// direction the comment claimed could not happen.
+const proseIds = ["pw", "px", "py", "pz"];
+const prose = {
+  decompose: { fileStructure: "f: r", tasks: proseIds.map((id) =>
+    gtaskProse(id, `The ${id}() helper. Nothing else is produced.`, "The project layout only")) },
+  ...graphVet(proseIds),
+};
+const { result: prosePlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, prose);
+const pg = prosePlan.graph;
+ok(pg.edges.every((e) => !e.via.includes("The")),
+  "plan graph: 'The' is not a contract name — prose does not fabricate an edge");
+ok(pg.graphWidth === 4 && pg.p === 0.75,
+  "plan graph: four independent tasks with prose contracts still report width 4, p=0.75");
+ok(pg.edges.every((e) => e.status === "unverified"),
+  "plan graph: prose contracts degrade to unverified (this class only — the failure mode is NOT one-directional overall)");
+
+// …and the rule must still admit the names it exists for.
+const keepIds = ["k1", "k2"];
+const keep = {
+  decompose: { fileStructure: "f: r", tasks: [
+    gtask("k1", ["ResetToken", "create_token"], []),
+    gtask("k2", ["validate_token"], ["create_token", "ResetToken"]),
+  ] },
+  ...graphVet(keepIds),
+};
+const { result: keepPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, keep);
+ok(keepPlan.graph.edges[0].status === "real",
+  "plan graph: NEGATIVE CONTROL — snake_case and camelCase names are still matched");
+ok(keepPlan.graph.edges[0].via.includes("create_token") && keepPlan.graph.edges[0].via.includes("ResetToken"),
+  "plan graph: both underscore and internal-capital forms resolve, so the rule is not merely stricter");
+
+// B3: PROPERTIES over randomised plans. Seeded, so a failure is reproducible —
+// an unseeded fuzz reports a different bug every run and none of them twice.
+//
+// These are INVARIANTS, deliberately not a second implementation of the graph.
+// A differential oracle was written and run during review (400 plans, zero
+// disagreements) and is not shipped: a copied algorithm has to be updated in
+// lockstep, and two identically-wrong copies are trivially "in agreement" —
+// F30's shape, which this repo has already been bitten by. Properties cannot
+// drift into agreement with a bug because they never encode the algorithm.
+{
+  let seed = 20260818;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  const WORDS = ["The", "Nothing", "None", "make_a", "make_b", "ResetToken", "helper", "app", "x1"];
+  const word = () => WORDS[Math.floor(rnd() * WORDS.length)];
+  let checked = 0;
+  const broken = [];
+  for (let iter = 0; iter < 120; iter++) {
+    const n = 1 + Math.floor(rnd() * 5);
+    // Duplicate ids on purpose: they are what broke the layer assignment twice.
+    const tasks = Array.from({ length: n }, (_, i) =>
+      gtaskProse(rnd() < 0.2 ? "dup" : `t${i}`, `${word()} ${word()}`, rnd() < 0.3 ? "" : `${word()} ${word()}`));
+    const fx = { decompose: { fileStructure: "f", tasks }, ...graphVet(tasks.map((t) => t.id)) };
+    let res;
+    try { ({ result: res } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, fx)); }
+    catch (e) { broken.push(`iter ${iter}: threw ${e.message.slice(0, 40)}`); continue; }
+    const g = res.graph; checked++;
+    if (g.layers.flat().length !== tasks.length) broken.push(`iter ${iter}: layers hold ${g.layers.flat().length}/${tasks.length} tasks`);
+    if (g.layers.some((l) => !Array.isArray(l))) broken.push(`iter ${iter}: sparse hole in layers`);
+    if (!(g.p >= 0 && g.p < 1)) broken.push(`iter ${iter}: p=${g.p} out of [0,1)`);
+    const expect = Number((tasks.length / g.layers.length).toFixed(2));
+    if (Math.abs(g.ceiling - expect) > 0.02) broken.push(`iter ${iter}: ceiling ${g.ceiling} != N/L ${expect}`);
+    if ((res.blocked ?? []).length || (res.needsInfo ?? []).length) broken.push(`iter ${iter}: graph reached a blocking bucket`);
+    // The property whose absence let a layer inversion pass 120/120: the ceiling
+    // check above derives L from the OUTPUT, so it only proves internal
+    // consistency. This one is about the graph being a graph.
+    const lo = new Map();
+    (g.layerIndexes ?? []).forEach((l, li) => l.forEach((ix) => lo.set(ix, li)));
+    for (const e of g.edges) {
+      if (e.status === "real" && !(lo.get(e.fromIndex) < lo.get(e.toIndex)))
+        broken.push(`iter ${iter}: real edge ${e.from}->${e.to} points backwards in layers`);
+    }
+    // Array#some SKIPS holes, so the sparse-hole check could never fire.
+    for (let li = 0; li < g.layers.length; li++)
+      if (g.layers[li] === undefined) broken.push(`iter ${iter}: hole at layer ${li}`);
+  }
+  ok(checked === 120, `plan graph fuzz: all 120 seeded plans produced a graph (got ${checked})`);
+  ok(broken.length === 0, `plan graph fuzz: no invariant violated${broken.length ? " — " + broken[0] : ""}`);
+}
+
+// B4: outOfOrder. It shipped with no assertion anywhere, so flipping the scan
+// direction or dropping the log branch would leave the suite green while the
+// only signal that the concurrency numbers are untrustworthy stopped firing.
+{
+  const ooIds = ["late", "early"];
+  const oo = { decompose: { fileStructure: "f: r", tasks: [
+      gtask("late", ["make_late"], ["make_early"]),
+      gtask("early", ["make_early"], []),
+    ] }, ...graphVet(ooIds) };
+  const { result: ooPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, oo);
+  const og = ooPlan.graph;
+  ok(og.outOfOrder.length === 1 && og.outOfOrder[0].taskId === "late",
+    "plan graph: a task consuming what a LATER task produces is reported outOfOrder");
+  ok(og.outOfOrder[0].producedLaterBy.includes("early"),
+    "plan graph: outOfOrder names the later producer, so the operator can fix the ordering");
+  ok((ooPlan.blocked ?? []).length === 0,
+    "plan graph: POLARITY — outOfOrder reports, it does not block");
+
+  // The guard the review measured: a LATER task reusing a produced name is
+  // benign when the real dependency already resolved backwards. Flagging it
+  // announced "p/ceiling understate the serial path" about a correct number.
+  const benignIds = ["A", "B", "C"];
+  const benign = { decompose: { fileStructure: "f: r", tasks: [
+      gtask("A", ["make_x"], []),
+      gtask("B", ["make_b"], ["make_x"]),
+      gtask("C", ["make_x"], []),
+    ] }, ...graphVet(benignIds) };
+  const { result: bPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, benign);
+  ok(bPlan.graph.outOfOrder.length === 0,
+    "plan graph: NEGATIVE CONTROL — a benign duplicate producer name later in the list is NOT outOfOrder");
+}
+
+// B5: an `unverified` edge must not imply "no dependency" when dependsOn found a
+// non-adjacent one. Measured on the repo's own control fixture, where two edges
+// read unverified while both tasks genuinely depend on task 0.
+{
+  const nonAdjIds = ["p0", "p1", "p2"];
+  const nonAdj = { decompose: { fileStructure: "f: r", tasks: [
+      gtask("p0", ["make_root"], []),
+      gtask("p1", ["make_one"], ["make_root"]),
+      gtask("p2", ["make_two"], ["make_root"]),
+    ] }, ...graphVet(nonAdjIds) };
+  const { result: naPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, nonAdj);
+  const e = naPlan.graph.edges.find((x) => x.from === "p1" && x.to === "p2");
+  ok(e.status === "unverified", "plan graph: p1->p2 is not a real declared edge");
+  ok((e.dependsInsteadOn ?? []).includes("p0"),
+    "plan graph: an unverified edge names the producer it DOES depend on — 'buys nothing' would be false here");
+}
+
+// An empty decomposition must return the SAME shape as a full one. It used to
+// omit northStar, tasks, vetting and graph, so a caller reading result.graph or
+// result.northStar got a TypeError on undefined.
+{
+  const { result: emptyPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR },
+    { decompose: { fileStructure: "f", tasks: [] } });
+  ok(emptyPlan.error && emptyPlan.northStar === NORTH_STAR,
+    "plan: an empty decomposition still returns the north star");
+  ok(emptyPlan.graph && Array.isArray(emptyPlan.graph.layers) && emptyPlan.graph.ceiling === 1,
+    "plan: an empty decomposition returns an empty graph, not undefined");
+  for (const k of ["tasks", "vetting", "blocked", "needsInfo", "vettingIncomplete"])
+    ok(Array.isArray(emptyPlan[k]), `plan: empty decomposition still returns ${k} as an array`);
+}
+
+// B0: STRUCTURED vs INFERRED. The reason produces/consumes became arrays: while
+// they were prose, every extraction rule had both a false-positive and a
+// false-negative class, and four review rounds each closed one and opened
+// another. Declared names need no rule. What must never come back is the silent
+// mixing of the two — a number estimated from English presented as one measured
+// from declarations.
+{
+  const decl = { decompose: { fileStructure: "f: r", tasks: [
+      gtask("d0", ["The", "Object"], []),          // names that a parser would have refused
+      gtask("d1", ["done"], ["The"]),               // …and that resolve exactly when DECLARED
+    ] }, ...graphVet(["d0", "d1"]) };
+  const { result: dPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, decl);
+  ok(dPlan.graph.contractsInferred.length === 0,
+    "plan graph: declared arrays are not inferred — contractsInferred is empty");
+  ok(dPlan.graph.edges[0].status === "real" && dPlan.graph.edges[0].via.includes("The"),
+    "plan graph: a DECLARED name matches literally, even one no heuristic would accept");
+  ok(dPlan.graph.p === 0 && dPlan.graph.ceiling === 1,
+    "plan graph: …and the resulting chain is measured, not estimated");
+}
+{
+  // A decomposer ignoring the schema still gets a graph — flagged, never silent.
+  const prose = { decompose: { fileStructure: "f: r", tasks: [
+      gtaskProse("p1", "make_thing() -> str", ""),
+      gtaskProse("p2", "make_other() -> str", "make_thing from p1"),
+    ] }, ...graphVet(["p1", "p2"]) };
+  const { result: pPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, prose);
+  ok(pPlan.graph.contractsInferred.length > 0,
+    "plan graph: a PROSE contract is recorded in contractsInferred, not silently parsed");
+  ok(pPlan.graph.contractsInferred.includes("p1.produces"),
+    "plan graph: …naming the task and field, so the operator knows which numbers are estimates");
+  ok(pPlan.graph.edges[0].status === "real",
+    "plan graph: the fallback still works — it is flagged, not disabled");
+}
+{
+  // Mixed input must flag only the prose half.
+  const mixed = { decompose: { fileStructure: "f: r", tasks: [
+      gtask("x1", ["make_x"], []),
+      gtaskProse("x2", "make_y() -> str", "make_x from x1"),
+    ] }, ...graphVet(["x1", "x2"]) };
+  const { result: mPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, mixed);
+  ok(mPlan.graph.contractsInferred.every((f) => f.startsWith("x2.")),
+    "plan graph: only the prose task is flagged — a mixed plan reports exactly which half was guessed");
+}
+
+// B7: the round-4 regressions, each pinned by the property that would have
+// caught it. The fuzz missed all of them because its ceiling check derives L
+// from the output under test — internal consistency, not correctness.
+{
+  // NEAREST producer, not earliest: a re-produced name used to layer the
+  // consumer above a producer the same result stamps `real`.
+  const rp = { decompose: { fileStructure: "f: r", tasks: [
+      gtask("t0", ["make_alpha"], []),
+      gtask("t1", ["make_beta"], ["make_alpha"]),
+      gtask("t2", ["make_alpha"], ["make_beta"]),
+      gtask("t3", ["make_final"], ["make_alpha"]),
+    ] }, ...graphVet(["t0", "t1", "t2", "t3"]) };
+  const { result: rpPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, rp);
+  const g = rpPlan.graph;
+  ok(g.layers.length === 4 && g.graphWidth === 1 && g.p === 0,
+    "plan graph: a re-produced name resolves to the NEAREST producer — a chain reports as a chain");
+  // The invariant the fuzz lacked: no real edge may point backwards in layers.
+  const layerOf = new Map();
+  g.layerIndexes.forEach((l, i) => l.forEach((ix) => layerOf.set(ix, i)));
+  ok(g.edges.filter((e) => e.status === "real").every((e) => layerOf.get(e.fromIndex) < layerOf.get(e.toIndex)),
+    "plan graph: every REAL edge points from a lower layer to a higher one (joined on index, not id)");
+}
+{
+  // A non-string produces used to become "[object Object]" and share a token
+  // across every task.
+  const objTasks = ["o1", "o2", "o3"].map((id) => ({
+    id, title: "t", files: ["f.py"], produces: { name: id }, consumes: { needs: id },
+    specExcerpt: "x", testCycle: "run x → pass", steps: ["s"] }));
+  const { result: objPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR },
+    { decompose: { fileStructure: "f", tasks: objTasks }, ...graphVet(["o1", "o2", "o3"]) });
+  ok(objPlan.graph.edges.every((e) => e.status === "unverified"),
+    "plan graph: a non-string produces yields NO contract names, it does not invent 'Object'");
+  ok(objPlan.graph.graphWidth === 3,
+    "plan graph: …so three independent object-valued tasks stay independent");
+}
+{
+  // A token the task produces itself is not "produced by no task".
+  const selfP = { decompose: { fileStructure: "f: r", tasks: [
+      gtask("s1", ["make_s"], ["make_s"]),
+    ] }, ...graphVet(["s1"]) };
+  const { result: spPlan2 } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, selfP);
+  ok(spPlan2.graph.consumesNoTaskProduces.length === 0,
+    "plan graph: a token the task produces ITSELF is not reported as produced by nobody");
+}
+// A bare `Missed if:` must not borrow later prose to clear the floor.
+await throws(() => run(WF("plan.js"), { spec: "s",
+    northStar: "Users can reset their own password unaided end to end.\nMissed if:\n\nNotes: see docs/spec/reset.md for the flow." },
+  planFixtures),
+  "plan northStar: an empty miss clause cannot borrow a later line to clear the floor", "usable");
+// …and an indented goal is still a goal.
+{
+  const padded = "            It ships and users sign in. Missed if: any path still needs a support agent.";
+  const { result: padPlan } = await run(WF("plan.js"), { spec: "s", northStar: padded }, planFixtures);
+  ok(padPlan.northStar === padded,
+    "plan northStar: leading whitespace does not turn a real goal into a bare miss clause");
+}
+
+// B6: the FALSE-NEGATIVE direction. Dropping bare capitals to kill "The" made
+// contractNames blind to single-word type names and routes — two of the three
+// shapes `produces` documents — and that direction OVERSTATES the ceiling, which
+// is worse for #66 than understating it.
+{
+  const tnIds = ["ty1", "ty2"];
+  const tn = { decompose: { fileStructure: "f: r", tasks: [
+      gtaskProse("ty1", "class Mailer; POST /api/reset-password", ""),
+      gtaskProse("ty2", "send() -> bool", "Mailer and the /api/reset-password route from ty1"),
+    ] }, ...graphVet(tnIds) };
+  const { result: tnPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, tn);
+  ok(tnPlan.graph.edges[0].status === "real",
+    "plan graph: a single-word type name (Mailer) resolves — the false-NEGATIVE class is closed");
+  ok(tnPlan.graph.edges[0].via.some((v) => v.includes("api/reset-password")),
+    "plan graph: a route string resolves too");
+}
+
+// …and the stopword list must not have reopened the false-POSITIVE class.
+{
+  const spIds = ["s1", "s2"];
+  const sp = { decompose: { fileStructure: "f: r", tasks: [
+      gtaskProse("s1", "The helper. Nothing else is produced.", ""),
+      gtaskProse("s2", "Another thing entirely.", "The project layout only"),
+    ] }, ...graphVet(spIds) };
+  const { result: spPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, sp);
+  ok(spPlan.graph.edges[0].status === "unverified",
+    "plan graph: NEGATIVE CONTROL — sentence-opening capitals still fabricate no edge");
+}
+
+// A north star that is ONLY a miss clause states no goal, and used to pass.
+await throws(() => run(WF("plan.js"), {
+    spec: "s", northStar: "Missed if: any path still needs a support agent today.",
+  }, planFixtures),
+  "plan northStar: a bare miss clause with no goal sentence → refused", "names no goal");
+
+// C: the dangling consumes #73 measured — a task naming a producer nobody ships.
+const dangIds = ["m", "n"];
+const dang = {
+  decompose: { fileStructure: "f: r", tasks: [
+    gtask("m", ["make_m"], []),
+    gtask("n", ["make_n"], ["never_produced_anywhere"]),
+  ] },
+  ...graphVet(dangIds),
+};
+const { result: dangPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, dang);
+const dangIdsOut = dangPlan.graph.consumesNoTaskProduces.map((d) => d.taskId);
+ok(dangIdsOut.includes("n"),
+  "plan graph: a consumes naming nothing any earlier task produces is reported (#73's question, computed)");
+ok(!dangIdsOut.includes("m"),
+  "plan graph: NEGATIVE CONTROL — an empty consumes is not a dangling one");
+ok(dangPlan.graph.consumesNoTaskProduces[0].tokens.includes("never_produced_anywhere"),
+  "plan graph: dangling names WHICH token is unproduced, not just which task");
+
+// PER-TOKEN, the defect a review measured: one resolved name used to hide every
+// unresolved one in the same task, so the field answering #73 "exact and free"
+// reported nothing for the commonest real case.
+{
+  const mixIds = ["m1", "m2"];
+  const mix = { decompose: { fileStructure: "f: r", tasks: [
+      gtask("m1", ["make_a"], []),
+      gtask("m2", ["make_b"], ["make_a", "make_ghost"]),
+    ] }, ...graphVet(mixIds) };
+  const { result: mixPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, mix);
+  const d = mixPlan.graph.consumesNoTaskProduces.find((x) => x.taskId === "m2");
+  ok(d && d.tokens.includes("make_ghost"),
+    "plan graph: a task with one RESOLVED and one unproduced consume still reports the unproduced one");
+}
+
+// PER-TOKEN for outOfOrder too — the regression a review caught: the per-task
+// `continue` I added to silence a false positive also silenced a true one on
+// this repo's own corpus.
+{
+  const ooIds2 = ["a1", "b1", "c1"];
+  const oo2 = { decompose: { fileStructure: "f: r", tasks: [
+      gtask("a1", ["make_early"], []),
+      gtask("b1", ["make_mid"], ["make_early", "make_late"]),
+      gtask("c1", ["make_late"], []),
+    ] }, ...graphVet(ooIds2) };
+  const { result: oo2Plan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, oo2);
+  const rec = oo2Plan.graph.outOfOrder.find((x) => x.taskId === "b1");
+  ok(rec && rec.tokens.includes("make_late"),
+    "plan graph: a task consuming one BACKWARD-resolved and one forward-only name is still reported out of order");
+  ok(rec && !rec.tokens.includes("make_early"),
+    "plan graph: …and names only the forward-only token, not the one that resolved");
+}
+ok((dangPlan.blocked ?? []).length === 0,
+  "plan graph: POLARITY — a dangling consumes reports, it does not block");
+
+// D: the arithmetic itself, against the issue's own worked numbers.
+// All three, because a single point passes against a table that is right once.
+// The k=16 value is the sobering one the issue is about: p=0.75 with 16 workers
+// buys 3.37x, not 16x, and the serial tail is the cap.
+ok(wg.speedupAt["2"] === 1.6 && wg.speedupAt["4"] === 2.29 && wg.speedupAt["16"] === 3.37,
+  "plan graph: S = 1/((1-p) + p/k) at k=2/4/16 → 1.6x / 2.29x / 3.37x, computed not asserted");
+ok(typeof cg.dispatchBound === "string" && cg.dispatchBound.includes("CHART-r6"),
+  "plan graph: the width is reported WITH the charter bound — one implementer at a time");
+ok(!planCalls.some((c) => c.label.startsWith("graph")),
+  "plan graph: no agent call — it is arithmetic over data the workflow already holds");
+
+// E: degenerate shapes. The graph runs on whatever the decomposer returned, and
+// a decomposer is a model — duplicate ids, a task consuming its own output, and
+// a back-reference are all things it can emit. None may throw (that would take
+// down a plan over a report) and none may reach blocked/needsInfo. Cycles are
+// impossible BY CONSTRUCTION, not by a check: dependsOn scans only tasks EARLIER
+// in the list, so the relation is a DAG whatever the text says — the
+// back-reference case is what proves that rather than asserting it.
+for (const [label, degen] of Object.entries({
+  "a single task": [gtask("solo", "make_solo() -> str", "")],
+  "duplicate task ids": [gtask("dup", "make_x() -> str", ""), gtask("dup", "make_y() -> str", "make_x from dup")],
+  "a task consuming its own output": [gtask("s", "make_s() -> str", "make_s from s")],
+  "a back-reference to a later task": [gtask("p", "make_p() -> str", "make_q from q"),
+                                       gtask("q", "make_q() -> str", "make_p from p")],
+  "no produces anywhere": [gtask("n1", "", ""), gtask("n2", "", "")],
+  "punctuation-only contract text": [gtask("u", "→ ✓ ---", "→ ✓ ---")],
+})) {
+  const fx = { decompose: { fileStructure: "f", tasks: degen }, ...graphVet(degen.map((t) => t.id)) };
+  let res = null, threw = null;
+  try { ({ result: res } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, fx)); }
+  catch (e) { threw = e; }
+  ok(!threw && res?.graph, `plan graph: ${label} does not throw`);
+  ok((res?.blocked ?? []).length === 0 && (res?.needsInfo ?? []).length === 0,
+    `plan graph: ${label} reaches neither blocked nor needsInfo (report-only holds)`);
+  ok(Number.isFinite(res?.graph?.p) && Number.isFinite(res?.graph?.ceiling) && res.graph.ceiling >= 1,
+    `plan graph: ${label} yields finite p and a ceiling >= 1`);
+}
+
+// The degenerate loop above asserts only "does not throw / does not block /
+// finite p", and a review measured what that cannot see: with layers keyed by
+// task ID, duplicate ids collapsed and a task VANISHED from the report while p
+// was still computed over the full N — 2 ids surfaced for 3 tasks. The no-throw
+// assertion passed throughout. Count what came out, not just that something did.
+{
+  const dupTasks = [gtask("x", "make_x() -> str", ""), gtask("y", "make_y() -> str", "make_x from x"),
+                    gtask("x", "make_z() -> str", "")];
+  const { result: dupRes } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR },
+    { decompose: { fileStructure: "f", tasks: dupTasks }, ...graphVet(["x", "y"]) });
+  const surfaced = dupRes.graph.layers.flat();
+  ok(surfaced.length === dupTasks.length,
+    "plan graph: duplicate ids — every task still surfaces in a layer, none silently dropped");
+  ok(dupRes.graph.layers.every((l) => Array.isArray(l)),
+    "plan graph: duplicate ids — no sparse hole in layers (a JSON null the operator would read as a layer)");
+}
+// The same depth for the OTHER degenerate shapes (PR #77 review: the dup-id
+// block was the only shape with a count check — a back-reference silently
+// vanishing from layers would ship green). Every task surfaces exactly once,
+// in exactly one layer, whatever the shape.
+{
+  const shapes = {
+    "solo": [gtask("solo", "make_solo() -> str", "")],
+    "self-consume": [gtask("s", "make_s() -> str", "make_s from s")],
+    "back-reference": [gtask("p", "make_p() -> str", "make_q from q"),
+                       gtask("q", "make_q() -> str", "make_p from p")],
+    "no-produces": [gtask("n1", "", ""), gtask("n2", "", "")],
+    "punctuation": [gtask("u", "→ ✓ ---", "→ ✓ ---")],
+  };
+  for (const [label, tasks] of Object.entries(shapes)) {
+    const { result } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR },
+      { decompose: { fileStructure: "f", tasks }, ...graphVet(tasks.map((t) => t.id)) });
+    const flat = result.graph.layers.flat();
+    ok(flat.length === tasks.length && new Set(flat).size === flat.length,
+      `plan graph: ${label} — every task surfaces exactly once, no duplicates, no drops`);
+    // a back-reference must NOT fabricate a real edge: p consumes make_q which
+    // only a LATER task produces, so the forward resolution stays unverified
+    if (label === "back-reference") {
+      ok(result.graph.edges.every((e) => e.kind !== "real" || e.from !== "q" || e.to !== "p"),
+        "plan graph: back-reference produces no real edge (dependsOn scans earlier tasks only)");
+    }
+  }
+}
+
+// args.spec is guarded like northStar: an absent spec used to run a full
+// judgment-tier decompose plus every vet seat against a placeholder string.
+await throws(() => run(WF("plan.js"), { northStar: NORTH_STAR }, planFixtures),
+  "plan spec: absent → refused", "args.spec is required");
+await throws(() => run(WF("plan.js"), { spec: "   ", northStar: NORTH_STAR }, planFixtures),
+  "plan spec: whitespace-only → refused", "args.spec is required");
+
+// "Refused BEFORE any dispatch is paid for" is the entire justification for
+// these guards, and throws() cannot see it — it inspects e.message and never
+// rt.calls, so moving a guard below the decompose agent() call would leave every
+// assertion above green while the run still cost a judgment-tier pass and N vet
+// seats. Assert the spend, not the message.
+for (const [label, badArgs] of Object.entries({
+  "absent spec": { northStar: NORTH_STAR },
+  "absent northStar": { spec: "s" },
+  "vague northStar": { spec: "s", northStar: "Make it better." },
+  "northStar with no miss clause": { spec: "s", northStar: "Users can reset their password and sign in unaided, end to end." },
+})) {
+  let rt = null;
+  try { ({ rt } = await run(WF("plan.js"), badArgs, planFixtures)); }
+  catch (e) { rt = e?.rt ?? rt; }
+  ok(rt == null || (rt.calls ?? []).length === 0,
+    `plan guards: ${label} spends NOTHING — zero agent calls, not just a thrown message`);
+}
 
 // ── crawl: shard fan-out + merge ─────────────────────────────────────────────
 console.log("-- Case: crawl.js shard fan-out + merge");
@@ -616,7 +1173,7 @@ await throws(() => run(WF("review.js"), { tiers: { MECHANICAL: "not routable" } 
   "review tier: charset-bad id rejected — the guard is applied, not merely present (#60)", "outside the");
 await throws(() => run(WF("crawl.js"), { tiers: { MECHANICAL: "not routable" }, shards: ["x"] }, {}),
   "crawl tier: charset-bad id rejected — the guard is applied, not merely present (#60)", "outside the");
-await throws(() => run(WF("plan.js"), { tiers: { MECHANICAL: "not routable" }, spec: "s" }, {}),
+await throws(() => run(WF("plan.js"), { tiers: { MECHANICAL: "not routable" }, spec: "s", northStar: NORTH_STAR }, {}),
   "plan tier: charset-bad id rejected — the guard is applied, not merely present (#60)", "outside the");
 
 // ── dispatch: one seat, one model (#55) ─────────────────────────────────────

@@ -1,0 +1,79 @@
+{
+  "column": "misaligned",
+  "shape": "missing-final-step",
+  "fileStructure": "app/reset.py: token issuance, validation, and confirmation for password reset. app/models.py: User gains no new field. app/auth.py: unchanged; login remains the only session source. app/mailer.py: unchanged.",
+  "tasks": [
+    {
+      "id": "reset-token-store",
+      "title": "ResetToken record and single-use token issuance",
+      "files": [
+        "app/reset.py",
+        "app/models.py"
+      ],
+      "produces": "ResetToken dataclass (token, user_id, expires_at, used); create_token(user_id: int) -> str; token_row(token: str) -> ResetToken | None",
+      "consumes": "",
+      "specExcerpt": "R1 — Token issuance. A reset token is a random 32-hex-character string bound to one user id, valid for 30 minutes, single-use. Storage is a dict keyed by the token string; an expired or unknown token is indistinguishable to a caller.",
+      "testCycle": "python3 -m unittest tests.test_reset_token -v → OK (3 tests): a fresh token is 32 hex chars, token_row returns the row for it, and token_row returns None for an unknown string",
+      "steps": [
+        "write tests/test_reset_token.py asserting len(create_token(1)) == 32 and all chars in string.hexdigits",
+        "run it → ModuleNotFoundError: app.reset",
+        "add app/reset.py with the ResetToken dataclass and a module-level _TOKENS dict",
+        "implement create_token using secrets.token_hex(16) and a 30-minute expires_at",
+        "implement token_row as a dict lookup returning None on miss",
+        "run it → OK (3 tests), commit"
+      ]
+    },
+    {
+      "id": "reset-request",
+      "title": "request_reset issues a token and mails the link",
+      "files": [
+        "app/reset.py",
+        "app/mailer.py"
+      ],
+      "produces": "request_reset(email: str) -> None",
+      "consumes": "create_token from app/reset.py",
+      "specExcerpt": "R2 — Requesting a reset. `request_reset(email)` looks the user up, issues a token, and mails a link. An address with no account is accepted silently — the response must not reveal whether an account exists.",
+      "testCycle": "python3 -m unittest tests.test_reset_request -v → OK (2 tests): a known address appends one entry to mailer.sent whose body contains the issued token, and an unknown address returns None while leaving mailer.sent empty",
+      "steps": [
+        "write tests/test_reset_request.py for both the known and unknown address",
+        "run it → AttributeError: request_reset",
+        "implement request_reset: store.get_user_by_email, early return on None, create_token, mailer.send_email",
+        "run it → OK (2 tests), commit"
+      ]
+    },
+    {
+      "id": "reset-email-copy",
+      "title": "Reset email body: expiry and one link",
+      "files": [
+        "app/reset.py"
+      ],
+      "produces": "reset_email_body(token: str, ttl_minutes: int) -> str",
+      "consumes": "the token string produced by create_token",
+      "specExcerpt": "R3 — The email. The mail body names the expiry in minutes and carries the reset link exactly once. Copy is plain text; no HTML part.",
+      "testCycle": "python3 -m unittest tests.test_reset_email -v → OK (2 tests): the body contains '30 minutes' and body.count('/reset/confirm?token=') == 1",
+      "steps": [
+        "write tests/test_reset_email.py asserting the ttl string appears and the link appears exactly once",
+        "run it → AttributeError: reset_email_body",
+        "implement reset_email_body as an f-string; have request_reset call it",
+        "run it → OK (2 tests), commit"
+      ]
+    },
+    {
+      "id": "reset-token-validate",
+      "title": "validate_token rejects expired, unknown, and used tokens",
+      "files": [
+        "app/reset.py"
+      ],
+      "produces": "validate_token(token: str) -> ResetToken | None",
+      "consumes": "token_row and the ResetToken.used/expires_at fields from app/reset.py",
+      "specExcerpt": "R4 — Validating a token. `validate_token(token)` returns the token row for a live token and nothing for an expired, unknown, or already-used one.",
+      "testCycle": "python3 -m unittest tests.test_reset_validate -v → OK (4 tests): live token returns the row; unknown, expired (expires_at backdated), and used (used=True) each return None",
+      "steps": [
+        "write tests/test_reset_validate.py covering all four cases",
+        "run it → AttributeError: validate_token",
+        "implement validate_token: token_row, then reject on used or expires_at in the past",
+        "run it → OK (4 tests), commit"
+      ]
+    }
+  ]
+}

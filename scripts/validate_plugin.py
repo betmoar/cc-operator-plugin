@@ -867,15 +867,20 @@ def check_reader_bounds(root, problems):
     still applied to one of four readers. Now it fails the build instead.
     """
     readers = {
-        "ops-stop-hook.sh": 2,   # sentinel_owner + the DECISIONS.md deviation scan
-        "ops-verdict.sh": 2,     # sentinel_owner + the --reconcile fragment loop
-        "ops-adopt.sh": 1,       # the inline sentinel parse
+        # Ownership moved into the sentinel's FILENAME, so three body parsers —
+        # and the bounded reads that made an untrusted file safe to parse — are
+        # gone rather than unbounded. Lowering a count is only ever correct
+        # because the READER was deleted; that distinction is invisible to the
+        # number, which is why it is written here.
+        "ops-stop-hook.sh": 1,   # the DECISIONS.md deviation scan
+        "ops-verdict.sh": 1,     # the --reconcile fragment loop
+        # ops-adopt no longer reads a sentinel at all: adoption is a rename.
         # The statusline segment renders on a ~300ms timer, which makes it the
         # hottest reader here by three orders of magnitude — the others run once
         # per turn-end or per command. Measured on one 64MB newline-less
         # sentinel: 0.014s bounded vs 6.20s per parse unbounded, i.e. a
         # permanently wedged status bar rather than a slow one.
-        "statusline.sh": 2,      # sentinel_owner + the dev[N] reverse-tail scan
+        "statusline.sh": 1,      # the dev[N] reverse-tail scan
         # The tier-config resolver reads a file under .operator/ (untrusted — a
         # merge or checkout can produce it). Same hazard class as the others:
         # a newline-less multi-MB tiers.env is one "line" to an unbounded read.
@@ -952,7 +957,12 @@ def check_reader_bounds(root, problems):
 
 
 def check_platform_idioms(root, problems):
-    """Ban the try-BSD-then-GNU fallback idiom in scripts and tests.
+    """Ban idioms that pass on one platform and silently fail on the other.
+
+    Two families, same failure signature — green where the author runs it, wrong
+    where the other half of the world runs it.
+
+    ONE: the try-BSD-then-GNU fallback.
 
     `stat -f %m F || stat -c %Y F` looks portable and is not. On GNU coreutils
     `-f` means FILESYSTEM status and the format goes via `-c`, so `stat -f %m F`
@@ -970,8 +980,50 @@ def check_platform_idioms(root, problems):
     The rule: PROBE the flavor once and branch, or use a form both accept
     (`touch -t <literal>`). Never `A || B` across platform dialects where A can
     emit stdout before failing.
+
+    TWO: a brace group inside a DOUBLE-QUOTED sed script. `sed -n "/^f() {$/,/^}$/p"`
+    is correct under bash 5 and mangled under bash 3.2 — which is still
+    /bin/bash on every macOS — once it sits inside `"$( … )"`: the nested double
+    quotes do not survive that parse, `{$/,/^}` becomes a BRACE EXPANSION, and
+    sed receives a split script ("invalid command code $"). The extraction it was
+    driving silently produces nothing.
+
+    That is worse than a normal portability bug because of WHERE it lands. The
+    measured instance (tests/test-scripts.sh, fixed 2026-08-17) was a control
+    assertion — the one asserting that a guard had been exercised. It could not
+    pass on darwin, and CI's bash 5 parsed it correctly and reported green, so
+    the local suite was red and the only visible signal said fine. #21's class
+    with the polarity inverted: not a guard that cannot fail, a control that
+    cannot pass.
+
+    Single-quote the sed script. Nothing in a sed address needs interpolation,
+    and a single-quoted script is immune at every nesting depth.
     """
+    # A brace group is only expandable when unquoted or double-quoted, so the
+    # pattern requires the double quote. `[^"}]*` on both sides of the comma
+    # keeps it inside one brace group rather than spanning two arguments.
+    # Anchored on a sed ADDRESS (`/…{$/` … `/^}…/`), not on any brace-comma-brace.
+    # The first version matched every double-quoted sed script containing
+    # `{…,…}`, which is also an ERE interval quantifier: `sed -E "s/[0-9]{2,4}/X/"`
+    # failed the build on correct, portable code. And `(?:-[a-zA-Z]+\s+)*` could
+    # not consume a long flag, so `sed --posix -n "/^f() {$/,/^}$/p"` — the real
+    # defect — slipped through. Both measured. A checker that fires on correct
+    # code is the one that gets disabled, which its own docstring says.
+    #
+    # The flag part accepts `--expression=…` (a `=value` form) and a flag with no
+    # following space (`-e"…"`), both of which the first anchored version missed
+    # while firing on the space-separated spelling of the same command. The
+    # closing side allows text before `}` so an indented brace still matches. A
+    # `\`-continued invocation is still invisible: the scan is line-based, and
+    # that bound is real rather than fixed.
+    sed_brace = re.compile(
+        r"""sed\s+(?:--?[a-zA-Z-]+(?:=\S*)?\s*)*"[^"]*/\^?[^"]*\{\\?\$?/\s*,\s*/\^?\\?[^"]*\}""")
     bad = (
+        (sed_brace,
+         "a brace group inside a double-quoted sed script — bash 3.2 (every "
+         "macOS /bin/bash) brace-expands it inside \"$( … )\" and sed gets a "
+         "split script, while bash 5 parses it correctly and CI stays green; "
+         "single-quote the sed script"),
         (re.compile(r"stat\s+-f\s+%\w+.*\|\|.*stat\s+-c"),
          "stat -f … || stat -c … — GNU `-f` prints filesystem info to stdout "
          "before failing, so the fallback CONCATENATES garbage; probe the "
@@ -1024,6 +1076,29 @@ def check_guard_parity(root, problems):
             problems.append(
                 f"scripts/{name}: no leading-dot rejection — a dotfile sentinel "
                 f"is invisible to the Stop hook's glob, so the gate never sees it")
+        # the `__` separator rule, SCOPED TO check_bare_name's body: `__` splits
+        # owner from task in the sentinel filename, so a `__` inside either half
+        # builds a name every reader's first-`__` split parses differently than
+        # the writer intended. ops-task.sh alone carried this arm through 0.9.0
+        # (PR #77 review): adopting as `sessA__evilB` created
+        # `sessA__evilB__T1`, readers parsed owner `sessA`, the real adopter was
+        # locked out and `sessA` — which adopted nothing — closed the task.
+        # Scoped to the function for the same F30 reason as the F1 pin below:
+        # `*__*` appears elsewhere in real code (readers splitting names), and a
+        # file-wide search is satisfied by a reader, not the guard.
+        body = _function_body(text, "check_bare_name")
+        if body is None:
+            problems.append(
+                f"scripts/{name}: cannot locate check_bare_name()'s body — the "
+                f"`__`-separator pin has nothing to check. Reshaping the guard "
+                f"must update this locator, not silently skip it")
+        elif "*__*" not in body:
+            problems.append(
+                f"scripts/{name}: check_bare_name() does not reject '__' — it "
+                f"separates owner from task in the sentinel name, so an owner or "
+                f"task-id containing it makes every reader's first-`__` split "
+                f"parse a name our own writers could never have built (PR #77 "
+                f"review; the arm must match ops-task.sh's copy)")
     # the hook's parser must reject what the writers reject, or a hand-written
     # sentinel reads as a valid foreign owner and the gate opens
     hook = root / "scripts" / "ops-stop-hook.sh"
@@ -1053,7 +1128,7 @@ def check_guard_parity(root, problems):
                 f"planted symlink in pending/, laundering an entry our CLIs "
                 f"never wrote into a trusted sentinel (F65/F66; the guard "
                 f"must live at every reader, see docs/PLAYBOOK.md)")
-    # sentinel_owner()'s reject-set must include *.exempt in all three body
+    # sentinel_owner_of_name()'s reject-set must include *.exempt in all three body
     # parsers, mirroring check_owner_name's reject of the reserved G3 grant
     # namespace — else a corrupted body "session_id: victim.exempt" parses as
     # a valid owner and recompute_arm_marker deletes another session's grant
@@ -1071,16 +1146,16 @@ def check_guard_parity(root, problems):
         p = root / "scripts" / name
         if not p.is_file():
             continue
-        text = _function_body(shell_code(p), "sentinel_owner")
+        text = _function_body(shell_code(p), "sentinel_owner_of_name")
         if text is None:
             problems.append(
-                f"scripts/{name}: cannot locate sentinel_owner() — the F1 "
+                f"scripts/{name}: cannot locate sentinel_owner_of_name() — the F1 "
                 f"reject-set pin has nothing to check. Renaming or reshaping "
                 f"the parser must update this locator, not silently skip it")
             continue
         if "*.exempt" not in text:
             problems.append(
-                f"scripts/{name}: sentinel_owner()'s reject-set is missing "
+                f"scripts/{name}: sentinel_owner_of_name()'s reject-set is missing "
                 f"*.exempt — a sentinel body naming a G3 grant parses as a "
                 f"valid owner, letting recompute_arm_marker delete another "
                 f"session's exemption (F1)")
@@ -1691,6 +1766,21 @@ def check_workflows(root, problems):
         # meta is rejected at launch. Check the anchor, not the object body (the
         # runtime validates phases/whenToUse).
         #
+        # …and the literal must not be COMPUTED. `whenToUse: "a" + "b"` is a
+        # concatenation expression, not a literal, and the harness rejects a
+        # computed meta AT LAUNCH — the workflow simply does not run, which no
+        # suite here would notice because none of them launches one. plan.js
+        # briefly shipped this while documenting its new required args, and it
+        # was the only workflow of five to do so; a review flagged it as
+        # unverifiable from inside the repo, which is exactly why it needs a pin
+        # rather than a convention.
+        meta_block = re.search(r"export const meta\s*=\s*\{.*?\n\};", text, re.S)
+        if meta_block and re.search(r'"\s*\+|\+\s*"', meta_block.group(0)):
+            problems.append(
+                f"workflows/{f.name}: `meta` contains a concatenation — the harness "
+                f"requires a PURE LITERAL and rejects a computed meta at launch, so "
+                f"the workflow would fail to run with every gate here green")
+
         # No `node --check` here: it is too lenient to gate on (measured
         # 2026-07-30 — returns exit 0 on redeclared consts, unclosed parens,
         # and dangling expressions; only structural nonsense like a stray `}`
@@ -2590,11 +2680,153 @@ def check_release_gates_cover_validate(root, problems):
                 f"than the PR build that does not (#38)")
 
 
+def check_northstar(root, problems):
+    """`plan.js`'s north star stays REQUIRED, and stays out of the vet packets.
+
+    Two independent things, both measured, both quietly reversible:
+
+    ONE — required. Every other input to plan.js is guarded; the one naming what
+    the work is FOR fell back to a placeholder string that then got decomposed as
+    if it were a spec (#58). The demotion that would undo this is one character:
+    `A.northStar ?? "…"`. A fallback here does not fail any test that supplies a
+    goal, and every test supplies a goal, so nothing else would notice.
+
+    TWO — decompose only. Stage A measured what happens when the goal goes into
+    the PER-TASK vet packets: 6/6 feasibility seats raised goal-reachability
+    findings against the control column, the plan that reaches its goal. It is
+    noise bought at judgment tier. The natural "improvement" a later maintainer
+    makes is to pass the goal to the lenses too — it reads like an obvious
+    omission unless you know it was tried. So the interpolation site is counted:
+    exactly one, in the decompose prompt.
+
+    Pinning the COUNT rather than the absence from named prompts catches the
+    interpolation form. It does NOT catch every form, and the earlier version of
+    this docstring claimed otherwise — a review pointed out that
+    `+ "\n\nNORTH STAR:\n" + northStar` appended to a vet prompt leaves the count
+    at 1 and this check green, and that `+`-concatenated template literals are
+    exactly how both vet prompts in plan.js are built, i.e. the idiomatic way a
+    maintainer would actually add it.
+
+    A SECOND gap, disclosed for the same reason: this is a grep with no ordering
+    awareness. Moving the three throws below the decompose dispatch keeps every
+    pin satisfied and the check green, while the refusal fires only after a
+    judgment-tier pass has been paid for — the exact cost the guard exists to
+    prevent. That is caught by the `spends NOTHING` assertions in
+    tests/test_workflows.mjs, which count agent calls, and cannot be caught here
+    without parsing JS.
+
+    So the guarantee here is narrow and the real enforcement is elsewhere: the
+    `no vet lens receives it` assertion in tests/test_workflows.mjs inspects the
+    prompts the stub runtime actually captured, which covers concatenation,
+    variables, and anything else. Stated plainly because a checker whose
+    docstring overclaims is worse than one that does not exist — the next
+    maintainer trusts it and stops looking.
+    """
+    f = root / "workflows" / "plan.js"
+    if not f.is_file():
+        problems.append("workflows/plan.js: missing")
+        return
+    raw = f.read_text(encoding="utf-8")
+
+    # A comment-stripped view, for the reason check_workflows already strips one
+    # (F48/F57): a guard moved into a comment must not satisfy the regex that
+    # asks whether the guard is there. Measured against THIS check by a review —
+    # prefixing every line of all three northStar guard blocks with `// ` left it
+    # reporting zero problems, so an unvalidated (possibly undefined) goal flowed
+    # into the decompose prompt with the build green. That is precisely the
+    # silent reversal the docstring above says this check exists to catch, and it
+    # was written without the strip the sibling check already had.
+    #
+    # `Missed if` needs the strip for a second reason: it appears in prose twice
+    # (meta.whenToUse and the throw text), so deleting ONLY the MISS_CLAUSE block
+    # also measured green.
+    src = re.sub(r"/\*.*?\*/", "", raw, flags=re.DOTALL)
+    src = "\n".join(ln for ln in src.split("\n") if not ln.lstrip().startswith("//"))
+
+    # `const { … northStar … } = A;` is the behaviour-identical refactor and used
+    # to be reported as a missing read.
+    reads_goal = (re.search(r"const\s+northStar\s*=\s*A\.northStar\s*;", src)
+                  or re.search(r"const\s*\{[^}]*\bnorthStar\b[^}]*\}\s*=\s*A\s*;", src))
+    if not reads_goal:
+        problems.append(
+            "workflows/plan.js: no bare `const northStar = A.northStar;` — the goal "
+            "must be read without a default (#58: the fallback placeholder was the bug)")
+    if re.search(r"A\.northStar\s*\?\?", src) or re.search(r"A\.northStar\s*\|\|", src):
+        problems.append(
+            "workflows/plan.js: `A.northStar` has a `??`/`||` fallback — that silently "
+            "restores the #58 defect and no test supplying a goal would catch it")
+    if "args.northStar is required" not in src:
+        problems.append(
+            "workflows/plan.js: no throw naming `args.northStar is required` — the "
+            "field is only required if its absence refuses")
+    # Declared AND applied, the same shape check_workflows uses for BAD_CHARSET.
+    # A bare `"Missed if" in src` was measured green after deleting the entire
+    # miss-clause block, because the words survive in meta.whenToUse and in the
+    # other throw's text — both code lines, so comment-stripping does not help.
+    # Only the regex's declaration plus a call site distinguishes the rule from
+    # prose about the rule.
+    if not re.search(r"const\s+MISS_CLAUSE\s*=\s*/", src):
+        problems.append(
+            "workflows/plan.js: no `const MISS_CLAUSE = /…/` — a goal with no miss "
+            "condition cannot fail, so it cannot align anything (#58)")
+    if not re.search(r"MISS_CLAUSE\.(exec|test)\s*\(", src):
+        problems.append(
+            "workflows/plan.js: MISS_CLAUSE is declared but never applied — the "
+            "falsifiability rule is prose unless something runs it")
+
+    # `A.spec` is the sibling guard added in the same diff and plan.js's own
+    # comment calls it "guarded for the same reason". Nothing pinned it: a review
+    # measured reverting it to the old placeholder fallback and the whole
+    # validator stayed green, so the cheaper-to-revert of the two guards was the
+    # unpinned one.
+    if not re.search(r"const\s+spec\s*=\s*A\.spec\s*;", src):
+        problems.append(
+            "workflows/plan.js: no bare `const spec = A.spec;` — the spec must be read "
+            "without a default, same rule as northStar (a placeholder ran a full "
+            "judgment-tier decompose plus every vet seat on nothing)")
+    if re.search(r"A\.spec\s*\?\?", src) or re.search(r"A\.spec\s*\|\|", src):
+        problems.append(
+            "workflows/plan.js: `A.spec` has a `??`/`||` fallback — that is the exact "
+            "placeholder shape #58 removed")
+    if "args.spec is required" not in src:
+        problems.append(
+            "workflows/plan.js: no throw naming `args.spec is required`")
+
+    # produces/consumes must stay ARRAYS. Reverting either to `type: "string"`
+    # restores prose input and with it every parsing defect four review rounds
+    # removed — and nothing else would notice, because the fallback still works
+    # and the suite would go on passing with `contractsInferred` quietly filling.
+    for field in ("produces", "consumes"):
+        m = re.search(rf'{field}:\s*\{{\s*\n\s*type:\s*"([a-z]+)"', src)
+        if not m:
+            problems.append(f"workflows/plan.js: cannot locate the `{field}` schema type")
+        elif m.group(1) != "array":
+            problems.append(
+                f'workflows/plan.js: `{field}` is type "{m.group(1)}", must be "array" — '
+                f"prose contracts are what the graph's parsing defects came from, and the "
+                f"prose fallback still works, so a revert here is silent")
+    if "contractsInferred" not in src:
+        problems.append(
+            "workflows/plan.js: no `contractsInferred` — a prose contract must be RECORDED, "
+            "or an estimate over English is indistinguishable from a measurement over "
+            "declared names")
+
+    sites = src.count("${northStar}")
+    if sites != 1:
+        problems.append(
+            f"workflows/plan.js: `${{northStar}}` is interpolated {sites} time(s), "
+            f"expected exactly 1 (the decompose prompt). Stage A measured the goal in "
+            f"the per-task vet packets drawing goal findings from 6/6 seats against the "
+            f"CONTROL column — see tests/fixtures/plan-align/MEASUREMENT.md before "
+            f"changing this")
+
+
 # The registry, in run order. Both main() and the test suite iterate THIS —
 # a hand-copied second list is how three guardrails (reader bounds, guard
 # parity, lock parity) ended up running in the build but not in the test that
 # asserts a good tree is clean, which is the test most likely to be trusted.
 CHECKS = (
+    check_northstar,
     check_manifests,
     check_statusline,
     check_changelog,
