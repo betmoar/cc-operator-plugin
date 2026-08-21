@@ -11,8 +11,10 @@
 #             the command to clear them (Claude Code feeds stderr back as
 #             guidance).
 #
-# Ownership: a sentinel stamps `session_id: <id>` (ops-task.sh --owner). Only
-# sentinels owned by THIS session — or owned by nobody — block. Foreign ones are
+# Ownership: the sentinel FILENAME carries the owner — `pending/<sid>__<task>`
+# is owned (ops-task.sh --owner stamps it by naming it), `pending/<task>` is
+# unowned. Only sentinels owned by THIS session — or owned by nobody — block.
+# Foreign ones are
 # reported on stderr and allowed, so one session can no longer be trapped by
 # another's open task, nor close a row it did not perform. An UNOWNED sentinel
 # fails CLOSED (pre-0.4 sentinels are empty files, and an unowned sentinel is a
