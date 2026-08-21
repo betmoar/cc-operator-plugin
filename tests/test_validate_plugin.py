@@ -302,11 +302,13 @@ def make_good_tree(root):
             Run `bash "${{CLAUDE_PLUGIN_ROOT}}/scripts/ops-init.sh"`.
             """))
     # Two workflow fixtures carrying the shared tier-validation invariants
-    # identically (ROUTABLE + BAD_CHARSET byte-equal, KNOWN_TIERS = resolver's
-    # TIER_NAMES) so check_workflows, check_workflow_parity, and
-    # check_workflow_tier_namespace pass on the good tree. The sandbox forbids
-    # imports, so the block is copy-pasted; parity + namespace-equality are the
-    # only things holding it together.
+    # identically (BAD_CHARSET byte-equal, DEFAULT_TIERS values harness
+    # aliases) so check_workflows, check_workflow_parity, and
+    # check_workflow_default_tiers pass on the good tree. The sandbox forbids
+    # imports, so the block is copy-pasted; parity + the alias pin are the
+    # only things holding it together. (KNOWN_TIERS and its namespace check
+    # were deleted with #76 step 2 — the workflows no longer carry a tier-name
+    # catalogue.)
     # Both stubs carry check_routable and TIER_NAMES: the resolver and the
     # renderer parse the same tiers.env, so check_resolver_renderer_parity
     # requires both to declare each (a plugin shipping one guarded and one
@@ -380,8 +382,8 @@ def make_good_tree(root):
     # now, not a requirement (check_workflows (c)). BAD_CHARSET is the guard.
     WF_SHARED = (
         'const BAD_CHARSET = /[^\\w./:@[\\]-]/;\n'
-        'const KNOWN_TIERS = ["JUDGMENT","IMPLEMENT","MECHANICAL","RECON"];\n'
-        'for (const [n, id] of Object.entries({JUDGMENT:"claude-opus-5"})) {\n'
+        'const DEFAULT_TIERS = { JUDGMENT: "opus" };\n'
+        'for (const [n, id] of Object.entries(DEFAULT_TIERS)) {\n'
         '  if (BAD_CHARSET.test(id)) throw new Error("bad");\n'
         '}\n'
     )
@@ -1463,7 +1465,7 @@ class ValidatorTest(unittest.TestCase):
         probs = []
         vp.check_workflows(ROOT, probs)
         vp.check_workflow_parity(ROOT, probs)
-        vp.check_workflow_tier_namespace(ROOT, probs)
+        vp.check_workflow_default_tiers(ROOT, probs)
         vp.check_workflow_agent_types(ROOT, probs)
         self.assertEqual(probs, [])
 
@@ -1475,8 +1477,7 @@ class ValidatorTest(unittest.TestCase):
     def test_workflow_agent_type_unshipped_fires(self):
         write(self.dir / "workflows" / "review.js",
               'export const meta = { name: "review", description: "d" };\n'
-              'const KNOWN_TIERS = ["JUDGMENT","IMPLEMENT","MECHANICAL","RECON"];\n'
-              'agent("x", { agentType: "cc-operator:op-ghost" });\n')
+                            'agent("x", { agentType: "cc-operator:op-ghost" });\n')
         probs = []
         vp.check_workflow_agent_types(self.dir, probs)
         self.assertTrue(any("op-ghost" in p and "names no shipped agent" in p
@@ -1485,8 +1486,7 @@ class ValidatorTest(unittest.TestCase):
     def test_workflow_agent_type_shipped_is_clean(self):
         write(self.dir / "workflows" / "review.js",
               'export const meta = { name: "review", description: "d" };\n'
-              'const KNOWN_TIERS = ["JUDGMENT","IMPLEMENT","MECHANICAL","RECON"];\n'
-              'agent("x", { agentType: "cc-operator:op-author" });\n')
+                            'agent("x", { agentType: "cc-operator:op-author" });\n')
         probs = []
         vp.check_workflow_agent_types(self.dir, probs)
         self.assertEqual(probs, [])
@@ -1502,8 +1502,7 @@ class ValidatorTest(unittest.TestCase):
         # covers a table entry and a call site alike.
         write(self.dir / "workflows" / "review.js",
               'export const meta = { name: "review", description: "d" };\n'
-              'const KNOWN_TIERS = ["JUDGMENT","IMPLEMENT","MECHANICAL","RECON"];\n'
-              'const SEATS = { scout: "cc-operator:op-ghost" };\n'
+                            'const SEATS = { scout: "cc-operator:op-ghost" };\n'
               'agent("x", { agentType: SEATS[s] });\n')
         probs = []
         vp.check_workflow_agent_types(self.dir, probs)
@@ -1518,8 +1517,7 @@ class ValidatorTest(unittest.TestCase):
         # that got it right.
         write(self.dir / "workflows" / "review.js",
               'export const meta = { name: "review", description: "d" };\n'
-              'const KNOWN_TIERS = ["JUDGMENT","IMPLEMENT","MECHANICAL","RECON"];\n'
-              '// never write "cc-operator:op-ghost" as a computed string\n'
+                            '// never write "cc-operator:op-ghost" as a computed string\n'
               '/* nor "cc-operator:op-phantom" in a block comment */\n'
               'agent("x", { agentType: "cc-operator:op-author" });\n')
         probs = []
@@ -1553,62 +1551,53 @@ class ValidatorTest(unittest.TestCase):
         vp.check_charter(self.dir, probs)
         self.assertTrue(any("ceiling" in p for p in probs), probs)
 
-    # --- 13. workflow tier namespace: KNOWN_TIERS == resolver TIER_NAMES (F07) ---
-    # A workflow must accept every tier the resolver may emit, else forwarding
-    # the resolver's full map throws on a valid-but-unused key (F07 — the prior
-    # F03 fix removed a workflow's IMPLEMENT declaration and broke this).
+    # --- 13. workflow default tiers: values must be harness aliases (#76 s2) ---
+    # The namespace tests that lived here died with the KNOWN_TIERS catalogue:
+    # workflows no longer declare which tier names exist (that was five copies
+    # of the resolver's facts). What replaces them is the alias pin — a vendor
+    # model id pasted back into a DEFAULT_TIERS is the reflex fix that
+    # recreates the catalogue one file at a time, and this is the only gate
+    # that sees it.
 
-    def test_workflow_missing_known_tiers_fires(self):
-        # A conforming workflow that omits KNOWN_TIERS entirely.
+    def test_workflow_default_tiers_vendor_id_fires(self):
         write(self.dir / "workflows" / "review.js",
               'export const meta = { name: "review", description: "d" };\n'
-              'const BAD_CHARSET = /[^\\w./:@[\\]-]/;\n'
-              'for (const [n, id] of Object.entries({JUDGMENT:"claude-opus-5"})) {\n'
-              '  if (BAD_CHARSET.test(id)) throw new Error("x");\n'
-              '}\n')
+              'const DEFAULT_TIERS = { JUDGMENT: "claude-opus-5" };\n')
         probs = []
-        vp.check_workflow_tier_namespace(self.dir, probs)
-        self.assertTrue(any("no `const KNOWN_TIERS" in p for p in probs), probs)
+        vp.check_workflow_default_tiers(self.dir, probs)
+        self.assertTrue(any("not a harness alias" in p for p in probs), probs)
 
-    def test_workflow_known_tiers_diverges_from_resolver_fires(self):
-        # KNOWN_TIERS omits IMPLEMENT, which the resolver's TIER_NAMES emits.
+    def test_workflow_default_tiers_alias_is_clean(self):
         write(self.dir / "workflows" / "review.js",
               'export const meta = { name: "review", description: "d" };\n'
-              'const KNOWN_TIERS = ["JUDGMENT","MECHANICAL","RECON"];\n')
+              'const DEFAULT_TIERS = { JUDGMENT: "opus", MECHANICAL: "haiku" };\n')
         probs = []
-        vp.check_workflow_tier_namespace(self.dir, probs)
-        self.assertTrue(any("does not match the resolver's" in p for p in probs), probs)
-
-    def test_workflow_tier_namespace_holds_on_good_tree(self):
-        probs = []
-        vp.check_workflow_tier_namespace(self.dir, probs)
+        vp.check_workflow_default_tiers(self.dir, probs)
         self.assertEqual(probs, [])
 
-    def test_resolver_tier_names_unreadable_fails_loud(self):
-        # F2/F3 fix: a legal rewrite of TIER_NAMES that the regex can't read must
-        # FAIL LOUD, not silently disable the namespace check (fail-open). Single
-        # quotes are accepted; a genuinely unreadable form (no assignment) fires.
-        write(self.dir / "scripts" / "ops-tiers.sh",
-              "TIER_NAMES='JUDGMENT IMPLEMENT MECHANICAL RECON'\n")
+    def test_workflow_default_tiers_missing_reports(self):
+        # Absence is a reshape, not a valid state — the locator must REPORT,
+        # never silently skip (the fail-open shape _resolver_tier_names had).
+        write(self.dir / "workflows" / "review.js",
+              'export const meta = { name: "review", description: "d" };\n')
         probs = []
-        vp.check_workflow_tier_namespace(self.dir, probs)  # single-quote: accepted, no problem
-        self.assertFalse(any("unreadable" in p for p in probs), probs)
-        # A form the regex cannot read at all → fail loud.
-        write(self.dir / "scripts" / "ops-tiers.sh",
-              ' tiers=(JUDGMENT IMPLEMENT MECHANICAL RECON)\n')
-        probs = []
-        vp.check_workflow_tier_namespace(self.dir, probs)
-        self.assertTrue(any("unreadable" in p for p in probs), probs)
+        vp.check_workflow_default_tiers(self.dir, probs)
+        self.assertTrue(any("no `const DEFAULT_TIERS" in p for p in probs), probs)
 
-    def test_known_tiers_only_in_comment_fires(self):
-        # F4 fix: a KNOWN_TIERS appearing only in a comment must not satisfy the
-        # check (matches check_reader_bounds' code-only convention).
+    def test_workflow_default_tiers_in_comment_only_fires(self):
+        # Code-only view, same convention as the namespace check it replaced:
+        # a commented-out declaration must read as MISSING, not as conforming.
         write(self.dir / "workflows" / "review.js",
               'export const meta = { name: "review", description: "d" };\n'
-              '// const KNOWN_TIERS = ["JUDGMENT","IMPLEMENT","MECHANICAL","RECON"];\n')
+              '// const DEFAULT_TIERS = { JUDGMENT: "opus" };\n')
         probs = []
-        vp.check_workflow_tier_namespace(self.dir, probs)
-        self.assertTrue(any("no `const KNOWN_TIERS" in p for p in probs), probs)
+        vp.check_workflow_default_tiers(self.dir, probs)
+        self.assertTrue(any("no `const DEFAULT_TIERS" in p for p in probs), probs)
+
+    def test_workflow_default_tiers_good_tree_holds(self):
+        probs = []
+        vp.check_workflow_default_tiers(self.dir, probs)
+        self.assertEqual(probs, [])
 
 
 class RenderTemplateTest(unittest.TestCase):

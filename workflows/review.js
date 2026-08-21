@@ -19,30 +19,23 @@ export const meta = {
 //
 // cc-proxy routes by id SHAPE (^glm-|/|^claude-), and opts.model overrides the
 // agent file's `model:` frontmatter — both measured 2026-07-29.
+// DEFAULTS ARE HARNESS ALIASES, NOT MODEL IDS (#76 step 2). The old defaults
+// named vendor ids — a catalogue of another system's facts in five copies, the
+// class 0.8.3 removed from the id guard. An alias is resolved by the harness,
+// so it cannot go stale here; real bindings are the operator's job via
+// /cc-operator:tiers, arriving as args.tiers. Exactly the tiers dispatched.
 const DEFAULT_TIERS = {
-  JUDGMENT: "claude-opus-5",
-  MECHANICAL: "glm-5-turbo",
+  JUDGMENT: "opus",
+  MECHANICAL: "haiku",
 };
 
-// Charset mirror of ops-tiers.sh's check_routable (audit F01, 2026-07-30).
-// It is the ONLY id guard, by design: operator does not decide which models
+// The ONLY id guard, by design: operator does not decide which models
 // exist. That is the user's choice (tiers.env / args.model) and cc-proxy's
 // routing decision — see ops-tiers.sh check_routable for the full reasoning
 // behind dropping the id-shape catalogue and the provider-lens allowlist in
 // 0.8.3. What remains tests the STRING, so it cannot go stale: whitespace or a
 // quote means the tiers.env line is malformed, not that the model is unknown.
 const BAD_CHARSET = /[^\w./:@[\]-]/;
-
-// The canonical tier namespace ops-tiers.sh (TIER_NAMES) may emit. A workflow
-// USES only the subset it destructures (review: JUDGMENT, MECHANICAL); the rest
-// are valid-but-unused and must be accepted, not rejected. Rejecting them breaks
-// the natural path of forwarding the resolver's full 4-tier map: the resolver
-// emits IMPLEMENT, and a workflow whose DEFAULT_TIERS omits it would throw on a
-// legitimate key (audit F07, 2026-07-30 — caused by the prior F03 fix removing
-// a workflow's IMPLEMENT declaration). DEFAULT_TIERS is what the workflow
-// dispatches; KNOWN_TIERS is what it accepts. Keep this in sync with
-// ops-tiers.sh TIER_NAMES (enforced by check_workflow_tier_namespace).
-const KNOWN_TIERS = ["JUDGMENT", "IMPLEMENT", "MECHANICAL", "RECON"];
 
 // Normalize args. The Workflow tool stringifies a passed object into a JSON
 // STRING in transit (verified), so `args?.tiers` reads undefined and defaults
@@ -76,11 +69,14 @@ if (overrides != null) {
   if (typeof overrides !== "object" || Array.isArray(overrides)) {
     throw new Error(`args.tiers must be an object, got ${typeof overrides}`);
   }
+  // No KNOWN_TIERS catalogue (#76 step 2): a key this workflow does not
+  // dispatch is forward-compatible input — the resolver's FULL map is legal
+  // (audit F07: rejecting a valid resolver key broke exactly that
+  // forwarding). A typo'd key would silently leave the default in place, so
+  // unused keys are LOGGED, not thrown.
   for (const name of Object.keys(overrides)) {
-    if (!KNOWN_TIERS.includes(name)) {
-      throw new Error(
-        `unknown tier '${name}' in args.tiers (known: ${KNOWN_TIERS.join(", ")})`,
-      );
+    if (!(name in DEFAULT_TIERS)) {
+      log(`tiers: '${name}' is not a tier this workflow dispatches (${Object.keys(DEFAULT_TIERS).join(", ")}) — accepted, unused`);
     }
   }
 }

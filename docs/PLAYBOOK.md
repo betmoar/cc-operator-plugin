@@ -237,36 +237,40 @@ the unknown-tier-key guard):
 ### Adding a workflow
 
 Drop a `.js` in `workflows/`. It must: begin with `export const meta = {…}`,
-declare `const BAD_CHARSET` byte-identical to the others, declare
-`const KNOWN_TIERS = [...]` equal to the resolver's `TIER_NAMES`, and apply
-`BAD_CHARSET.test` in a tier-validation loop whose unknown-key check is
-`if (!KNOWN_TIERS.includes(name))`. It must NOT declare `const ROUTABLE`
-(see point 5 above — the validator fires on it).
-`check_workflows` + `check_workflow_parity` + `check_workflow_tier_namespace`
-enforce all three at build time.
+declare `const BAD_CHARSET` byte-identical to the others, declare a
+`const DEFAULT_TIERS = {…}` whose values are **harness aliases**
+(`opus`/`sonnet`/`haiku`/`fable`, never vendor ids), and apply
+`BAD_CHARSET.test` in a tier-validation loop. An unknown `args.tiers` key is
+**accepted and logged**, never thrown — the resolver's full map is legal input
+(F07). It must NOT declare `const ROUTABLE` (see point 5 above — the validator
+fires on it) and NOT declare a `KNOWN_TIERS` catalogue (#76 step 2 deleted it;
+a workflow has no business listing which tier names exist).
+`check_workflows` + `check_workflow_parity` + `check_workflow_default_tiers`
+enforce these at build time.
 
-### The tier-namespace coupling (audit F07, 2026-07-31)
+### The tier coupling after the #76 lift (was: the F07 namespace coupling)
 
-`KNOWN_TIERS` (what a workflow *accepts* in `args.tiers`) and the resolver's
-`TIER_NAMES` (what `ops-tiers.sh` *emits*) must be the same set, even though a
-workflow only *uses* a subset (its `DEFAULT_TIERS`). The trap: if you add a tier
-to the resolver (e.g. a fifth seat) and forget to add it to every workflow's
-`KNOWN_TIERS`, forwarding the resolver's full map throws on the new key — exactly
-the F07 bug. `check_workflow_tier_namespace` holds this, but it is a regex
-reader, so:
+Until 0.9.0 every workflow carried `KNOWN_TIERS`, a copy of the resolver's
+`TIER_NAMES`, so forwarding the resolver's full map would not throw on a
+valid-but-unused key (audit F07). #76 step 2 removed the catalogue instead of
+synchronizing it: an unknown key is now accepted-and-logged, which preserves
+the F07 property with nothing to keep in sync. What replaced the namespace
+check:
 
-- **`KNOWN_TIERS` must be a real statement, not a comment.** The check matches
-  code lines only (it strips `//` lines, like `check_reader_bounds`). A
-  `// const KNOWN_TIERS = …` in a comment does NOT satisfy it.
-- **A rename/retype of the resolver's `TIER_NAMES=` line breaks the regex.** If
-  you change it to `readonly TIER_NAMES=` or single quotes, both work (the regex
-  accepts them); anything else (an array, a different var name) makes the check
-  **fail loud** — update `_resolver_tier_names`'s regex, do not silence it. The
-  check must never fail *open* (silently pass) — that was the review-caught
-  defect in the first version of this guard.
-- **`DEFAULT_TIERS` ≠ `KNOWN_TIERS`.** DEFAULT_TIERS is what the workflow
-  dispatches (review: 2 tiers); KNOWN_TIERS is what it accepts (always all 4).
-  Do not "fix" a workflow by making them equal — that re-opens F07.
+- **`DEFAULT_TIERS` values must be harness aliases** — `check_workflow_default_tiers`
+  fires on a vendor id (`claude-opus-5`) in a workflow default. Real bindings
+  are the operator's job: `/cc-operator:tiers` resolves `tiers.env`, the result
+  arrives as `args.tiers`. Pasting an id back into a default is the reflex fix
+  that recreates the five-copy catalogue this lift deleted.
+- **The declaration must be a real statement, not a comment** — the check reads
+  code lines only, and a missing/commented `DEFAULT_TIERS` is REPORTED, never
+  silently skipped (the fail-open shape the old `_resolver_tier_names` had).
+- **The typo guard moved from throw to log.** `tiers: { Mechanical: … }` used
+  to throw; now it logs `accepted, unused`. The node case pins the log line —
+  do not "fix" a typo report by re-adding a key catalogue.
+- The resolver↔renderer `TIER_NAMES` equality (`check_resolver_renderer_parity`)
+  is unchanged — those two scripts parse the same `tiers.env` and remain the
+  only holders of the tier-name set.
 
 ### Dead agents: null is a DEATH, not an empty result (audit F31 + F32)
 

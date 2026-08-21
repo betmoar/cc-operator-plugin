@@ -1607,12 +1607,14 @@ def check_resolver_renderer_parity(root, problems):
     binding the resolver would have rejected, or refuses one the resolver
     accepts: two different ideas of which model ids exist.
 
-    TIER_NAMES is the second copy. _resolver_tier_names reads it from
-    ops-tiers.sh only, and check_workflow_tier_namespace holds the workflows to
-    that; ops-render.sh declares its own literal and nothing checked it. A fifth
-    tier added per the coupling table's instructions would leave the renderer's
-    is_tier_name gating a stale namespace — accepting or rejecting the wrong
-    set, with a `die` message listing tiers that disagree with the resolver's.
+    TIER_NAMES is the second copy: ops-tiers.sh declares the canonical set and
+    ops-render.sh declares its own literal, and until 0.8.4 nothing checked the
+    renderer's. A fifth tier added per the coupling table's instructions would
+    leave the renderer's is_tier_name gating a stale namespace — accepting or
+    rejecting the wrong set, with a `die` message listing tiers that disagree
+    with the resolver's. (The workflows no longer carry a tier-name catalogue
+    at all — #76 step 2 deleted KNOWN_TIERS and its namespace check; these two
+    scripts are the only TIER_NAMES holders left.)
 
     Compared as normalized token streams, not byte-for-byte: the two copies are
     line-wrapped differently for readability, and reflowing a `case` arm is not
@@ -1906,80 +1908,51 @@ def check_workflow_parity(root, problems):
                 f"(see check_lock_parity for the bash analogue)")
 
 
-# The canonical tier namespace the resolver may emit. Workflows accept overrides
-# against THIS set (KNOWN_TIERS), not their smaller DEFAULT_TIERS — otherwise a
-# valid resolver key a workflow happens not to use (IMPLEMENT in review) is
-# rejected and forwarding the resolver's full map throws (audit F07). The guard
-# is the inverse coupling of WORKFLOW_PARITY_CONSTS: the regexes must not drift
-# APART across workflows, and KNOWN_TIERS must not drift FROM the resolver.
-TIER_NAMES_SRC = "scripts/ops-tiers.sh"
+# DEFAULT_TIERS values must be HARNESS ALIASES, never vendor model ids
+# (#76 step 2). Until 0.9.0 every workflow shipped a DEFAULT_TIERS of vendor
+# ids ("claude-opus-5", "glm-5-turbo") plus a KNOWN_TIERS catalogue mirroring
+# ops-tiers.sh TIER_NAMES — five copies of facts about other systems, held
+# together by check_workflow_tier_namespace and half of check_workflow_parity.
+# The lift removed the responsibility: real bindings are resolved by the
+# operator (/cc-operator:tiers) and passed as args.tiers; workflow defaults are
+# aliases the HARNESS resolves, which cannot go stale. This pin exists because
+# the reflex fix, when a default routes badly, is to paste a vendor id back in
+# — which quietly recreates the catalogue this lift deleted, one file at a
+# time, with every other gate green.
+HARNESS_ALIASES = ("opus", "sonnet", "haiku", "fable")
 
 
-def _resolver_tier_names(root, problems):
-    """Read the TIER_NAMES literal from ops-tiers.sh, as a sorted tuple.
+def check_workflow_default_tiers(root, problems):
+    """Every workflow's DEFAULT_TIERS values must be harness aliases.
 
-    Fails LOUD — appends a problem and returns None on any read failure, rather
-    than silently disabling check_workflow_tier_namespace (the fail-open a review
-    caught: deleting ops-tiers.sh or single-quoting TIER_NAMES made the whole
-    namespace check pass with rc 0). A None return therefore ALWAYS carries a
-    problem; callers treat None as "unreadable, already reported" and skip the
-    per-workflow equality loop, not as "no constraint".
-
-    Accepts both quote styles and an optional `readonly` prefix so a legal shell
-    refactor of the TIER_NAMES line cannot silently turn the guard off.
+    Reads the object literal's string VALUES. Reports a workflow whose
+    DEFAULT_TIERS cannot be located (a legal reshape must update this locator,
+    not silence it) — every workflow dispatches at least one tier, so absence
+    is a reshape, not a valid state.
     """
-    p = root / TIER_NAMES_SRC
-    if not p.is_file():
-        return None  # missing-file is check_scripts' job (ops-tiers.sh is required)
-    m = re.search(r'^\s*(?:readonly\s+)?TIER_NAMES=["\']([^"\']+)["\']',
-                  p.read_text(encoding="utf-8"), re.MULTILINE)
-    if not m:
-        problems.append(
-            f"{TIER_NAMES_SRC}: no `TIER_NAMES=\"…\"` assignment found — the "
-            f"canonical tier namespace is unreadable, so check_workflow_tier_"
-            f"namespace cannot hold the resolver↔workflow contract (F07). A legal "
-            f"refactor (renaming, retyping) must update this regex, not silence it.")
-        return None
-    return tuple(sorted(m.group(1).split()))
-
-
-def check_workflow_tier_namespace(root, problems):
-    """Each workflow's KNOWN_TIERS array must equal the resolver's TIER_NAMES.
-
-    KNOWN_TIERS is the set of tier keys a workflow accepts in args.tiers; the
-    resolver (ops-tiers.sh TIER_NAMES) is the set it may emit. If a workflow's
-    KNOWN_TIERS omits a resolver tier, forwarding the resolver's full map throws
-    on a legitimate key — the F07 bug. If it adds one the resolver does not know,
-    a typo is no longer caught. Keep them equal; the array is copy-pasted per the
-    import-forbidden sandbox, so a check is the only thing holding it.
-    """
-    canonical = _resolver_tier_names(root, problems)
     wf_dir = root / "workflows"
     files = sorted(wf_dir.glob("*.js")) if wf_dir.is_dir() else []
     for f in files:
         rel = f"workflows/{f.name}"
         text = f.read_text(encoding="utf-8")
-        # CODE lines only — a KNOWN_TIERS appearing solely in a comment must NOT
-        # satisfy this check (matches the check_reader_bounds convention; a review
-        # caught that raw-text matching made `// const KNOWN_TIERS=…` pass).
         code = "\n".join(ln for ln in text.splitlines()
                          if not ln.lstrip().startswith("//"))
-        m = re.search(r"const\s+KNOWN_TIERS\s*=\s*\[([^\]]*)\]", code)
+        m = re.search(r"const\s+DEFAULT_TIERS\s*=\s*\{([^}]*)\}", code)
         if not m:
             problems.append(
-                f"{rel}: no `const KNOWN_TIERS = [...]` found — a workflow must "
-                f"validate args.tiers keys against the canonical tier namespace "
-                f"(see audit F07: rejecting a valid resolver tier breaks the "
-                f"forwarding path)")
+                f"{rel}: no `const DEFAULT_TIERS = {{...}}` found — every "
+                f"workflow declares the tiers it dispatches; a reshape must "
+                f"update this locator, not silence the alias pin (#76 step 2)")
             continue
-        got = tuple(sorted(t.strip().strip('"').strip("'")
-                           for t in m.group(1).split(",") if t.strip()))
-        if canonical is not None and got != canonical:
-            problems.append(
-                f"{rel}: KNOWN_TIERS={list(got)} does not match the resolver's "
-                f"TIER_NAMES={list(canonical)} in {TIER_NAMES_SRC} — a workflow "
-                f"must accept every tier the resolver may emit or forwarding the "
-                f"resolver map throws on a valid key (F07)")
+        for vm in re.finditer(r'"([^"]*)"', m.group(1)):
+            val = vm.group(1)
+            if val not in HARNESS_ALIASES:
+                problems.append(
+                    f"{rel}: DEFAULT_TIERS value {val!r} is not a harness alias "
+                    f"{list(HARNESS_ALIASES)} — a vendor model id in a workflow "
+                    f"default recreates the catalogue-of-another-system's-facts "
+                    f"class the #76 tier lift deleted (real bindings belong in "
+                    f"tiers.env, forwarded as args.tiers)")
 
 
 def check_workflow_agent_types(root, problems):
@@ -2853,7 +2826,7 @@ CHECKS = (
     check_resolver_renderer_parity,
     check_workflows,
     check_workflow_parity,
-    check_workflow_tier_namespace,
+    check_workflow_default_tiers,
     check_workflow_agent_types,
     check_commands,
     check_replay_charter,

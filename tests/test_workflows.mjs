@@ -136,12 +136,18 @@ ok((await brainstormN(99)) === 6, "brainstorm N: 99 → clamped to 6 (max)");
 ok((await brainstormN(3)) === 3, "brainstorm N: 3 → 3 (in range)");
 ok((await brainstormN(undefined)) === 4, "brainstorm N: undefined → default 4");
 
-// Tier validation: IMPLEMENT (valid-but-unused) accepted; typo rejected; bad
-// charset rejected. An id operator does not recognise is ACCEPTED (0.8.3).
-// Each rejection is a top-level throw, so the workflow aborts before any
-// agent call.
-await throws(() => run(WF("brainstorm.js"), { tiers: { Mechanical: "glm-5" } }, {}),
-  "brainstorm tier: typo 'Mechanical' rejected (F07 typo guard)", "unknown tier");
+// Tier validation post-#76-step-2: there is no KNOWN_TIERS catalogue, so an
+// unknown key is ACCEPTED (the resolver's full map is legal input — F07) but
+// LOGGED, because a typo'd key silently leaves the default in place and the
+// log line is how the caller who meant MECHANICAL finds out. The assertion
+// must pin the log, not a throw: reverting to the throw breaks resolver-map
+// forwarding, and dropping the log makes the typo invisible — both wrong.
+{
+  const { rt: typoRt } = await run(WF("brainstorm.js"), { tiers: { Mechanical: "glm-5" } },
+    { blindspots: { findings: [] }, converge: { ranked: [], sharedConstraints: [], openQuestions: [] } });
+  ok(typoRt.logs.some((m) => m.includes("'Mechanical'") && m.includes("accepted, unused")),
+    "brainstorm tier: typo 'Mechanical' accepted but LOGGED as unused (#76 step 2 — was a throw)");
+}
 // Every whitespace/quote shape now lands on the ONE guard (0.8.3 removed the
 // id-shape catalogue). The pre-0.8.3 suite split these across two guards and
 // mislabelled which one fired — a review found the "glm 5" case claimed charset
@@ -182,13 +188,16 @@ for (const good of ["glm-5.2", "claude-opus-5", "deepseek/deepseek-r1:free",
   } catch { accepted = false; }
   ok(accepted, `brainstorm tier: id ${JSON.stringify(good)} accepted — operator does not gate the catalogue (0.8.3)`);
 }
-// IMPLEMENT is in KNOWN_TIERS → accepted (no throw); it's unused but routable.
+// The F07 property, post-catalogue: forwarding the resolver's FULL map (keys
+// this workflow never dispatches, IMPLEMENT among them) must not throw. This
+// is the case the KNOWN_TIERS catalogue existed to protect, so it must
+// survive the catalogue's deletion.
 let implOk = true;
 try {
   await run(WF("brainstorm.js"), { tiers: { IMPLEMENT: "claude-sonnet-5" } },
     { blindspots: { findings: [] }, converge: { ranked: [], sharedConstraints: [], openQuestions: [] } });
 } catch { implOk = false; }
-ok(implOk, "brainstorm tier: IMPLEMENT accepted (F07 — valid-but-unused tier)");
+ok(implOk, "brainstorm tier: IMPLEMENT accepted (F07 — resolver-map forwarding survives the catalogue deletion)");
 
 // ── review: bucket + threshold filter ───────────────────────────────────────
 console.log("-- Case: review.js scoring bucket + threshold");
@@ -1260,8 +1269,8 @@ await throws(() => run(WF("dispatch.js"), { seat: "mechanic", model: "glm-5-turb
 // out they dispatched on something else.
 const { result: dFall, rt: dFallRt } = await run(WF("dispatch.js"),
   { seat: "mechanic", prompt: "p" }, DISPATCH_OK);
-ok(dFall?.model === "claude-opus-5",
-  "dispatch: no args.model falls back to the JUDGMENT tier default");
+ok(dFall?.model === "opus",
+  "dispatch: no args.model falls back to the JUDGMENT default — a harness ALIAS since #76 step 2, never a vendor id");
 // The command it names must be one a user can actually TYPE. It used to say
 // `ops-render.sh --model <seat>`, which is neither installed into
 // .operator/bin/ (only the five gate CLIs are) nor reachable via
