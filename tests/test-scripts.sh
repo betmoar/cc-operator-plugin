@@ -1190,6 +1190,28 @@ for _s in "$P"/.operator/pending/*T-RACE "$P"/.operator/pending/T-RACE; do
   [ -e "$_s" ] && SENTN=$((SENTN + 1))
 done
 check "concurrent open: exactly one sentinel for the task (no second owner)" "$([ "$SENTN" = "1" ] && echo 0 || echo 1)"
+# The post-rename re-check: the mv re-opens the window the O_EXCL claim closed
+# (the bare claim path is free again the instant the winner's rename lands), so
+# a second opener interleaving across it mints a SECOND sentinel. We cannot
+# force that interleave deterministically at real speed (a 6-way stress, 10
+# rounds, hit it 0 times — PR #77 review needed an injected sleep), so the
+# re-check fires in the LOSING-leg posture: our sentinel already exists, a
+# foreign one lands beside it. sentinel_for's scan sees EITHER sentinel (glob
+# order) and returns "already open" — so the load-bearing property at this
+# site is not the die; it is that a second, foreign sentinel for the id can
+# never be created THROUGH ops-task while one exists under any owner: the
+# bare claim path stays occupied (EEXIST) or the scan finds the id first.
+rm -f "$P"/.operator/pending/*T-RACE "$P/.operator/pending/T-RACE"
+( cd "$P" && bash "$TASK" T-RACE --owner SESS-A >/dev/null 2>&1 )
+: > "$P/.operator/pending/SESS-X__T-RACE"
+DUPMSG="$( cd "$P" && bash "$TASK" T-RACE --owner SESS-B 2>&1 )"; DUPRC=$?
+SENTN2=0
+for _s in "$P"/.operator/pending/*__T-RACE; do [ -e "$_s" ] && SENTN2=$((SENTN2+1)); done
+check "open beside a foreign sentinel for the same id never adds a third" \
+  "$([ "$SENTN2" = "2" ] && echo 0 || echo 1)"
+check "the racing owner is refused or told already-open, never a silent win" \
+  "$([ "$DUPRC" -ne 0 ] || printf '%s' "$DUPMSG" | grep -q 'already open' && echo 0 || echo 1)"
+rm -f "$P/.operator/pending/SESS-X__T-RACE"
 
 # adopt vs verdict: whoever wins the lock, the loser must not damage the ledger.
 # HONESTY NOTE: unlike the open-race above (which fails ~155/200 on the unfixed

@@ -262,6 +262,28 @@ if { { printf 'cwd: %s\n' "$PWD"
   set +C
   # The claim is ours; stamp the owner into the name.
   if [ "$CLAIM" != "$SENTINEL" ]; then mv "$CLAIM" "$SENTINEL"; fi
+  # POST-RENAME RE-CHECK. The mv above re-opens the exact window the O_EXCL
+  # claim closed: the bare claim path is FREE again the moment the winner's
+  # rename lands, so a second opener whose sentinel_for() scan ran before our
+  # O_EXCL create — and whose own create lands after our rename — wins a
+  # SECOND claim and mints a second sentinel for one task-id, silently
+  # breaking "ONE sentinel per task-id" (PR #77 review; the reviewer's repro
+  # needed an injected sleep, and a 6-way real-speed stress did not hit it in
+  # 10 rounds — the window is scheduler-wide, not just instruction-adjacent).
+  # We cannot prevent that interleave from here; we CAN refuse to be the one
+  # who silently completes it. Our own SENTINEL is on disk by now, so this
+  # glob finds any OTHER owner's sentinel for the same id: that is the race's
+  # fingerprint, and it is a die, not a cleanup — which sentinel is legit is
+  # not ours to decide, and deleting either half would destroy the other
+  # opener's gate.
+  if [ -n "$OWNER" ]; then
+    shopt -s nullglob
+    for _dup in "$OPDIR/pending"/*__"$ID"; do
+      [ "$_dup" = "$SENTINEL" ] && continue
+      die "duplicate sentinel detected: $_dup exists beside $SENTINEL — two sessions raced the same task-id; resolve in .operator/pending/ by hand (keep the intended owner's sentinel)"
+    done
+    shopt -u nullglob
+  fi
 else
   _rc=$?; set +C
   # The redirection failed. O_EXCL makes this EEXIST when a real sentinel
