@@ -467,18 +467,18 @@ const names = tasks.map((t) => ({
 //   * the pair scan re-spread `b.consumes` and re-sliced `names` per ordered
 //     pair — 780 allocations on a 40-task plan for work an index does once.
 //
-// firstProducer keeps the EARLIEST producing index per token, so a duplicated
-// produced name resolves the way a reader of a dependency-ordered list would.
-const firstProducer = new Map();
+// laterProducers indexes EVERY producing index per token, in order — backward
+// resolution walks it for the NEAREST producer below j, forward resolution
+// filters it for everything above (see resolveBackward for why nearest, not
+// earliest, is the rule).
 const laterProducers = new Map();
 names.forEach((t, i) => {
   for (const tok of t.produces) {
-    if (!firstProducer.has(tok)) firstProducer.set(tok, i);
     (laterProducers.get(tok) ?? laterProducers.set(tok, []).get(tok)).push(i);
   }
 });
 
-// Per consumed token: the earliest producer strictly BEFORE this task, if any.
+// Per consumed token: the nearest producer strictly BEFORE this task, if any.
 const resolveBackward = (j, tok) => {
   // NEAREST producer before j, not the earliest. A token produced twice — a task
   // rewriting a name an earlier task also produced — resolved to the first
