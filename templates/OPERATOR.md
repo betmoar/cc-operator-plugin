@@ -102,8 +102,8 @@ criteria via the Discovery discipline [DOC:spec-D1.2].
 
 A row without evidence is FAIL by definition; assertions are not evidence — command output,
 diffs, and reviewer verdict lines are [D:CHART-def]. Open a tracked task with
-`.operator/bin/ops-task.sh <task-id> --owner <session-id>` (SessionStart names that id; always
-pass it, or the sentinel blocks every session) [DOC:spec-concurrent].
+`.operator/bin/ops-task.sh <task-id> --owner <session-id>` — the id SessionStart injects; the
+CLI itself warns when you omit it [DOC:spec-concurrent].
 `.operator/bin/ops-verdict.sh <id> <criterion> <evidence> <PASS|FAIL> --owner <id>` appends the
 row and clears that sentinel — the single writer to VERDICTS.md [DOC:spec-D4].
 `.operator/bin/ops-claims.sh --claimed "<paths>"` verifies the REPORT's CHANGED line against
@@ -132,9 +132,9 @@ condition; (5) Stop conditions; (6) Not-doing.
 On restart or suspected compaction, never trust memory over the ledgers [D:CHART-recover]: (1)
 re-read this charter; (2) read `.operator/DECISIONS.md` in full; (3) `git log --oneline -20`;
 (4) read `.operator/VERDICTS.md` for the last verdict; (5) rebuild TodoWrite from open work;
-(6) your session id changed, so re-claim yours: `.operator/bin/ops-adopt.sh --owner <new-id>
-<task-id>...` — name only tasks you are working [DOC:spec-concurrent]; (7) resume at the first
-incomplete task [D:CHART-recover].
+(6) re-claim only the tasks you are still working: `.operator/bin/ops-adopt.sh --owner <new-id>
+<task-id>...` — SessionStart printed this line with your new id filled in [DOC:spec-concurrent];
+(7) resume at the first incomplete task [D:CHART-recover].
 
 ## PRECEDENCE
 
