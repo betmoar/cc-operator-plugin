@@ -562,25 +562,34 @@ def check_decisions_schema(root, problems):
             f"{DECISIONS_GATED_LITERAL!r}; DECISION/DEFERRED-VERDICT are records "
             "that never block. A reader who cannot see the split mistakes a "
             "non-gated record for a kind that should block Stop (issue #9)")
-    # Both deviation-gate readers must count EXACTLY the gated kinds: a reader
-    # that widened to DECISION would gate routine notes, and one that dropped a
-    # kind would miss unpresented decisions (issue #9, F30 call-site half).
+    # The deviation gate's SCAN lives in scripts/lib/partition.sh (0.10: the
+    # hook and the bar source ONE implementation). The gated-kind and mark
+    # literals must live there; the two consumers must SOURCE the lib, or the
+    # hook silently runs without a deviation gate at all.
+    lib = root / "scripts" / "lib" / "partition.sh"
+    if lib.is_file():
+        s = lib.read_text(encoding="utf-8")
+        if DECISIONS_GATED_LITERAL not in s:
+            problems.append(
+                f"scripts/lib/partition.sh: deviation gate does not count the "
+                f"gated kinds ({DECISIONS_GATED_LITERAL!r}) — must match the "
+                f"header's gated set exactly (issue #9)")
+        if "HANDOFF-MARK" not in s:
+            problems.append(
+                "scripts/lib/partition.sh: does not reference HANDOFF-MARK — "
+                "the deviation gate's clearing mark is in the enum but the "
+                "shared scan never matches it, so a presented decision reads as "
+                "unpresented forever (F30: the enum AND its consumers must agree)")
     for name in ("ops-stop-hook.sh", "statusline.sh"):
         p = root / "scripts" / name
         if not p.is_file():
             continue  # missing-file is already reported by check_scripts
         s = p.read_text(encoding="utf-8")
-        if DECISIONS_GATED_LITERAL not in s:
+        if "partition.sh" not in s:
             problems.append(
-                f"scripts/{name}: deviation gate does not count the gated kinds "
-                f"({DECISIONS_GATED_LITERAL!r}) — must match the header's gated "
-                f"set exactly (issue #9)")
-        if "HANDOFF-MARK" not in s:
-            problems.append(
-                f"scripts/{name}: does not reference HANDOFF-MARK — the "
-                f"deviation gate's clearing mark is in the enum but this reader "
-                f"never matches it, so a presented decision reads as unpresented "
-                f"forever (F30: the enum AND its consumers must agree)")
+                f"scripts/{name}: does not source lib/partition.sh — the "
+                f"shared partition (sentinel ownership, deviation gate) is the "
+                f"one contract this bar/hook pair must not fork")
     # The verdict CLI WRITES HANDOFF-MARK; the readers above only READ it. A
     # writer that never emits the marker strands every presented decision as
     # unpresented (F30 writer half — distinct from the reader drift above).
@@ -892,26 +901,19 @@ def check_reader_bounds(root, problems):
     This is a coupling no prose can enforce — the rule lives in CLAUDE.md and was
     still applied to one of four readers. Now it fails the build instead.
     """
+    # 0.10: the deviation scans moved to scripts/lib/partition.sh (hook) and a
+    # tail-window variant (statusline); the counts below are per-file as shipped.
     readers = {
-        # Ownership moved into the sentinel's FILENAME, so three body parsers —
-        # and the bounded reads that made an untrusted file safe to parse — are
-        # gone rather than unbounded. Lowering a count is only ever correct
-        # because the READER was deleted; that distinction is invisible to the
-        # number, which is why it is written here.
-        "ops-stop-hook.sh": 1,   # the DECISIONS.md deviation scan
         "ops-verdict.sh": 1,     # the --reconcile fragment loop
-        # ops-adopt no longer reads a sentinel at all: adoption is a rename.
-        # The statusline segment renders on a ~300ms timer, which makes it the
-        # hottest reader here by three orders of magnitude — the others run once
-        # per turn-end or per command. Measured on one 64MB newline-less
-        # sentinel: 0.014s bounded vs 6.20s per parse unbounded, i.e. a
-        # permanently wedged status bar rather than a slow one.
-        "statusline.sh": 1,      # the dev[N] reverse-tail scan
+        "lib/partition.sh": 1,   # the deviation scan (its NUL probe counts below)
+        # The statusline segment renders on a ~300ms timer, the hottest reader
+        # in the plugin (a 64MB newline-less sentinel: 0.014s bounded vs 6.20s
+        # unbounded — a permanently wedged bar, not a slow one).
+        "statusline.sh": 3,      # dev[N] scan + NUL probe + payload field reads
         # The tier-config resolver reads a file under .operator/ (untrusted — a
-        # merge or checkout can produce it). Same hazard class as the others:
-        # a newline-less multi-MB tiers.env is one "line" to an unbounded read.
+        # merge or checkout can produce it): a newline-less multi-MB tiers.env
+        # is one "line" to an unbounded read.
         "ops-tiers.sh": 1,       # the load_file config loop
-        # ops-render.sh parses the same tiers.env with the same bounded loop.
         "ops-render.sh": 1,      # the load_file config loop
     }
     for name, expected in readers.items():
@@ -1125,24 +1127,26 @@ def check_guard_parity(root, problems):
                 f"task-id containing it makes every reader's first-`__` split "
                 f"parse a name our own writers could never have built (PR #77 "
                 f"review; the arm must match ops-task.sh's copy)")
-    # the hook's parser must reject what the writers reject, or a hand-written
-    # sentinel reads as a valid foreign owner and the gate opens
-    hook = root / "scripts" / "ops-stop-hook.sh"
-    if hook.is_file():
-        text = shell_code(hook)
+    # the readers' parser (lib/partition.sh since 0.10) must reject what the
+    # writers reject, or a hand-written sentinel reads as a valid foreign owner
+    # and the gate opens
+    lib = root / "scripts" / "lib" / "partition.sh"
+    if lib.is_file():
+        text = shell_code(lib)
         if "[[:space:]]" not in text:
             problems.append(
-                "scripts/ops-stop-hook.sh: sentinel_owner does not reject "
+                "scripts/lib/partition.sh: sentinel_owner does not reject "
                 "whitespace owners — an owner that can never match a real "
                 "session id makes its task permanently non-blocking")
-    # The -L symlink rejection is a FIVE-site coupling: the opener plus every
-    # sentinel reader. It was first applied to ops-task.sh alone, and every
+    # The -L symlink rejection: the opener plus every sentinel reader. The Stop
+    # hook's pending/ enumeration lives in lib/partition.sh (scan_pending) since
+    # 0.10, so its -L obligation moved there with the code. It was first applied to ops-task.sh alone, and every
     # read site kept following planted symlinks — adopt laundered them into
     # real sentinels, verdict closed them into the ledger, the hook and bar
     # read their targets' owners (F65/F66, code-review of f4cae1a 2026-08-04).
     # `-f` follows symlinks; a symlink is never a sentinel our CLIs wrote.
     for name in ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh",
-                 "ops-stop-hook.sh", "statusline.sh"):
+                 "statusline.sh", "lib/partition.sh"):
         p = root / "scripts" / name
         if not p.is_file():
             continue
@@ -1168,7 +1172,7 @@ def check_guard_parity(root, problems):
     # green-lit the exact regression it was written to prevent. Caught by
     # GuardParityVacuityTest when the file-wide version failed to fire on a
     # parser-only deletion (2026-08-14).
-    for name in ("ops-verdict.sh", "ops-stop-hook.sh", "statusline.sh"):
+    for name in ("ops-verdict.sh", "lib/partition.sh"):
         p = root / "scripts" / name
         if not p.is_file():
             continue

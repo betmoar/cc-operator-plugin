@@ -46,14 +46,25 @@ GOOD_CHARTER = "# OPERATOR.md\n\n" + "\n".join(
 # be clean under every check in vp.CHECKS, not merely under the manifest-shaped
 # ones — a fixture that only passes the checks someone remembered to call is
 # how three guardrails went unexercised here.
-GOOD_STATUSLINE = (
+# 0.10: the shared partition lib — the hook and the bar source ONE
+# implementation (scan_pending + scan_deviations + sentinel_owner_of_name).
+# The gate CLIs (Zone B: they install standalone into .operator/bin/) keep
+# their own copies, still pinned by check_guard_parity.
+GOOD_PARTITION_LIB = (
     "#!/usr/bin/env bash\n"
-    "[ ! -L \"$1\" ] || exit 0\n"
-    "# deviation-gate mirror: counts DEVIATION|ESCALATION|GATE-EXCEPTION (HANDOFF-MARK)\n"
-    "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
     "sentinel_owner_of_name() {\n"
     "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) printf '\\n'; return 0 ;; esac\n"
-    "}\n")
+    "}\n"
+    "# deviation gate: counts DEVIATION|ESCALATION|GATE-EXCEPTION (HANDOFF-MARK)\n"
+    "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
+    "[ ! -L \"$decisions\" ] || exit 0\n")
+GOOD_STATUSLINE = (
+    "#!/usr/bin/env bash\n"
+    '. lib/partition.sh\n'
+    "[ ! -L \"$decisions\" ] || exit 0\n"
+    "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
+    "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
+    "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n")
 
 # A json_get() whose python3 branch carries the bool coercion. The three hooks
 # must agree on it (F14 parity pin); fixtures embed this single source so the
@@ -236,12 +247,7 @@ def make_good_tree(root):
     # every sentinel touchpoint carries the -L symlink rejection (F65/F66)
     nolink = "[ ! -L \"$1\" ] || exit 0\n"
     write(root / "scripts" / "ops-stop-hook.sh",
-          "#!/usr/bin/env bash\n" + nolink + JSON_GET +
-          "# deviation gate: counts DEVIATION|ESCALATION|GATE-EXCEPTION (HANDOFF-MARK)\n"
-          "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
-          "sentinel_owner_of_name() {\n"
-    "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) printf '\\n'; return 0 ;; esac\n"
-    "}\n")
+          "#!/usr/bin/env bash\n. lib/partition.sh\n" + JSON_GET)
     write(root / "scripts" / "ops-task.sh",
           "#!/usr/bin/env bash\n" + guards + nolink)
     write(root / "scripts" / "ops-verdict.sh",
@@ -295,6 +301,8 @@ def make_good_tree(root):
           'if [ -e "$opdir/.armed" ] && { [ ! -d "$opdir/.armed" ] || '
           '[ ! -x "$opdir/.armed" ] || [ ! -w "$opdir/.armed" ]; }; then exit 0; fi\n'
           "exit 2\n")
+    (root / "scripts" / "lib").mkdir(exist_ok=True)
+    write(root / "scripts" / "lib" / "partition.sh", GOOD_PARTITION_LIB)
     write(root / "scripts" / "statusline.sh", GOOD_STATUSLINE)
     # Every shipped slash command: frontmatter the harness registers it by,
     # and plugin-root script paths (a bare scripts/ path resolves only inside
@@ -966,17 +974,16 @@ class ValidatorTest(unittest.TestCase):
     def test_decisions_reader_missing_handoff_mark_fires(self):
         # A deviation-gate reader that never matches HANDOFF-MARK never clears —
         # the enum is declared but the consumer drifted (F30 call-site half).
-        write(self.dir / "scripts" / "ops-stop-hook.sh",
-              "#!/usr/bin/env bash\n[ ! -L \"$1\" ] || exit 0\n"
-              "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
-              "while IFS= read -r -n 512 dline; do :; done < \"$dec\"\n")
+        # 0.10: the shared scan lives in lib/partition.sh.
+        p = self.dir / "scripts" / "lib" / "partition.sh"
+        write(p, p.read_text().replace("HANDOFF-MARK", "NO-SUCH-MARK"))
         self.assertFires("does not reference HANDOFF-MARK")
 
     def test_decisions_reader_gated_literal_drift_fires(self):
         # A reader that counts a kind the gate should ignore (DECISION) diverges
-        # from the header's gated set (issue #9). Mutate the good hook's gated
-        # literal so only this check fires, not every check.
-        p = self.dir / "scripts" / "ops-stop-hook.sh"
+        # from the header's gated set (issue #9). Mutate the shared lib's gated
+        # literal (the scan lives there since 0.10) so only this check fires.
+        p = self.dir / "scripts" / "lib" / "partition.sh"
         write(p, p.read_text().replace(
             "DEVIATION|ESCALATION|GATE-EXCEPTION", "DEVIATION|ESCALATION|DECISION"))
         self.assertFires("deviation gate does not count the gated kinds")
@@ -1096,13 +1103,8 @@ class ValidatorTest(unittest.TestCase):
         """Install minimal but realistic reader scripts into the fixture tree."""
         good_hook = (
             "#!/usr/bin/env bash\n"
-            "[ ! -L \"$1\" ] || exit 0\n" + JSON_GET +
-            "# deviation gate: the ONLY bounded read left — ownership is the\n"
-            "# sentinel filename, so no sentinel is opened.\n"
-            "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
-            "sentinel_owner_of_name() {\n"
-    "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) printf '\\n'; return 0 ;; esac\n"
-    "}\n")
+            ". lib/partition.sh\n"
+            "[ ! -L \"$1\" ] || exit 0\n" + JSON_GET)
         good_verdict = (
             "#!/usr/bin/env bash\n"
             "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
@@ -1197,20 +1199,14 @@ class ValidatorTest(unittest.TestCase):
         self.assertTrue(any("chunk cap" in p for p in probs), probs)
 
     def test_missing_symlink_guard_fires(self):
-        # The F65 -L guard is a four-reader coupling (adopt, verdict, hook,
-        # statusline) plus the opener — the exact shape check_guard_parity
-        # exists to hold: it was first applied to ops-task.sh alone, and every
-        # read site kept following planted symlinks (code-review of f4cae1a,
-        # 2026-08-04). A reader that loses its `-L` test fails the build.
-        self._write_readers(hook_body=(
-            "#!/usr/bin/env bash\n"
-            "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
-            "sentinel_owner() {\n"
-            "  case \"$owner\" in */* | .* | *\"|\"* | *[[:space:]]*) owner=\"\" ;; esac\n"
-            "}\n"
-            "# no -L rejection\n"))
+        # The F65 -L guard is a reader coupling (task/verdict/adopt CLIs, the
+        # statusline, and lib/partition.sh — which has carried the hook's
+        # pending/ enumeration since 0.10). A reader that loses its `-L` test
+        # fails the build.
+        p = self.dir / "scripts" / "lib" / "partition.sh"
+        write(p, p.read_text().replace('[ ! -L "$decisions" ] || exit 0', ":"))
         probs = self.bounds_problems()
-        self.assertTrue(any("symlink" in p and "ops-stop-hook.sh" in p
+        self.assertTrue(any("symlink" in p and "lib/partition.sh" in p
                             for p in probs), probs)
 
     def test_probe_cap_raised_to_substring_superset_fires(self):
@@ -1262,12 +1258,10 @@ class ValidatorTest(unittest.TestCase):
         self.assertTrue(any("missing check_owner_name()" in p for p in probs), probs)
 
     def test_hook_dropping_whitespace_reject_fires(self):
-        self._write_readers(hook_body=(
-            "#!/usr/bin/env bash\n"
-            "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
-            "sentinel_owner() {\n"
-            "  case \"$owner\" in */* | .* | *\"|\"*) owner=\"\" ;; esac\n"
-            "}\n"))
+        # 0.10: the readers' parser lives in lib/partition.sh — drop the arm there.
+        p = self.dir / "scripts" / "lib" / "partition.sh"
+        write(p, p.read_text().replace(
+            r"""*[[:space:]]* | *.exempt)""", "*.exempt)"))
         probs = self.bounds_problems()
         self.assertTrue(any("whitespace owners" in p for p in probs), probs)
 
@@ -2396,7 +2390,7 @@ class GuardParityVacuityTest(unittest.TestCase):
         # All three readers now share ONE shape: ownership is the filename, so
         # the reject set guards a name split rather than a body parse. The pin
         # is unchanged in purpose — a planted name must not pose as an owner.
-        ("ops-stop-hook.sh",
+        ("lib/partition.sh",
          r'''"" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) printf '\n'; return 0 ;;''',
          r'''"" | */* | .* | *"|"* | *[[:space:]]*) printf '\n'; return 0 ;;''',
          "*.exempt"),
@@ -2404,12 +2398,10 @@ class GuardParityVacuityTest(unittest.TestCase):
          r'''"" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) printf '\n'; return 0 ;;''',
          r'''"" | */* | .* | *"|"* | *[[:space:]]*) printf '\n'; return 0 ;;''',
          "*.exempt"),
-        # The statusline is the fourth sentinel reader and the third *.exempt
-        # parser; it renders the same partition the Stop hook gates on.
-        ("statusline.sh",
-         r'''"" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) printf '\n'; return 0 ;;''',
-         r'''"" | */* | .* | *"|"* | *[[:space:]]*) printf '\n'; return 0 ;;''',
-         "*.exempt"),
+        # (The statusline's own parser copy is gone: it sources the lib, and
+        # the lib's parser is the case above. The bar keeps a HANDOFF-MARK
+        # tail scanner of its own — pinned by check_decisions_schema's
+        # source-pin, not by a reject-set literal.)
         # F15's PREV set — the fifth copy, and the one whose pin was file-wide
         # until this round. ops-adopt.sh carries *.exempt at the WRITER too, so
         # the pin must read this arm specifically or the writer satisfies it.
@@ -2417,10 +2409,10 @@ class GuardParityVacuityTest(unittest.TestCase):
          '*[[:cntrl:]]* | *.exempt) PREV="<invalid>" ;;',
          '*[[:cntrl:]]*) PREV="<invalid>" ;;',
          "*.exempt"),
-        # Not an *.exempt case: the whitespace arm the hook needs so an owner
-        # that can never equal a real session id cannot make a task permanently
-        # non-blocking. Different literal, same vacuity shape.
-        ("ops-stop-hook.sh",
+        # Not an *.exempt case: the whitespace arm the readers' parser needs
+        # so an owner that can never equal a real session id cannot make a task
+        # permanently non-blocking. Different literal, same vacuity shape.
+        ("lib/partition.sh",
          r'''"" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) printf '\n'; return 0 ;;''',
          r'''"" | */* | .* | *"|"* | *.exempt) printf '\n'; return 0 ;;''',
          "[[:space:]]"),
@@ -2448,10 +2440,12 @@ class GuardParityVacuityTest(unittest.TestCase):
     def _install_real(self):
         """Copy the real CLIs in — the pins must hold against shipped code."""
         for n in ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh",
-                  "ops-stop-hook.sh", "statusline.sh"):
+                  "ops-stop-hook.sh", "statusline.sh", "lib/partition.sh"):
             src = self.real / n
             if src.is_file():
-                write(self.dir / "scripts" / n, src.read_text(encoding="utf-8"))
+                dest = self.dir / "scripts" / n
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                write(dest, src.read_text(encoding="utf-8"))
 
     def test_the_real_tree_is_clean(self):
         self._install_real()

@@ -3307,13 +3307,12 @@ check "statusline counts a long mine DEVIATION with no trailing newline (#10 rev
 # STRUCTURAL first: a timing assertion is flaky under load, but re-adding the
 # whole-file redirect is a textual regression. Both probe/scan reads must be fed
 # by `tail`; no `done < "$f"` remains in scan_deviations_bar.
-check "no whole-file read survives in scan_deviations_bar (F10)" \
-  "$(awk '/^scan_deviations_bar\(\)/{ins=1} ins && /done < "\$f"/{bad=1} /^}$/{ins=0} END{exit bad?1:0}' \
-     "$SCRIPTS/statusline.sh" && echo 0 || echo 1)"
-# shellcheck disable=SC2016  # `\$f` is the LITERAL text being grepped for in the
-# renderer's source; expanding it here would search for this suite's own $f.
+check "no whole-file read survives in the bar's deviation scan (F10)" \
+  "$(grep -q 'done < "$OPDIR/DECISIONS.md"' "$SCRIPTS/statusline.sh" && echo 1 || echo 0)"
+# shellcheck disable=SC2016  # the path is the LITERAL text being grepped for in
+# the renderer's source; expanding it here would search for this suite's own var.
 check "the bar's NUL probe is fed by tail -n 256, like the scan (F10)" \
-  "$([ "$(grep -c 'done < <(tail -n 256 "\$f" 2>/dev/null)' "$SCRIPTS/statusline.sh")" -eq 2 ] && echo 0 || echo 1)"
+  "$([ "$(grep -c 'done < <(tail -n 256 "$OPDIR/DECISIONS.md" 2>/dev/null)' "$SCRIPTS/statusline.sh")" -eq 2 ] && echo 0 || echo 1)"
 # SEMANTIC: a NUL inside the tail window still classifies the ledger as corrupt,
 # so no dev[ renders — the fail-toward-silence rule is unchanged where observable.
 F10DEC="$DEVPROJ/.operator/DECISIONS.md"
