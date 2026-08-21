@@ -454,6 +454,30 @@ graph work now computes the answer that issue needs.
   The suite's assertion count is now invariant to ambient state (711/0 with and
   without a sentinel in the repo root); at `d9eef21` it varied, 709 vs 710.
 
+- **`ops-corpus.sh`'s containment guard failed OPEN wherever git was absent**
+  (`a402ff8`). `repo_toplevel()` returned git's answer *or nothing*, so
+  without git the caller's `if [ -n "$toplevel" ]` containment check silently
+  **vanished** — measured in a bare ubuntu container, the derived corpus was
+  written straight into the repo worktree (5 files, no refusal). It now fails
+  CLOSED: the toplevel falls back to the plugin root resolved via
+  `script_dir/..`, and the containment check always runs. The same
+  CI-platform verification pass (`scripts/ci-local.sh`, pinned shellcheck
+  0.10.0 = CI's) caught two portability defects with it: `import.meta.dirname`
+  requires node ≥ 20.11 while ubuntu ships 18.19 — both `.mjs` suites crashed
+  on every run (now `fileURLToPath`, no version floor) — and four test cases
+  leaned on chmod behavior root ignores (now announced skips, the existing
+  holder idiom).
+
+- **Eight environment edge cases, two suite defects under them** (`471179f`).
+  The suite now runs clean as non-root ubuntu (CI's actual configuration),
+  on a path containing a space, with no git at all (`@no-vcs` source stamp),
+  under `LC_ALL=C` ANSI_X3.4-1968, on node 18/20/22/24, and python 3.9–3.11;
+  the Stop hook's python3 fallback and the compressor's world-writable-`/tmp`
+  hardening were attacked directly and held. Found by running it: two cases
+  **errored** on a missing git instead of skipping (a suite that dies on a raw
+  traceback reports nothing), and `test_compress` lstat'ed a path a hostile
+  root placement leaves nonexistent — same class, same fix.
+
 ## [0.8.4] - 2026-08-16
 
 Six issues closed, and the one that mattered most closed by
