@@ -293,6 +293,32 @@ def check_charter(root, problems):
         problems.append(
             f"templates/OPERATOR.md: only {len(tags)} citation tags for "
             f"{len(headings)} sections — every rule line must carry [D:]/[DOC:]")
+    # Every [DOC:spec-<key>] must resolve to a `### spec-<key>` heading in
+    # docs/spec/TAGS.md — the in-tree index that replaced two never-committed
+    # spec files (#76 step E: 22 of 24 DOC tags dangled in every fresh clone,
+    # documented as "expected" in CLAUDE.md's provenance section for three
+    # releases). The index is tracked; a tag added to the charter without an
+    # entry fails here, so the register cannot silently fall behind. The
+    # reverse direction (an orphan entry no tag cites) is deliberately NOT
+    # checked: a surviving entry for a retired tag is history, not rot.
+    doc_keys = {t[5:-1] for t in tags if t.startswith("[DOC:")}
+    tags_md = root / "docs" / "spec" / "TAGS.md"
+    if doc_keys and not tags_md.is_file():
+        problems.append(
+            "docs/spec/TAGS.md: missing — the charter carries "
+            f"{len(doc_keys)} [DOC:*] tags and this index is where they "
+            f"resolve in a clone (the original spec files were never "
+            f"committed); ship the index or drop the tags")
+    elif doc_keys:
+        headings_md = set(re.findall(r"^### (\S+)\s*$",
+                                     tags_md.read_text(encoding="utf-8"),
+                                     re.MULTILINE))
+        for key in sorted(doc_keys - headings_md):
+            problems.append(
+                f"templates/OPERATOR.md: [DOC:{key}] has no `### {key}` entry "
+                f"in docs/spec/TAGS.md — every DOC tag must resolve in-tree; "
+                f"add the entry (what the rule anchors as shipped) or use a "
+                f"[D:] tag for a self-describing decision reference")
     # no ## section (other than the title) should be entirely tag-free
     section, body = None, []
     def flush(sec, bod):

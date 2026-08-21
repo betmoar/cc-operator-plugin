@@ -131,25 +131,20 @@ Everything under `docs/` is read-only rationale — why the code is shaped this
 way. None of it is loaded by the plugin at runtime; the validator reads only
 `templates/`, `scripts/`, `hooks/`, `agents/`, and the manifests.
 
-- `docs/spec/chief-operator-spec.md` — the original design spec (D1–D6, the
-  seams); most of the charter's `[DOC:spec-*]` citation tags resolve to it.
-  **Local-only:** `docs/spec/` is gitignored wholesale (`docs/spec/.gitignore`
-  is a bare `*`); the four files that ship were force-added. This one is not,
-  because it quotes the prior project's evidence base — the same material 0.3.0
-  deliberately removed from the tree. A fresh clone does not get it.
-- `docs/spec/concurrent-sessions.md` — the 0.4.0 design: the field report, the
-  ownership proposal, and `Implemented (0.4.0)` amendments recording where the
-  shipped code diverged from the proposal. Its line numbers are 0.3.0-relative
-  and say so. Also the honest register of what a green suite does **not** prove.
-  **Local-only**, same as above.
-- Consequence, and it is not small: of the charter's 24 `[DOC:spec-*]` tags,
-  **22 point into those two untracked files** (`D2`×5, `D4`×4, `D6`×3,
-  `D1.5`×3, `concurrent`×3, plus `D1.2`, `D1.6`, `D5`, `O8`). Only `spec-wf`
-  and `spec-unk` resolve in a fresh clone. `check_charter` counts tags and
-  requires ≥1 per section; it never resolves a tag to a file, so the build
-  stays green either way. Treat a dangling `[DOC:spec-*]` in a clean checkout as expected, not as
-  charter rot — and if you need the rationale, it is in the maintainer's local
-  tree or the git history, not in the clone.
+- `docs/spec/TAGS.md` — **the in-tree resolution index for every charter
+  `[DOC:spec-*]` tag** (#76 step E). The original spec files
+  (`chief-operator-spec.md`, D1–D6; `concurrent-sessions.md`, the 0.4.0
+  ownership design) were never committed — they quoted the prior project's
+  evidence base 0.3.0 removed — and by 2026-08-21 no copy survived in the
+  maintainer's local tree either, so 22 of the charter's 24 DOC tags dangled
+  in EVERY checkout, documented as "expected". TAGS.md replaced that: each
+  entry records what the tag anchors *as shipped* (from the code and the
+  charter's usage, not recovered spec prose — where the original rationale is
+  lost, the entry says so), and `check_charter` fails the build on a charter
+  DOC tag with no `### spec-<key>` entry, so the index cannot fall behind.
+  Orphan entries (a retired tag's survivor) are deliberately allowed: history,
+  not rot. `docs/spec/backlog-charter.md` (the 0.7.0 arm-gate spec) still
+  ships alongside it.
 - `docs/PLAYBOOK.md` — the executable procedures (adding a guard, adding a
   reader, touching the lock), each derived from a bug that happened here.
 - `docs/REPLAY-CHARTER.md` — the live-session replay protocol (R0–R8): re-proves

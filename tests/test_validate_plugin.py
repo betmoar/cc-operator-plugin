@@ -121,6 +121,10 @@ def make_good_tree(root):
     }))
     write(root / "CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n## [0.1.0] - 2026-07-06\n\n- init\n")
     write(root / "templates" / "OPERATOR.md", GOOD_CHARTER)
+    # Every [DOC:spec-<key>] in the charter must have a `### spec-<key>` entry
+    # in the tracked tag index (#76 step E) — the fixture charter cites spec-D4.
+    write(root / "docs" / "spec" / "TAGS.md",
+          "# Tags\n\n### spec-D4\n\nThe evidence gate.\n")
     write(root / "templates" / "VERDICTS-header.md",
           "# Verdicts\n" + vp.VERDICTS_HEADER + "\n|---|---|---|---|\n")
     write(root / "templates" / "DECISIONS-header.md",
@@ -897,6 +901,28 @@ class ValidatorTest(unittest.TestCase):
             for i, sec in enumerate(vp.CHARTER_SECTION_ORDER))
         write(self.dir / "templates" / "OPERATOR.md", bad)
         self.assertFires("no citation tag")
+
+    def test_charter_doc_tag_without_index_entry_fires(self):
+        # A [DOC:spec-*] tag added to the charter with no `### spec-*` entry in
+        # docs/spec/TAGS.md must fail: the index is where DOC tags resolve in a
+        # clone (#76 step E — 22 of 24 used to dangle against untracked files).
+        write(self.dir / "templates" / "OPERATOR.md",
+              GOOD_CHARTER.replace("[DOC:spec-D4]", "[DOC:spec-D4] [DOC:spec-ghost]", 1))
+        self.assertFires("[DOC:spec-ghost] has no `### spec-ghost` entry")
+
+    def test_charter_doc_tags_with_missing_index_fires(self):
+        (self.dir / "docs" / "spec" / "TAGS.md").unlink()
+        self.assertFires("docs/spec/TAGS.md: missing")
+
+    def test_charter_orphan_index_entry_is_not_a_finding(self):
+        # The reverse direction is deliberately unchecked: an entry surviving a
+        # retired tag is history, not rot.
+        p = self.dir / "docs" / "spec" / "TAGS.md"
+        p.write_text(p.read_text() + "\n### spec-retired\n\nold entry.\n",
+                     encoding="utf-8")
+        probs = []
+        vp.check_charter(self.dir, probs)
+        self.assertEqual([x for x in probs if "spec-retired" in x], [])
 
     def test_charter_missing_project_cli_path(self):
         write(self.dir / "templates" / "OPERATOR.md",
