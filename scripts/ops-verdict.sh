@@ -130,6 +130,11 @@ check_bare_name() { # check_bare_name <label> <value>
   case "$2" in
     */*) die "$1 must be a bare name (no '/')" ;;
     .*) die "$1 must not start with '.' — a dotfile sentinel is invisible to the Stop hook's glob" ;;
+    # `__` separates owner from task in the sentinel NAME — same reasoning and
+    # same PR #77 review finding as ops-adopt.sh's copy; a `sessA__evilB`
+    # owner made every reader's first-`__` split parse owner `sessA`, letting
+    # a session that adopted nothing close the real adopter's task.
+    *__*) die "$1 must not contain '__' (it separates owner from task in the sentinel name)" ;;
   esac
   check_cell "$1" "$2"
 }

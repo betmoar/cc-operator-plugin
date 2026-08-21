@@ -1076,6 +1076,29 @@ def check_guard_parity(root, problems):
             problems.append(
                 f"scripts/{name}: no leading-dot rejection — a dotfile sentinel "
                 f"is invisible to the Stop hook's glob, so the gate never sees it")
+        # the `__` separator rule, SCOPED TO check_bare_name's body: `__` splits
+        # owner from task in the sentinel filename, so a `__` inside either half
+        # builds a name every reader's first-`__` split parses differently than
+        # the writer intended. ops-task.sh alone carried this arm through 0.9.0
+        # (PR #77 review): adopting as `sessA__evilB` created
+        # `sessA__evilB__T1`, readers parsed owner `sessA`, the real adopter was
+        # locked out and `sessA` — which adopted nothing — closed the task.
+        # Scoped to the function for the same F30 reason as the F1 pin below:
+        # `*__*` appears elsewhere in real code (readers splitting names), and a
+        # file-wide search is satisfied by a reader, not the guard.
+        body = _function_body(text, "check_bare_name")
+        if body is None:
+            problems.append(
+                f"scripts/{name}: cannot locate check_bare_name()'s body — the "
+                f"`__`-separator pin has nothing to check. Reshaping the guard "
+                f"must update this locator, not silently skip it")
+        elif "*__*" not in body:
+            problems.append(
+                f"scripts/{name}: check_bare_name() does not reject '__' — it "
+                f"separates owner from task in the sentinel name, so an owner or "
+                f"task-id containing it makes every reader's first-`__` split "
+                f"parse a name our own writers could never have built (PR #77 "
+                f"review; the arm must match ops-task.sh's copy)")
     # the hook's parser must reject what the writers reject, or a hand-written
     # sentinel reads as a valid foreign owner and the gate opens
     hook = root / "scripts" / "ops-stop-hook.sh"

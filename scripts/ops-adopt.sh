@@ -415,6 +415,14 @@ check_bare_name() { # check_bare_name <label> <value>
     */*) die "$1 must be a bare name (no '/')" ;;
     .*) die "$1 must not start with '.' — a dotfile sentinel is invisible to the Stop hook's glob" ;;
     *"|"* | *"$NL"*) die "$1 must not contain '|' or newlines" ;;
+    # `__` separates owner from task in the sentinel NAME, so it cannot appear
+    # in either half or every reader's first-`__` split parses a name our own
+    # writers could never have built. ops-task.sh had this arm and the other
+    # two writers did not (PR #77 review): a session adopting as
+    # `sessA__evilB` created `sessA__evilB__T1`, every reader parsed owner
+    # `sessA`, the real adopter was locked out and `sessA` — a session that
+    # adopted nothing — could close the task.
+    *__*) die "$1 must not contain '__' (it separates owner from task in the sentinel name)" ;;
   esac
 }
 

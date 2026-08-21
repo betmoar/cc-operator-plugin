@@ -842,6 +842,29 @@ check "ops-task refuses a repeated --owner" "$([ "$DUPRC" -ne 0 ] && [ ! -e "$P/
 # same trap as above: assert the reason, not merely a non-zero exit
 ADOUT2="$( cd "$P" && bash "$ADOPT" --owner SESS-A --owner SESS-B T-X 2>&1 )"; ADRC=$?
 check "ops-adopt refuses a repeated --owner (by reason)" "$([ "$ADRC" -ne 0 ] && printf '%s' "$ADOUT2" | grep -q 'more than once' && echo 0 || echo 1)"
+# `__` separates owner from task in the sentinel NAME (0.9.0). A `__` inside
+# either half builds a filename every reader's first-`__` split parses as a
+# DIFFERENT (owner, task) pair than the writer intended — ops-task.sh carried
+# this arm alone through 0.9.0 and the other two writers did not (PR #77
+# review, reproduced): adopting as `sessA__evilB` created
+# `sessA__evilB__T1`, readers parsed owner `sessA`, the real adopter was
+# locked out and bare `sessA` — which adopted nothing — CLOSED the task.
+# Assert the REASON (the adopt refusal would otherwise fire for the unrelated
+# "no such open task"; the verdict one for "task not open").
+( cd "$P" && bash "$TASK" T-SEP --owner SESS-A >/dev/null 2>&1 )
+TSEP1="$( cd "$P" && bash "$ADOPT" --owner "sessA__evilB" T-SEP 2>&1 )"; SEP1=$?
+check "ops-adopt refuses a '__' owner (by reason)" "$([ "$SEP1" -ne 0 ] && printf '%s' "$TSEP1" | grep -q "must not contain '__'" && echo 0 || echo 1)"
+check "no ambiguous sentinel was created" "$([ ! -e "$P/.operator/pending/sessA__evilB__T-SEP" ] && echo 0 || echo 1)"
+TSEP2="$( cd "$P" && bash "$VERDICT" T-SEP c e PASS --owner "sessA__evilB" 2>&1 )"; SEP2=$?
+check "ops-verdict refuses a '__' owner (by reason)" "$([ "$SEP2" -ne 0 ] && printf '%s' "$TSEP2" | grep -q "must not contain '__'" && echo 0 || echo 1)"
+TSEP3="$( cd "$P" && bash "$TASK" "bad__id" --owner SESS-A 2>&1 )"; SEP3=$?
+check "ops-task still refuses a '__' task-id (by reason)" "$([ "$SEP3" -ne 0 ] && printf '%s' "$TSEP3" | grep -q "must not contain '__'" && echo 0 || echo 1)"
+# and the spoof itself must now fail end-to-end: bare sessA cannot close T-SEP
+# because the ambiguous adoption never happened
+( cd "$P" && bash "$VERDICT" T-SEP c e PASS --owner SESS-A >/dev/null 2>&1 )
+check "the pre-fix spoof path closes the task only via its REAL owner" "$(grep -q 'T-SEP' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
+( cd "$P" && bash "$TASK" T-SEP2 --owner SESS-A >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" T-SEP2 c e PASS --owner SESS-A >/dev/null 2>&1 )
 # --reconcile is a WRITE to the ledger of record: it must enforce the same
 # 4-cell schema as the direct writer. A fragment is an ordinary file that a
 # merge or hand-edit can corrupt.
