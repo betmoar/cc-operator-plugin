@@ -63,6 +63,18 @@ def contract_names(text):
     `consumes = "the frobnicate_widget helper from nowhere.py"` on the last task
     passed, via "the". That is the defect the plan graph had just been fixed for,
     reproduced inside the test written to police the corpus.
+
+    DRIFT NOTE (PR #77 review): this is a deliberate REIMPLEMENTATION of
+    plan.js's inferNames acceptance rule (paren-followed, underscore, digit,
+    internal capital), not a shared import — the corpus test is python, the
+    workflow is .mjs, and the corpus intentionally never loads the workflow.
+    It is intentionally NARROWER than inferNames (no leading-capital arm, no
+    STOPWORDS list, no '/' tokens): the corpus's own check should resolve
+    FEWER tokens than the workflow's heuristic, so a name the corpus accepts
+    is always a name the workflow would also accept — drift in the widening
+    direction cannot make a dangling consume look resolved here. The corpus's
+    produces/consumes are prose by design (see the README note), so this rule
+    guards what the fixtures actually contain.
     """
     out = set()
     src = str(text or "")

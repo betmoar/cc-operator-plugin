@@ -188,10 +188,9 @@ const TASK = {
     // the graph, and while they were prose every rule for extracting names from
     // them had both a false-positive and a false-negative class: `The` matched
     // as a contract name; dropping bare capitals lost `Mailer`; a stopword list
-    // lost `HTTPClient`; a non-string coerced to `Object` and joined every task
-    // to every other. Four review rounds, each fix closing one class and opening
-    // the next, because the input was English.
-    //
+    // lost `HTTPClient`; a non-string interpolated to "[object Object]" and
+    // joined every task to every other. Four review rounds, each fix closing
+    // one class and opening the next, because the input was English.
     // The schema already said "exact names". Saying it in the TYPE removes the
     // parsing step instead of improving it — the difference between a number
     // measured and a number estimated.
