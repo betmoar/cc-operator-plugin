@@ -98,7 +98,7 @@ const repoRoot = A.repoRoot ?? ".";
 // not a criterion.
 //
 // It is passed to DECOMPOSE ONLY, and that is measured, not an oversight.
-// Stage A (tests/fixtures/plan-align/MEASUREMENT.md, run 2026-08-18) put the
+// Stage A (measurement run 2026-08-18; instrument removed in 0.10, git history) put the
 // goal in the PER-TASK vet packets and measured what came back: 6/6 feasibility
 // seats raised goal-reachability concerns against the CONTROL column — the plan
 // that does reach its goal — including one that called a task "the north-star

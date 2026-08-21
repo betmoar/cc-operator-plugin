@@ -348,7 +348,7 @@ await throws(() => run(WF("plan.js"), {
   }, planFixtures),
   "plan northStar: long but with no miss clause → refused", "Missed if");
 
-// The measured decision (tests/fixtures/plan-align/MEASUREMENT.md, 2026-08-18):
+// The measured decision (2026-08-18 run; instrument removed in 0.10, git history):
 // the goal goes to DECOMPOSE and NOT to the per-task vet packets. Putting it
 // there drew goal-reachability findings from 6/6 seats against the CONTROL
 // column — a plan that reaches its goal — so it is noise bought at judgment
