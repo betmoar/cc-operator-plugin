@@ -211,14 +211,12 @@ if (vm) {
 }
 
 // ── a FAILED spill must be marked, not silent (pr-review 2026-08-03) ────────
-console.log("-- Case: spill failure leaves an explicit TRUNCATED marker, not silence");
+console.log("-- Case: spill failure leaves an explicit marker, not silence");
 // spill() returns null on any write failure (disk full, perms). Elided text
 // with no marker is indistinguishable from complete output — the I2.3
 // falsification class through the failure path. Force the failure inside the
-// IN-PROJECT branch: a cwd that has `.operator/` (so containment does not divert
-// to the tempdir) whose `.compress-spill` is a regular FILE, making mkdirSync
-// throw. Pointing cwd at a file no longer works as injection — that path now
-// falls back to the tempdir and succeeds, which is the containment fix working.
+// in-project branch: a cwd whose .compress-spill is a regular FILE, making
+// mkdirSync throw.
 const badCwd = fs.mkdtempSync(path.join(os.tmpdir(), "opsbadspill-"));
 fs.mkdirSync(path.join(badCwd, ".operator"));
 fs.writeFileSync(path.join(badCwd, ".operator", ".compress-spill"), "");
@@ -226,8 +224,8 @@ const failRes = compress({ ...bash("y".repeat(50000)), tool_input: { command: "n
   { env: {}, cwd: badCwd });
 {
   const failOut = failRes?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
-  ok(/TRUNCATED and the spill to disk FAILED/.test(failOut),
-    "elided output whose spill failed carries the explicit failure marker");
+  ok(/no spill copy exists/.test(failOut),
+    "elided output whose spill failed carries the explicit no-spill marker");
   ok(!/full output spilled to/.test(failOut),
     "a failed spill never cites a spill file that does not exist");
 }
@@ -257,73 +255,27 @@ console.log("-- Case: ephemera are self-ignoring and never materialize .operator
   ok(fs.readFileSync(path.join(TMP, ".operator", ".compress-state", ".gitignore"), "utf8").trim() === "*",
     "the dedup-state root carries its own .gitignore holding '*'");
 
-  // (B) a project WITHOUT .operator/ gets no directory at all — the roots move
-  //     to a cwd-keyed tempdir, and spill/cite keep working.
+  // (B) a project WITHOUT .operator/ gets no directory at all and no spill:
+  //     elide still fires, the marker says "not spilled", and nothing is
+  //     written outside the project.
   const virgin = fs.mkdtempSync(path.join(os.tmpdir(), "opsvirgin-"));
   const vres = compress({ ...bash(big), tool_input: { command: "npm test" } },
     { env: {}, cwd: virgin });
   const vout = vres?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
   ok(!fs.existsSync(path.join(virgin, ".operator")),
     "a project that never ran /cc-operator:start gets NO .operator/ directory");
-  const vm = vout.match(/full output spilled to (\S+)/);
-  ok(vm != null, "the spill still happens and is still cited");
-  if (vm) {
-    ok(path.isAbsolute(vm[1]), "an out-of-tree spill is cited by ABSOLUTE path, never a ../.. walk");
-    ok(fs.readFileSync(vm[1], "utf8") === big, "the out-of-tree spill holds the verbatim original");
-  }
-  // The wipe path the SessionStart hook recomputes in shell must match. The
-  // shared segment carries the uid: /tmp is world-writable on Linux and the key
-  // is a plain sha256 of cwd, so a uid-less shared root was readable — and
-  // pre-plantable — by any other local user.
-  const key = crypto.createHash("sha256").update(virgin).digest("hex").slice(0, 16);
-  const uid = typeof process.getuid === "function" ? process.getuid() : "nouid";
-  const tmpBase = path.join(os.tmpdir(), `cc-operator-${uid}`);
-  ok(fs.existsSync(path.join(tmpBase, key, ".compress-spill")),
-    "the tempdir root is <tmp>/cc-operator-<uid>/sha256(cwd)[:16] — the path SessionStart wipes");
-  ok(!fs.existsSync(path.join(os.tmpdir(), "cc-operator", key)),
-    "nothing is written to the legacy uid-less shared root");
-
-  // Modes: the spill holds UNREDACTED tool output, so no group/other bits on
-  // any segment or on the file itself.
-  // lstat only what exists. When the tempdir root is HOSTILE — pre-planted as a
-  // symlink by another local user, which is the attack the uid scoping and the
-  // 0700 modes exist for — ephemeralRoot correctly returns null and no segment
-  // is created. Verified on Linux with a real world-writable /tmp: /etc was
-  // untouched. But this loop then lstat'd a path that rightly did not exist and
-  // the whole suite died on a raw ENOENT stack trace instead of reporting a
-  // verdict, which is the "raw error as operator guidance" class in JS. Say what
-  // happened; a refused hostile root is a legitimate environment, not a crash.
-  for (const p of [tmpBase, path.join(tmpBase, key),
-                   path.join(tmpBase, key, ".compress-spill")]) {
-    if (!fs.existsSync(p)) {
-      ok(false, `tempdir segment absent (hostile or unwritable ${os.tmpdir()}?): ${path.basename(p)}`);
-      continue;
-    }
-    ok((fs.lstatSync(p).mode & 0o077) === 0, `tempdir segment is 0700-tight: ${path.basename(p)}`);
-  }
-  if (vm && fs.existsSync(vm[1])) {
-    ok((fs.lstatSync(vm[1]).mode & 0o077) === 0, "the spill FILE is 0600 — pre-scrub output is not world-readable");
-  }
-
-  // A hijacked root must not be written through. Point the keyed segment at a
-  // symlink and assert the compressor declines rather than following it.
-  const hijackCwd = fs.mkdtempSync(path.join(os.tmpdir(), "opshijack-"));
-  const hkey = crypto.createHash("sha256").update(hijackCwd).digest("hex").slice(0, 16);
-  const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "opselsewhere-"));
-  fs.mkdirSync(tmpBase, { recursive: true, mode: 0o700 });
-  fs.symlinkSync(elsewhere, path.join(tmpBase, hkey));
-  const hres = compress({ ...bash(big), tool_input: { command: "npm test" } },
-    { env: {}, cwd: hijackCwd });
-  const hout = hres?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
-  ok(!/full output spilled to/.test(hout),
-    "a symlinked tempdir root is refused — no spill, no cite, rather than writing pre-scrub output where another user chose");
-  ok(fs.readdirSync(elsewhere).length === 0,
-    "nothing was written through the planted symlink");
-  fs.unlinkSync(path.join(tmpBase, hkey));
-  fs.rmSync(elsewhere, { recursive: true, force: true });
-  fs.rmSync(hijackCwd, { recursive: true, force: true });
+  ok(/chars elided/.test(vout) && /no spill copy exists/.test(vout),
+    "elide still fires outside an operated project, marked 'not spilled'");
+  ok(!/full output spilled to/.test(vout),
+    "no spill cite in an un-operated project (there is no spill file to cite)");
+  // And dedup is off there too: the same big output twice must NOT collapse to
+  // the identical-marker (no .compress-state root exists to hold the hash).
+  const vres2 = compress({ ...bash(big), tool_input: { command: "npm test" } },
+    { env: {}, cwd: virgin });
+  const vout2 = vres2?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
+  ok(!/identical to this tool's previous output/.test(vout2),
+    "dedup is skipped in an un-operated project (no state root, no false HIT)");
   fs.rmSync(virgin, { recursive: true, force: true });
-  fs.rmSync(path.join(tmpBase, key), { recursive: true, force: true });
 }
 
 // ── F3: a traversal session_id must not escape the spill root ──────────────
@@ -435,8 +387,8 @@ console.log("-- Case: F18 a vanished spill-dir entry does not fail the spill");
   const rText = raceRes?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
   ok(/full output spilled to/.test(rText),
     "spill() still returns a valid, non-null path when a listed entry has already vanished");
-  ok(!/TRUNCATED and the spill to disk FAILED/.test(rText),
-    "the vanished entry does not throw spill() into the outer FAILED-spill branch");
+  ok(!/no spill copy exists/.test(rText),
+    "the vanished entry does not throw spill() into the outer no-spill branch");
 }
 
 // ── #59: the case above never ENTERS the guarded window ─────────────────────
@@ -495,8 +447,8 @@ console.log("-- Case: #59 the F18 guard is ENTERED — an entry listed but unsta
   // the FAILED marker even though the write itself succeeded.
   ok(/full output spilled to/.test(wText),
     "#59 spill still cites a real path when an entry is listed but unstattable");
-  ok(!/TRUNCATED and the spill to disk FAILED/.test(wText),
-    "#59 the unstattable entry does not collapse the spill into the FAILED branch");
+  ok(!/no spill copy exists/.test(wText),
+    "#59 the unstattable entry does not collapse the spill into the no-spill branch");
   // And the spill file is really on disk — a cite pointing at nothing would
   // satisfy the regex above while the guard was doing nothing useful.
   const cited = /full output spilled to ([^\s]+)/.exec(wText);

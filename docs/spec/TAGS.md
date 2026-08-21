@@ -84,10 +84,12 @@ the lost spec, and O8 is the only one the charter cites.
 
 ### spec-compress
 
-The compressor's spill contract (`scripts/ops-compress.mjs`): elided output is
-spilled to a file and the marker names the path, so evidence citing compressed
-output MUST cite the spill path — the middle of the stream is gone from the
-transcript. The compressor's own header documents the I1–I5 invariants.
+The compressor's spill contract (`scripts/ops-compress.mjs`): in an operated
+project, elided output is spilled to a file and the marker names the path, so
+evidence citing compressed output MUST cite the spill path — the middle of the
+stream is gone from the transcript. Outside one (no `.operator/`), elide still
+fires but is marked "not spilled" — there is no citable artifact. The
+compressor's own header documents the I1–I5 invariants.
 
 ### spec-concurrent
 
