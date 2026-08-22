@@ -66,13 +66,14 @@ models. `/cc-operator:tiers` wraps both.
 scrubs/dedups/elides re-billed tool output on a strict allowlist — never
 Read/Edit/Write/NotebookEdit, never `mcp__*`, never evidence-gate output
 (ledger paths and gate CLIs are carved out by path). Elided output is spilled
-verbatim (pre-scrub) and cited, so evidence stays recoverable byte-for-byte —
-to `.operator/.compress-spill/` in an initialized project, or to a cwd-keyed
-tempdir in one that never ran `/cc-operator:start`, so the hook never
-materializes a `.operator/` in a project that did not ask for it. Either root
-carries its own `*` ignore, and `.operator/.gitignore` is an allowlist: the two
-ledgers, the `verdicts.d/` fragments and `tiers.env` are tracked; everything
-else the plugin creates is ignored by default.
+verbatim (pre-scrub) and cited, so evidence stays recoverable byte-for-byte — to
+`.operator/.compress-spill/`, and **only** there: a project that never ran
+`/cc-operator:start` gets no spill and no dedup state, and the elide says "not
+spilled" rather than writing somewhere the user never asked for (0.10 removed the
+tempdir fallback). The spill root carries its own `*` ignore, and
+`.operator/.gitignore` is an allowlist: the two ledgers, the `verdicts.d/`
+fragments and `tiers.env` are tracked; everything else the plugin creates is
+ignored by default.
 
 ## Commands
 
@@ -188,7 +189,9 @@ workflows/{review,brainstorm,plan,crawl,dispatch}.js  # the orchestration primit
 agents/op-*.md                    # tier-aliased seats: author, mechanic, reviewer, scout, verifier, brainstorm, crawler
 skills/chief-operator/SKILL.md    # thin router (front door only)
 scripts/ops-{init,task,verdict,adopt,claims,backlog}.sh  # the evidence-gate mechanism
+scripts/ops-install-set.sh        # the .operator/bin install manifest (both writers source it)
 scripts/ops-{stop,sessionstart}-hook.sh # completion gate + session-id injection
+scripts/lib/partition.sh          # the mine/foreign partition rule — hook + statusline share it
 scripts/ops-{tiers,render}.sh     # tier resolver + project-layer agent renderer
 scripts/ops-compress.mjs          # input-axis compressor (PostToolUse)
 .claude-plugin/statusline.json    # cc-status segment manifest (name/render/order)

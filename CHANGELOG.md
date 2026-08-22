@@ -9,6 +9,170 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-22
+
+The release that stops defending the codebase against its own development
+process. Measured at the start of the branch: **11,371 shipped lines**, of which
+the product a user touches — charter, gate, workflows, tiers — is about 3,000.
+The rest was armor, accreted one review at a time: every finding became a
+permanent guard *plus* a war-story comment *plus* a coupling-table row *plus* a
+parity check, and nothing was ever deleted on the grounds that a design change
+had made the bug impossible.
+
+The shipped tree is now **7,852 lines**. Nothing a user relies on was removed —
+the deletions are guards whose bug became unreachable, comparators whose
+duplication was collapsed, and validator checks that policed process rather than
+product. The model for all of it is 0.9.0's filename-ownership refactor, which
+deleted 184 parser lines by making the parse unnecessary: **change the design so
+the guard has nothing to guard, then delete the guard.**
+
+Two things arrived alongside the diet and matter more than the line count. #76's
+duplication work removed three responsibilities that had required copies, so
+three parity mechanisms had nothing left to compare. And the replay charter was
+executed live for the fourth time, which found a stale expectation in the
+charter itself and four shipped surfaces with no test that could fail.
+
+### Changed
+
+- **The `.operator/bin` install set has ONE declaration.** `scripts/ops-install-set.sh`
+  is the manifest both writers source; the four hand-copies are gone. The polarity
+  split between the writers is deliberate and both halves are verified end to end:
+  `ops-init.sh` fails **loud** without the manifest (rc 1, zero installs — it is
+  the interactive path, so a failure is visible), while `ops-sessionstart-hook.sh`
+  fails **open** (skips the upgrade, warns, keeps the old stamp). The second is not
+  laziness: an empty set must never record an upgrade that copied nothing.
+  `check_install_set_parity` now pins the single-source shape instead of comparing
+  two literals, with 7 mutation cases against the real writers.
+
+- **The mine/foreign partition lives in `scripts/lib/partition.sh`.** The Stop hook
+  (the gate) and `statusline.sh` (the bar) source the same implementation, because a
+  bar describing a different gate than the one that runs is worse than no bar.
+  `statusline.sh` 450 → 237, `ops-stop-hook.sh` 364 → 171. The bar keeps its one
+  documented deviation: a tail-window approximation of the deviation scan, since the
+  whole-file scan measured 0.4s at 3,000 lines against a ~300ms render budget (CR5).
+  It fails toward silence; the hook still gates exactly. The `.operator/bin/` CLIs
+  deliberately do NOT source the lib — they install standalone, and their hand-copies
+  stay pinned by `check_guard_parity`.
+
+- **Workflows carry no facts about the resolver.** `DEFAULT_TIERS` are harness
+  aliases (`opus`/`haiku`) the harness resolves rather than vendor model ids, and
+  `KNOWN_TIERS` — a five-times-copied catalogue of the resolver's own tier names —
+  is deleted. An unknown `args.tiers` key is accepted and logged, never thrown, so
+  F07's resolver-map forwarding survives with nothing left to synchronize.
+  `check_workflow_default_tiers` pins the alias set, because the reflex fix when a
+  default routes badly is pasting a vendor id back in, one file at a time.
+
+- **The compressor's ephemera live only under an existing `.operator/`.** The
+  cwd-keyed tempdir fallback is gone: no `.operator/` now means no spill, no dedup
+  state, and the elide is marked "not spilled" rather than written somewhere the
+  user never asked for. `ops-compress.mjs` 470 → 358.
+
+- **`unused` tier keys can no longer fail a run.** An unknown `args.tiers` key was
+  logged as "accepted, unused" and then spread into `TIERS` and value-validated, so
+  a malformed value on a tier the workflow never dispatches threw anyway. All five
+  workflows now filter overrides to the dispatched set. (Copilot review, PR #78.)
+
+### Removed
+
+- **The arm gate (G2/G3) and its exemption mechanism**, per the maintainer decision
+  recorded on `docs/spec/backlog-charter.md`. G1, the retro-gate, remains and is
+  still what catches a verdict recorded with no sentinel open. `ops-armgate-hook.sh`
+  deleted; the sections in the backlog charter are kept as tombstones.
+
+- **The measurement corpora and `ops-corpus.sh`** (#24 security, #70 drift, #58
+  plan-align). Each had already produced its answer — twice "do not build the seat",
+  once "ship the field, not the lens" — and a corpus that has answered its question
+  is history, not shipping code. They live in the git history (tree ≤ 0.9.0).
+
+- **Four validator checks: `check_issue_refs`, `check_replay_charter`,
+  `check_northstar`, `check_platform_idioms`.** Markdown link lint and runbook prose
+  are not shipping concerns, and a runbook is validated by running it — which this
+  release did. `validate_plugin.py` 2,882 → 1,773 lines. The plan-graph rules
+  `check_northstar` policed are now covered by the node suite, where they belong.
+
+- **`docs/img/` and `docs/INFOGRAPHICS.md`** (5.5MB of rendered diagrams), and the
+  pre-0.9 CHANGELOG entries, split to `docs/CHANGELOG-archive.md`.
+
+- **1,295 comment-only lines** across the six gate CLIs and 1,414 across the two test
+  suites, each proven comment-only by byte-comparing the stripped code.
+
+### Fixed
+
+- **The replay charter quoted an expectation the hook has not met since 0.9.0.**
+  R2b said the foreign-sentinel report names "the task, its owner and its open
+  time". `git log -S` places the drop at #76 step 1: ownership moved from the
+  sentinel BODY to the FILENAME, so the readers stopped opening the body at all —
+  which is what makes them builtin-only and what closed the `session_id: EVIL`
+  smuggling class. The open time went with the read. The hook is right; the prose
+  was stale, and it survived a release because nobody ran the phase.
+
+- **`README.md` promised a compressor tempdir fallback that 0.10 removed**, and its
+  repository layout omitted `scripts/lib/` and the install manifest.
+
+### Added
+
+- **`docs/spec/TAGS.md` — the in-tree resolution index for every charter
+  `[DOC:spec-*]` tag.** 22 of the charter's 24 tags pointed into two spec files that
+  were **never committed** and no longer exist anywhere, a dangle CLAUDE.md
+  documented as "expected" for three releases. Each entry records what the tag
+  anchors *as shipped*, and says so plainly where the original rationale is lost.
+  `check_charter` now fails the build on an unindexed tag. Orphan entries — a retired
+  tag's survivor — are deliberately allowed: history, not rot.
+
+- **Direct coverage for `/cc-operator:start` and `/cc-operator:handoff`**, which had
+  none: the bash suite matched only `commands/tiers.md`. The handoff cases assert the
+  six sections against the CHARTER as well as the command, because the
+  `HANDOUT_PACKET_SPINE` lesson is that parity passes perfectly when the original is
+  what lost the field.
+
+- **brainstorm and crawl fan-out coverage.** Both had one case (tier validation),
+  leaving their fan-out shape and both dead-agent guards untested — the F31/F32 class,
+  where a laundered agent death is byte-identical to "found nothing". Now 11 cases
+  each: direction/shard counts, the cheap-vs-judgment tier split, the dropped-shard
+  count, the dead-agent returns, and that `args.noReferences` skips the dispatch
+  rather than dropping its result.
+
+  Suites: **bash 604 → 620, node 219 → 242.** Every new case mutation-checked. One is
+  worth recording: the six-section counter first read `^[1-6]\. \*\*`, which counts at
+  most six and is therefore blind to a seventh — it stayed green when the mutation
+  added one. A check that cannot fail is not a check.
+
+### Verified live
+
+The replay charter (R0–R8) was executed against this tree with the plugin
+inline-loaded: **9 PASS, 1 deferred, 0 FAIL**, every phase with its own negative
+control. R0's build-identity check earned itself immediately — the first `cmp` ran
+against a stale plugin cache and reported 5/5 STALE, which was a wrong measurement,
+not a defect: the session runs `--plugin-dir .`, so the working tree *is* the plugin
+root.
+
+R7 was run for real rather than deferred, which is what makes the review panel's
+claim testable at all. A committed artifact carried one **unlabelled** off-by-one
+(`can_afford` uses `<` where `spend()` gates on `>`); the giveaway comment was
+stripped, because a lens that only finds a defect labelled `DEFECT` has found the
+label. Verdict **REFUTED**, all five lenses finding it independently. The adversarial
+seat swept the boundary exhaustively — 21 mismatches, one for every state where
+`n == remaining()` — and found three defects nobody planted: a `ZeroDivisionError` at
+`total=0`, an unvalidated negative total, and a check-then-act race.
+
+### Known gaps
+
+Recorded as issues rather than left as silence:
+
+- **#79** — only `review` has ever run against a model. brainstorm, crawl, plan and
+  dispatch are proven at the wiring level: the node suite loads each workflow with
+  stub agents returning canned objects, which tests tier resolution, fan-out shape,
+  refusals and dead-agent accounting, not output quality.
+- **#80** — `skills/chief-operator/SKILL.md` has no gate of any kind. Its
+  `/cc-operator:` command reference can be renamed to a nonexistent plugin and every
+  check stays green, while CLAUDE.md's coupling table lists it as maintained.
+- **#74** remains open and is now confirmed from the other direction: R7 ran
+  un-isolated, F-A1 fired correctly, and `isolation` reported `mode: builder-tree`
+  with `observedCommit: null` — honest about what it did not do.
+- **#25** gained a datum this release: `.operator/` was deleted between sessions and,
+  being gitignored, left no trace. The ledger is not merely unreadable from outside
+  the session — it is not durable inside it.
+
 ## [0.9.0] - 2026-08-18
 
 A release whose headline is that a **measurement changed what got built**. #58

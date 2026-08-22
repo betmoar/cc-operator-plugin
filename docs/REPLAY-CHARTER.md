@@ -80,14 +80,31 @@ and failed). This is the same asymmetry CLAUDE.md records for `CLAUDE_SESSION_ID
 by hand, and use `$PR` everywhere the charter used to write the variable:
 
 ```
+ps -ax -o args= | grep '[c]laude' | head        # HOW was this session launched?
 PR="$HOME/.claude/plugins/cache/<owner>/cc-operator/<version>"
 [ -d "$PR/scripts" ] || { echo "PR does not resolve — find it: ls -d $HOME/.claude/plugins/cache/*/cc-operator/*"; }
 ```
 
-Do **not** substitute the repo's own `scripts/` here. It is the reachable-looking
-fix and it silently audits the tree instead of the installed plugin — precisely
-the build-identity confusion the next check exists to prevent. The `cmp` below is
-what licenses treating the cache copy as the tree; run it before you rely on `$PR`.
+**Check the launch line first, and prefer it over the cache path** (fourth run,
+2026-08-22). A session started with `claude --plugin-dir .` loads the plugin from
+**that directory**, not from the cache — so `$PR` is the working tree and the cache
+copy is an unrelated older install. Resolving by convention there reported 5/5
+STALE, which reads exactly like the #34 class recurring and is simply a wrong pair.
+The error is symmetric and that is what makes it dangerous: a mis-resolved `$PR`
+yields five spurious STALEs in one direction and five spurious CURRENTs in the
+other, and only the second is silent.
+
+Do **not** substitute the repo's own `scripts/` here *on a cache-loaded session*.
+It is the reachable-looking fix and it silently audits the tree instead of the
+installed plugin — precisely the build-identity confusion the next check exists to
+prevent. The `cmp` below is what licenses treating the cache copy as the tree; run
+it before you rely on `$PR`.
+
+The `--plugin-dir` case is not an exception to that rule, it is the rule applied:
+there the tree **is** the installed plugin, which the launch line establishes as a
+fact rather than an assumption. The distinction to hold onto is *why* `$PR` points
+where it does — measured from how the session was started, never picked because it
+was convenient.
 
 **Build identity — do this before any other phase.** Establish *which* code the
 run is about to test, because there are two answers and they can differ:
@@ -537,3 +554,72 @@ designed to confirm a limitation is the one that needs no edits.
 `@8ef5d9eb26bd` gave exactly this run's eleven, with 2026-08-14's rows sitting
 above them untouched — U10's stamp doing the job it was built for, incidentally,
 in the middle of an audit about something else.
+
+## What the fourth real run changed (2026-08-22, `1677fff` → 0.10.0, inline load)
+
+Scorecard by stamp: **9 PASS, 1 deferred (R7 initially), 0 FAIL, 0 not-executed** —
+then R7 was executed after all, as the run's own R8 rule demands, and passed. The
+run's two findings both concern *this file* and the tests around it, not the gate.
+
+**R0 caught a wrong measurement before it became a wrong conclusion.** The first
+`cmp` loop reported **5/5 STALE** against
+`~/.claude/plugins/cache/betmoar/cc-operator/0.9.0`. That looked like the #34 class
+recurring. It was not: `ps` showed the session running as `claude --plugin-dir .`,
+so the working tree *is* the plugin root and the cache copy was simply a different,
+older install. Against the correct root: 5/5 CURRENT, with the negative control
+discriminating (mutate a byte in `.operator/bin/` → `STALE` for exactly that file →
+restore → CURRENT).
+
+The lesson generalizes past the inline case: **`$PR` is a claim, and R0's `cmp` is
+only as good as it.** A replayer who resolves the plugin root by convention rather
+than by checking how the session was launched will measure the wrong pair and get a
+confident, wrong answer in either direction — five spurious STALEs here, five
+spurious CURRENTs if the typo had gone the other way. Add the launch check to R0's
+resolution step: `ps` for the running `claude` invocation, and prefer what it says
+over the cache path.
+
+**R2b found this charter quoting an expectation the hook has not met since 0.9.0** —
+the `opened <ISO-8601>` clause, corrected in the R2b section above with its cause.
+It had stood through a release for the plainest possible reason: **nobody ran the
+phase.** R8 already says "before recording a phase as unexecutable, try to execute
+it"; this run is the evidence that the rule applies just as much to phases nobody
+bothered to execute at all. A charter that is never run is prose, and prose drifts.
+
+**R5 ran on genuine state rather than a manufactured probe.** The R0 verdict was
+recorded under `replay-run-R0` while the open sentinel was `replay-run` — an
+ordinary id mismatch, and the retro-gate caught it, writing a real GATE-EXCEPTION.
+So the deviation gate had two unpresented decisions to block on, one accidental and
+one deliberate, and cleared correctly on `--mark-handoff` (rc 2 → 0 through the
+hook). An accident is a better fixture than a probe.
+
+**R1's F05 control littered the repo it was auditing, again.** Running the scaffold
+from `docs/` scaffolded there — nine entries, gitignored and therefore invisible to
+`git status`. The third run recorded this same cleanup and the note was read only
+*after* re-creating the mess. Kept here in stronger terms: the F05 control's cleanup
+is part of the control, not a postscript to it.
+
+**R7 was run rather than deferred, and it is the reason the panel's claim is
+testable.** A committed artifact carried one **unlabelled** off-by-one —
+`can_afford` uses `<` where `spend()` gates on `>`, so a request for exactly the
+remaining budget is refused while `spend()` accepts it. The giveaway comment was
+stripped before committing, because a lens that only finds a defect labelled
+`DEFECT` has found the label, not the bug.
+
+Verdict **REFUTED**, `blocked: true`, all five lenses finding it independently
+(scores 95/95/95/85/85). The adversarial seat swept the boundary exhaustively — 21
+mismatches, one for every state where `n == remaining()` — and found three defects
+nobody planted: `ZeroDivisionError` at `total=0`, an unvalidated negative total, and
+a check-then-act race in `spend()`. 6 agents, 0 errors, 129,700 tokens, 120s.
+
+Two things worth carrying from it. First, the run was **un-isolated**, so F-A1
+shipped and fired correctly — it reported the replayer's own in-progress edits as
+stray paths, which is exactly its job on a run whose artifact lived elsewhere. The
+returned `isolation` block said `mode: builder-tree`, `observedCommit: null`: honest
+about what it did not do (#74). Second, R7's negative control is not optional
+ceremony. A panel returning CONFIRMED on everything is indistinguishable from a
+working one when it only ever sees clean code, and this is the phase that tells them
+apart.
+
+**What the run did NOT reach, recorded rather than glossed:** only `review` has been
+exercised against a real model (#79), and `skills/chief-operator` has no gate of any
+kind (#80). Both filed with the measurement attached.

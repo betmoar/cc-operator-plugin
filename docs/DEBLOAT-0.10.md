@@ -1,5 +1,19 @@
 # DEBLOAT — the 0.10 plan
 
+> **Status: EXECUTED in 0.10.0** (2026-08-22). All six steps landed, plus a
+> second round of seven items. The plan below is kept in the tense it was
+> written in — it is the reasoning that justified the deletions, and rewriting
+> it into the past tense would destroy the record of what was predicted versus
+> what the work actually cost. Read the targets as *predictions*; the outcomes
+> are in `CHANGELOG.md` under 0.10.0 and in the commit log.
+>
+> Where prediction and outcome differ, the outcome is what shipped:
+> validate_plugin.py 2,894 → **1,773** (predicted ~1,200), statusline.sh
+> 450 → **237**, ops-stop-hook.sh 364 → **171**, ops-compress.mjs 470 → **358**,
+> ops-backlog.sh 131 → **49**. Step 6's product call resolved as: corpus DELETE,
+> arm gate DELETE, claims KEEP. The shipped tree finished at **7,852 lines**
+> against the ~7,600 this plan projected before step 6.
+
 **Premise.** We are building software, not defending a codebase against its own
 development process. Measured on this branch: 11,371 shipped lines, of which
 the product a user touches — charter, gate, workflows, tiers — is ~3,000. The
