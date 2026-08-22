@@ -236,11 +236,21 @@ statusline, its segment must show this session's pending count (a mirror of the
 mine/foreign partition, not a count of `pending/`).
 
 Foreign-sentinel half: `ops-task.sh foreign-probe --owner OTHER-SESSION`, then
-attempt Stop again. Expected stderr names the task, its owner and its open time —
+attempt Stop again. Expected stderr names the task and its owner —
 `operator: 1 pending verdict(s) owned by another session (foreign-probe owned by
-OTHER-SESSION, opened <ISO-8601>) — not blocking.` — reported, and the blocking
+OTHER-SESSION) — not blocking.` — reported, and the blocking
 line for your own task still follows it. Close it: `ops-verdict.sh foreign-probe
 --defer "replay probe" --owner OTHER-SESSION`.
+
+There is **no open-time in that line, and its absence is the design**. Until
+0.8.4 the readers parsed the sentinel BODY, so `sentinel_owner` could return
+`"<owner>|<opened_at>"` in one bounded pass and the report carried a timestamp.
+0.9.0 (#76 step 1) moved ownership into the FILENAME — `pending/<sid>__<task>` —
+and the readers stopped opening the body at all, which is what makes them
+builtin-only and what closed the `session_id: EVIL` smuggling class. The open
+time went with the body read. A replayer who sees no `opened <ISO-8601>` is
+looking at a correct 0.9.0+ hook; this expectation was stale prose until the
+fourth run (2026-08-22) executed the phase and caught it.
 
 R2a proves the *script's* answer; R2b is what proves the harness honors it. Both
 are required — the charter's claim is about the pair, and R2a alone is the
