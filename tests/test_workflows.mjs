@@ -1176,5 +1176,148 @@ ok(dDead?.dead === true && /agent died/.test(dDead?.error ?? ""),
 ok(dDead?.result === undefined,
   "dispatch: a dead agent carries no `result` key a caller could read as output");
 
+// ── brainstorm: fan-out shape + the dead-agent paths ────────────────────────
+// Until the 2026-08-22 replay, brainstorm had ONE case (tier validation). Its
+// fan-out and its two dead-agent guards — the class F31/F32 exists for — had no
+// coverage at all: a laundered death here returns a bundle that reads complete.
+console.log("-- Case: brainstorm.js fan-out shape and dead-agent guards");
+
+const BS_DIR = { stance: "s", sketch: "k", tradeoffs: [], yagnis: "y" };
+const BS_BLIND = { findings: ["existing thing at a.js:1"] };
+const BS_BUNDLE = { ranked: [], sharedConstraints: [], openQuestions: ["q?"] };
+// Label-keyed returns: directions are labelled per-direction, so match loosely.
+// makeRuntime indexes this map by the agent's `label` (test_workflows.mjs:44),
+// so direction seats need their real labels — `direction <i>/<n>` — enumerated.
+const bsReturns = (n, over = {}) => {
+  const m = { blindspots: BS_BLIND, references: "ref text", converge: BS_BUNDLE, ...over };
+  for (let i = 1; i <= n; i++) m[`direction ${i}/${n}`] = over.direction ?? BS_DIR;
+  return m;
+};
+
+// Happy path: every lens returns, the bundle ships with the divergent work attached.
+const { result: bsOk, rt: bsOkRt } = await run(WF("brainstorm.js"),
+  { topic: "t", context: "c", directions: 3 }, bsReturns(3));
+ok(bsOk?.bundle != null && bsOk?.error === undefined,
+  "brainstorm: a complete run returns a bundle and no error");
+ok(Array.isArray(bsOk?.directions) && bsOk.directions.length === 3,
+  "brainstorm: args.directions=3 dispatches exactly 3 direction seats");
+ok(bsOk?.blindspots?.length === 1,
+  "brainstorm: the blindspot scan's findings reach the returned bundle");
+// The log is the only channel the operator has for what the fan-out actually did.
+ok(bsOkRt.logs.some((m) => /3 directions/.test(m) && /1 blindspots/.test(m)),
+  "brainstorm: diverge LOGS the direction/blindspot counts it actually got");
+// Direction seats must be the brainstorm seat, not a judgment seat: this is the
+// cheap-generation half of the design, and a mis-seated fan-out silently costs
+// judgment-tier spend per direction.
+const bsDirCalls = bsOkRt.calls.filter((c) => !["blindspots", "references", "converge"].includes(c.label));
+ok(bsDirCalls.length === 3 && bsDirCalls.every((c) => c.model === "haiku"),
+  "brainstorm: direction seats run on the cheap tier, converge does not");
+ok(bsOkRt.calls.find((c) => c.label === "converge")?.model === "opus",
+  "brainstorm: converge is the ONE judgment-tier dispatch");
+
+// A dead blindspots agent is byte-identical to "no blindspots found" if
+// laundered — the exact F31/F32 class. It must surface as an error and keep the
+// directions, not ship a bundle whose scan silently never ran.
+// Wrapped: removing the null guard makes the workflow THROW on
+// `blindspotsRaw.findings` rather than return, and an uncaught throw kills the
+// whole suite — the regression is caught either way, but a crash hides WHICH
+// case caught it. Convert the throw into this case's own failure.
+let bsNoBlind = null, bsNoBlindRt = { calls: [] };
+try {
+  ({ result: bsNoBlind, rt: bsNoBlindRt } = await run(WF("brainstorm.js"),
+    { topic: "t", context: "c", directions: 2 }, bsReturns(2, { blindspots: null })));
+} catch (e) {
+  ok(false, `brainstorm: a dead blindspot scan must RETURN an error, not throw (${e?.message ?? e})`);
+  bsNoBlindRt = e?.rt ?? bsNoBlindRt;
+}
+ok(/blindspots agent died/.test(bsNoBlind?.error ?? ""),
+  "brainstorm: a dead blindspot scan is reported, never laundered into an empty scan");
+ok(bsNoBlind?.bundle === undefined && bsNoBlind?.directions?.length === 2,
+  "brainstorm: the dead-blindspot return keeps the directions and ships NO bundle");
+ok(bsNoBlindRt.calls.every((c) => c.label !== "converge"),
+  "brainstorm: it does not pay for converge after the blindspot scan died");
+
+// A dead converge must keep the divergent work — it was paid for and is intact.
+let bsNoConv = null;
+try {
+  ({ result: bsNoConv } = await run(WF("brainstorm.js"),
+    { topic: "t", context: "c", directions: 2 }, bsReturns(2, { converge: null })));
+} catch (e) {
+  ok(false, `brainstorm: a dead converge must RETURN an error, not throw (${e?.message ?? e})`);
+}
+ok(/converge agent died/.test(bsNoConv?.error ?? "") && /do not re-diverge/.test(bsNoConv?.error ?? ""),
+  "brainstorm: a dead converge is reported AND says not to re-diverge");
+ok(bsNoConv?.directions?.length === 2 && bsNoConv?.blindspots?.length === 1,
+  "brainstorm: the dead-converge return preserves directions and blindspots");
+
+// args.noReferences must actually skip the lens, not merely drop its output.
+const { rt: bsNoRefRt } = await run(WF("brainstorm.js"),
+  { topic: "t", context: "c", directions: 2, noReferences: true }, bsReturns(2));
+ok(bsNoRefRt.calls.every((c) => c.label !== "references"),
+  "brainstorm: args.noReferences SKIPS the reference dispatch, not just its result");
+
+// ── crawl: shard hygiene, fan-out accounting, dead merge ────────────────────
+// crawl also had ONE case. Its shard filter and its digest accounting are what
+// stop a partial crawl from reading as a complete one.
+console.log("-- Case: crawl.js shard hygiene, digest accounting, dead merge");
+
+const CR_DIGEST = (i) => ({ shard: [`p${i}`], findings: [{ fact: `f${i}`, inferred: false }], gaps: [] });
+const CR_MERGED = { findings: [{ fact: "merged", inferred: false }], gaps: [] };
+const crReturns = (n, over = {}) => {
+  const m = { merge: CR_MERGED, ...over };
+  for (let i = 1; i <= n; i++) m[`shard ${i}/${n}`] = CR_DIGEST(i);
+  return m;
+};
+
+const { result: crOk, rt: crOkRt } = await run(WF("crawl.js"),
+  { question: "q", shards: [{ paths: ["a"] }, { paths: ["b"] }] }, crReturns(2));
+ok(crOk?.shardsRequested === 2 && crOk?.shardsReturned === 2,
+  "crawl: a complete run reports requested == returned");
+ok(crOkRt.calls.filter((c) => /^shard /.test(c.label)).every((c) => c.model === "haiku"),
+  "crawl: shard seats run on the cheap tier");
+ok(crOkRt.calls.find((c) => c.label === "merge")?.model === "opus",
+  "crawl: the merge is the ONE judgment-tier dispatch");
+
+// Malformed shards must be DROPPED AND COUNTED. Silently dropping them makes a
+// half-read corpus indistinguishable from a fully-read one.
+const { result: crDrop, rt: crDropRt } = await run(WF("crawl.js"),
+  { question: "q", shards: [{ paths: ["a"] }, { paths: [] }, {}, "nope"] }, crReturns(1));
+ok(crDropRt.logs.some((m) => /dropped 3 malformed\/empty shard/.test(m)),
+  "crawl: malformed and empty shards are dropped AND the count is logged");
+ok(crDrop?.shardsRequested === 1,
+  "crawl: shardsRequested counts the shards it actually crawled, not what was passed");
+
+// No usable shards at all is an error, not an empty-but-successful crawl.
+const { result: crNone } = await run(WF("crawl.js"),
+  { question: "q", shards: [{}, "x"] }, crReturns(0));
+ok(/no shards to crawl/.test(crNone?.error ?? ""),
+  "crawl: zero usable shards returns an error naming args.shards");
+
+// A partial fan-out must be visible in the counts — this is the number an
+// operator banks a conclusion on.
+const { result: crPartial, rt: crPartialRt } = await run(WF("crawl.js"),
+  { question: "q", shards: [{ paths: ["a"] }, { paths: ["b"] }] },
+  { "shard 1/2": CR_DIGEST(1), merge: CR_MERGED });  // shard 2/2 absent → dead
+ok(crPartial?.shardsRequested === 2 && crPartial?.shardsReturned === 1,
+  "crawl: a dead shard shows as returned < requested, never silently equal");
+ok(crPartialRt.logs.some((m) => /1\/2 shard digests returned/.test(m)),
+  "crawl: the shard-return ratio is LOGGED (F31 dead-lens accounting)");
+
+// A dead merge must not read as a clean-empty crawl after every shard was paid for.
+// Same wrapping, same reason: without the guard, `merged.findings` throws.
+let crNoMerge = null;
+try {
+  ({ result: crNoMerge } = await run(WF("crawl.js"),
+    { question: "q", shards: [{ paths: ["a"] }] }, crReturns(1, { merge: null })));
+} catch (e) {
+  ok(false, `crawl: a dead merge must RETURN an error, not throw (${e?.message ?? e})`);
+}
+ok(/merge agent died/.test(crNoMerge?.error ?? "") && /do not re-crawl/.test(crNoMerge?.error ?? ""),
+  "crawl: a dead merge is reported AND says not to re-crawl");
+ok(Array.isArray(crNoMerge?.digests) && crNoMerge.digests.length === 1,
+  "crawl: the dead-merge return hands back the un-merged digests it paid for");
+ok(crNoMerge?.findings === undefined,
+  "crawl: a dead merge ships NO findings key a caller could read as an empty result");
+
 console.log(`\n== summary: ${pass} passed, ${fail} failed ==`);
 if (fail > 0) process.exit(1);

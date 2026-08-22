@@ -3342,6 +3342,63 @@ check "#68 ops-adopt names ITSELF in the ceiling message, not its sibling" \
 rm -f "$ADERR"; rm -rf "$P"
 
 ########################################################################
+echo "-- Case: /cc-operator:start scaffolds and points CLAUDE.md at the charter"
+# start.md had NO direct coverage until the 2026-08-22 replay measured it: the command's contract is that its
+# allowed-tools can actually run the steps it prescribes, and that its grep-guard shape makes step 3 idempotent.
+# The scaffolding itself is ops-init.sh's (covered above); what is asserted here is the WRAPPER's own promises.
+SCMD="$REPO/commands/start.md"
+check "commands/start.md exists" "$([ -f "$SCMD" ] && echo 0 || echo 1)"
+# Step 1 runs `bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-init.sh"`; a bare scripts/ path resolves only inside this
+# repo (the v0.2.0 bug), and without Bash(bash:*) the command cannot run its own step 1.
+check "start.md invokes ops-init.sh through CLAUDE_PLUGIN_ROOT" \
+  "$(grep -q 'CLAUDE_PLUGIN_ROOT}/scripts/ops-init.sh' "$SCMD" && echo 0 || echo 1)"
+check "start.md's allowed-tools grants the bash it prescribes" \
+  "$(grep -q 'allowed-tools:.*Bash(bash:\*)' "$SCMD" && echo 0 || echo 1)"
+# Step 2 says to use Read+Write and states cp is NOT granted. If Write were missing the step is unrunnable; if the
+# prose stopped saying so a maintainer would reach for cp and hit a permission wall mid-engagement.
+check "start.md grants Write for materializing the charter" \
+  "$(grep -q 'allowed-tools:.*Write' "$SCMD" && echo 0 || echo 1)"
+# Step 3's idempotence rests on a grep-guard. The guard token and the stanza it guards must be the SAME string, or
+# a re-run appends a second copy of the import — the failure the guard exists to prevent.
+check "start.md guards the CLAUDE.md import on the token it appends" \
+  "$(grep -q '@OPERATOR.md' "$SCMD" && grep -q 'Grep-guard' "$SCMD" && echo 0 || echo 1)"
+# The --inline branch guards on a DIFFERENT token (the heading), because the inlined body contains no @import line.
+check "start.md's --inline branch guards on the ## Operator heading" \
+  "$(grep -q 'Grep-guard on the `## Operator` heading' "$SCMD" && echo 0 || echo 1)"
+
+########################################################################
+echo "-- Case: /cc-operator:handoff carries the six-section contract and clears the deviation gate"
+# handoff.md had NO direct coverage until the 2026-08-22 replay. Two things must hold: the six sections it names
+# must be the six OPERATOR.md defines (the command is the only place a session reads them from), and the
+# deviation-gate release must stay wired to --mark-handoff. A handoff command that stopped naming --mark-handoff
+# leaves every session blocked at Stop with no reachable instruction for clearing it.
+HCMD="$REPO/commands/handoff.md"
+check "commands/handoff.md exists" "$([ -f "$HCMD" ] && echo 0 || echo 1)"
+for _sec in Verdict Banked "Unverified" "Conditional next steps" "Stop conditions" "Not-doing"; do
+  check "handoff.md names section '$_sec'" \
+    "$(grep -qi -- "$_sec" "$HCMD" && echo 0 || echo 1)"
+done
+# Exactly six numbered sections — an added seventh silently diverges from OPERATOR.md § HANDOFF.
+HSECN="$(grep -c '^[0-9]\+\. \*\*' "$HCMD")"
+check "handoff.md numbers exactly six sections" \
+  "$([ "$HSECN" -eq 6 ] && echo 0 || echo 1)"
+check "handoff.md routes the deviation-gate release through --mark-handoff" \
+  "$(grep -q 'ops-verdict.sh --mark-handoff' "$HCMD" && echo 0 || echo 1)"
+check "handoff.md's allowed-tools grants the ops-verdict.sh it prescribes" \
+  "$(grep -q 'allowed-tools:.*ops-verdict.sh' "$HCMD" && echo 0 || echo 1)"
+# The charter is the source of the section list; if OPERATOR.md's HANDOFF section lost a name the command would be
+# teaching a shape the charter no longer defines (the HANDOUT_PACKET_SPINE lesson: parity passes when the ORIGINAL
+# is what lost the field, so assert against the charter directly).
+CHARTER_H="$REPO/templates/OPERATOR.md"
+for _sec in Banked "Stop conditions" "Not-doing"; do
+  check "OPERATOR.md HANDOFF still defines '$_sec'" \
+    "$(grep -qi -- "$_sec" "$CHARTER_H" && echo 0 || echo 1)"
+done
+# --mark-handoff must exist in the CLI the command tells the operator to run, or the instruction is a dead end.
+check "ops-verdict.sh actually implements --mark-handoff" \
+  "$(grep -q -- '--mark-handoff' "$SCRIPTS/ops-verdict.sh" && echo 0 || echo 1)"
+
+########################################################################
 # The measurement corpora (#24 security, #70 drift, #58 plan-align) were removed in 0.10 (docs/DEBLOAT-0.10.md
 # step 5); they live in git history (tree <= 0.9.0) and the maintainer's local .archive/dev/. ops-corpus.sh
 # followed in step 6 (decision: DELETE).
