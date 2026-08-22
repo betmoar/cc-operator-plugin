@@ -99,24 +99,10 @@ def shell_code(path):
 def _function_body(code, fn):
     """The lines of shell function `fn`, or None if it cannot be located.
 
-    Returns None rather than "" so a caller can REPORT an unlocatable function
-    instead of silently pinning nothing — the failure mode `check_source_stamp`
-    and `check_install_set_parity` were both bitten by.
-
-    Brace-counting, not a shell parser: these are our own files, written in one
-    style (`name() {` … a closing brace at the function's own indent). A guard
-    hidden in a construct this cannot follow is a guard nobody can review.
-
-    KNOWN LIMIT, recorded because it fails toward None and None is REPORTED, not
-    skipped: a K&R head (`name()` with `{` on the next line) does not match the
-    locator regex. No function in scripts/*.sh is written that way — verified by
-    grep — so this is unexercised, not live. The first one written will fail the
-    build with "cannot locate", which is the correct direction: a security pin
-    that cannot find its target must say so, never quietly pin nothing. Widen
-    the regex then; do not make the caller tolerate None.
-
-    An unbalanced `{` inside a string truncates the body early. Also the safe
-    direction — a short body fails the literal search and reports.
+    None (never "") so the caller REPORTS an unlocatable function instead of
+    silently pinning nothing. Brace-counting in our one house style; a K&R
+    head or an unbalanced `{` in a string fails toward None → reported. Widen
+    the locator then; do not make the caller tolerate None.
     """
     lines = code.splitlines()
     for i, ln in enumerate(lines):
@@ -389,20 +375,12 @@ def check_handout_packet(root, problems):
                     f"{rel}: the dispatch packet is missing {token!r} — {note}")
 
 
-# The source-state stamp (U10/#22): every row's evidence cell ends with the
-# tree that produced it. Pinned here because an UNSTAMPED row looks exactly
-# like a stamped one until audited — no runtime consumer would announce a
-# regression. The bash S1 cases are the only other thing standing on this.
-# Properties three and four are F30 (declared-but-not-applied) and #21 (a marker
-# that can never be off is not a marker):
-#   1. every marker the resolver can emit is present in CODE, not just prose;
-#   2. the row printf still builds FOUR cells, with the stamp inside cell 3 —
-#      a fifth cell would break every ledger and grep in the field;
-#   3. the resolved value is APPLIED at the row site;
-#   4. `.operator/` is excluded from the dirty test, or every row everywhere
-#      stamps +dirty and the marker stops distinguishing anything.
-# Plus the ordering the PLAYBOOK's "touching the lock" step 3 demands: git work
-# is resolved BEFORE lock_acquire, never inside the critical section.
+# The source-state stamp (U10/#22) — an unstamped row looks stamped until
+# audited. Pins: markers in CODE; the row printf keeps FOUR cells with the
+# stamp inside cell 3 (a fifth breaks every ledger and grep in the field);
+# the value APPLIED at the row site (F30); .operator/ excluded from the dirty
+# test (#21: a marker that cannot be off marks nothing); git resolved BEFORE
+# lock_acquire (PLAYBOOK).
 STAMP_MARKERS = ("no-vcs", "no-commit", "+dirty", "+unknown")
 STAMP_ROW_FORMAT = "'| %s | %s | %s @%s | %s |'"
 STAMP_DIRTY_EXCLUDE = "':(exclude).operator'"
@@ -1179,19 +1157,9 @@ def check_gitignore_parity(root, problems):
 def check_lock_parity(root, problems):
     """ops-verdict.sh and ops-adopt.sh must carry the SAME lock implementation.
 
-    They contend on the same `.operator/.lock`, so a divergence is not a style
-    problem — it is two different ideas of mutual exclusion, and the failure it
-    produces (two writers inside the critical section) is invisible until it
-    corrupts the ledger of record.
-
-    "Keep the two implementations identical" was prose in CLAUDE.md and in both
-    files' comments for the whole 0.4.0 cycle. Prose cannot hold a coupling: the
-    same instruction is what `check_reader_bounds` was written to replace after a
-    byte bound reached one reader of four. This compares the marked block byte
-    for byte, normalizing only the tool name in warning messages.
-
-    The bash suite asserts this too, but it takes ~4 minutes to reach; the point
-    of a build gate is that a maintainer editing one file learns immediately.
+    Both contend on `.operator/.lock`: a divergence is two different ideas of
+    mutual exclusion, invisible until it corrupts the ledger. Byte-for-byte on
+    the marked block, normalizing only the tool name in messages.
     """
     blocks = {}
     for name in ("ops-verdict.sh", "ops-adopt.sh"):
@@ -1279,11 +1247,8 @@ def check_resolver_renderer_parity(root, problems):
                     f"but agreeing on a guard that checks nothing is how a "
                     f"parity check passes while the guard is gone")
 
-    # The LENS_NAMESPACES allowlist lived here until 0.8.3: a hand-held list of
-    # facts about ANOTHER system, measured wrong against a live catalogue of
-    # 409 ids (it refused 8 that route). Deleted with the allowlist. A future
-    # guard needing cc-proxy facts should ASK cc-proxy — do not
-    # re-copy its table into this repo, where nothing can keep it honest.
+    # (LENS_NAMESPACES deleted 0.8.3 — a copied cc-proxy fact table nothing
+    # here can keep honest. A future guard needing proxy facts asks the proxy.)
 
     names = {}
     for name, text in src.items():
@@ -1342,19 +1307,9 @@ def check_workflows(root, problems):
         code = "\n".join(ln for ln in code.split("\n")
                          if not ln.lstrip().startswith("//"))
 
-        # (b) meta is the first statement. The harness requires `export const
-        # meta = {…}` as the first statement and a pure literal — a computed
-        # meta is rejected at launch. Check the anchor, not the object body (the
-        # runtime validates phases/whenToUse).
-        #
-        # …and the literal must not be COMPUTED. `whenToUse: "a" + "b"` is a
-        # concatenation expression, not a literal, and the harness rejects a
-        # computed meta AT LAUNCH — the workflow simply does not run, which no
-        # suite here would notice because none of them launches one. plan.js
-        # briefly shipped this while documenting its new required args, and it
-        # was the only workflow of five to do so; a review flagged it as
-        # unverifiable from inside the repo, which is exactly why it needs a pin
-        # rather than a convention.
+        # (b) meta: first statement, PURE literal. A concatenation inside it
+        # is rejected by the harness AT LAUNCH — the workflow silently never
+        # runs, and no suite here launches one (plan.js shipped this once).
         meta_block = re.search(r"export const meta\s*=\s*\{.*?\n\};", text, re.S)
         if meta_block and re.search(r'"\s*\+|\+\s*"', meta_block.group(0)):
             problems.append(
@@ -1362,11 +1317,8 @@ def check_workflows(root, problems):
                 f"requires a PURE LITERAL and rejects a computed meta at launch, so "
                 f"the workflow would fail to run with every gate here green")
 
-        # No `node --check` (too lenient: exit 0 on redeclared consts and
-        # unclosed parens — a gate passing 90% of real syntax errors trains
-        # ignore). Real syntax errors surface at launch; the contracts below
-        # are what the build can
-        # actually enforce.
+        # no `node --check`: too lenient (exit 0 on redeclared consts);
+        # real syntax errors surface at launch
         body = text.lstrip()
         if not body.startswith("export const meta ="):
             problems.append(
@@ -1424,11 +1376,8 @@ def check_workflows(root, problems):
 # possible, and byte-parity is the only thing holding the copies together —
 # the same lesson check_lock_parity enforces for the bash lock. DEFAULT_TIERS
 # is excluded (each workflow declares only what it uses), so it is NOT a
-# parity invariant. BAD_CHARSET IS — it defines what "valid charset" means, and
-# a divergence between two workflows' copies is a silent disagreement about
-# which ids are well-formed.
-# ROUTABLE was dropped from this tuple in 0.8.3 along with the guard itself
-# (see check_workflows (c)); BAD_CHARSET is what remains to hold in parity.
+# parity invariant. BAD_CHARSET IS — a divergence between copies is a silent
+# disagreement about which ids are well-formed. (ROUTABLE dropped 0.8.3.)
 WORKFLOW_PARITY_CONSTS = ("BAD_CHARSET",)
 
 
