@@ -16,11 +16,11 @@ commands/{start,handoff,tiers}.md # slash commands (trigger-only frontmatter des
 agents/*.md                       # tier-aliased delegation roles (author/mechanic/reviewer/scout/verifier/crawler/brainstorm)
 workflows/*.js                    # orchestration primitives (review/plan/brainstorm/crawl/dispatch)
 skills/chief-operator/SKILL.md    # thin router (front door only — nothing load-bearing)
-scripts/ops-*.sh                  # the evidence-gate mechanism, the tier resolver/renderer, the corpus builder
+scripts/ops-*.sh                  # the evidence-gate mechanism, the tier resolver/renderer
 scripts/ops-compress.mjs          # the PostToolUse output compressor
 scripts/validate_plugin.py        # contract linter — run before every PR
 scripts/release_gate.py           # release-tag coupling gate
-hooks/hooks.json                  # SessionStart + Stop + PreToolUse (arm gate) + PostToolUse (compressor)
+hooks/hooks.json                  # SessionStart + Stop + PostToolUse (compressor)
 tests/                            # bash + stdlib Python + node suites
 ```
 

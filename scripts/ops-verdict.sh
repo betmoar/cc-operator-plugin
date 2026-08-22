@@ -615,7 +615,7 @@ if [ "${2:-}" = "--defer" ]; then
   printf '%s | %s | DEFERRED-VERDICT | %s | deferred via ops-verdict.sh --defer\n' \
     "$(date +%F)" "$ID" "$REASON" >> "$DECISIONS"
   if [ "$RETRO_STATE" = "never-armed" ]; then
-    printf '%s | %s | GATE-EXCEPTION | [sid:%s] defer of %s recorded without an open sentinel — the arm gate was not used | never-armed via ops-verdict.sh --defer\n' \
+    printf '%s | %s | GATE-EXCEPTION | [sid:%s] defer of %s recorded without an open sentinel — no task was opened | never-armed via ops-verdict.sh --defer\n' \
       "$(date +%F)" "$ID" "${OWNER:-$SOWNER}" "$ID" >> "$DECISIONS"
   fi
   clear_sentinel
@@ -653,7 +653,7 @@ ROW="$(printf '| %s | %s | %s @%s | %s |' "$ID" "$CRITERION" "$EVIDENCE" "$SOURC
 # 2. fragment (repairable by --reconcile); 3. ledger row (un-repairable, so
 # last); 4. sentinel clear (any failure above leaves the task OPEN).
 if [ "$RETRO_STATE" = "never-armed" ]; then
-  printf '%s | %s | GATE-EXCEPTION | [sid:%s] verdict %s recorded without an open sentinel — the arm gate was not used | never-armed via ops-verdict.sh\n' \
+  printf '%s | %s | GATE-EXCEPTION | [sid:%s] verdict %s recorded without an open sentinel — no task was opened | never-armed via ops-verdict.sh\n' \
     "$(date +%F)" "$ID" "${OWNER:-$SOWNER}" "$ID" >> "$DECISIONS"
 fi
 # Fragment BEFORE the ledger: that direction is the --reconcile-repairable one.

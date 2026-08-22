@@ -172,9 +172,6 @@ def make_good_tree(root):
                 "type": "command",
                 "command": 'node "${CLAUDE_PLUGIN_ROOT}/scripts/ops-compress.mjs"',
             }]}],
-            # The G2 arm gate. `Bash` must NEVER appear in this matcher —
-            # check_armgate pins the set exactly (gating Bash deadlocks the
-            # repair path, since ops-task.sh is itself a Bash call).
         }
     }))
     write(root / ".claude-plugin" / "statusline.json", json.dumps({
@@ -187,10 +184,9 @@ def make_good_tree(root):
                     "!.gitignore\n!.gitattributes\n"
                     "!VERDICTS.md\n!DECISIONS.md\n!tiers.env\n"
                     "!verdicts.d/\n!verdicts.d/*.md\n"
-                    # Evidence and policy, not machine state (#30/#31): the
-                    # handoff is what the charter's HANDOFF section produces,
-                    # and armgate.on is the project's committable opt-in.
-                    "!handoff-*.md\n!armgate.on\n")
+                    # Evidence, not machine state (#30): the handoff is what
+                    # the charter's HANDOFF section produces.
+                    "!handoff-*.md\n")
     # Both writers must DETECT a v1 file as well as emit the v2 body, and must
     # refuse to overwrite it without a backup they verified. Emitting alone used
     # to satisfy the check; a stub that only emits would now (correctly) fail.

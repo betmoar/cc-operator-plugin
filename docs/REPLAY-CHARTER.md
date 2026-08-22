@@ -477,7 +477,8 @@ having. Scorecard by stamp: 10 PASS, 1 FAIL, 0 human-verified, 0 deferred,
 **The FAIL is R7 and it is the point of the phase.** The adversarial seat
 returned REFUTED and it was right twice over: it refuted on F-A1 (an
 uncommitted fixture edit, which it *demonstrated* changes the stamp
-`ops-corpus.sh` produces rather than merely reporting the tree dirty), and it
+`ops-corpus.sh` — since deleted in 0.10 step 6 — produces rather than merely
+reporting the tree dirty), and it
 found two live defects in `corpus_hash` — code this repo had shipped one day
 earlier as the fix for the plausible-hash class:
 

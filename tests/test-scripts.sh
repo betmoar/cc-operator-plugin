@@ -4364,9 +4364,8 @@ rm -f "$ADERR"; rm -rf "$P"
 # removed from the shipped tree in 0.10 (docs/DEBLOAT-0.10.md step 5):
 # decided questions, ~350KB of fixtures, and the bash cases that pinned
 # them as instruments. They live in the git history (tree <= 0.9.0) and
-# the maintainer's local .archive/dev/. ops-corpus.sh itself stays pending
-# the step-6 decision (keep / lab plugin / delete) and keeps its bash -n
-# via validate_plugin.check_scripts.
+# the maintainer's local .archive/dev/. ops-corpus.sh followed in step 6
+# (decision: DELETE).
 ########################################################################
 if [ "$FAIL" -ne 0 ]; then
   echo "== failed cases =="

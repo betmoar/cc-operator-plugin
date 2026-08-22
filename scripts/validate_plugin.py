@@ -86,7 +86,7 @@ def shell_code(path):
     Pins asserting "this guard exists" must search THIS, never `read_text()`:
     a raw-text search is satisfied by the guard's own comment, and deleting the
     guard while keeping the comment (the realistic regression) stays green —
-    measured on the F1 `*.exempt` pin with BOTH gates silent. Whole-line only:
+    measured with BOTH gates silent (F1). Whole-line only:
     a trailing-comment stripper would need shell quoting, and `case` arms
     legitimately contain `#` — so a pinned literal must never sit in a trailing
     comment. GuardParityVacuityTest mutation-tests every pin.
@@ -687,11 +687,9 @@ def check_permission_guards(root, problems):
     for path in sorted((root / "scripts").glob("*.sh")):
         code = [ln for ln in path.read_text(encoding="utf-8").splitlines()
                 if not ln.lstrip().startswith("#")]
-        # OCCURRENCES, not lines. A line-based count makes the pin depend on
-        # formatting: the two halves of the unusable-.armed guard read as 2 when
-        # the condition wraps across lines and 1 when it does not, so a reflow
-        # would fail the build and a fixture written on one line would silently
-        # under-report. Measured both ways while writing this.
+        # OCCURRENCES, not lines: a line-based count depends on formatting —
+        # a guard whose condition wraps across lines would double-count, and a
+        # reflow would flip the pin. Measured both ways while writing this.
         n = sum(len(pat.findall(ln)) for ln in code)
         allowed = ALLOWED.get(path.name, 0)
         if n > allowed:
@@ -851,8 +849,7 @@ def check_guard_parity(root, problems):
                 "session id makes its task permanently non-blocking")
     # The -L symlink rejection: the opener plus every sentinel reader (`-f`
     # follows a planted symlink; F65/F66). The Stop hook's pending/ enumeration
-    # lives in lib/partition.sh since 0.10, so its obligation moved there.' owners (F65/F66, code-review of f4cae1a 2026-08-04).
-    # `-f` follows symlinks; a symlink is never a sentinel our CLIs wrote.
+    # lives in lib/partition.sh since 0.10, so its obligation moved there.
     for name in ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh",
                  "statusline.sh", "lib/partition.sh"):
         p = root / "scripts" / name
