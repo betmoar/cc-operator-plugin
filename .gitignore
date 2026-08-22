@@ -19,12 +19,6 @@ __pycache__/
 .reload/
 .remember/
 
-# Audit resume-state (mode, phase cursor, append-only event log). Scaffolding for
-# a run in progress, not product — same rule as the build ledgers removed in
-# 0.3.0. The audit's OUTPUT ships under docs/audit-*.
-/AUDIT_STATE.md
-/AUDIT_LOG.md
-
 # Review-panel run reports (lens breakdown, finding counts, scoring). Same rule:
 # HOW a doc got reviewed is scaffolding; WHY the code is shaped that way belongs
 # in the doc itself. One was committed in 14d6ca9 and removed for 0.4.0.
