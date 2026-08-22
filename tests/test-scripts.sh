@@ -3400,6 +3400,43 @@ check "ops-verdict.sh actually implements --mark-handoff" \
   "$(grep -q -- '--mark-handoff' "$SCRIPTS/ops-verdict.sh" && echo 0 || echo 1)"
 
 ########################################################################
+echo "-- Case: skills/chief-operator/SKILL.md — the front door resolves"
+# #80: until 0.10 nothing read skills/ at all — not the validator, not this suite — so a rename following
+# CLAUDE.md's own coupling row ("update the /cc-operator: command refs in OPERATOR.md + SKILL.md") was caught
+# everywhere EXCEPT the file the row names. Measured 2026-08-22: retyping the ref to a nonexistent plugin
+# shipped green. The skill is deliberately not load-bearing; that is a reason to keep it cheap, not unchecked.
+PLUGIN_NAME="$(sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$REPO/.claude-plugin/plugin.json" | head -1)"
+SKILL="$REPO/skills/chief-operator/SKILL.md"
+check "skills/chief-operator/SKILL.md exists" "$([ -f "$SKILL" ] && echo 0 || echo 1)"
+# A skill whose frontmatter `name` disagrees with its directory does not register, and the failure is silent.
+SKILL_NAME="$(sed -n 's/^name:[[:space:]]*//p' "$SKILL" | head -1)"
+check "SKILL.md frontmatter name matches its directory" \
+  "$([ "$SKILL_NAME" = "chief-operator" ] && echo 0 || echo 1)"
+check "SKILL.md carries a description (the trigger text)" \
+  "$(grep -q '^description:[[:space:]]*[^[:space:]]' "$SKILL" && echo 0 || echo 1)"
+# THE ONE THAT CATCHES #80's MEASUREMENT: every /cc-operator:<cmd> the skill names must be a command that
+# ships. This generalizes past a plugin rename to a command deleted or renamed out from under the front door.
+# Scanned as /<plugin>:<cmd>, NOT as /cc-operator:<cmd>. A pattern anchored on the plugin name is blind to a
+# rename of the plugin half — which is the half CLAUDE.md's coupling row is about, and the exact mutation that
+# first shipped green against this very case (2026-08-22). Both halves are checked, so either drift is caught.
+SKILL_REF_BAD=0
+for _ref in $(grep -o '/[a-z][a-z0-9-]*:[a-z-]*' "$SKILL" | sort -u); do
+  _plug="${_ref%%:*}"; _plug="${_plug#/}"
+  _cmd="${_ref##*:}"
+  if [ "$_plug" != "$PLUGIN_NAME" ]; then
+    SKILL_REF_BAD=1; echo "     (wrong plugin: $_ref — this plugin is $PLUGIN_NAME)"
+  elif [ ! -f "$REPO/commands/$_cmd.md" ]; then
+    SKILL_REF_BAD=1; echo "     (unresolvable command: $_ref)"
+  fi
+done
+check "every slash-command ref in SKILL.md names this plugin and a command that exists" \
+  "$([ "$SKILL_REF_BAD" -eq 0 ] && echo 0 || echo 1)"
+# The skill must keep disclaiming authority: its whole safety property is that nothing load-bearing lives here,
+# because skill activation is unreliable. If that sentence goes, the next editor has no reason not to add rules.
+check "SKILL.md still points at the materialized charter as the authority" \
+  "$(grep -q 'OPERATOR.md' "$SKILL" && echo 0 || echo 1)"
+
+########################################################################
 # The measurement corpora (#24 security, #70 drift, #58 plan-align) were removed in 0.10 (docs/DEBLOAT-0.10.md
 # step 5); they live in git history (tree <= 0.9.0) and the maintainer's local .archive/dev/. ops-corpus.sh
 # followed in step 6 (decision: DELETE).
