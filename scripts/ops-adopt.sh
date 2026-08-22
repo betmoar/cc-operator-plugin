@@ -257,9 +257,6 @@ check_owner_name() { # check_owner_name <value>
   check_bare_name "owner" "$1"
   case "$1" in
     *[[:space:]]*) die "owner must not contain whitespace — it could never match a real session id, leaving the task permanently unblockable" ;;
-    # .armed/ is one flat namespace for <sid> (derived) and <sid>.exempt (G3
-    # grant) — an owner ending .exempt could forge or destroy a grant (#30).
-    *.exempt) die "owner must not end in '.exempt' — that suffix is reserved for G3 exemption markers in .armed/, and an owner carrying it would forge or destroy one" ;;
   esac
 }
 
@@ -320,7 +317,7 @@ for ID in ${IDS+"${IDS[@]}"}; do
   # F15: the previous owner is an untrusted NAME — a planted filename can
   # carry terminal escapes; our writers cannot produce these shapes.
   case "${PREV:-}" in
-    */* | .* | *"|"* | *[[:space:]]* | *[[:cntrl:]]* | *.exempt) PREV="<invalid>" ;;
+    */* | .* | *"|"* | *[[:space:]]* | *[[:cntrl:]]*) PREV="<invalid>" ;;
   esac
   DEST="$OPDIR/pending/${OWNER}__$ID"
 
@@ -334,12 +331,6 @@ for ID in ${IDS+"${IDS[@]}"}; do
     mv "$F" "$DEST"
   fi
   F="$DEST"
-
-  # --- arm marker (G2.1): after the rename, under the lock. Failure is
-  # swallowed — dying here would abort an adoption that already succeeded.
-  if mkdir -p "$OPDIR/.armed" 2>/dev/null; then
-    : > "$OPDIR/.armed/$OWNER" 2>/dev/null || true
-  fi
 
   echo "adopted $ID: ${PREV:-<unowned>} -> $OWNER"
 done

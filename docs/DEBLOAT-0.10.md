@@ -159,10 +159,15 @@ a target project).
 
 `ops-claims.sh` (523), `ops-armgate-hook.sh` (212) + the .armed/ machinery in
 three CLIs, and `ops-corpus.sh` (521) are complete features with real designs —
-and no evidence of field use. Options, for the human to pick per feature:
-keep / move to a `cc-operator-lab` plugin / delete with the git history as
-archive. This step is a decision, not a default: the plan takes no action
-without it.
+and no evidence of field use.
+
+**DECISION (2026-08-22, the maintainer): claims KEEP, armgate DELETE, corpus
+DELETE.** Executed same day: ops-corpus.sh and ops-armgate-hook.sh removed with
+their wiring (hooks.json PreToolUse entry, `.armed/` writes in task/adopt/
+verdict, `--exempt`/`--exempt-mark`/recompute_arm_marker, the `.exempt` reject
+arms, `armgate.on` allow-lines, check_armgate, the G2/G3 bash cases, R3 of the
+replay charter). The G1 retro-gate and the deviation gate (GATE-EXCEPTION/
+HANDOFF-MARK) stay — they are the core evidence gate, not the arm gate.
 
 ---
 

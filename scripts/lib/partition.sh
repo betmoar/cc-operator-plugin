@@ -17,14 +17,12 @@ sentinel_owner_of_name() { # <basename> → owner ("" when unowned or unwritable
     *) printf '\n'; return 0 ;;
   esac
   _o="${1%%__*}"
-  # The F1 reject set: our CLIs can never write these shapes (check_bare_name
-  # refuses them at construction), so a name carrying one was PLANTED — and the
-  # grant-suffix arm would let it pose as the owner of a G3 grant. Degrade to
-  # unowned, which blocks everyone: fails CLOSED, the safe direction.
-  # Literals live ONLY in the case below, never in prose: the vacuity test
-  # mutates raw text, and a comment repeating a pinned literal absorbs it.
+  # The F1 reject set ("" | */* | .* | *"|"* | *[[:space:]]*): our CLIs can
+  # never write these shapes (check_bare_name refuses them at construction),
+  # so a name carrying one was PLANTED. Degrade to unowned, which blocks
+  # everyone: fails CLOSED, the safe direction.
   case "$_o" in
-    "" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) printf '\n'; return 0 ;;
+    "" | */* | .* | *"|"* | *[[:space:]]*) printf '\n'; return 0 ;;
   esac
   printf '%s\n' "$_o"
 }

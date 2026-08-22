@@ -8,8 +8,6 @@
 #   Appends exactly one row and clears .operator/pending/<task-id>.
 # Defer:    ops-verdict.sh <task-id> --defer "<reason>" [--owner <sid>]
 #   Writes a DEFERRED-VERDICT line to DECISIONS.md and clears the sentinel.
-# Exempt:   ops-verdict.sh --exempt-mark "<reason>" --owner <sid>
-#   The ledger half of the G3 arm-gate exemption (called by ops-task.sh --exempt).
 # Reconcile: ops-verdict.sh --reconcile
 #   Appends rows present in .operator/verdicts.d/*.md but missing from
 #   VERDICTS.md. Repairs a merge; never regenerates (BAR blocks are hand-written).
@@ -81,9 +79,6 @@ check_owner_name() { # check_owner_name <value>
   check_bare_name "owner" "$1"
   case "$1" in
     *[[:space:]]*) die "owner must not contain whitespace — it could never match a real session id, leaving the task permanently unblockable" ;;
-    # .armed/ is one flat namespace for <sid> (derived) and <sid>.exempt (G3
-    # grant) — an owner ending .exempt could forge or destroy a grant (#30).
-    *.exempt) die "owner must not end in '.exempt' — that suffix is reserved for G3 exemption markers in .armed/, and an owner carrying it would forge or destroy one" ;;
   esac
 }
 
@@ -339,7 +334,7 @@ sentinel_owner_of_name() { # <basename> → owner ("" when unowned or unwritable
   # planted name to unowned (fails CLOSED). Literals live only in the case
   # below — a comment repeating a pinned literal absorbs the vacuity mutation.
   case "$_o" in
-    "" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) printf '\n'; return 0 ;;
+    "" | */* | .* | *"|"* | *[[:space:]]*) printf '\n'; return 0 ;;
   esac
   printf '%s\n' "$_o"
 }
@@ -490,43 +485,6 @@ if [ "${1:-}" = "--mark-handoff" ]; then
   exit 0
 fi
 
-# --- exempt-mark path (no task-id) ------------------------------------------
-# The ledger half of the G3 exemption (delegated here: single DECISIONS.md
-# writer, owns the lock). The GATE-EXCEPTION costs a handoff presentation.
-# --owner REQUIRED — an untagged exception would block every session.
-if [ "${1:-}" = "--exempt-mark" ]; then
-  shift
-  XREASON=""
-  XOWNER=""
-  XSEEN=0
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --owner)
-        [ $# -ge 2 ] || die "--owner requires a session id"
-        [ -z "$XOWNER" ] || die "--owner given more than once"
-        XOWNER="$2"; shift 2 ;;
-      --owner=*)
-        [ -z "$XOWNER" ] || die "--owner given more than once"
-        XOWNER="${1#--owner=}"; shift ;;
-      -*) die "unknown option '$1' (usage: ops-verdict.sh --exempt-mark \"<reason>\" --owner <sid>)" ;;
-      *)
-        [ "$XSEEN" -eq 0 ] || die "unexpected extra argument '$1' (the reason is a single quoted string)"
-        XSEEN=1; XREASON="$1"; shift ;;
-    esac
-  done
-  [ -n "$XREASON" ] || die "--exempt-mark requires a non-empty reason (the grant is audited: the reason is what the handoff presents)"
-  [ -n "$XOWNER" ] || die "--exempt-mark requires --owner <sid> (an untagged GATE-EXCEPTION reads as unowned and would block every session)"
-  check_owner_name "$XOWNER"
-  check_cell "exemption reason" "$XREASON"
-  [ -f "$DECISIONS" ] || die "missing $DECISIONS — run ops-init.sh first"
-  lock_acquire
-  printf '%s | %s | GATE-EXCEPTION | [sid:%s] arm-gate exemption granted: %s | exempt via ops-task.sh --exempt\n' \
-    "$(date +%F)" "arm-gate" "$XOWNER" "$XREASON" >> "$DECISIONS"
-  lock_release
-  echo "GATE-EXCEPTION recorded for session $XOWNER (owes a handoff presentation: ops-verdict.sh --mark-handoff --owner $XOWNER)"
-  exit 0
-fi
-
 # --- Argument parse ----------------------------------------------------------
 # The unknown-option arm is `--*`, NOT `-*` (#64): a typo'd `--ownr` must not
 # fall to a positional (it once landed in the ledger as the evidence cell),
@@ -595,32 +553,6 @@ ownership_gate() {
 
 clear_sentinel() { [ -n "${SPATH:-}" ] && rm -f "$SPATH"; return 0; }
 
-# --- arm-marker recompute (G2.1) --------------------------------------------
-# Under the lock, AFTER clear_sentinel. Remove → rescan → restore: the
-# intuitive order loses a task opened mid-recompute (stale-FALSE, the one
-# forbidden desync). The .exempt marker is NEVER touched (G3: two lifetimes).
-# Failures are swallowed — dying here would abort a verdict that succeeded.
-recompute_arm_marker() { # recompute_arm_marker <session-id>
-  local sid="$1" f still=1
-  [ -n "$sid" ] || return 0
-  rm -f "$OPDIR/.armed/$sid" 2>/dev/null || true
-  shopt -s nullglob
-  for f in "$OPDIR/pending"/*; do
-    # -f, not -e: a directory or symlink in pending/ is not a sentinel ours.
-    [ -f "$f" ] || continue
-    if [ "$(sentinel_owner_of_name "${f##*/}")" = "$sid" ]; then still=0; break; fi
-  done
-  shopt -u nullglob
-  if [ "$still" -eq 0 ]; then
-    # Explicit `if`, not `A && B || C` (SC2015): the chained form runs the
-    # `|| true` even when the truncate itself failed.
-    if mkdir -p "$OPDIR/.armed" 2>/dev/null; then
-      : > "$OPDIR/.armed/$sid" 2>/dev/null || true
-    fi
-  fi
-  return 0
-}
-
 # --- Retro-gate (G1): RETRO_STATE = armed | never-armed | duplicate ---------
 # Inside the lock, after ownership_gate. Never-armed with no session dies (G1.4).
 retro_gate() {
@@ -687,7 +619,6 @@ if [ "${2:-}" = "--defer" ]; then
       "$(date +%F)" "$ID" "${OWNER:-$SOWNER}" "$ID" >> "$DECISIONS"
   fi
   clear_sentinel
-  recompute_arm_marker "$FRAG_OWNER"   # G2.1 — under the lock, after the clear
   lock_release
   echo "deferred $ID (DECISIONS.md line written, sentinel cleared)"
   exit 0
@@ -729,7 +660,6 @@ fi
 append_fragment "$FRAG_OWNER" "$ROW"
 printf '%s\n' "$ROW" >> "$VERDICTS"
 clear_sentinel
-recompute_arm_marker "$FRAG_OWNER"     # G2.1 — under the lock, after the clear
 lock_release
 if [ "$RETRO_STATE" = "never-armed" ]; then
   echo "recorded $ID = $VERDICT (never-armed — GATE-EXCEPTION written to DECISIONS.md)"

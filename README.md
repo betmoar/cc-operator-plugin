@@ -188,8 +188,7 @@ workflows/{review,brainstorm,plan,crawl,dispatch}.js  # the orchestration primit
 agents/op-*.md                    # tier-aliased seats: author, mechanic, reviewer, scout, verifier, brainstorm, crawler
 skills/chief-operator/SKILL.md    # thin router (front door only)
 scripts/ops-{init,task,verdict,adopt,claims,backlog}.sh  # the evidence-gate mechanism
-scripts/ops-{stop,sessionstart,armgate}-hook.sh # completion gate + session-id injection + arm gate
-scripts/ops-corpus.sh             # stamped, neutralized derived trees for measurement corpora
+scripts/ops-{stop,sessionstart}-hook.sh # completion gate + session-id injection
 scripts/ops-{tiers,render}.sh     # tier resolver + project-layer agent renderer
 scripts/ops-compress.mjs          # input-axis compressor (PostToolUse)
 .claude-plugin/statusline.json    # cc-status segment manifest (name/render/order)

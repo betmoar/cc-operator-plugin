@@ -246,60 +246,7 @@ R2a proves the *script's* answer; R2b is what proves the harness honors it. Both
 are required — the charter's claim is about the pair, and R2a alone is the
 weaker claim the 2026-08-14 run mistakenly recorded as the whole phase.
 
-## R3 — Arm gate, live (G2/G3; the four controls from PR #12)
-
-Enable: `touch .operator/armgate.on`. Then, same file and same tool each time:
-
-**Use a PROBE SESSION ID, not `<sid>`.** The earlier revision of this table told
-you to unarm your own session, which R0 has already armed by opening
-`replay-run` — `.armed/<sid>` exists, so control (a) would be *allowed* and the
-table's own parenthetical wandered through three contradictory workarounds
-trying to escape that. There is nothing to escape: the arm gate keys on the
-session id in the hook payload, so a probe id that owns no task is unarmed by
-construction, and your real session keeps its tracking task throughout. Call it
-`<psid>` (any string, e.g. `ARM-PROBE-SID`).
-
-The gate is a PreToolUse hook, so drive it by feeding it a payload rather than
-by making real edits — that also lets `<psid>` differ from the session you are
-actually running in:
-
-```
-printf '{"session_id":"<psid>","cwd":"'"$PWD"'","tool_name":"Write",
-"tool_input":{"file_path":"'"$PWD"'/probe.txt"}}' \
-  | bash "$PR/scripts/ops-armgate-hook.sh"; echo "rc=$?"
-```
-
-| Control | Setup | Expected |
-|---|---|---|
-| a | gate on, `<psid>` owns no task | **denied**, rc 2; stderr carries all three repair commands verbatim |
-| b | `ops-task.sh arm-probe --owner <psid>` | same payload **allowed**, rc 0 |
-| c | `rm .operator/.armed/<psid>` (simulate desync) | denied again, rc 2 — stale-FALSE fails closed |
-| d | `ops-adopt.sh --owner <psid> arm-probe` | allowed — the deny message's own repair works |
-
-Clean up after: `ops-verdict.sh arm-probe --defer "replay R3 control probe"
---owner <psid>` and `rm -f .operator/.armed/<psid>`.
-
-Every deny is confirmed by **reading the file back** — `probe.txt` must not
-exist after (a) and (c). rc 2 with the file present would mean the hook denied
-after the write, which is a different and worse bug.
-
-**Negative control (R3):** controls (b) and (d) ARE the control — they are the
-allowed half, and without them a hook that denies unconditionally passes (a) and
-(c). Add one more, because the gate is opt-in: with `.operator/armgate.on`
-removed, the same payload from an unarmed `<psid>` must be **allowed**. A gate
-that denies while switched off is not a gate, it is a wedge.
-
-With `<psid>` doing the probing there is no ordering constraint against R2: your
-own session keeps `replay-run` open the whole time. Still exercise **G3**, on a
-third id so the grant is isolated: `ops-task.sh --exempt "replay R3" --owner
-<esid>`, expecting `exemption granted for session <esid> (GATE-EXCEPTION written
-… Stop is now blocked until you present it …)`, then confirm the same payload
-now passes for `<esid>` and that a `GATE-EXCEPTION` carrying `[sid:<esid>]`
-landed in DECISIONS.md. Present and clear it with `ops-verdict.sh
---mark-handoff --owner <esid>`. Disable the gate after: `rm
-.operator/armgate.on`, and remove `.armed/<esid>.exempt`.
-
-Record R2+R3 as verdict rows citing the observed stderr.
+## R3 — (removed in 0.10 — the arm gate was deleted; see docs/DEBLOAT-0.10.md step 6. R5's retro-gate and deviation-gate phases remain and are the gate's live-verification surface for sentinelloss closes.)
 
 ## R4 — Evidence lifecycle and the stamp (U10)
 
@@ -427,8 +374,8 @@ something if it was blocked a moment earlier.
 - Any phase red ⇒ file it as an issue with the observed vs expected output;
   the row's stamp names the tree it happened on. R0/R2 reds are
   harness-integration failures (highest blast radius — the gate is not
-  running); R3 reds distinguish hook-answer from harness-honor; R4.3 "red"
-  is almost always a misreading — reread the stamp's contract first.
+  running); R4.3 "red" is almost always a misreading — reread the stamp's
+  contract first.
 - Replay after: plugin upgrades, harness (Claude Code) upgrades, new OS/uid
   environments (#20 — run once as non-root and once as root and diff), and
   before any release that claims a live-verified gate.

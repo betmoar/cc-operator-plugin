@@ -105,7 +105,7 @@ if [ -d "$cwd/.operator/pending" ]; then
     # ambiguous name the writers now refuse, and control chars have no honest
     # source in a body our CLIs wrote
     case "$_sid" in
-      "" | */* | .* | *"|"* | *[[:space:]]* | *[[:cntrl:]]* | *__* | *.exempt) continue ;;
+      "" | */* | .* | *"|"* | *[[:space:]]* | *[[:cntrl:]]* | *__*) continue ;;
     esac
     mv "$_s" "$cwd/.operator/pending/${_sid}__${_s##*/}" 2>/dev/null || true
   done
@@ -301,7 +301,6 @@ if [ -f "$_gi" ] && ! grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi" 2
 !verdicts.d/
 !verdicts.d/*.md
 !handoff-*.md
-!armgate.on
 EOF
     # The flag is the NOTICE's trigger, so it is set only here — after the
     # replacement actually happened and the backup already exists.

@@ -53,7 +53,7 @@ GOOD_CHARTER = "# OPERATOR.md\n\n" + "\n".join(
 GOOD_PARTITION_LIB = (
     "#!/usr/bin/env bash\n"
     "sentinel_owner_of_name() {\n"
-    "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) printf '\\n'; return 0 ;; esac\n"
+    "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]*) printf '\\n'; return 0 ;; esac\n"
     "}\n"
     "# deviation gate: counts DEVIATION|ESCALATION|GATE-EXCEPTION (HANDOFF-MARK)\n"
     "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
@@ -175,15 +175,6 @@ def make_good_tree(root):
             # The G2 arm gate. `Bash` must NEVER appear in this matcher —
             # check_armgate pins the set exactly (gating Bash deadlocks the
             # repair path, since ops-task.sh is itself a Bash call).
-            # The `timeout` is pinned too (#33): this hook blocks every file
-            # mutation synchronously, so an unbounded one lets a hung JSON
-            # parser stall the session (measured: still blocked at 6s against a
-            # ~44ms normal path).
-            "PreToolUse": [{"matcher": "Write|Edit|MultiEdit|NotebookEdit", "hooks": [{
-                "type": "command",
-                "command": 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-armgate-hook.sh"',
-                "timeout": 5,
-            }]}],
         }
     }))
     write(root / ".claude-plugin" / "statusline.json", json.dumps({
@@ -253,7 +244,7 @@ def make_good_tree(root):
     write(root / "scripts" / "ops-verdict.sh",
           "#!/usr/bin/env bash\n" + guards + nolink +
           "sentinel_owner_of_name() {\n"
-          "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) printf '\\n'; return 0 ;; esac\n"
+          "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]*) printf '\\n'; return 0 ;; esac\n"
           "}\n" +
           "# F2: refuse a symlink fragment before the write + skip on both reads\n"
           '[ -L "$FRAGDIR/$who.md" ] && exit 1\n'
@@ -284,23 +275,6 @@ def make_good_tree(root):
     write(root / "scripts" / "ops-backlog.sh",
           "#!/usr/bin/env bash\n"
           'if [ "${1:-}" = "--census" ]; then echo "files: 0"; exit 0; fi\n')
-    # ops-armgate-hook.sh: the G2 PreToolUse gate. check_armgate pins that it
-    # consults armgate.on, reads the .armed/ marker, honours .exempt, and carries
-    # a `-d` test so an unusable marker dir fails OPEN.
-    #
-    # The `-x` and `-w` halves are here because check_permission_guards pins
-    # their COUNT (#21): it fails both when a new permission test appears and
-    # when an existing one is removed, so a fixture missing them reads as the
-    # #19/#27 guards having regressed. A synthetic tree that does not track a
-    # pin makes the pin vacuous — the same lesson the timeout pin taught.
-    write(root / "scripts" / "ops-armgate-hook.sh",
-          "#!/usr/bin/env bash\n" + JSON_GET +
-          '[ -f "$opdir/armgate.on" ] || exit 0\n'
-          '[ -e "$opdir/.armed/$session" ] && exit 0\n'
-          '[ -e "$opdir/.armed/$session.exempt" ] && exit 0\n'
-          'if [ -e "$opdir/.armed" ] && { [ ! -d "$opdir/.armed" ] || '
-          '[ ! -x "$opdir/.armed" ] || [ ! -w "$opdir/.armed" ]; }; then exit 0; fi\n'
-          "exit 2\n")
     (root / "scripts" / "lib").mkdir(exist_ok=True)
     write(root / "scripts" / "lib" / "partition.sh", GOOD_PARTITION_LIB)
     write(root / "scripts" / "statusline.sh", GOOD_STATUSLINE)
@@ -938,7 +912,7 @@ class ValidatorTest(unittest.TestCase):
             "check_owner_name() { :; }\n"
             "[ ! -L \"$f\" ] || exit 0\n"
             "sentinel_owner_of_name() {\n"
-          "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]* | *.exempt) printf '\\n'; return 0 ;; esac\n"
+          "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]*) printf '\\n'; return 0 ;; esac\n"
           "}\n"
             "# F2: refuse a symlink fragment before the write + skip on both reads\n"
             '[ -L "$FRAGDIR/$who.md" ] && exit 1\n'
@@ -1088,7 +1062,7 @@ class ValidatorTest(unittest.TestCase):
         # 0.10: the readers' parser lives in lib/partition.sh — drop the arm there.
         p = self.dir / "scripts" / "lib" / "partition.sh"
         write(p, p.read_text().replace(
-            r"""*[[:space:]]* | *.exempt)""", "*.exempt)"))
+            r"""*"|"* | *[[:space:]]*)""", '*"|"*)'))
         probs = self.bounds_problems()
         self.assertTrue(any("whitespace owners" in p for p in probs), probs)
 
@@ -1109,16 +1083,6 @@ class ValidatorTest(unittest.TestCase):
         probs = self.problems()
         self.assertTrue(any("permission test" in p and "ops-task.sh" in p
                             for p in probs), probs)
-
-    def test_removing_a_permission_guard_fires(self):
-        # The OTHER direction, and the one that matters more: dropping the -w
-        # half silently reopens #27 (a non-writable .armed wedges the project
-        # off-root). The count is pinned both ways for that reason.
-        real = (self.dir / "scripts" / "ops-armgate-hook.sh").read_text(encoding="utf-8")
-        write(self.dir / "scripts" / "ops-armgate-hook.sh",
-              real.replace(' || [ ! -w "$opdir/.armed" ]', "", 1))
-        probs = self.problems()
-        self.assertTrue(any("was REMOVED" in p for p in probs), probs)
 
     def test_commands_dir_optional(self):
         # A plugin that ships only agents need not have commands/. The good-tree
@@ -2138,14 +2102,6 @@ class GuardParityVacuityTest(unittest.TestCase):
         # All three readers now share ONE shape: ownership is the filename, so
         # the reject set guards a name split rather than a body parse. The pin
         # is unchanged in purpose — a planted name must not pose as an owner.
-        ("lib/partition.sh",
-         r'''"" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) printf '\n'; return 0 ;;''',
-         r'''"" | */* | .* | *"|"* | *[[:space:]]*) printf '\n'; return 0 ;;''',
-         "*.exempt"),
-        ("ops-verdict.sh",
-         r'''"" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) printf '\n'; return 0 ;;''',
-         r'''"" | */* | .* | *"|"* | *[[:space:]]*) printf '\n'; return 0 ;;''',
-         "*.exempt"),
         # (The statusline's own parser copy is gone: it sources the lib, and
         # the lib's parser is the case above. The bar keeps a HANDOFF-MARK
         # tail scanner of its own — pinned by check_decisions_schema's
@@ -2153,16 +2109,12 @@ class GuardParityVacuityTest(unittest.TestCase):
         # F15's PREV set — the fifth copy, and the one whose pin was file-wide
         # until this round. ops-adopt.sh carries *.exempt at the WRITER too, so
         # the pin must read this arm specifically or the writer satisfies it.
-        ("ops-adopt.sh",
-         '*[[:cntrl:]]* | *.exempt) PREV="<invalid>" ;;',
-         '*[[:cntrl:]]*) PREV="<invalid>" ;;',
-         "*.exempt"),
         # Not an *.exempt case: the whitespace arm the readers' parser needs
         # so an owner that can never equal a real session id cannot make a task
         # permanently non-blocking. Different literal, same vacuity shape.
         ("lib/partition.sh",
-         r'''"" | */* | .* | *"|"* | *[[:space:]]* | *.exempt) printf '\n'; return 0 ;;''',
-         r'''"" | */* | .* | *"|"* | *.exempt) printf '\n'; return 0 ;;''',
+         r'''"" | */* | .* | *"|"* | *[[:space:]]*) printf '\n'; return 0 ;;''',
+         r'''"" | */* | .* | *"|"*) printf '\n'; return 0 ;;''',
          "[[:space:]]"),
         # The leading-dot rule, one per writer CLI: a dotfile sentinel is
         # invisible to the Stop hook's glob, so the gate never sees the task.

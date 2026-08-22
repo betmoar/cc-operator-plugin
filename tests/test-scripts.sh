@@ -31,7 +31,6 @@ VERDICT="$SCRIPTS/ops-verdict.sh"
 HOOK="$SCRIPTS/ops-stop-hook.sh"
 TASK="$SCRIPTS/ops-task.sh"
 ADOPT="$SCRIPTS/ops-adopt.sh"
-ARMHOOK="$SCRIPTS/ops-armgate-hook.sh"
 CLAIMS="$SCRIPTS/ops-claims.sh"
 SSHOOK="$SCRIPTS/ops-sessionstart-hook.sh"
 
@@ -3513,402 +3512,6 @@ check "G1.9 --defer never-armed without --owner is refused" \
 rm -rf "$P"
 
 ########################################################################
-echo "-- Case: G2 arm gate — PreToolUse blocks the first unarmed write (opt-in)"
-# The gate is one or two stats on .operator/.armed/<sid>, and its polarity is
-# the OPPOSITE of the Stop hook's: every infrastructure failure fails OPEN,
-# because an unwritable project cannot repair itself. See backlog-charter.md §8c.
-
-# Feed the arm hook a PreToolUse payload; captures exit code (ARC) and stderr (AERR).
-run_armhook() { # run_armhook <cwd> <session-id> [restricted-PATH]
-  local cwd="$1" sid="$2" rpath="${3:-}" json errf
-  json="$(sed -e "s|<tmp>|$cwd|g" -e "s|<sid>|$sid|g" "$FIXTURES/pretooluse-write.json")"
-  errf="$(mktemp)"
-  if [ -n "$rpath" ]; then
-    printf '%s' "$json" | PATH="$rpath" "$BASH_ABS" "$ARMHOOK" 2>"$errf"
-  else
-    printf '%s' "$json" | "$BASH_ABS" "$ARMHOOK" 2>"$errf"
-  fi
-  ARC=$?
-  AERR="$(cat "$errf")"; rm -f "$errf"
-}
-
-P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
-S="SESS-G2"
-
-# G2.1 — armgate.on absent: the gate does not exist for this project.
-run_armhook "$P" "$S"
-check "G2.1 armgate.on absent → exit 0 (opt-in default)" "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
-check "G2.1 armgate.on absent → no stderr" "$([ -z "$AERR" ] && echo 0 || echo 1)"
-
-# G2.2 — gate on, no marker: deny, and the message names both recovery commands.
-: > "$P/.operator/armgate.on"
-run_armhook "$P" "$S"
-check "G2.2 gate on + unarmed → exit 2" "$([ "$ARC" -eq 2 ] && echo 0 || echo 1)"
-check "G2.2 stderr names ops-task.sh … --owner $S" \
-  "$(printf '%s' "$AERR" | grep -q "ops-task.sh <task-id> --owner $S" && echo 0 || echo 1)"
-check "G2.2 stderr names the --exempt path" \
-  "$(printf '%s' "$AERR" | grep -q -- '--exempt' && echo 0 || echo 1)"
-
-# G2.3 — the derived marker arms the session.
-mkdir -p "$P/.operator/.armed"; : > "$P/.operator/.armed/$S"
-run_armhook "$P" "$S"
-check "G2.3 .armed/\$S present → exit 0" "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
-rm -f "$P/.operator/.armed/$S"
-
-# G2.4 — the granted (exempt) marker arms independently of the derived one.
-: > "$P/.operator/.armed/$S.exempt"
-run_armhook "$P" "$S"
-check "G2.4 only .armed/\$S.exempt present → exit 0" "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
-rm -f "$P/.operator/.armed/$S.exempt"
-
-# G2.5 — no .operator/ above the payload cwd: fail OPEN on missing state.
-Q="$(newproj)"
-run_armhook "$Q" "$S"
-check "G2.5 no .operator/ above cwd → exit 0 (fails open)" "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
-rm -rf "$Q"
-
-# G2.6 — no JSON parser on PATH: fail OPEN, silently. The gate is still ON and
-# the session is still unarmed, so a fail-CLOSED hook would exit 2 here.
-run_armhook "$P" "$S" "/nonexistent"
-check "G2.6 no JSON parser → exit 0 (fails open)" "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
-check "G2.6 no JSON parser → silent (no stderr before every edit)" \
-  "$([ -z "$AERR" ] && echo 0 || echo 1)"
-
-# G2.11 — `.armed` EXISTS but is not a usable directory → fail OPEN. This is the
-# unwritable-and-UNREPAIRABLE case: with .armed unusable every marker write in
-# the repo fails, so all three repairs the deny message prints are dead
-# (ops-task.sh/ops-adopt.sh swallow their marker write and report success while
-# changing nothing; --exempt dies after its ledger row lands). A legitimately
-# armed session was denied every file mutation with no in-band way out.
-# Measured before the fix: rc=2. (PR-review finding, 2026-08-07.)
-#
-# Polarity matters in BOTH directions, so both are asserted: an unusable .armed
-# fails OPEN, an ABSENT .armed still DENIES (the honest never-armed case).
-( cd "$P/.operator" && rm -rf .armed && : > .armed )      # regular file, not a dir
-run_armhook "$P" "$S"
-check "G2.11 .armed exists but is not a usable directory → exit 0 (fails open)" \
-  "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
-( cd "$P/.operator" && rm -f .armed )                      # absent again
-run_armhook "$P" "$S"
-check "G2.11 .armed absent + unarmed session → still exit 2 (absence is not an infra fault)" \
-  "$([ "$ARC" -eq 2 ] && echo 0 || echo 1)"
-
-# G2.12 — the OTHER unusable modes, and the property the guard's inertness rests
-# on (issue #19). The `[ ! -x ]` half of the guard is INERT for uid 0 (root's
-# `[ -x ]` on a chmod 000 dir is TRUE), so these cases pin the half that does
-# work on every uid — `[ ! -d ]` — plus the reason the inert half is tolerable.
-#
-# A DANGLING SYMLINK is absence, not unusability: `[ -e ]` is false on a broken
-# link, so it must reach the ordinary never-armed DENY. Asserting it stops a
-# future reader from "fixing" the guard with `[ -L ]` and silently converting a
-# real never-armed session into a fail-open.
-( cd "$P/.operator" && rm -rf .armed && ln -s ./nowhere-at-all .armed )
-run_armhook "$P" "$S"
-check "G2.12 .armed is a DANGLING symlink → exit 2 (a broken link is absence, not an infra fault)" \
-  "$([ "$ARC" -eq 2 ] && echo 0 || echo 1)"
-
-# THE LOAD-BEARING ONE. The fail-open for a chmod-000 .armed cannot fire under
-# uid 0, and that is only acceptable because root's marker LOOKUP stays accurate
-# through the unreadable directory — present reads TRUE, absent reads FALSE — so
-# root never reaches a wrong verdict. If that ever stopped holding, the inert
-# guard would become a real defect. This case is the tripwire for that.
-# Skipped for a non-root runner, where the chmod genuinely denies and the
-# question does not arise (see #20: chmod-based cases are uid-dependent).
-( cd "$P/.operator" && rm -rf .armed && mkdir .armed && : > ".armed/$S" && chmod 000 .armed )
-if [ "$(id -u)" = 0 ]; then
-  ARMED_PRESENT=$([ -e "$P/.operator/.armed/$S" ] && echo yes || echo no)
-  ARMED_ABSENT=$([ -e "$P/.operator/.armed/NO-SUCH-SESSION" ] && echo yes || echo no)
-  check "G2.12 as uid 0, the marker lookup stays accurate through a chmod-000 .armed" \
-    "$([ "$ARMED_PRESENT" = yes ] && [ "$ARMED_ABSENT" = no ] && echo 0 || echo 1)"
-  run_armhook "$P" "$S"
-  check "G2.12 as uid 0, an armed session is ALLOWED even with .armed chmod 000" \
-    "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
-else
-  run_armhook "$P" "$S"
-  check "G2.12 as non-root, a chmod-000 .armed fails OPEN (the -x half fires)" \
-    "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
-fi
-( cd "$P/.operator" && chmod 755 .armed 2>/dev/null; rm -rf .armed )
-
-# G2.13 — a NON-WRITABLE .armed (mode 555) must fail OPEN (issue #27). Mode 555
-# passes both `-d` and `-x`, so before the `-w` half existed the guard stayed
-# silent while the project wedged: a new session denied, ops-task.sh reporting
-# success while writing no marker (it swallows the write by design), its sentinel
-# landing anyway so Stop blocked too, and all three advertised repairs writing
-# into that same unwritable directory. Measured end to end off-root — which is
-# what makes this the real unwritable-and-unrepairable case (#19 examined
-# chmod 000, concluded root is never blocked by mode bits, and stopped there).
-#
-# UID-CONDITIONAL, and the asymmetry is the point rather than an inconvenience.
-# `-w` is inert for uid 0 exactly as `-x` is: root's `[ -w ]` on a 555 directory
-# is TRUE, so the guard does not fire and an unarmed root session gets the
-# ordinary never-armed DENY. That is CORRECT, not a gap — root's writes into 555
-# genuinely succeed, so ops-task.sh really does arm it and the repair path is
-# alive. The wedge only exists for a uid whose writes actually fail.
-# (An earlier draft of this case asserted exit 0 unconditionally and failed under
-# root for exactly this reason; the hook was right and the assertion was wrong.)
-( cd "$P/.operator" && rm -rf .armed && mkdir .armed && chmod 555 .armed )
-run_armhook "$P" "$S"
-if [ "$(id -u)" = 0 ]; then
-  check "G2.13 as uid 0, a mode-555 .armed still DENIES (the -w half is inert, and root is not wedged)" \
-    "$([ "$ARC" -eq 2 ] && echo 0 || echo 1)"
-  # The property that makes the inertness safe, asserted rather than assumed:
-  # root can actually write the marker into a 555 directory, so the repair works.
-  ( : > "$P/.operator/.armed/root-write-probe" ) 2>/dev/null
-  check "G2.13 as uid 0, a marker write into a mode-555 .armed SUCCEEDS (repair path alive)" \
-    "$([ -e "$P/.operator/.armed/root-write-probe" ] && echo 0 || echo 1)"
-  rm -f "$P/.operator/.armed/root-write-probe" 2>/dev/null
-else
-  check "G2.13 .armed exists but is NOT WRITABLE (mode 555) → exit 0 (fails open)" \
-    "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
-fi
-( cd "$P/.operator" && chmod 755 .armed 2>/dev/null; rm -rf .armed )
-
-# G2.7 — `Bash` is never in the PreToolUse matcher. Asserted against hooks.json
-# itself (check_armgate pins the same property in the build gate).
-G27="$(python3 - "$REPO/hooks/hooks.json" <<'PY'
-import json, sys
-h = json.load(open(sys.argv[1]))["hooks"]["PreToolUse"][0]["matcher"]
-print(sum(1 for t in h.split("|") if t == "Bash"))
-PY
-)"
-check "G2.7 PreToolUse matcher contains zero Bash entries" \
-  "$([ "$G27" = "0" ] && echo 0 || echo 1)"
-
-# --- the recompute: remove → rescan → restore, under the ledger lock ----------
-
-# G2.8 — one task open, verdicted: the marker is removed.
-( cd "$P" && bash "$TASK" g2t8 --owner "$S" >/dev/null 2>&1 )
-check "G2.8 ops-task.sh creates .armed/\$S" \
-  "$([ -e "$P/.operator/.armed/$S" ] && echo 0 || echo 1)"
-( cd "$P" && bash "$VERDICT" g2t8 crit ev PASS --owner "$S" >/dev/null 2>&1 )
-check "G2.8 verdict on the only task removes .armed/\$S" \
-  "$([ ! -e "$P/.operator/.armed/$S" ] && echo 0 || echo 1)"
-run_armhook "$P" "$S"
-check "G2.8 the disarmed session is denied again" "$([ "$ARC" -eq 2 ] && echo 0 || echo 1)"
-
-# G2.9 — TWO tasks open, one verdicted: remove-then-rescan-then-RESTORE puts the
-# marker back. A clear→rescan→conditionally-remove implementation passes G2.8 and
-# fails here; this is the case that catches the wrong order.
-( cd "$P" && bash "$TASK" g2t9a --owner "$S" >/dev/null 2>&1 )
-( cd "$P" && bash "$TASK" g2t9b --owner "$S" >/dev/null 2>&1 )
-( cd "$P" && bash "$VERDICT" g2t9a crit ev PASS --owner "$S" >/dev/null 2>&1 )
-check "G2.9 verdict with a second task still open restores .armed/\$S" \
-  "$([ -e "$P/.operator/.armed/$S" ] && echo 0 || echo 1)"
-run_armhook "$P" "$S"
-check "G2.9 the still-armed session is allowed" "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
-
-# G2.10 — marker deleted by hand (the stale-FALSE desync), then a verdict on
-# another open task of the same session: the recompute is self-healing.
-( cd "$P" && bash "$TASK" g2t10 --owner "$S" >/dev/null 2>&1 )
-rm -f "$P/.operator/.armed/$S"
-( cd "$P" && bash "$VERDICT" g2t10 crit ev PASS --owner "$S" >/dev/null 2>&1 )
-check "G2.10 hand-deleted marker is restored by the recompute" \
-  "$([ -e "$P/.operator/.armed/$S" ] && echo 0 || echo 1)"
-
-# The --defer path recomputes too — same lock, same order. g2t9b is still open,
-# so deferring it must leave no marker; and the exempt grant must survive a
-# recompute (G3.5: two marker kinds, two lifetimes).
-: > "$P/.operator/.armed/$S.exempt"
-( cd "$P" && bash "$VERDICT" g2t9b --defer "blocked upstream" >/dev/null 2>&1 )
-check "G2 --defer recomputes: no owned sentinel left → marker removed" \
-  "$([ ! -e "$P/.operator/.armed/$S" ] && echo 0 || echo 1)"
-check "G2 the recompute never touches .armed/\$S.exempt (G3 grant)" \
-  "$([ -e "$P/.operator/.armed/$S.exempt" ] && echo 0 || echo 1)"
-rm -f "$P/.operator/.armed/$S.exempt"
-
-# F1 — a CORRUPTED sentinel body naming a G3 grant ("session_id: victim.exempt")
-# must not parse as a valid owner: check_owner_name (the writer) already rejects
-# *.exempt, but sentinel_owner() (the untrusted-body parser) did not mirror it,
-# so the smuggled name reached recompute_arm_marker and `rm -f
-# .armed/victim.exempt` deleted another session's real G3 exemption grant
-# (issue #30). Plant the victim's grant, then run a verdict on a task whose
-# body claims that reserved name and carries NO --owner (forcing the parser's
-# reject-set to be what's tested).
-: > "$P/.operator/.armed/victim.exempt"
-( cd "$P" && bash "$TASK" g2f1 --owner "$S" >/dev/null 2>&1 )
-printf 'session_id: victim.exempt\n' > "$P/.operator/pending/g2f1"
-( cd "$P" && bash "$VERDICT" g2f1 crit ev PASS >/dev/null 2>&1 )
-check "F1 a sentinel body naming a G3 grant is rejected as unowned" \
-  "$([ -e "$P/.operator/.armed/victim.exempt" ] && echo 0 || echo 1)"
-rm -f "$P/.operator/.armed/victim.exempt" "$P/.operator/pending/g2f1"
-
-# ops-adopt.sh re-creates the marker for the NEW owner — the recovery the deny
-# message names verbatim (stale-false mitigation 1).
-S2="SESS-G2-ROT"
-( cd "$P" && bash "$TASK" g2adopt --owner "$S" >/dev/null 2>&1 )
-rm -f "$P/.operator/.armed/$S2"
-( cd "$P" && bash "$ADOPT" --owner "$S2" g2adopt >/dev/null 2>&1 )
-check "G2 ops-adopt.sh creates .armed/ for the adopting session" \
-  "$([ -e "$P/.operator/.armed/$S2" ] && echo 0 || echo 1)"
-run_armhook "$P" "$S2"
-check "G2 the adopting session is allowed" "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
-# Ownership-scoping: a BYSTANDER session is not armed by $S2's open task. The
-# marker is keyed by session id precisely so an unscoped "is pending/ non-empty?"
-# cannot let session B write because session A holds work open — the cross-
-# session fail-open 0.4.0 exists to close. Uses a session that has never opened
-# anything: $S still carries an ACCEPTED stale-true marker here (adopt re-keys
-# the sentinel to $S2 but does not recompute the previous owner), which is the
-# documented harmless direction, not a property to assert against.
-S3="SESS-G2-BYSTANDER"
-run_armhook "$P" "$S3"
-check "G2 another session's open task does not arm a bystander" \
-  "$([ "$ARC" -eq 2 ] && echo 0 || echo 1)"
-( cd "$P" && bash "$VERDICT" g2adopt crit ev PASS --owner "$S2" >/dev/null 2>&1 )
-
-# An UNOWNED task arms nobody: there is no session to key a marker to. Counted
-# as a DELTA, not as an empty directory — $S's accepted stale-true marker lives
-# there (see above), so "no markers at all" is the wrong assertion.
-count_markers() { local n=0 m; shopt -s nullglob; for m in "$P/.operator/.armed"/*; do [ -e "$m" ] && n=$((n+1)); done; shopt -u nullglob; echo "$n"; }
-ARM_BEFORE="$(count_markers)"
-( cd "$P" && bash "$TASK" g2unowned >/dev/null 2>&1 )
-ARM_AFTER="$(count_markers)"
-check "G2 an unowned open task writes no new marker" \
-  "$([ "$ARM_BEFORE" = "$ARM_AFTER" ] && echo 0 || echo 1)"
-run_armhook "$P" "$S3"
-check "G2 an unowned open task arms no session" "$([ "$ARC" -eq 2 ] && echo 0 || echo 1)"
-
-rm -rf "$P"
-
-########################################################################
-echo "-- Case: G3 exemption — the audited escape hatch the arm gate advertises"
-# A blocking gate with no override is how a session wedges. The hatch is one
-# command and it is NOT free: it writes a GATE-EXCEPTION, a kind the stage-2
-# deviation gate already blocks Stop on until a HANDOFF-MARK presents it. So
-# bypassing the arm gate owes a handoff presentation. See backlog-charter.md §G3.
-P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
-S="SESS-G3"
-DEC3="$P/.operator/DECISIONS.md"
-payload3() { printf '{"session_id":"%s","stop_hook_active":false,"cwd":"%s"}' "$S" "$P"; }
-
-# G3.2 FIRST (it must leave DECISIONS.md untouched, which is only checkable
-# against a ledger the grant has not yet written to).
-DEC3_BEFORE="$(cat "$DEC3")"
-( cd "$P" && bash "$TASK" --exempt >/dev/null 2>&1 ); X2=$?
-check "G3.2 --exempt with no reason → exit non-zero" "$([ "$X2" -ne 0 ] && echo 0 || echo 1)"
-# A FORGOTTEN reason: `--exempt --owner $S` must not swallow the next flag as
-# the reason text — that grants an exemption whose audit line reads "--owner",
-# and drops the ownership tag that scopes the debt.
-( cd "$P" && bash "$TASK" --exempt --owner "$S" >/dev/null 2>&1 ); X2F=$?
-check "G3.2 --exempt --owner \$S (reason forgotten) → exit non-zero" \
-  "$([ "$X2F" -ne 0 ] && echo 0 || echo 1)"
-( cd "$P" && bash "$TASK" --exempt "" --owner "$S" >/dev/null 2>&1 ); X2E=$?
-check "G3.2 --exempt with an EMPTY reason → exit non-zero" "$([ "$X2E" -ne 0 ] && echo 0 || echo 1)"
-( cd "$P" && bash "$TASK" --exempt "no owner given" >/dev/null 2>&1 ); X2O=$?
-check "G3.2 --exempt without --owner → exit non-zero (no untagged GATE-EXCEPTION)" \
-  "$([ "$X2O" -ne 0 ] && echo 0 || echo 1)"
-check "G3.2 a refused --exempt leaves DECISIONS.md unchanged" \
-  "$([ "$(cat "$DEC3")" = "$DEC3_BEFORE" ] && echo 0 || echo 1)"
-check "G3.2 a refused --exempt writes no marker" \
-  "$([ ! -e "$P/.operator/.armed/$S.exempt" ] && echo 0 || echo 1)"
-# An exemption is the NO-open-task path: taking a task id too is contradictory.
-( cd "$P" && bash "$TASK" t-x --exempt "both" --owner "$S" >/dev/null 2>&1 ); X2B=$?
-check "G3.2 --exempt with a task-id → exit non-zero (mutually exclusive)" \
-  "$([ "$X2B" -ne 0 ] && echo 0 || echo 1)"
-
-# G3.1 — the grant itself.
-( cd "$P" && bash "$TASK" --exempt "upstream API is down, documenting the workaround" --owner "$S" >/dev/null 2>&1 ); X1=$?
-check "G3.1 --exempt \"reason\" --owner \$S → exit 0" "$([ "$X1" -eq 0 ] && echo 0 || echo 1)"
-# Count ROWS, not mentions: the scaffolded header carries the kind enum as a
-# comment (`# gated ...: DEVIATION | ESCALATION | GATE-EXCEPTION`), which a bare
-# grep counts — the same false positive the Stop hook's `#`-skip exists for.
-GX="$(grep -c '^[^#].* | GATE-EXCEPTION | ' "$DEC3" || true)"
-check "G3.1 exactly one GATE-EXCEPTION row written" "$([ "$GX" = "1" ] && echo 0 || echo 1)"
-check "G3.1 the GATE-EXCEPTION is tagged [sid:\$S] and carries the reason" \
-  "$(grep '^[^#].* | GATE-EXCEPTION | ' "$DEC3" | grep -q "\[sid:$S\].*upstream API is down" && echo 0 || echo 1)"
-check "G3.1 .armed/\$S.exempt exists" \
-  "$([ -e "$P/.operator/.armed/$S.exempt" ] && echo 0 || echo 1)"
-# The grant does NOT fabricate the derived marker: two kinds, two lifetimes.
-check "G3.1 the grant writes no DERIVED .armed/\$S" \
-  "$([ ! -e "$P/.operator/.armed/$S" ] && echo 0 || echo 1)"
-# ...and the gate now lets this session write (the hatch actually opens).
-run_armhook "$P" "$S"
-check "G3.1 armgate.on absent → allowed anyway (control for the next assert)" \
-  "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
-: > "$P/.operator/armgate.on"
-run_armhook "$P" "$S"
-check "G3.1 gate ON + exemption granted → the write is allowed" \
-  "$([ "$ARC" -eq 0 ] && echo 0 || echo 1)"
-rm -f "$P/.operator/armgate.on"
-
-# G3.3 — the debt: the exemption owes a presentation, so Stop is blocked.
-payload3 | bash "$HOOK" >/dev/null 2>&1; X3=$?
-check "G3.3 after the grant, Stop is BLOCKED (the exemption owes a presentation)" \
-  "$([ "$X3" = 2 ] && echo 0 || echo 1)"
-
-# G3.5 BEFORE G3.4: the mark would clear the deviation gate and make the
-# ordering of the remaining asserts less discriminating. Verdicting an
-# UNRELATED open task runs recompute_arm_marker, which must never touch a
-# GRANTED marker — an exempt session has nothing in pending/, so a recompute
-# that owned both kinds would revoke the grant on the next verdict.
-( cd "$P" && bash "$TASK" g3unrelated --owner "$S" >/dev/null 2>&1 )
-( cd "$P" && bash "$VERDICT" g3unrelated crit ev PASS --owner "$S" >/dev/null 2>&1 )
-check "G3.5 the recompute leaves .armed/\$S.exempt present" \
-  "$([ -e "$P/.operator/.armed/$S.exempt" ] && echo 0 || echo 1)"
-check "G3.5 the same recompute DID remove the derived .armed/\$S (recompute ran)" \
-  "$([ ! -e "$P/.operator/.armed/$S" ] && echo 0 || echo 1)"
-
-# G3.4 — presenting the debt clears it.
-( cd "$P" && bash "$VERDICT" --mark-handoff --owner "$S" >/dev/null 2>&1 )
-payload3 | bash "$HOOK" >/dev/null 2>&1; X4=$?
-check "G3.4 after --mark-handoff, Stop is allowed" "$([ "$X4" = 0 ] && echo 0 || echo 1)"
-
-# The debt is SESSION-SCOPED: a foreign session never inherits it. (A grant that
-# blocked everyone would be the wedge this feature exists to prevent.)
-printf '{"session_id":"SESS-G3-OTHER","stop_hook_active":false,"cwd":"%s"}' "$P" \
-  | bash "$HOOK" >/dev/null 2>&1; X4F=$?
-check "G3 a foreign session is not blocked by \$S's exemption" \
-  "$([ "$X4F" = 0 ] && echo 0 || echo 1)"
-
-# G3.6 — the opener stays LOCK-FREE. The ledger write is delegated to
-# ops-verdict.sh, which already holds the lock; a lock here would copy the LOCK
-# BLOCK to a third file (and check_lock_parity to a third site) for one rare flag.
-X6="$(grep -c 'lock_acquire' "$TASK" || true)"
-check "G3.6 grep -c 'lock_acquire' ops-task.sh = 0 (the write is delegated)" \
-  "$([ "$X6" = "0" ] && echo 0 || echo 1)"
-
-# G3.7 — an owner ending in `.exempt` is REFUSED by all three writers (#30).
-# `.armed/` carries two marker kinds in one flat namespace, so that suffix is
-# forgeable in both directions. Measured before the fix, on a real project:
-#   grant   — `ops-task.sh <ordinary-task> --owner foo.exempt` wrote
-#             `.armed/foo.exempt`; session `foo` went from arm-gate exit 2 to
-#             exit 0 with ZERO GATE-EXCEPTION rows. G3's whole premise is that
-#             bypassing the gate costs a handoff presentation; this cost nothing
-#             and left no trace.
-#   destroy — a session named `foo.exempt` closing an ordinary task ran
-#             `recompute_arm_marker foo.exempt`, deleting foo's REAL exemption
-#             while the GATE-EXCEPTION row still asserted it held.
-# Refused at the WRITERS, deliberately not in the hook's reject set: that set
-# fails OPEN, so rejecting there would ALLOW such a session rather than deny it.
-X7P="$(newproj)"; ( cd "$X7P" && bash "$INIT" >/dev/null 2>&1 )
-( cd "$X7P" && bash "$TASK" ordinary --owner "victim.exempt" >/dev/null 2>&1 ); X7T=$?
-check "G3.7 ops-task.sh refuses an owner ending in .exempt (would forge a G3 grant)" \
-  "$([ "$X7T" != 0 ] && echo 0 || echo 1)"
-check "G3.7 the refused open wrote no .armed marker" \
-  "$([ ! -e "$X7P/.operator/.armed/victim.exempt" ] && echo 0 || echo 1)"
-# The adopt case needs a REAL open sentinel first. Without one, ops-adopt.sh
-# fails with "no open task" whatever the owner is, and the assertion passes for
-# the wrong reason — mutation-verified: removing the guard from ops-adopt.sh
-# still gave a green suite until this line existed. That is the repo's own
-# vacuous-guard class (F48) reproduced inside its own test.
-( cd "$X7P" && bash "$TASK" adoptable --owner legit-sid >/dev/null 2>&1 )
-( cd "$X7P" && bash "$ADOPT" --owner "victim.exempt" adoptable >/dev/null 2>&1 ); X7A=$?
-check "G3.7 ops-adopt.sh refuses the same owner (second, independent grant path)" \
-  "$([ "$X7A" != 0 ] && echo 0 || echo 1)"
-check "G3.7 the refused adopt wrote no .armed marker either" \
-  "$([ ! -e "$X7P/.operator/.armed/victim.exempt" ] && echo 0 || echo 1)"
-( cd "$X7P" && bash "$VERDICT" ordinary crit ev PASS --owner "victim.exempt" >/dev/null 2>&1 ); X7V=$?
-check "G3.7 ops-verdict.sh refuses it too (the recompute would delete a real grant)" \
-  "$([ "$X7V" != 0 ] && echo 0 || echo 1)"
-# A REAL exemption still works — the guard must reject the owner, not the feature.
-( cd "$X7P" && bash "$TASK" --exempt "genuine reason" --owner victim >/dev/null 2>&1 )
-check "G3.7 a genuine --exempt for the same base session still lands" \
-  "$([ -e "$X7P/.operator/.armed/victim.exempt" ] && echo 0 || echo 1)"
-rm -rf "$X7P"
-
-rm -rf "$P"
-
-########################################################################
 echo "-- Case: S1 source-state stamp — a verdict row names the tree it came from"
 # U10 (issue #22). A PASS survived unstaged, staged, committed and untracked
 # mutation of the source it verified, because the row named no source state at
@@ -4076,7 +3679,7 @@ check "non-git project: init exits 0, no warning" \
   "$([ "$W3RC" = 0 ] && ! printf '%s' "$W3ERR" | grep -q 'gitignored by a rule outside' && echo 0 || echo 1)"
 rm -rf "$P"
 
-echo "-- Case: the v2 allowlist admits the handoff and the gate switch (#28, #31)"
+echo "-- Case: the v2 allowlist admits the handoff artifact (#28)"
 # BEHAVIOURAL, not textual: the validator pins the allow LINES, this pins what
 # git actually does with them. Two findings, both measured on the real scaffold:
 #   #28 — `.operator/handoff-<date>.md` (commands/handoff.md:9 writes exactly
@@ -4084,9 +3687,8 @@ echo "-- Case: the v2 allowlist admits the handoff and the gate switch (#28, #31
 #         artifact the charter's HANDOFF section exists to produce — shipped
 #         untracked. A REGRESSION: v1's blocklist tracked it (verified by running
 #         main's ops-init.sh in a fresh repo).
-#   #31 — `.operator/armgate.on` is the project's opt-in DECISION, not machine
-#         state. Ignored, a team could not commit it and every fresh clone got
-#         the gate silently OFF. tiers.env is allow-listed for the same reason.
+#         (#31's armgate.on allow line went with the arm gate in 0.10 — the
+#         file no longer exists to commit.)
 # The negative control matters as much: a NEW ephemera file must still be
 # ignored, or the allowlist has quietly become a blocklist again.
 if command -v git >/dev/null 2>&1; then
@@ -4094,25 +3696,20 @@ P="$(newproj)"
 ( cd "$P" && git init -q . && git config user.email t@example.com && git config user.name t ) >/dev/null 2>&1
 ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
 : > "$P/.operator/handoff-2026-08-11.md"
-: > "$P/.operator/armgate.on"
 : > "$P/.operator/some-new-ephemera.tmp"
 # `git check-ignore -q` EXIT STATUS is the truth — `-v` prints the last matching
 # rule even when that rule is a `!` negation, which reads as "ignored" and is not.
 ( cd "$P" && git check-ignore -q .operator/handoff-2026-08-11.md ) && GIH=1 || GIH=0
 check "#28 the handoff file is TRACKED (not ignored by the v2 allowlist)" \
   "$([ "$GIH" = 0 ] && echo 0 || echo 1)"
-( cd "$P" && git check-ignore -q .operator/armgate.on ) && GIA=1 || GIA=0
-check "#31 armgate.on is TRACKED (a team can commit its own opt-in)" \
-  "$([ "$GIA" = 0 ] && echo 0 || echo 1)"
 ( cd "$P" && git check-ignore -q .operator/some-new-ephemera.tmp ) && GIE=1 || GIE=0
 check "the allowlist still IGNORES a new ephemera file (it is not a blocklist)" \
   "$([ "$GIE" = 1 ] && echo 0 || echo 1)"
 # End to end: does `git add -A` actually stage them?
 ( cd "$P" && git add -A >/dev/null 2>&1 )
 GIST="$(cd "$P" && git status --porcelain)"
-check "#28/#31 git add -A stages both the handoff and armgate.on" \
-  "$(printf '%s' "$GIST" | grep -q 'handoff-2026-08-11.md' \
-     && printf '%s' "$GIST" | grep -q 'armgate.on' && echo 0 || echo 1)"
+check "#28 git add -A stages the handoff artifact" \
+  "$(printf '%s' "$GIST" | grep -q 'handoff-2026-08-11.md' && echo 0 || echo 1)"
 check "git add -A does NOT stage the new ephemera file" \
   "$(printf '%s' "$GIST" | grep -q 'some-new-ephemera.tmp' && echo 1 || echo 0)"
 rm -rf "$P"

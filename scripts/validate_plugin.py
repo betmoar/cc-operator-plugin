@@ -682,11 +682,7 @@ def check_permission_guards(root, problems):
     """
     # site -> why it is allowed to exist. Comments are stripped before counting,
     # so the header prose in that same file does not inflate the number.
-    ALLOWED = {
-        "ops-armgate-hook.sh": 2,   # the -x and -w halves of the unusable-.armed
-                                    # guard (#19, #27), both paired with `! -d`,
-                                    # both documented inert for uid 0 in place.
-    }
+    ALLOWED = {}
     pat = re.compile(r"\[\s+!?\s*-[rwx]\s")
     for path in sorted((root / "scripts").glob("*.sh")):
         code = [ln for ln in path.read_text(encoding="utf-8").splitlines()
@@ -715,110 +711,11 @@ def check_permission_guards(root, problems):
                 f"in check_permission_guards; if not, #19/#27 have regressed")
 
 
-def check_armgate(root, problems):
-    r"""The PreToolUse arm gate must never match `Bash` (G2/G2.7).
-
-    The arm gate BLOCKS (exit 2). Deciding whether an arbitrary shell command
-    writes is an unwinnable classification problem, and `ops-task.sh` — the only
-    way to clear a denial — is itself a Bash call, so a matcher that grew `Bash`
-    would deadlock the repair path: the session could neither write nor arm.
-    That is this repo's recurring worst outcome (a guard that makes an existing
-    task unclosable), and its loss would be silent — the gate would still look
-    like it worked, right up to the first wedged session.
-
-    Pinned here rather than left to review because the matcher is one string in
-    a JSON file, and every other property of the gate is enforced by a test that
-    would still pass with `Bash` in it.
-    """
-    hp = root / "hooks" / "hooks.json"
-    hook = load_json(hp, problems)
-    if hook is None:
-        return
-    try:
-        block = hook["hooks"]["PreToolUse"][0]
-    except (KeyError, IndexError, TypeError):
-        problems.append(
-            "hooks/hooks.json: no PreToolUse block — the arm gate (G2) is not wired")
-        return
-    matcher = block.get("matcher", "")
-    tools = [t for t in matcher.split("|") if t]
-    if "Bash" in tools:
-        problems.append(
-            "hooks/hooks.json: the PreToolUse arm-gate matcher includes `Bash` — "
-            "it must never (G2.7): classifying shell commands is unwinnable, and "
-            "gating Bash deadlocks the repair path (ops-task.sh IS a Bash call)")
-    expected = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
-    if set(tools) != expected:
-        problems.append(
-            f"hooks/hooks.json: PreToolUse arm-gate matcher is {matcher!r}; "
-            f"expected exactly {'|'.join(sorted(expected))} (structured "
-            f"file-mutation tools only — see scripts/ops-armgate-hook.sh SCOPE)")
-    try:
-        entry = block["hooks"][0]
-        cmd = entry["command"]
-    except (KeyError, IndexError, TypeError):
-        problems.append("hooks/hooks.json: PreToolUse block has no hook command")
-        return
-    # A timeout on the blocking gate (#33): fail-open-FAST polarity, and a hung
-    # parser (a `jq` wrapping `sleep`) would otherwise stall every edit.
-    t = entry.get("timeout")
-    if not isinstance(t, (int, float)) or isinstance(t, bool) or t <= 0:
-        problems.append(
-            "hooks/hooks.json: the PreToolUse arm-gate hook has no positive "
-            "`timeout` — it blocks every Write/Edit/MultiEdit/NotebookEdit "
-            "synchronously, so a hung JSON parser stalls the session with no "
-            "bound (measured: still blocked at 6s against a ~44ms normal path)")
-    elif t > 30:
-        problems.append(
-            f"hooks/hooks.json: the PreToolUse arm-gate timeout is {t}s — far "
-            f"above the ~44ms the hook costs; a gate that can stall an edit for "
-            f"that long is not the fail-open-fast contract its header states")
-    if "ops-armgate-hook.sh" not in cmd:
-        problems.append(
-            f"hooks/hooks.json: PreToolUse command does not point at "
-            f"ops-armgate-hook.sh (got {cmd!r})")
-    if "${CLAUDE_PLUGIN_ROOT}" not in cmd:
-        problems.append(
-            "hooks/hooks.json: PreToolUse command should use ${CLAUDE_PLUGIN_ROOT} "
-            "— hooks run from the plugin root, not the project (a scripts/ path "
-            "resolves only inside this repo)")
-    # The gate is opt-in in 0.7.x: the switch must be READ, and its absence must
-    # be the allow path. A hook that stopped consulting armgate.on would block
-    # every project that never asked for the gate.
-    p = root / "scripts" / "ops-armgate-hook.sh"
-    if p.is_file():
-        text = p.read_text(encoding="utf-8")
-        if "armgate.on" not in text:
-            problems.append(
-                "scripts/ops-armgate-hook.sh: does not consult armgate.on — the "
-                "gate is opt-in in 0.7.x; without the switch it blocks every project")
-        if ".armed/" not in text and ".armed/$session" not in text:
-            problems.append(
-                "scripts/ops-armgate-hook.sh: does not read the .armed/ marker — "
-                "the whole gate is that one stat (G2.1)")
-        if ".exempt" not in text:
-            problems.append(
-                "scripts/ops-armgate-hook.sh: does not honour .armed/<sid>.exempt "
-                "— the G3 exemption is the only escape from a blocking gate")
-        # An EXISTING-but-unusable .armed must fail OPEN: without this the gate
-        # denies an armed session while every documented repair is dead
-        # (marker writes swallowed as success, --exempt dead after its row).
-        # Pinned because every other assertion here passed with the bug present.
-        code = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
-        if not any("-d" in ln and ".armed" in ln for ln in code):
-            problems.append(
-                "scripts/ops-armgate-hook.sh: no `-d` test on .armed — an existing "
-                "but unusable marker directory must fail OPEN, or a legitimately "
-                "armed session is denied every edit with no in-band repair (the "
-                "hook's own header promises this; it was once documented and "
-                "unimplemented)")
-
-
 def check_scripts(root, problems):
     for name in ("ops-init.sh", "ops-verdict.sh", "ops-task.sh",
                  "ops-adopt.sh", "ops-claims.sh", "ops-backlog.sh",
                  "ops-stop-hook.sh", "ops-sessionstart-hook.sh",
-                 "ops-armgate-hook.sh", "statusline.sh", "ops-tiers.sh",
+                 "statusline.sh", "ops-tiers.sh",
                  "ops-render.sh"):
         p = root / "scripts" / name
         if not p.is_file():
@@ -949,6 +846,7 @@ def check_guard_parity(root, problems):
         if "[[:space:]]" not in text:
             problems.append(
                 "scripts/lib/partition.sh: sentinel_owner does not reject "
+                "[[:space:]] "
                 "whitespace owners — an owner that can never match a real "
                 "session id makes its task permanently non-blocking")
     # The -L symlink rejection: the opener plus every sentinel reader (`-f`
@@ -968,47 +866,6 @@ def check_guard_parity(root, problems):
                 f"planted symlink in pending/, laundering an entry our CLIs "
                 f"never wrote into a trusted sentinel (F65/F66; the guard "
                 f"must live at every reader, see docs/PLAYBOOK.md)")
-    # sentinel_owner_of_name()'s reject-set must include *.exempt, mirroring
-    # check_owner_name's reserved G3-grant reject (F1/#30). SCOPED TO THE
-    # FUNCTION BODY: the CLIs carry `*.exempt` at the writer too, and a
-    # file-wide search is satisfied by the writer alone — F1 verbatim.
-    for name in ("ops-verdict.sh", "lib/partition.sh"):
-        p = root / "scripts" / name
-        if not p.is_file():
-            continue
-        text = _function_body(shell_code(p), "sentinel_owner_of_name")
-        if text is None:
-            problems.append(
-                f"scripts/{name}: cannot locate sentinel_owner_of_name() — the F1 "
-                f"reject-set pin has nothing to check. Renaming or reshaping "
-                f"the parser must update this locator, not silently skip it")
-            continue
-        if "*.exempt" not in text:
-            problems.append(
-                f"scripts/{name}: sentinel_owner_of_name()'s reject-set is missing "
-                f"*.exempt — a sentinel body naming a G3 grant parses as a "
-                f"valid owner, letting recompute_arm_marker delete another "
-                f"session's exemption (F1)")
-    # F15: ops-adopt's inline PREV reject-set echoes untrusted input and must
-    # degrade `.exempt` like the parsers. Matched on the PREV-assigning arm
-    # (inline at top level — no function body to bind to); REPORTS on a moved
-    # arm, never skips.
-    p = root / "scripts" / "ops-adopt.sh"
-    if p.is_file():
-        prev_arms = [ln for ln in shell_code(p).splitlines()
-                     if re.search(r'PREV\s*=\s*"<invalid>"', ln)]
-        if not prev_arms:
-            problems.append(
-                "scripts/ops-adopt.sh: cannot locate the PREV reject-set arm "
-                "(a line assigning PREV=\"<invalid>\") — the F15 pin has "
-                "nothing to check. Reshaping that guard must update this "
-                "locator, not silently skip it")
-        elif not any("*.exempt" in ln for ln in prev_arms):
-            problems.append(
-                "scripts/ops-adopt.sh: the PREV reject-set is missing *.exempt — "
-                "PREV is echoed to stdout from the untrusted sentinel body, so a "
-                "reserved-suffix value must degrade to <invalid> like the three "
-                "sentinel_owner parsers (F15 follow-up)")
     # F2: an -L test must guard the verdicts.d fragment path at the write and
     # both read sites — a planted symlink there launders every row for that
     # owner into an arbitrary file, exit 0 silent (F65 class).
@@ -1065,8 +922,7 @@ def check_guard_parity(root, problems):
     # F14: the hooks' json_get() must coerce JSON booleans to "true"/"false" —
     # a bare print(v) renders Python True/False and every `= "true"` test
     # silently fails. Pinned in the body, not a whole-file substring (F30).
-    for name in ("ops-sessionstart-hook.sh", "ops-stop-hook.sh",
-                 "ops-armgate-hook.sh"):
+    for name in ("ops-sessionstart-hook.sh", "ops-stop-hook.sh"):
         p = root / "scripts" / name
         if not p.is_file():
             continue
@@ -1233,12 +1089,11 @@ def check_gitignore_parity(root, problems):
     """
     MARK = "# cc-operator gitignore v2 (allowlist)"
     IGNORE_ALL = "*"
-    # `handoff-*.md` is evidence (the HANDOFF section's artifact) and
-    # `armgate.on` is a committable opt-in decision - neither is machine state
-    # (#28/#31).
+    # `handoff-*.md` is evidence (the HANDOFF section's artifact), not machine
+    # state (#28).
     ALLOW = ("!.gitignore", "!.gitattributes", "!VERDICTS.md", "!DECISIONS.md",
              "!tiers.env", "!verdicts.d/", "!verdicts.d/*.md",
-             "!handoff-*.md", "!armgate.on")
+             "!handoff-*.md")
     sets = {}
     for name in ("ops-init.sh", "ops-sessionstart-hook.sh"):
         p = root / "scripts" / name
@@ -1932,7 +1787,6 @@ CHECKS = (
     check_agents,
     check_render_templates,
     check_hook,
-    check_armgate,
     check_permission_guards,
     check_scripts,
     check_reader_bounds,

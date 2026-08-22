@@ -82,7 +82,6 @@ $_GI_MARK
 !verdicts.d/
 !verdicts.d/*.md
 !handoff-*.md
-!armgate.on
 EOF
 }
 if [ ! -f "$OPDIR/.gitignore" ]; then
