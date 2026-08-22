@@ -484,4 +484,4 @@ graph work now computes the answer that issue needs.
 
 ---
 
-Older releases (0.1.0 – 0.8.4) live in [CHANGELOG-archive.md](CHANGELOG-archive.md).
+Older releases (0.1.0 – 0.8.4) live in [docs/CHANGELOG-archive.md](docs/CHANGELOG-archive.md).
