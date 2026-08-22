@@ -3363,8 +3363,9 @@ check "start.md grants Write for materializing the charter" \
 check "start.md guards the CLAUDE.md import on the token it appends" \
   "$(grep -q '@OPERATOR.md' "$SCMD" && grep -q 'Grep-guard' "$SCMD" && echo 0 || echo 1)"
 # The --inline branch guards on a DIFFERENT token (the heading), because the inlined body contains no @import line.
+# Backticks stay out of the pattern: inside single quotes shellcheck reads them as command substitution (SC2016).
 check "start.md's --inline branch guards on the ## Operator heading" \
-  "$(grep -q 'Grep-guard on the `## Operator` heading' "$SCMD" && echo 0 || echo 1)"
+  "$(grep -q 'Grep-guard on the .## Operator. heading' "$SCMD" && echo 0 || echo 1)"
 
 ########################################################################
 echo "-- Case: /cc-operator:handoff carries the six-section contract and clears the deviation gate"
