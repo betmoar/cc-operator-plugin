@@ -1,10 +1,8 @@
 // tests/test_compress.mjs — replay tests for the input-axis compressor.
 //
-// The spec (docs/spec/input-axis-compressor.md, "Validator guardrails" §3) names
-// these cases; this file is that list, executable. Every assertion is against a
-// PINNED default, never a tilde — "a test against a tilde is not a test"
-// (audit F25/F27). The pinned numbers live in ONE place, scripts/ops-compress.mjs,
-// and are read from there rather than restated here.
+// The spec (docs/spec/input-axis-compressor.md §3) names these cases; every
+// assertion is against a PINNED default, never a tilde (audit F25/F27). Pinned
+// numbers live in ONE place, scripts/ops-compress.mjs, and are read from there.
 //
 // Run:  node tests/test_compress.mjs   (exit 0 iff all pass)
 
@@ -14,9 +12,8 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
-// `import.meta.dirname` is Node >=20.11 and ubuntu:24.04 ships 18.19, where it is
-// undefined and path.resolve throws "paths[0] must be of type string" — an error
-// naming nothing about Node versions. fileURLToPath has no floor.
+// `import.meta.dirname` is Node >=20.11; ubuntu:24.04 ships 18.19, where it's
+// undefined. fileURLToPath has no floor.
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MOD = pathToFileURL(path.join(ROOT, "scripts", "ops-compress.mjs")).href;
 const { compress, DEFAULTS } = await import(MOD);
@@ -31,17 +28,14 @@ const ok = (cond, msg) => {
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "opscompress-"));
 fs.mkdirSync(path.join(TMP, ".operator"), { recursive: true });
 
-// `compress` is pure w.r.t. its inputs: it takes the hook payload and an env
-// override map, and returns either null (skip — emit nothing) or the
-// hookSpecificOutput object. No process.env reads inside, so a test never has
-// to mutate global state to pin a tunable.
+// `compress` is pure w.r.t. its inputs: hook payload + env override map, 
+// returns null (skip) or the hookSpecificOutput object. No process.env reads
+// inside, so a test never has to mutate global state to pin a tunable.
 const run = (payload, env = {}) => compress(payload, { env, cwd: TMP });
 
-// Each case gets a FRESH session id. Dedup is stateful per (session, tool), so
-// two cases reusing one session make the second hit the dedup marker instead of
-// the tier under test — which is a bug in the TEST, and it bit exactly once here
-// (the spill case silently measured dedup). Isolation is not optional for a
-// stateful tier.
+// Each case gets a FRESH session id: dedup is stateful per (session, tool), so
+// two cases reusing one session make the second hit the dedup marker instead
+// of the tier under test (measured once, the spill case silently hit dedup).
 let sessN = 0;
 const bash = (stdout, extra = {}) => ({
   tool_name: "Bash",
@@ -115,10 +109,8 @@ ok(DEFAULTS.SCRUB_MIN === 1024, "SCRUB_MIN pinned at 1024");
 ok(DEFAULTS.LINE_CHARS === 400, "LINE_CHARS pinned at 400");
 ok(DEFAULTS.SALVAGE_LINES === 12, "SALVAGE_LINES pinned at 12");
 // A payload whose only compressible content is blank lines: shrink is exactly
-// MIN_SHRINK-1 → must be kept whole.
-// N trailing newlines collapse to 1, so the saving is exactly N-1. Assert BOTH
-// sides of the floor: a threshold test that only checks the reject side passes
-// just as well when the feature is switched off entirely.
+// MIN_SHRINK-1 → must be kept whole. N trailing newlines collapse to 1, so
+// assert both sides of the floor.
 const base = "a".repeat(2000);
 const savingOf = (n) => base + "\n".repeat(n + 1);   // → saves exactly n
 const underRes = run({ ...bash(savingOf(DEFAULTS.MIN_SHRINK - 1)), tool_input: { command: "echo hi" } });
@@ -173,10 +165,8 @@ ok(run({ ...dedupPayload, session_id: undefined }) !== null,
 // ── spill holds the VERBATIM original INCLUDING stderr ──────────────────────
 console.log("-- Case: spill preserves stderr, not just stdout (I2.3 verbatim contract)");
 // F50: spill(original) lost stderr because `original` was stdout alone while
-// elide cut stdout+stderr. For a Bash failure landing on stderr, the verbatim
-// artifact vanished from BOTH the model's view and the spill — breaking the
-// citation contract for exactly the FAIL case it exists to protect. Proven by
-// reproduction before the fix: spill held 1560 B of a 36589-B combined output.
+// elide cut stdout+stderr — a Bash failure on stderr vanished from both the
+// model's view and the spill (reproduced: spill held 1560 B of 36589 B).
 const stderrBig = "x".repeat(2000);
 const stderrMid = "not ok 99 - the failing test\n" + "z".repeat(20000);
 const stderrRes = run({ ...bash(stderrBig, { stderr: stderrMid }), tool_input: { command: "npm test" } });
@@ -194,10 +184,9 @@ if (sm) {
 
 // ── spill is VERBATIM — pre-scrub, lossless (finding 6) ─────────────────────
 console.log("-- Case: spill is the verbatim pre-scrub original, not the scrubbed text");
-// spill(text) after scrub collapses repeats and strips ANSI — a lossy transform
-// that broke "verbatim original" (I2.3) in a second dimension. The spill must
-// hold what the tool PRODUCED, byte-identical, so a cited artifact is
-// recoverable. Construct output scrub WOULD mutate: 9 identical lines + ANSI.
+// spill(text) after scrub collapses repeats and strips ANSI, breaking
+// "verbatim original" (I2.3) — the spill must hold what the tool PRODUCED,
+// byte-identical.
 const repeatLine = "same line\n".repeat(9);
 const ansiLine = "\x1b[31mred\x1b[0m and text\n";
 const noisy = repeatLine + ansiLine + "z".repeat(10000);
@@ -211,14 +200,10 @@ if (vm) {
 }
 
 // ── a FAILED spill must be marked, not silent (pr-review 2026-08-03) ────────
-console.log("-- Case: spill failure leaves an explicit TRUNCATED marker, not silence");
-// spill() returns null on any write failure (disk full, perms). Elided text
-// with no marker is indistinguishable from complete output — the I2.3
-// falsification class through the failure path. Force the failure inside the
-// IN-PROJECT branch: a cwd that has `.operator/` (so containment does not divert
-// to the tempdir) whose `.compress-spill` is a regular FILE, making mkdirSync
-// throw. Pointing cwd at a file no longer works as injection — that path now
-// falls back to the tempdir and succeeds, which is the containment fix working.
+console.log("-- Case: spill failure leaves an explicit marker, not silence");
+// spill() returns null on any write failure; elided text with no marker is
+// indistinguishable from complete output (I2.3's failure-path class). Force
+// the failure via a .compress-spill that's a regular FILE.
 const badCwd = fs.mkdtempSync(path.join(os.tmpdir(), "opsbadspill-"));
 fs.mkdirSync(path.join(badCwd, ".operator"));
 fs.writeFileSync(path.join(badCwd, ".operator", ".compress-spill"), "");
@@ -226,8 +211,8 @@ const failRes = compress({ ...bash("y".repeat(50000)), tool_input: { command: "n
   { env: {}, cwd: badCwd });
 {
   const failOut = failRes?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
-  ok(/TRUNCATED and the spill to disk FAILED/.test(failOut),
-    "elided output whose spill failed carries the explicit failure marker");
+  ok(/no spill copy exists/.test(failOut),
+    "elided output whose spill failed carries the explicit no-spill marker");
   ok(!/full output spilled to/.test(failOut),
     "a failed spill never cites a spill file that does not exist");
 }
@@ -242,13 +227,11 @@ ok(noElide === null, "a raised MAX_CHARS threshold suppresses the elide tier");
 
 // ── ephemera containment ────────────────────────────────────────────────────
 // The compressor fires in every project where the plugin is merely INSTALLED.
-// Before containment it created `.operator/` (mkdir recursive) in repos that
-// never ran /cc-operator:start — and, with no ops-init to write one, a
-// `.operator/` carrying no .gitignore at all: untracked dirty state the user
-// never asked for.
+// Before containment it mkdir'd `.operator/` (with no .gitignore, since no
+// ops-init ran) in repos that never ran /cc-operator:start.
 console.log("-- Case: ephemera are self-ignoring and never materialize .operator/");
 {
-  // (A) a project WITH .operator/ keeps spilling in-tree, and each ephemera root
+  // (A) a project WITH .operator/ keeps spilling in-tree; each ephemera root
   //     carries its own `*` ignore so the tree is clean without ops-init.
   const spillRoot = path.join(TMP, ".operator", ".compress-spill");
   ok(fs.existsSync(spillRoot), "an initialized project spills under .operator/");
@@ -257,73 +240,26 @@ console.log("-- Case: ephemera are self-ignoring and never materialize .operator
   ok(fs.readFileSync(path.join(TMP, ".operator", ".compress-state", ".gitignore"), "utf8").trim() === "*",
     "the dedup-state root carries its own .gitignore holding '*'");
 
-  // (B) a project WITHOUT .operator/ gets no directory at all — the roots move
-  //     to a cwd-keyed tempdir, and spill/cite keep working.
+  // (B) a project WITHOUT .operator/ gets no directory and no spill: elide
+  //     still fires, the marker says "not spilled".
   const virgin = fs.mkdtempSync(path.join(os.tmpdir(), "opsvirgin-"));
   const vres = compress({ ...bash(big), tool_input: { command: "npm test" } },
     { env: {}, cwd: virgin });
   const vout = vres?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
   ok(!fs.existsSync(path.join(virgin, ".operator")),
     "a project that never ran /cc-operator:start gets NO .operator/ directory");
-  const vm = vout.match(/full output spilled to (\S+)/);
-  ok(vm != null, "the spill still happens and is still cited");
-  if (vm) {
-    ok(path.isAbsolute(vm[1]), "an out-of-tree spill is cited by ABSOLUTE path, never a ../.. walk");
-    ok(fs.readFileSync(vm[1], "utf8") === big, "the out-of-tree spill holds the verbatim original");
-  }
-  // The wipe path the SessionStart hook recomputes in shell must match. The
-  // shared segment carries the uid: /tmp is world-writable on Linux and the key
-  // is a plain sha256 of cwd, so a uid-less shared root was readable — and
-  // pre-plantable — by any other local user.
-  const key = crypto.createHash("sha256").update(virgin).digest("hex").slice(0, 16);
-  const uid = typeof process.getuid === "function" ? process.getuid() : "nouid";
-  const tmpBase = path.join(os.tmpdir(), `cc-operator-${uid}`);
-  ok(fs.existsSync(path.join(tmpBase, key, ".compress-spill")),
-    "the tempdir root is <tmp>/cc-operator-<uid>/sha256(cwd)[:16] — the path SessionStart wipes");
-  ok(!fs.existsSync(path.join(os.tmpdir(), "cc-operator", key)),
-    "nothing is written to the legacy uid-less shared root");
-
-  // Modes: the spill holds UNREDACTED tool output, so no group/other bits on
-  // any segment or on the file itself.
-  // lstat only what exists. When the tempdir root is HOSTILE — pre-planted as a
-  // symlink by another local user, which is the attack the uid scoping and the
-  // 0700 modes exist for — ephemeralRoot correctly returns null and no segment
-  // is created. Verified on Linux with a real world-writable /tmp: /etc was
-  // untouched. But this loop then lstat'd a path that rightly did not exist and
-  // the whole suite died on a raw ENOENT stack trace instead of reporting a
-  // verdict, which is the "raw error as operator guidance" class in JS. Say what
-  // happened; a refused hostile root is a legitimate environment, not a crash.
-  for (const p of [tmpBase, path.join(tmpBase, key),
-                   path.join(tmpBase, key, ".compress-spill")]) {
-    if (!fs.existsSync(p)) {
-      ok(false, `tempdir segment absent (hostile or unwritable ${os.tmpdir()}?): ${path.basename(p)}`);
-      continue;
-    }
-    ok((fs.lstatSync(p).mode & 0o077) === 0, `tempdir segment is 0700-tight: ${path.basename(p)}`);
-  }
-  if (vm && fs.existsSync(vm[1])) {
-    ok((fs.lstatSync(vm[1]).mode & 0o077) === 0, "the spill FILE is 0600 — pre-scrub output is not world-readable");
-  }
-
-  // A hijacked root must not be written through. Point the keyed segment at a
-  // symlink and assert the compressor declines rather than following it.
-  const hijackCwd = fs.mkdtempSync(path.join(os.tmpdir(), "opshijack-"));
-  const hkey = crypto.createHash("sha256").update(hijackCwd).digest("hex").slice(0, 16);
-  const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "opselsewhere-"));
-  fs.mkdirSync(tmpBase, { recursive: true, mode: 0o700 });
-  fs.symlinkSync(elsewhere, path.join(tmpBase, hkey));
-  const hres = compress({ ...bash(big), tool_input: { command: "npm test" } },
-    { env: {}, cwd: hijackCwd });
-  const hout = hres?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
-  ok(!/full output spilled to/.test(hout),
-    "a symlinked tempdir root is refused — no spill, no cite, rather than writing pre-scrub output where another user chose");
-  ok(fs.readdirSync(elsewhere).length === 0,
-    "nothing was written through the planted symlink");
-  fs.unlinkSync(path.join(tmpBase, hkey));
-  fs.rmSync(elsewhere, { recursive: true, force: true });
-  fs.rmSync(hijackCwd, { recursive: true, force: true });
+  ok(/chars elided/.test(vout) && /no spill copy exists/.test(vout),
+    "elide still fires outside an operated project, marked 'not spilled'");
+  ok(!/full output spilled to/.test(vout),
+    "no spill cite in an un-operated project (there is no spill file to cite)");
+  // Dedup is off there too: the same big output twice must not collapse to
+  // the identical-marker (no .compress-state root to hold the hash).
+  const vres2 = compress({ ...bash(big), tool_input: { command: "npm test" } },
+    { env: {}, cwd: virgin });
+  const vout2 = vres2?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
+  ok(!/identical to this tool's previous output/.test(vout2),
+    "dedup is skipped in an un-operated project (no state root, no false HIT)");
   fs.rmSync(virgin, { recursive: true, force: true });
-  fs.rmSync(path.join(tmpBase, key), { recursive: true, force: true });
 }
 
 // ── F3: a traversal session_id must not escape the spill root ──────────────
@@ -350,30 +286,22 @@ console.log("-- Case: F3 traversal session_id stays inside the spill root");
 }
 
 // ── A dot-only session_id must not COLLAPSE the spill dir onto its root ─────
-// Not the traversal above: `.` resolves to `base` itself, so the containment
-// test passed it — the sid then names no subdirectory and every session shares
-// one bucket. spill()'s `keep` cleanup unlinks the oldest entries of whatever
-// dir it is given, so a collapsed session prunes OTHER sessions' spills, and
-// those hold unredacted tool output. Asserted on the observable path, not on
-// the sanitizer's return value, so it survives a refactor of the helper.
-// (Copilot review of PR #56, round 2.)
+// `.` resolves to `base` itself, so the sid names no subdirectory and every
+// session shares one bucket — spill()'s `keep` cleanup then prunes OTHER
+// sessions' unredacted spills (Copilot review of PR #56, round 2).
 console.log("-- Case: a dot-only session_id gets its own subdir, never the root");
 {
   const spillRoot = path.resolve(TMP, ".operator", ".compress-spill");
-  // The neighbour must be a FILE directly under the root, and the root must
-  // hold more than SPILL_KEEP entries. Both were wrong in the first draft: the
-  // victim was a subdirectory (spill()'s cleanup calls unlinkSync, which throws
-  // EPERM on a non-empty dir and is swallowed by its best-effort catch — the
-  // victim was structurally immune) and the root held ~5 entries against
-  // SPILL_KEEP=50, so the eviction loop's slice was empty and never ran. The
-  // assertion could not fail in either direction. A collapsed session's spills
-  // land as plain files at the top level, which is what is modelled now.
-  // (Both facts measured; found by the review panel, round 3.)
+  // The neighbour must be a FILE directly under the root, with more than
+  // SPILL_KEEP entries present. Both were wrong in the first draft: a
+  // subdirectory victim is structurally immune (unlinkSync throws EPERM,
+  // swallowed by the best-effort catch) and ~5 entries against SPILL_KEEP=50
+  // left the eviction slice empty (found by the review panel, round 3).
   fs.mkdirSync(spillRoot, { recursive: true, mode: 0o700 });
   const victim = path.join(spillRoot, "aaa-neighbour-spill");
   fs.writeFileSync(victim, "neighbour spill", { mode: 0o600 });
-  // Oldest by mtime => first in line for eviction. Without this the padding
-  // below could be evicted instead and the case would pass by luck.
+  // Oldest by mtime => first in line for eviction, or the padding below could
+  // be evicted instead and the case would pass by luck.
   const old = Date.now() / 1000 - 86400;
   fs.utimesSync(victim, old, old);
   for (let i = 0; i < DEFAULTS.SPILL_KEEP + 10; i++) {
@@ -383,10 +311,9 @@ console.log("-- Case: a dot-only session_id gets its own subdir, never the root"
   }
 
   for (const sid of [".", "..", "..."]) {
-    // Vary the body per iteration: all three sids correctly resolve to the SAME
-    // "nosession" bucket, so identical text would be suppressed as a dedup HIT
-    // and the later two would never reach spill() at all — the case would pass
-    // by not testing anything. (Cost one red run to notice.)
+    // Vary the body per iteration: all three sids resolve to the same
+    // "nosession" bucket, so identical text would dedup-suppress the later
+    // two and the case would pass by not testing anything.
     const res = run({
       tool_name: "Bash",
       tool_use_id: `toolu_dot${sid.length}`,
@@ -402,7 +329,7 @@ console.log("-- Case: a dot-only session_id gets its own subdir, never the root"
       ok(resolved.startsWith(spillRoot + path.sep),
         `session_id ${JSON.stringify(sid)}: the spill stays inside the root`);
       // The real assertion: the spill's PARENT is a subdirectory of the root,
-      // never the root itself. `===` on the parent is what `.` used to give.
+      // never the root itself — `===` on the parent is what `.` used to give.
       ok(path.dirname(resolved) !== spillRoot,
         `session_id ${JSON.stringify(sid)}: the spill dir is NOT the shared root ` +
         `(a collapsed sid mixes sessions and lets one prune another's spills)`);
@@ -419,9 +346,8 @@ console.log("-- Case: F18 a vanished spill-dir entry does not fail the spill");
   const spillRoot = path.join(TMP, ".operator", ".compress-spill");
   const dir = path.join(spillRoot, raceSession);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  // Seed an entry, then remove it right before spill() runs its readdir+stat
-  // pass — simulating the race the F18 fix guards (an entry present at
-  // readdirSync but gone by statSync, e.g. a concurrent spill's own cleanup).
+  // Seed an entry, then remove it right before spill()'s readdir+stat pass —
+  // simulating the race the F18 fix guards (present at readdir, gone by stat).
   const ghost = path.join(dir, "ghost");
   fs.writeFileSync(ghost, "gone", { mode: 0o600 });
   fs.unlinkSync(ghost);
@@ -435,48 +361,34 @@ console.log("-- Case: F18 a vanished spill-dir entry does not fail the spill");
   const rText = raceRes?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
   ok(/full output spilled to/.test(rText),
     "spill() still returns a valid, non-null path when a listed entry has already vanished");
-  ok(!/TRUNCATED and the spill to disk FAILED/.test(rText),
-    "the vanished entry does not throw spill() into the outer FAILED-spill branch");
+  ok(!/no spill copy exists/.test(rText),
+    "the vanished entry does not throw spill() into the outer no-spill branch");
 }
 
 // ── #59: the case above never ENTERS the guarded window ─────────────────────
-// Measured: strip the try/catch from spill()'s map entirely and the whole suite
-// stays green. The reason is that the "ghost" is unlinked BEFORE spill() runs,
-// so its own readdirSync never lists it — the map never visits it, and the
-// statSync that would throw is never reached. The case proves the
-// already-a-ghost path, which needs no guard.
-//
-// The guarded window is the gap BETWEEN readdirSync and the statSync that
-// follows: an entry present at enumeration and unstattable a moment later.
-// Racing a real deletion into that gap would be timing-dependent, and this
-// project's standing rule is structural over timing (the #23 fixture's mtime
-// stamp exists for the same reason — a 1-in-3 test looks fixed and is a coin
-// flip). So the window is entered structurally instead: a DANGLING SYMLINK is
-// listed by readdirSync and makes statSync throw ENOENT, which is the identical
-// throw a vanished entry produces, on the identical line, deterministically and
-// on every run. Verified directly before writing this: readdirSync returns the
-// name, statSync throws ENOENT, lstatSync succeeds.
+// Measured: stripping spill()'s try/catch entirely still leaves the suite
+// green, because a ghost unlinked BEFORE spill() runs never appears in its
+// own readdirSync. The guarded window is the gap BETWEEN readdirSync and the
+// following statSync. Entered structurally via a dangling symlink (listed by
+// readdirSync, ENOENT on statSync — the identical throw a vanished entry
+// produces, deterministically on every run) rather than a timing race.
 console.log("-- Case: #59 the F18 guard is ENTERED — an entry listed but unstattable");
 {
   const winSession = `SESS-WINDOW${++sessN}`;
   const spillRoot = path.join(TMP, ".operator", ".compress-spill");
   const dir = path.join(spillRoot, winSession);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  // Points at a name that does not exist, and never will. Present to readdir,
-  // absent to stat — the two halves of the window, held open permanently.
+  // Points at a name that never exists: present to readdir, absent to stat —
+  // the two halves of the window, held open permanently.
   fs.symlinkSync(path.join(dir, "no-such-target"), path.join(dir, "dangling"));
-  // The precondition is the assertion that makes the rest mean anything: if a
-  // future Node stops listing dangling symlinks, or starts resolving them in
-  // statSync, this case silently stops testing the guard — the exact failure
-  // the case exists to end.
+  // The precondition assertion: if a future Node stops listing dangling
+  // symlinks, or resolves them in statSync, this case silently stops testing
+  // the guard.
   ok(fs.readdirSync(dir).includes("dangling"),
     "#59 precondition: the entry IS listed by readdirSync (it enters the map)");
-  // ENOENT specifically, not "any throw" (Copilot, PR review). The comment
-  // above claims the symlink reproduces the vanished-entry failure, and only
-  // ENOENT is that failure — an EACCES from a mode change, or an ELOOP from a
-  // symlink cycle, would satisfy a bare `threw` while the case silently stopped
-  // standing in for the race it was built to model. Pinning the code keeps the
-  // precondition as strong as the sentence that justifies it.
+  // ENOENT specifically, not "any throw" (Copilot review) — an EACCES or ELOOP
+  // would satisfy a bare `threw` while silently no longer modelling the
+  // vanished-entry race.
   let statErr = null;
   try { fs.statSync(path.join(dir, "dangling")); } catch (e) { statErr = e; }
   ok(statErr?.code === "ENOENT",
@@ -490,32 +402,27 @@ console.log("-- Case: #59 the F18 guard is ENTERED — an entry listed but unsta
     tool_response: { stdout: big, stderr: "" },
   });
   const wText = winRes?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
-  // WITHOUT the guard these two fail: the statSync throws out of the map, into
-  // spill()'s outer catch, which returns null — so the spill cite is replaced by
-  // the FAILED marker even though the write itself succeeded.
+  // WITHOUT the guard these two fail: the statSync throws out of the map,
+  // into spill()'s outer catch, returning null — the FAILED marker replaces
+  // a spill cite even though the write succeeded.
   ok(/full output spilled to/.test(wText),
     "#59 spill still cites a real path when an entry is listed but unstattable");
-  ok(!/TRUNCATED and the spill to disk FAILED/.test(wText),
-    "#59 the unstattable entry does not collapse the spill into the FAILED branch");
+  ok(!/no spill copy exists/.test(wText),
+    "#59 the unstattable entry does not collapse the spill into the no-spill branch");
   // And the spill file is really on disk — a cite pointing at nothing would
-  // satisfy the regex above while the guard was doing nothing useful.
+  // satisfy the regex above while the guard did nothing useful.
   const cited = /full output spilled to ([^\s]+)/.exec(wText);
   ok(!!cited && fs.existsSync(path.resolve(TMP, cited[1])),
     "#59 the cited spill path exists on disk (the write completed past the guard)");
 }
 
 // ── #59, second half: the guarded VALUE, not just the absence of a throw ────
-// The case above proves the guard does not throw. It does not reach the code
-// that USES what the guard returned, because the eviction loop only runs past
-// SPILL_KEEP entries and that directory holds two.
-//
-// So the `-Infinity` at the catch site was untested, and its polarity is a
-// stated behaviour: "Sort it oldest-first so it is preferred for deletion
-// rather than kept." Measured — flip it to `Infinity` and BOTH suites stay
-// green (95/0, 638/0) while an unstattable entry becomes permanently
-// un-evictable AND displaces a real spill file from the bound on every pass.
-// That is the #59 class exactly: a line whose purpose no test observes,
-// surviving inside the fix for a line whose purpose no test observed.
+// The case above proves the guard doesn't throw, but never reaches the code
+// that USES the guard's return (eviction only runs past SPILL_KEEP entries).
+// The `-Infinity` polarity — "sort oldest-first so it's preferred for
+// deletion" — was untested: flipping it to `Infinity` left both suites green
+// (95/0, 638/0) while an unstattable entry became permanently un-evictable and
+// displaced real spills every pass.
 console.log("-- Case: #59b the unstattable entry sorts OLDEST — evicted, not kept");
 {
   const evSession = `SESS-EVICT${++sessN}`;
@@ -523,7 +430,7 @@ console.log("-- Case: #59b the unstattable entry sorts OLDEST — evicted, not k
   const dir = path.join(spillRoot, evSession);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   // Fill to the bound so the eviction loop actually runs: SPILL_KEEP existing
-  // files plus the dangling symlink, and spill() then adds one more.
+  // files plus the dangling symlink, then spill() adds one more.
   const KEEP = DEFAULTS.SPILL_KEEP;
   for (let i = 0; i < KEEP; i++) {
     fs.writeFileSync(path.join(dir, `f${String(i).padStart(3, "0")}`), "x", { mode: 0o600 });
@@ -542,14 +449,12 @@ console.log("-- Case: #59b the unstattable entry sorts OLDEST — evicted, not k
   });
 
   const after = fs.readdirSync(dir);
-  // The whole point: -Infinity sorts the unstattable entry FIRST, so it is the
-  // one deleted. With `Infinity` it sorts last, survives every pass forever,
-  // and a real spill file is evicted in its place.
+  // The whole point: -Infinity sorts the unstattable entry FIRST so it's the
+  // one deleted; `Infinity` sorts it last, evicting a real spill instead.
   ok(!after.includes("dangling"),
     "#59b the unstattable entry is EVICTED (it sorted oldest, as -Infinity intends)");
-  // The complement, and the half that shows the cost of getting it wrong: the
-  // newest real file must still be there. Asserting only the deletion would
-  // pass a bound that evicted everything.
+  // The complement: the newest real file must still be there — asserting only
+  // the deletion would pass a bound that evicted everything.
   ok(after.includes(`f${String(KEEP - 1).padStart(3, "0")}`),
     "#59b a real spill file was NOT evicted in the ghost's place");
 }

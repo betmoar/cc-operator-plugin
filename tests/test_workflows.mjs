@@ -1,23 +1,16 @@
 // tests/test_workflows.mjs — execution tests for the workflow .js logic.
 //
-// A workflow script runs top-to-bottom with top-level `await`, calling agent() /
-// parallel() / phase() / pipeline() / log() against the live harness. We cannot
-// drive the harness in-test, but we CAN load the workflow as a module with
-// STUBBED globals: `args` is injected, the agent primitives return canned
-// schema-shaped fixtures. The workflow's PURE top-level logic then runs against
-// real (stubbed) input — tier validation, the N clamp, the bucket/threshold
-// filter — and we assert on what it computes. This tests the ACTUAL code, not a
-// re-implementation (the import-forbidden sandbox means we can't factor it out).
+// Loads each workflow as a module with STUBBED globals (agent/parallel/phase/
+// pipeline/log), so its pure top-level logic runs against real stubbed input
+// and we assert on what it computes (not a reimplementation).
 //
 // Run:  node tests/test_workflows.mjs   (exit 0 iff all pass)
-// CI:   added as a step in .github/workflows/validate.yml (node ships on the runner).
 
 import { pathToFileURL, fileURLToPath } from "node:url";
 import path from "node:path";
 
-// `import.meta.dirname` is Node >=20.11 and ubuntu:24.04 ships 18.19, where it is
-// undefined and path.resolve throws "paths[0] must be of type string" — an error
-// naming nothing about Node versions. fileURLToPath has no floor.
+// `import.meta.dirname` is Node >=20.11; ubuntu:24.04 ships 18.19, where it's
+// undefined. fileURLToPath has no floor.
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WF = (f) => pathToFileURL(path.join(ROOT, "workflows", f)).href;
 
@@ -26,18 +19,9 @@ const ok = (cond, msg) => {
   if (cond) { pass++; console.log(`  ok   ${msg}`); }
   else { fail++; console.log(`  FAIL ${msg}`); }
 };
-// `expect` is REQUIRED: a substring the thrown message must contain.
-//
-// The generalized form of the #59-precondition finding (Copilot, PR #67): an
-// assertion that accepts ANY throw is satisfied by a throw that has nothing to
-// do with the property under test. Measured directly — a `TypeError: undefined
-// is not a function` from a broken harness scored as "tier: typo 'Mechanical'
-// rejected". Every workflow guard here throws with a specific message, so
-// naming a fragment of it costs nothing and is what makes the case discriminate
-// between "the guard fired" and "something, somewhere, threw".
-//
-// It is a required parameter rather than an optional one on purpose: an
-// optional tightening is a tightening nobody applies to the next case.
+// `expect` is REQUIRED: a substring the thrown message must contain — an
+// assertion that accepts ANY throw is satisfied by an unrelated crash (Copilot,
+// PR #67, measured: a broken-harness TypeError scored as a guard firing).
 const throws = async (fn, msg, expect) => {
   if (!expect) { ok(false, `${msg} (test bug: throws() needs an expected message fragment)`); return; }
   try { await fn(); ok(false, `${msg} (expected throw, got none)`); }
@@ -48,18 +32,14 @@ const throws = async (fn, msg, expect) => {
 };
 
 // ── stub the workflow runtime globals ───────────────────────────────────────
-// phase/log are no-ops. agent() returns a caller-controlled canned value. We
-// key the canned return on the agent's `label` so a workflow's multiple agent
-// calls each get distinct fixtures. parallel returns its thunks' results in
-// order; pipeline runs each item through the stages.
+// phase/log are no-ops; agent() returns a canned value keyed on the agent's
+// `label`; parallel returns thunk results in order; pipeline runs each stage.
 function makeRuntime(agentReturns = {}) {
   const calls = [];
   const agent = async (prompt, opts = {}) => {
     const label = opts.label ?? "_";
-    // `isolation` is captured because #23's whole deliverable is WHERE the seat
-    // runs, and that lives in the opts the workflow passes — not in its return
-    // value. A case asserting only on the prompt would pass on a workflow that
-    // describes an isolated run and dispatches a builder-tree one.
+    // `isolation` is captured because #23's deliverable is WHERE the seat runs,
+    // which lives in opts, not the return value.
     calls.push({ label, model: opts.model, prompt, isolation: opts.isolation });
     return agentReturns[label] ?? null;
   };
@@ -78,23 +58,20 @@ function makeRuntime(agentReturns = {}) {
     return out;
   };
   const phase = () => {};
-  // Captured, not discarded: log() is the ONLY channel by which a fan-out
-  // reports that some of its agents failed to return. A workflow that silently
-  // narrows its coverage is a real defect, so the messages are assertable.
+  // Captured, not discarded: log() is the only channel a fan-out has to report
+  // agents that failed to return.
   const logs = [];
   const log = (m) => { logs.push(String(m)); };
   return { agent, parallel, pipeline, phase, log, calls, logs };
 }
 
-// Load a workflow with injected globals + args, return its result. The workflow
-// reads bare `args`/`agent`/etc. as globals; we wrap its source in a Function
-// with the stubs as parameters so the top-level logic runs against them.
+// Load a workflow with injected globals + args; wraps its source in a Function
+// with the stubs as parameters so top-level logic runs against them.
 async function run(file, argsValue, agentReturns) {
   const rt = makeRuntime(agentReturns);
   const fs = await import("node:fs");
-  // Strip `export ` — the workflow ships as ESM, but we wrap it in a Function
-  // (CommonJS body), where `export const` is a syntax error. `export` only
-  // marks meta for the harness; it's inert at runtime.
+  // Strip `export ` — wrapped as a Function body (CommonJS), where
+  // `export const` is a syntax error; `export` is inert at runtime.
   const source = fs.readFileSync(new URL(file), "utf8").replace(/\bexport\s+const\s+meta\b/, "const meta");
   const fn = new Function(
     "args", "agent", "parallel", "pipeline", "phase", "log",
@@ -105,9 +82,7 @@ async function run(file, argsValue, agentReturns) {
     result = await fn(argsValue, rt.agent, rt.parallel, rt.pipeline, rt.phase, rt.log);
   } catch (e) {
     // Attach the runtime to the throw so a caller can assert what was SPENT
-    // before the workflow refused. Without this the natural assertion
-    // (`rt == null || rt.calls.length === 0`) is vacuous — rt is always null on
-    // a throw, so it passes whether the guard runs first or last.
+    // before the workflow refused (rt is otherwise always null on a throw).
     if (e && typeof e === "object") e.rt = rt;
     throw e;
   }
@@ -117,9 +92,7 @@ async function run(file, argsValue, agentReturns) {
 // ── brainstorm: tier validation + N clamp ───────────────────────────────────
 console.log("-- Case: brainstorm.js tier validation + directions clamping");
 
-// N clamping: non-numeric directions → default 4; "abc" → 4; 0 → 2; 99 → 6; 3 → 3.
-// The number of direction agent calls = N (clamped). Stub agent to return a
-// fixed direction per label; count the `direction i/N` calls.
+// N clamping: non-numeric → default 4; "abc" → 4; 0 → 2; 99 → 6; 3 → 3.
 async function brainstormN(directions) {
   const rt = makeRuntime({});
   rt.agent = async (p, o = {}) => { rt.calls.push(o.label); return { stance: "x", sketch: "x", tradeoffs: [], yagnis: "x" }; };
@@ -136,41 +109,33 @@ ok((await brainstormN(99)) === 6, "brainstorm N: 99 → clamped to 6 (max)");
 ok((await brainstormN(3)) === 3, "brainstorm N: 3 → 3 (in range)");
 ok((await brainstormN(undefined)) === 4, "brainstorm N: undefined → default 4");
 
-// Tier validation: IMPLEMENT (valid-but-unused) accepted; typo rejected; bad
-// charset rejected. An id operator does not recognise is ACCEPTED (0.8.3).
-// Each rejection is a top-level throw, so the workflow aborts before any
-// agent call.
-await throws(() => run(WF("brainstorm.js"), { tiers: { Mechanical: "glm-5" } }, {}),
-  "brainstorm tier: typo 'Mechanical' rejected (F07 typo guard)", "unknown tier");
-// Every whitespace/quote shape now lands on the ONE guard (0.8.3 removed the
-// id-shape catalogue). The pre-0.8.3 suite split these across two guards and
-// mislabelled which one fired — a review found the "glm 5" case claimed charset
-// coverage while actually throwing on ROUTABLE, and neutering BAD_CHARSET in
-// all four workflows left the suite green. With one guard the label cannot lie,
-// but the list still spans the shapes that used to route differently.
+// Post-#76-step-2: no KNOWN_TIERS catalogue, so an unknown key is ACCEPTED
+// (F07 resolver-map forwarding) but LOGGED, since a typo'd key silently keeps
+// the default. Assertion pins the log, not a throw.
+{
+  const { rt: typoRt } = await run(WF("brainstorm.js"), { tiers: { Mechanical: "glm-5" } },
+    { blindspots: { findings: [] }, converge: { ranked: [], sharedConstraints: [], openQuestions: [] } });
+  ok(typoRt.logs.some((m) => m.includes("'Mechanical'") && m.includes("accepted, unused")),
+    "brainstorm tier: typo 'Mechanical' accepted but LOGGED as unused (#76 step 2 — was a throw)");
+}
+// Every whitespace/quote shape lands on the ONE guard (0.8.3 removed the
+// id-shape catalogue); the pre-0.8.3 suite mislabelled which guard fired.
 for (const bad of ["glm 5", "glm-5 turbo", "vendor/model x", 'glm-5"q', "claude-opus 5"]) {
   await throws(() => run(WF("brainstorm.js"), { tiers: { MECHANICAL: bad } }, {}),
     `brainstorm tier: charset-bad ${JSON.stringify(bad)} rejected (F01)`,
     "outside the");
 }
-// The converse: a bracket-marked id is charset-LEGAL and must NOT be rejected
-// (a Copilot review asserted `]` was excluded from the allowed set; it is not —
-// `\]` inside a JS character class includes a literal `]`).
+// The converse: a bracket-marked id is charset-LEGAL (`\]` in a JS character
+// class includes a literal `]`, contra a prior Copilot review).
 let bracketOk = true;
 try {
   await run(WF("brainstorm.js"), { tiers: { MECHANICAL: "glm-5.2[1m]" } },
     { blindspots: { findings: [] }, converge: { ranked: [], sharedConstraints: [], openQuestions: [] } });
 } catch { bracketOk = false; }
 ok(bracketOk, "brainstorm tier: bracket-marked id 'glm-5.2[1m]' accepted (charset allows ])");
-// 0.8.3: an id operator does not recognise is ACCEPTED, and that is the point.
-// The list below is the direct inverse of the pre-0.8.3 cases — `not-routable`
-// and `bogus:vendor/model` used to be the two headline rejects, held in place
-// by a shape catalogue and a provider allowlist. Both were operator asserting
-// which model ids exist. The user picks the model; cc-proxy routes it or
-// errors. `deepseek-v4-flash` and `qwen3.8-max` are here because they are real
-// ids the old guard refused (measured against a live 409-id catalogue), and
-// `bogus:vendor/model` because a namespace this repo has never heard of is
-// cc-proxy's business, not ours.
+// 0.8.3: an id operator does not recognise is ACCEPTED — the user picks the
+// model, cc-proxy routes or errors. `deepseek-v4-flash`/`qwen3.8-max` are real
+// ids the old shape catalogue refused (measured against a live 409-id set).
 for (const good of ["glm-5.2", "claude-opus-5", "deepseek/deepseek-r1:free",
                     "openrouter:anthropic/claude-3-opus", "vendor/model:free",
                     "deepseek-v4-flash", "qwen3.8-max", "not-routable",
@@ -182,18 +147,45 @@ for (const good of ["glm-5.2", "claude-opus-5", "deepseek/deepseek-r1:free",
   } catch { accepted = false; }
   ok(accepted, `brainstorm tier: id ${JSON.stringify(good)} accepted — operator does not gate the catalogue (0.8.3)`);
 }
-// IMPLEMENT is in KNOWN_TIERS → accepted (no throw); it's unused but routable.
+// F07 property, post-catalogue: forwarding the resolver's full map (keys this
+// workflow never dispatches) must not throw.
 let implOk = true;
 try {
   await run(WF("brainstorm.js"), { tiers: { IMPLEMENT: "claude-sonnet-5" } },
     { blindspots: { findings: [] }, converge: { ranked: [], sharedConstraints: [], openQuestions: [] } });
 } catch { implOk = false; }
-ok(implOk, "brainstorm tier: IMPLEMENT accepted (F07 — valid-but-unused tier)");
+ok(implOk, "brainstorm tier: IMPLEMENT accepted (F07 — resolver-map forwarding survives the catalogue deletion)");
+// The F07 case above forwards a WELL-FORMED unused key, so it never noticed
+// that an unused key was still value-validated: the workflow logged
+// "accepted, unused" and threw on it one line later (Copilot, PR #78). A tier
+// this workflow does not dispatch must not be able to fail its run at all —
+// otherwise "accepted" is a lie and forwarding the resolver's map is unsafe
+// the moment any tier in it is malformed. dispatch.js is the sharpest case:
+// it dispatches JUDGMENT alone, so every other key is unused by construction.
+{
+  let unusedOk = true;
+  try {
+    await run(WF("dispatch.js"),
+      { seat: "scout", prompt: "x", model: "glm-5-turbo",
+        tiers: { JUDGMENT: "opus", MECHANICAL: "glm 5 with spaces" } },
+      { "dispatch:scout": "ok" });
+  } catch { unusedOk = false; }
+  ok(unusedOk,
+    "dispatch tier: a malformed value on an UNDISPATCHED tier does not throw (logged unused means unused)");
+}
+// ...and the converse control: the same malformed value on a tier the
+// workflow DOES dispatch must still throw, or the filter above has simply
+// disabled the guard.
+await throws(() => run(WF("dispatch.js"),
+  { seat: "scout", prompt: "x", model: "glm-5-turbo",
+    tiers: { JUDGMENT: "glm 5 with spaces" } }, {}),
+  "dispatch tier: a malformed value on a DISPATCHED tier still throws (the filter did not neuter the guard)",
+  "outside the");
 
 // ── review: bucket + threshold filter ───────────────────────────────────────
 console.log("-- Case: review.js scoring bucket + threshold");
-// Synthesize a panel whose findings we control, assert the workflow drops <50
-// and buckets 75+/60-74/50-59. Stub each lens to return its findings.
+// Synthesize a panel with controlled findings; assert <50 dropped and
+// 75+/60-74/50-59 bucketing.
 const panelFixtures = {
   "lens:spec": { findings: [
     { summary: "drop me", evidence: "x", score: 40 },   // dropped (<50)
@@ -211,10 +203,8 @@ ok(rev.findings.find((f) => f.score === 90).bucket === "must-resolve", "review: 
 ok(rev.findings.find((f) => f.score === 65).bucket === "should-clarify", "review: bucket 60-74 → should-clarify");
 ok(rev.findings.find((f) => f.score === 55).bucket === "consider", "review: bucket 50-59 → consider");
 
-// A lens whose agent dies resolves to null and is dropped by .filter(Boolean).
-// Dropped-lens and found-nothing are then indistinguishable unless the ratio is
-// logged — crawl.js logs it for the identical pattern; review.js did not, so a
-// panel could silently run at half the coverage the operator asked for.
+// A dead lens resolves null, dropped by .filter(Boolean); the ratio must be
+// logged so dropped-lens and found-nothing stay distinguishable.
 const ALL_LENSES = ["spec", "testability", "feasibility", "quality", "correctness"];
 const everyLens = Object.fromEntries(ALL_LENSES.map((k) => [`lens:${k}`, { findings: [] }]));
 const { rt: fullRt } = await run(WF("review.js"), {}, everyLens);
@@ -233,9 +223,8 @@ const { result: partialRev } = await run(WF("review.js"), {},
 ok((partialRev.deadLenses ?? []).join() === "quality",
   "review: the dead lens is named in the RESULT, not only the log");
 
-// The Workflow tool JSON-encodes a passed scalar, so a bare target path
-// arrives as `"docs/x.md"` — quotes included. They used to survive into
-// `target` and ship in every lens prompt as part of the path.
+// The Workflow tool JSON-encodes a passed scalar, so a bare target arrives
+// quoted; quotes used to survive into every lens prompt.
 const { rt: quotedRt } = await run(WF("review.js"), JSON.stringify("docs/x.md"), everyLens);
 const lensPrompt = quotedRt.calls.find((c) => c.label.startsWith("lens:")).prompt;
 ok(lensPrompt.includes("ARTIFACT: docs/x.md\n"),
@@ -250,13 +239,9 @@ ok(junkRt.calls.find((c) => c.label.startsWith("lens:")).prompt.includes('ARTIFA
 
 // ── plan: decomposition + vet classification ────────────────────────────────
 console.log("-- Case: plan.js vet classification (blocked / needs-info / clear)");
-// Stub decompose to return 2 tasks; vet lenses return feasible/testable/issues.
-// Assert the workflow classifies a 'no' feasibility as blocked, 'needs-info' as
-// needsInfo, and clean as neither.
-// `blocked` is three OR'd conditions. The original fixture set feasible:"no"
-// AND a contradiction issue on the same task, so it proved only that their
-// disjunction fires — a regression killing the testable or contradiction branch
-// alone would have passed. Each condition now has its own task.
+// Stub decompose to return 2 tasks; classify 'no' as blocked, 'needs-info' as
+// needsInfo, clean as neither. `blocked` is three OR'd conditions, each given
+// its own task so a regression in one alone still fails.
 const planFixtures = {
   decompose: { tasks: [
     { id: "clean", title: "t", files: [], produces: "", testCycle: "run x → pass" },
@@ -290,10 +275,9 @@ ok(blockedIds.includes("contra"), "plan: contradiction issue alone → blocked")
 ok(needsInfoIds.includes("info"), "plan: feasible=needs-info → needsInfo");
 ok(!blockedIds.includes("clean") && !needsInfoIds.includes("clean"), "plan: clean task is neither blocked nor needsInfo");
 
-// A lens that dies resolves its slot to null → feasible/testable are undefined,
-// which matches neither "no" nor "needs-info". Before the fix that fell through
-// to the implicit "clear" bucket: a task whose vetting never ran reported as
-// having PASSED. It must surface as vettingIncomplete instead.
+// A dead lens leaves feasible/testable undefined, matching neither "no" nor
+// "needs-info" — it must surface as vettingIncomplete, not fall through to
+// implicit "clear".
 const nullFixtures = {
   decompose: { tasks: [
     { id: "dead", title: "t", files: [], produces: "", testCycle: "run x" },
@@ -306,12 +290,10 @@ ok((nullPlan.vettingIncomplete ?? []).includes("dead"),
   "plan: a lens returning null → vettingIncomplete, NOT clear");
 ok(!(nullPlan.blocked ?? []).map((b) => b.taskId).includes("dead"),
   "plan: vetting-incomplete is its own bucket, not conflated with blocked");
-// F13: the full spec goes to decompose ONCE; the per-task vet lenses get the
-// bounded specExcerpt, never the whole spec (it was re-billed T times at the
-// judgment tier — pure duplicate input).
+// F13: the full spec goes to decompose ONCE; per-task vet lenses get the
+// bounded specExcerpt, never the whole spec.
 const feasCalls = planCalls.filter((c) => c.label.startsWith("feas:"));
-// One feasibility lens per decomposed task — derived, not hardcoded, so adding
-// a classification fixture does not silently weaken the F13 assertion.
+// One feasibility lens per decomposed task, derived rather than hardcoded.
 ok(feasCalls.length === planFixtures.decompose.tasks.length &&
    feasCalls.every((c) => !c.prompt.includes(BIG_SPEC)),
   "plan: feasibility vet prompt does NOT carry the full spec (F13)");
@@ -320,10 +302,8 @@ ok(planCalls.find((c) => c.label === "decompose").prompt.includes(BIG_SPEC),
 
 // ── plan: the north star is required, and a vague one is refused (#58) ───────
 console.log("-- Case: plan.js north star — required, falsifiable, decompose-only");
-// Every other input to this workflow is guarded; the one saying what the work is
-// FOR used to fall back to a placeholder string and be decomposed as if it were
-// a spec. Absent, too short, and no-miss-clause each have their own case,
-// because a single disjunction test passes when two of the three branches die.
+// The input saying what the work is FOR is guarded; it used to fall back to a
+// placeholder and decompose as if that were the spec.
 await throws(() => run(WF("plan.js"), { spec: "s" }, planFixtures),
   "plan northStar: absent → refused, not decomposed as a placeholder", "required");
 await throws(() => run(WF("plan.js"), { spec: "s", northStar: 42 }, planFixtures),
@@ -339,12 +319,9 @@ await throws(() => run(WF("plan.js"), {
   }, planFixtures),
   "plan northStar: long but with no miss clause → refused", "Missed if");
 
-// The measured decision (tests/fixtures/plan-align/MEASUREMENT.md, 2026-08-18):
-// the goal goes to DECOMPOSE and NOT to the per-task vet packets. Putting it
-// there drew goal-reachability findings from 6/6 seats against the CONTROL
-// column — a plan that reaches its goal — so it is noise bought at judgment
-// tier. This is the F13 assertion's shape: pin WHERE an input is spent, because
-// nothing else would notice it being spent everywhere.
+// Measured decision (2026-08-18): the goal goes to DECOMPOSE, never the
+// per-task vet packets — putting it there drew goal-reachability findings
+// from 6/6 seats against the control column (noise at judgment tier).
 const nsCalls = planRt.calls;
 ok(nsCalls.find((c) => c.label === "decompose").prompt.includes(NORTH_STAR),
   "plan northStar: decompose receives it");
@@ -356,16 +333,13 @@ ok(plan.northStar === NORTH_STAR,
 
 // ── plan: the graph — edges, layers, Amdahl (#66) ────────────────────────────
 console.log("-- Case: plan.js graph — real/unverified edges, concurrency, p + ceiling");
-// Arithmetic over produces/consumes, no agent call. EVERY part gets a negative
-// control: a check that reports "wide" on a chain launders a guess as a
-// measurement, which is worse than not reporting one.
+// Arithmetic over produces/consumes, no agent call; every part gets a
+// negative control so a "wide" report can't launder a guess as a measurement.
 const graphVet = (ids) => Object.fromEntries(
   ids.flatMap((id) => [[`feas:${id}`, { feasible: "yes", testable: "yes", issues: [] }],
                        [`test:${id}`, { feasible: "yes", testable: "yes", issues: [] }]]));
-// Arrays: the shipped contract since produces/consumes became structured. A
-// second builder keeps the PROSE fallback exercised by name rather than by
-// accident — it is still reachable when a decomposer ignores the schema, and a
-// fallback nothing tests is a fallback nobody knows is broken.
+// Arrays are the shipped contract; a second builder exercises the PROSE
+// fallback by name so it stays covered even though it's still reachable.
 const gtask = (id, produces = [], consumes = []) => ({
   id, title: "t", files: ["f.py"], produces, consumes, specExcerpt: "x",
   testCycle: "run x → pass", steps: ["s"],
@@ -417,12 +391,9 @@ ok(wg.edges.length === 3 && wg.edges.every((e) => e.status === "unverified"),
 ok((widePlan.blocked ?? []).length === 0 && (widePlan.needsInfo ?? []).length === 0,
   "plan graph: POLARITY — unverified edges REPORT, they never block a plan (#21's class)");
 
-// B2: PROSE. The token rule must not treat ordinary capitalised English as a
-// contract name. A review measured the earlier rule (any uppercase letter)
-// reporting these four INDEPENDENT tasks as a strict chain — p=0, ceiling 1.0x,
-// every edge "real" via the token "The". The whole deliverable of #66 is the
-// number, so a spurious match is worse than a missed one, and it is also the
-// direction the comment claimed could not happen.
+// B2: PROSE. The token rule must not treat capitalised English as a contract
+// name — the earlier rule (any uppercase letter) reported four independent
+// tasks as a strict chain via the token "The" (measured).
 const proseIds = ["pw", "px", "py", "pz"];
 const prose = {
   decompose: { fileStructure: "f: r", tasks: proseIds.map((id) =>
@@ -453,15 +424,11 @@ ok(keepPlan.graph.edges[0].status === "real",
 ok(keepPlan.graph.edges[0].via.includes("create_token") && keepPlan.graph.edges[0].via.includes("ResetToken"),
   "plan graph: both underscore and internal-capital forms resolve, so the rule is not merely stricter");
 
-// B3: PROPERTIES over randomised plans. Seeded, so a failure is reproducible —
-// an unseeded fuzz reports a different bug every run and none of them twice.
-//
-// These are INVARIANTS, deliberately not a second implementation of the graph.
-// A differential oracle was written and run during review (400 plans, zero
-// disagreements) and is not shipped: a copied algorithm has to be updated in
-// lockstep, and two identically-wrong copies are trivially "in agreement" —
-// F30's shape, which this repo has already been bitten by. Properties cannot
-// drift into agreement with a bug because they never encode the algorithm.
+// B3: PROPERTIES over randomised, seeded plans — deliberately not a second
+// implementation of the graph. A differential oracle (400 plans, zero
+// disagreements) was run during review and not shipped: two identically-wrong
+// copies are trivially "in agreement" (F30's shape); properties can't drift
+// into agreement with a bug because they never encode the algorithm.
 {
   let seed = 20260818;
   const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
@@ -485,9 +452,9 @@ ok(keepPlan.graph.edges[0].via.includes("create_token") && keepPlan.graph.edges[
     const expect = Number((tasks.length / g.layers.length).toFixed(2));
     if (Math.abs(g.ceiling - expect) > 0.02) broken.push(`iter ${iter}: ceiling ${g.ceiling} != N/L ${expect}`);
     if ((res.blocked ?? []).length || (res.needsInfo ?? []).length) broken.push(`iter ${iter}: graph reached a blocking bucket`);
-    // The property whose absence let a layer inversion pass 120/120: the ceiling
-    // check above derives L from the OUTPUT, so it only proves internal
-    // consistency. This one is about the graph being a graph.
+    // The property whose absence let a layer inversion pass 120/120: the
+    // ceiling check above derives L from the OUTPUT, proving only internal
+    // consistency.
     const lo = new Map();
     (g.layerIndexes ?? []).forEach((l, li) => l.forEach((ix) => lo.set(ix, li)));
     for (const e of g.edges) {
@@ -502,9 +469,8 @@ ok(keepPlan.graph.edges[0].via.includes("create_token") && keepPlan.graph.edges[
   ok(broken.length === 0, `plan graph fuzz: no invariant violated${broken.length ? " — " + broken[0] : ""}`);
 }
 
-// B4: outOfOrder. It shipped with no assertion anywhere, so flipping the scan
-// direction or dropping the log branch would leave the suite green while the
-// only signal that the concurrency numbers are untrustworthy stopped firing.
+// B4: outOfOrder shipped with no assertion, so flipping the scan direction or
+// dropping the log branch would leave the suite green.
 {
   const ooIds = ["late", "early"];
   const oo = { decompose: { fileStructure: "f: r", tasks: [
@@ -521,8 +487,7 @@ ok(keepPlan.graph.edges[0].via.includes("create_token") && keepPlan.graph.edges[
     "plan graph: POLARITY — outOfOrder reports, it does not block");
 
   // The guard the review measured: a LATER task reusing a produced name is
-  // benign when the real dependency already resolved backwards. Flagging it
-  // announced "p/ceiling understate the serial path" about a correct number.
+  // benign when the real dependency resolved backwards.
   const benignIds = ["A", "B", "C"];
   const benign = { decompose: { fileStructure: "f: r", tasks: [
       gtask("A", ["make_x"], []),
@@ -534,9 +499,8 @@ ok(keepPlan.graph.edges[0].via.includes("create_token") && keepPlan.graph.edges[
     "plan graph: NEGATIVE CONTROL — a benign duplicate producer name later in the list is NOT outOfOrder");
 }
 
-// B5: an `unverified` edge must not imply "no dependency" when dependsOn found a
-// non-adjacent one. Measured on the repo's own control fixture, where two edges
-// read unverified while both tasks genuinely depend on task 0.
+// B5: an `unverified` edge must not imply "no dependency" when dependsOn
+// found a non-adjacent one (measured on the control fixture).
 {
   const nonAdjIds = ["p0", "p1", "p2"];
   const nonAdj = { decompose: { fileStructure: "f: r", tasks: [
@@ -551,9 +515,8 @@ ok(keepPlan.graph.edges[0].via.includes("create_token") && keepPlan.graph.edges[
     "plan graph: an unverified edge names the producer it DOES depend on — 'buys nothing' would be false here");
 }
 
-// An empty decomposition must return the SAME shape as a full one. It used to
-// omit northStar, tasks, vetting and graph, so a caller reading result.graph or
-// result.northStar got a TypeError on undefined.
+// An empty decomposition must return the same shape as a full one — it used
+// to omit northStar/tasks/vetting/graph, TypeError-ing a caller.
 {
   const { result: emptyPlan } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR },
     { decompose: { fileStructure: "f", tasks: [] } });
@@ -565,12 +528,9 @@ ok(keepPlan.graph.edges[0].via.includes("create_token") && keepPlan.graph.edges[
     ok(Array.isArray(emptyPlan[k]), `plan: empty decomposition still returns ${k} as an array`);
 }
 
-// B0: STRUCTURED vs INFERRED. The reason produces/consumes became arrays: while
-// they were prose, every extraction rule had both a false-positive and a
-// false-negative class, and four review rounds each closed one and opened
-// another. Declared names need no rule. What must never come back is the silent
-// mixing of the two — a number estimated from English presented as one measured
-// from declarations.
+// B0: STRUCTURED vs INFERRED. produces/consumes became arrays because every
+// prose extraction rule had both a false-positive and false-negative class.
+// Must never come back: silently mixing a guessed number with a measured one.
 {
   const decl = { decompose: { fileStructure: "f: r", tasks: [
       gtask("d0", ["The", "Object"], []),          // names that a parser would have refused
@@ -610,8 +570,8 @@ ok(keepPlan.graph.edges[0].via.includes("create_token") && keepPlan.graph.edges[
 }
 
 // B7: the round-4 regressions, each pinned by the property that would have
-// caught it. The fuzz missed all of them because its ceiling check derives L
-// from the output under test — internal consistency, not correctness.
+// caught it — the fuzz missed all of them (internal consistency, not
+// correctness).
 {
   // NEAREST producer, not earliest: a re-produced name used to layer the
   // consumer above a producer the same result stamps `real`.
@@ -666,10 +626,9 @@ await throws(() => run(WF("plan.js"), { spec: "s",
     "plan northStar: leading whitespace does not turn a real goal into a bare miss clause");
 }
 
-// B6: the FALSE-NEGATIVE direction. Dropping bare capitals to kill "The" made
-// contractNames blind to single-word type names and routes — two of the three
-// shapes `produces` documents — and that direction OVERSTATES the ceiling, which
-// is worse for #66 than understating it.
+// B6: FALSE-NEGATIVE direction. Dropping bare capitals to kill "The" made
+// contractNames blind to single-word type names/routes — overstating the
+// ceiling, worse for #66 than understating it.
 {
   const tnIds = ["ty1", "ty2"];
   const tn = { decompose: { fileStructure: "f: r", tasks: [
@@ -719,9 +678,8 @@ ok(!dangIdsOut.includes("m"),
 ok(dangPlan.graph.consumesNoTaskProduces[0].tokens.includes("never_produced_anywhere"),
   "plan graph: dangling names WHICH token is unproduced, not just which task");
 
-// PER-TOKEN, the defect a review measured: one resolved name used to hide every
-// unresolved one in the same task, so the field answering #73 "exact and free"
-// reported nothing for the commonest real case.
+// PER-TOKEN, a measured defect: one resolved name used to hide every
+// unresolved one in the same task.
 {
   const mixIds = ["m1", "m2"];
   const mix = { decompose: { fileStructure: "f: r", tasks: [
@@ -734,9 +692,8 @@ ok(dangPlan.graph.consumesNoTaskProduces[0].tokens.includes("never_produced_anyw
     "plan graph: a task with one RESOLVED and one unproduced consume still reports the unproduced one");
 }
 
-// PER-TOKEN for outOfOrder too — the regression a review caught: the per-task
-// `continue` I added to silence a false positive also silenced a true one on
-// this repo's own corpus.
+// PER-TOKEN for outOfOrder too: a per-task `continue` added to silence a
+// false positive also silenced a true one on this repo's own corpus.
 {
   const ooIds2 = ["a1", "b1", "c1"];
   const oo2 = { decompose: { fileStructure: "f: r", tasks: [
@@ -754,10 +711,9 @@ ok(dangPlan.graph.consumesNoTaskProduces[0].tokens.includes("never_produced_anyw
 ok((dangPlan.blocked ?? []).length === 0,
   "plan graph: POLARITY — a dangling consumes reports, it does not block");
 
-// D: the arithmetic itself, against the issue's own worked numbers.
-// All three, because a single point passes against a table that is right once.
-// The k=16 value is the sobering one the issue is about: p=0.75 with 16 workers
-// buys 3.37x, not 16x, and the serial tail is the cap.
+// D: the arithmetic against the issue's own worked numbers, all three so a
+// single point can't pass against a table that's right once. k=16: p=0.75
+// buys 3.37x not 16x — the serial tail is the cap.
 ok(wg.speedupAt["2"] === 1.6 && wg.speedupAt["4"] === 2.29 && wg.speedupAt["16"] === 3.37,
   "plan graph: S = 1/((1-p) + p/k) at k=2/4/16 → 1.6x / 2.29x / 3.37x, computed not asserted");
 ok(typeof cg.dispatchBound === "string" && cg.dispatchBound.includes("CHART-r6"),
@@ -765,13 +721,9 @@ ok(typeof cg.dispatchBound === "string" && cg.dispatchBound.includes("CHART-r6")
 ok(!planCalls.some((c) => c.label.startsWith("graph")),
   "plan graph: no agent call — it is arithmetic over data the workflow already holds");
 
-// E: degenerate shapes. The graph runs on whatever the decomposer returned, and
-// a decomposer is a model — duplicate ids, a task consuming its own output, and
-// a back-reference are all things it can emit. None may throw (that would take
-// down a plan over a report) and none may reach blocked/needsInfo. Cycles are
-// impossible BY CONSTRUCTION, not by a check: dependsOn scans only tasks EARLIER
-// in the list, so the relation is a DAG whatever the text says — the
-// back-reference case is what proves that rather than asserting it.
+// E: degenerate shapes a decomposer can emit (duplicate ids, self-consuming
+// task, back-reference). None may throw or reach blocked/needsInfo. Cycles
+// are impossible BY CONSTRUCTION (dependsOn scans only earlier tasks).
 for (const [label, degen] of Object.entries({
   "a single task": [gtask("solo", "make_solo() -> str", "")],
   "duplicate task ids": [gtask("dup", "make_x() -> str", ""), gtask("dup", "make_y() -> str", "make_x from dup")],
@@ -792,11 +744,9 @@ for (const [label, degen] of Object.entries({
     `plan graph: ${label} yields finite p and a ceiling >= 1`);
 }
 
-// The degenerate loop above asserts only "does not throw / does not block /
-// finite p", and a review measured what that cannot see: with layers keyed by
-// task ID, duplicate ids collapsed and a task VANISHED from the report while p
-// was still computed over the full N — 2 ids surfaced for 3 tasks. The no-throw
-// assertion passed throughout. Count what came out, not just that something did.
+// The degenerate loop above only asserts no-throw/no-block/finite p; a review
+// measured what that misses: layers keyed by task ID collapsed duplicate ids
+// and a task VANISHED from the report while p was computed over the full N.
 {
   const dupTasks = [gtask("x", "make_x() -> str", ""), gtask("y", "make_y() -> str", "make_x from x"),
                     gtask("x", "make_z() -> str", "")];
@@ -808,10 +758,8 @@ for (const [label, degen] of Object.entries({
   ok(dupRes.graph.layers.every((l) => Array.isArray(l)),
     "plan graph: duplicate ids — no sparse hole in layers (a JSON null the operator would read as a layer)");
 }
-// The same depth for the OTHER degenerate shapes (PR #77 review: the dup-id
-// block was the only shape with a count check — a back-reference silently
-// vanishing from layers would ship green). Every task surfaces exactly once,
-// in exactly one layer, whatever the shape.
+// The same depth for the OTHER degenerate shapes (PR #77 review: only the
+// dup-id block had a count check). Every task surfaces exactly once.
 {
   const shapes = {
     "solo": [gtask("solo", "make_solo() -> str", "")],
@@ -828,7 +776,7 @@ for (const [label, degen] of Object.entries({
     ok(flat.length === tasks.length && new Set(flat).size === flat.length,
       `plan graph: ${label} — every task surfaces exactly once, no duplicates, no drops`);
     // a back-reference must NOT fabricate a real edge: p consumes make_q which
-    // only a LATER task produces, so the forward resolution stays unverified
+    // only a LATER task produces, so forward resolution stays unverified
     if (label === "back-reference") {
       ok(result.graph.edges.every((e) => e.kind !== "real" || e.from !== "q" || e.to !== "p"),
         "plan graph: back-reference produces no real edge (dependsOn scans earlier tasks only)");
@@ -836,18 +784,16 @@ for (const [label, degen] of Object.entries({
   }
 }
 
-// args.spec is guarded like northStar: an absent spec used to run a full
-// judgment-tier decompose plus every vet seat against a placeholder string.
+// args.spec is guarded like northStar: absent used to run a full judgment-tier
+// decompose plus every vet seat against a placeholder string.
 await throws(() => run(WF("plan.js"), { northStar: NORTH_STAR }, planFixtures),
   "plan spec: absent → refused", "args.spec is required");
 await throws(() => run(WF("plan.js"), { spec: "   ", northStar: NORTH_STAR }, planFixtures),
   "plan spec: whitespace-only → refused", "args.spec is required");
 
-// "Refused BEFORE any dispatch is paid for" is the entire justification for
-// these guards, and throws() cannot see it — it inspects e.message and never
-// rt.calls, so moving a guard below the decompose agent() call would leave every
-// assertion above green while the run still cost a judgment-tier pass and N vet
-// seats. Assert the spend, not the message.
+// "Refused BEFORE any dispatch is paid for" is the whole justification; throws()
+// cannot see it (inspects e.message, never rt.calls) so a misplaced guard would
+// leave every message assertion green while the run still cost real spend.
 for (const [label, badArgs] of Object.entries({
   "absent spec": { northStar: NORTH_STAR },
   "absent northStar": { spec: "s" },
@@ -863,13 +809,12 @@ for (const [label, badArgs] of Object.entries({
 
 // ── crawl: shard fan-out + merge ─────────────────────────────────────────────
 console.log("-- Case: crawl.js shard fan-out + merge");
-// The operator packs shards; the workflow dispatches one crawler per shard, then
-// one merge. Assert: N shards → N crawler calls (labels shard i/N), exactly one
-// merge call, and the result carries the merged findings/gaps. Also: no shards
-// → an error return (the operator must pack them; the workflow has no fs).
+// The operator packs shards; the workflow dispatches one crawler per shard,
+// then one merge. N shards → N crawler calls + 1 merge call; no shards → error
+// (the operator must pack them).
 const crawlFixtures = {
   // every shard gets the same canned digest; the merge returns a merged shape.
-  // (the stub keys on label; shard labels are "shard 1/3" etc.)
+  // (stub keys on label; shard labels are "shard 1/3" etc.)
   merge: { findings: [{ fact: "merged", inferred: false }], gaps: [] },
 };
 // Override: return a shard digest for any "shard i/N" label, merge for "merge".
@@ -900,14 +845,13 @@ ok(noShard?.error && /no shards/.test(noShard.error), "crawl: no args.shards →
 
 // ── F32: a dead TERMINAL single agent must not read as a clean result ────────
 console.log("-- Case: dead terminal agents fail loud, not clean (F32)");
-// The fan-out accounting (deadLenses, vettingIncomplete) covers agents that die
-// mid-fan-out; these cover the single judgment call each workflow ENDS on. The
-// stub returns null for any label without a fixture — the same null a schema
-// mismatch, timeout, or rate limit produces in production.
+// The fan-out accounting covers agents dying mid-fan-out; these cover the
+// single judgment call each workflow ENDS on — stub returns null for any
+// unfixtured label, the same null a schema mismatch or timeout produces.
 
-// review: the adversarial verifier dies → the gate must fail CLOSED. null and
-// CONFIRMED both made `adversarial?.verdict === "REFUTED"` false, so a
-// verification that never ran read as a pass.
+// review: the adversarial verifier dies → gate must fail CLOSED. null and
+// CONFIRMED both made the REFUTED check false, so a never-run verification
+// read as a pass.
 const { result: deadAdv } = await run(WF("review.js"), "docs/x.md", everyLens);
 ok(deadAdv.blocked === true, "review: dead adversarial → blocked (fails closed, not open)");
 ok(deadAdv.unverified === true, "review: dead adversarial is named `unverified`, distinct from REFUTED");
@@ -916,8 +860,8 @@ const { result: liveAdv } = await run(WF("review.js"), "docs/x.md",
 ok(liveAdv.blocked === false && liveAdv.unverified === undefined,
   "review: CONFIRMED adversarial → not blocked, not unverified");
 
-// crawl: the merge dies → error return CARRYING the shard digests (the paid
-// crawl work), never findings:[] masquerading as "nothing relevant found".
+// crawl: the merge dies → error return CARRYING the shard digests, never
+// findings:[] masquerading as "nothing relevant found".
 const deadMerge = await crawlFn(
   { question: "q", shards: [{ paths: ["a"] }, { paths: ["b"] }] },
   async (p, o = {}) => o.label === "merge"
@@ -940,14 +884,9 @@ ok(deadConv?.error && /converge agent died/.test(deadConv.error),
 ok(Array.isArray(deadConv?.directions) && deadConv.directions.length === 4,
   "brainstorm: dead-converge error carries the surviving directions");
 
-// brainstorm: the BLINDSPOTS scan dies → must not launder into `[]` ("nothing
-// to account for"). The whole point of the lens is to surface existing
-// abstractions the design would duplicate; a dead scan returning a clean empty
-// omits all of them silently. Same F31/F32 class, and the adjacent `references`
-// lens already signals via .catch+log — blindspots was the one direct agent()
-// in divergence with no null guard (pr-review silent-failure hunt, 2026-08-03).
-// Stub every lens LIVE except blindspots: a dead blindspots must surface an
-// error even when everything else succeeds.
+// brainstorm: the BLINDSPOTS scan dies → must not launder into `[]`. It's the
+// only direct agent() with no null guard (pr-review, 2026-08-03); every other
+// lens is live in the fixture so a dead blindspots must surface alone.
 const { result: deadBlind } = await run(WF("brainstorm.js"), { topic: "t", noReferences: true },
   Object.fromEntries([1, 2, 3, 4].map((i) =>
     [`direction ${i}/4`, { stance: "s", sketch: "k", tradeoffs: [], yagnis: "y" }])
@@ -962,14 +901,13 @@ ok(Array.isArray(deadBlind?.directions) && deadBlind.directions.length === 4,
 console.log("-- Case: review.js adversarial isolation (#23)");
 // MEASURED: a stale gitignored artifact makes a broken assertion pass in the
 // builder's tree and fail in a worktree of the same commit, while F-A1's
-// `git status --porcelain` reports CLEAN — porcelain describes the TRACKED tree
-// and the contaminant is ignored. These cases pin the three properties that
+// `git status --porcelain` reports CLEAN. These cases pin the properties that
 // distinguish a real fix from a flag that reads like one.
 const liveAdvReturn = { adversarial: { verdict: "CONFIRMED", evidence: "ran x, saw y" } };
 const isoAdvCall = (rt) => rt.calls.find((c) => c.label === "adversarial");
 
-// 1. Default OFF. Cost is per-dispatch, so every existing caller keeps today's
-//    behaviour and today's (weaker, correctly-labelled) claim.
+// 1. Default OFF: cost is per-dispatch, every existing caller keeps today's
+//    (weaker, correctly-labelled) claim.
 const { result: plainRes, rt: plainIso } = await run(WF("review.js"), "docs/x.md",
   { ...everyLens, ...liveAdvReturn });
 ok(isoAdvCall(plainIso).isolation === undefined,
@@ -981,9 +919,9 @@ ok(/BUILDER'S ENVIRONMENT/.test(plainRes.isolation.bound),
 ok(isoAdvCall(plainIso).prompt.includes("F-A1 tree check"),
   "review/#23: un-isolated, F-A1 porcelain check still ships");
 
-// 2. With a sha: the flag reaches agent(), and F-A1 is REPLACED rather than
-//    joined. In a fresh worktree porcelain is empty by construction, so keeping
-//    F-A1 there would ship a control that cannot fail (#21's vacuous class).
+// 2. With a sha: the flag reaches agent(), and F-A1 is REPLACED, not joined —
+//    a fresh worktree's porcelain is empty by construction (#21's vacuous
+//    class).
 const SHA = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0";
 const { result: isoRes, rt: isoRt } = await run(WF("review.js"),
   { target: "docs/x.md", isolate: SHA }, { ...everyLens, ...liveAdvReturn });
@@ -997,23 +935,20 @@ ok(/NOT full isolation/.test(isoAdvCall(isoRt).prompt),
   "review/#23: the prompt states the bound (same $HOME, caches, PATH) rather than overclaiming");
 ok(isoRes.isolation?.mode === "worktree" && isoRes.isolation.requestedCommit === SHA,
   "review/#23: the result names the REQUESTED commit, under a key that says so");
-// The field must NOT be called `commit`: nothing in review.js observes where the
-// seat ran, so on a REFUTED (which is exactly what an identity mismatch yields)
-// a bare `commit` would label the verdict with a sha the run may never have been
-// at — the overclaim the field exists to prevent, reintroduced by naming.
+// The field must NOT be called `commit`: nothing observes where the seat ran,
+// so on a REFUTED a bare `commit` would label the verdict with a sha the run
+// may never have been at.
 ok(isoRes.isolation?.commit === undefined && "requestedCommit" in isoRes.isolation,
   "review/#23: the field is requestedCommit, not commit — it reports the ASK, not an observation");
 ok(isoRes.isolation?.observedCommit === null && /adversarial\.evidence/.test(isoRes.isolation.bound),
   "review/#23: observedCommit is null and the bound points at where the real HEAD is recorded");
-// The lenses are NOT isolated: they read the artifact under review, which is
-// the working tree the operator asked about. Isolation is the verifier's
-// property alone, and a blanket flag would silently change what the panel sees.
+// The lenses are NOT isolated: they read the working tree the operator asked
+// about. Isolation is the verifier's property alone.
 ok(isoRt.calls.filter((c) => c.label.startsWith("lens:")).every((c) => c.isolation === undefined),
   "review/#23: the panel lenses stay un-isolated — only the adversarial seat moves");
 
-// 3. Guards. `true` is the silent-wrong case the issue named: an isolated run
-//    with no named commit verifies whatever HEAD happens to be and reports
-//    CONFIRMED about a tree nobody chose.
+// 3. Guards: `true` is the silent-wrong case — an isolated run with no named
+//    commit verifies whatever HEAD happens to be.
 await throws(() => run(WF("review.js"), { target: "docs/x.md", isolate: true }, everyLens),
   "review/#23: args.isolate=true is refused — isolation without a named commit is silent-wrong",
   "not `true`");
@@ -1028,11 +963,9 @@ ok(isoAdvCall(offRt).isolation === undefined,
 
 // ── F37: an array target must review what was passed, or fail loud ──────────
 console.log("-- Case: review.js multi-path target (F37)");
-// meta.whenToUse promises "Pass the artifact path(s)" and the normalizer
-// explicitly JSON-parses a leading `[`, but `typeof A === "string"` then fell
-// through to the "the working diff" default: the panel reviewed something
-// OTHER than what was passed, with no error. Silent-wrong is the worst of the
-// three possible behaviours (right / loud-wrong / silent-wrong).
+// meta promises "Pass the artifact path(s)" and JSON-parses a leading `[`, but
+// `typeof A === "string"` fell through to the working-diff default — the
+// panel silently reviewed something OTHER than what was passed.
 const arrRt = (await run(WF("review.js"), JSON.stringify(["docs/a.md", "docs/b.md"]), everyLens)).rt;
 const arrPrompt = arrRt.calls.find((c) => c.label.startsWith("lens:")).prompt;
 ok(arrPrompt.includes("docs/a.md") && arrPrompt.includes("docs/b.md"),
@@ -1042,8 +975,8 @@ ok(!arrPrompt.includes("the working diff"),
 const oneRt = (await run(WF("review.js"), JSON.stringify(["docs/only.md"]), everyLens)).rt;
 ok(oneRt.calls.find((c) => c.label.startsWith("lens:")).prompt.includes("ARTIFACT: docs/only.md\n"),
   "review: a single-element array is rendered exactly like a bare path");
-// A malformed array is a caller error: reject it rather than review the wrong
-// thing. Loud-wrong beats silent-wrong.
+// A malformed array is a caller error: reject it rather than review the
+// wrong thing (loud-wrong beats silent-wrong).
 await throws(() => run(WF("review.js"), JSON.stringify([]), everyLens),
   "review: an empty array target is rejected, not defaulted", "is an empty array");
 await throws(() => run(WF("review.js"), JSON.stringify(["docs/a.md", 42]), everyLens),
@@ -1055,11 +988,9 @@ ok(objArrRt.calls.find((c) => c.label.startsWith("lens:")).prompt.includes("docs
 
 // ── F38: the lenses that ask about the task text must RECEIVE it ────────────
 console.log("-- Case: review.js lens context (F38)");
-// spec asks "what the task text asked for" and testability asks "for each
-// stated requirement" — but doneMeans went only to the adversarial seat, so
-// both were structurally forced into op-reviewer.md's NEEDS_CONTEXT branch.
-// Measured live: the spec lens returned one finding, score 0, saying exactly
-// that. A paid dispatch that cannot answer its own question.
+// spec/testability lenses need doneMeans, which only went to the adversarial
+// seat — both were structurally forced into NEEDS_CONTEXT. Measured live: the
+// spec lens returned one finding, score 0, saying exactly that.
 const dmRt = (await run(WF("review.js"),
   { target: "docs/x.md", doneMeans: "DONEMEANS_SENTINEL: ships a --json flag" }, everyLens)).rt;
 const byLens = Object.fromEntries(
@@ -1078,16 +1009,14 @@ ok(!noDmRt.calls.some((c) => /TASK TEXT:\s*\n/.test(c.prompt)),
   "review: an absent doneMeans emits no empty TASK TEXT header");
 
 // ── F41: doneMeans is validated like target ─────────────────────────────────
-// doneMeans gets target's guard: it was unvalidated where target now is, so a
-// non-string rendered "TASK TEXT: [object Object]" into the two lenses that
-// ask about it — silent-wrong, the class F37 fixed one field over.
+// A non-string doneMeans used to render "TASK TEXT: [object Object]" into two
+// lenses — the same F37 class one field over.
 for (const badDm of [{ x: 1 }, ["a"], 42, true]) {
   await throws(() => run(WF("review.js"), { target: "docs/x.md", doneMeans: badDm }, everyLens),
     `review: doneMeans=${JSON.stringify(badDm)} throws rather than stringifying into the prompt`,
     "must be a string");
 }
-// Whitespace-only is absence, not a header: an empty TASK TEXT starves the
-// same two lenses it was meant to feed.
+// Whitespace-only is absence, not a header: it starves the same two lenses.
 const wsDmRt = (await run(WF("review.js"),
   { target: "docs/x.md", doneMeans: "   \n  " }, everyLens)).rt;
 ok(!wsDmRt.calls.some((c) => /TASK TEXT:/.test(c.prompt)),
@@ -1095,11 +1024,9 @@ ok(!wsDmRt.calls.some((c) => /TASK TEXT:/.test(c.prompt)),
 
 // ── F-A1: the adversarial verifier carries the tree-check refutation target ─
 console.log("-- Case: review.js adversarial tree-check target (F-A1)");
-// The verifier is an AGENT (it touches disk), so it can confirm the working
-// tree holds no changes beyond the reviewed artifact — the read-only-seat write
-// boundary that prompt-level tool lists don't enforce. The target is a string
-// in the adversarial prompt; a worker touching files outside the artifact must
-// be a REFUTED basis. Assert the prompt carries it (F40-style, against the call).
+// The verifier is an AGENT, so it can confirm the working tree holds no
+// changes beyond the reviewed artifact — a read-only-seat write boundary
+// prompt-level tool lists don't enforce.
 const advRt = (await run(WF("review.js"), "docs/x.md", everyLens)).rt;
 const advCall = advRt.calls.find((c) => c.label === "adversarial");
 ok(advCall && /tree check|working tree|beyond the reviewed/i.test(advCall.prompt),
@@ -1107,10 +1034,9 @@ ok(advCall && /tree check|working tree|beyond the reviewed/i.test(advCall.prompt
 
 // ── F39: a malformed verdict is not a passing verdict ───────────────────────
 console.log("-- Case: review.js malformed adversarial verdict (F39)");
-// F32 made `adversarial == null` fail closed, but a NON-null malformed object
-// ({} or {verdict:"MAYBE"}) still yielded blocked:false — the same value a
-// CONFIRMED produces. The fix leaned entirely on the harness turning schema
-// violations into null; that is a narrower guarantee than "fails closed".
+// F32 made `adversarial == null` fail closed, but a non-null malformed object
+// ({} or {verdict:"MAYBE"}) still yielded blocked:false — the fix leaned on
+// the harness turning schema violations into null.
 for (const [label, adv] of [["{}", {}], ['{verdict:"MAYBE"}', { verdict: "MAYBE" }],
                             ['{verdict:""}', { verdict: "" }]]) {
   const r = (await run(WF("review.js"), "docs/x.md", { ...everyLens, adversarial: adv })).result;
@@ -1125,26 +1051,20 @@ ok(refuted.blocked === true && refuted.unverified === undefined,
 // ── F40: meta must not misstate what a dispatch costs ───────────────────────
 console.log("-- Case: review.js cost contract (F40)");
 // meta advertised "narrow lenses at cheap tiers" while 2 of 5 dispatch at
-// JUDGMENT — the cost shown in the tool picker was wrong. Assert the text
-// against the LENSES table itself so the two cannot drift apart again.
+// JUDGMENT; assert the text against the LENSES table so they can't drift.
 const metaSrc = (await import("node:fs")).readFileSync(new URL(WF("review.js")), "utf8");
 const judgmentLenses = (metaSrc.match(/tier:\s*JUDGMENT/g) ?? []).length;
 const metaBlock = metaSrc.slice(0, metaSrc.indexOf("};"));
-// The panel's own cost must be described honestly. "cheap tiers" UNQUALIFIED is
-// the lie (2 of 5 lenses are JUDGMENT); "most at cheap tiers and two at
-// judgment tier" is the truth, so the check is for an unhedged claim, not for
-// the substring. `phases[].detail` is what the tool picker shows, so it must
-// not say "cheap tiers" flatly either.
+// "cheap tiers" unqualified is the lie (2 of 5 are JUDGMENT); the check is for
+// an unhedged claim, and phases[].detail must not say it flatly either.
 const unhedgedCheap = /(?<!most |mixed )(?:at |, )cheap tiers(?! and)/.test(metaBlock);
 ok(judgmentLenses > 0 && /judgment/i.test(metaBlock) && !unhedgedCheap,
   "review: meta does not claim 'cheap tiers' while lenses dispatch at JUDGMENT (F40)");
 
-// The check above is the SHAPE half of the contract and was the whole of it
-// until a review panel repro'd the gap: flipping `correctness` to JUDGMENT
-// makes 3 of 5 lenses judgment-tier while meta still advertises "two", and the
-// suite stayed green at 63/63. `judgmentLenses > 0` is the only table-derived
-// assertion there, so the COUNT meta states was free to go stale. Bind the
-// spelled number in meta to the table, and "most" to the actual majority.
+// A review panel repro'd the gap the shape-check alone missed: flipping
+// `correctness` to JUDGMENT makes 3 of 5 lenses judgment-tier while meta still
+// advertises "two", and the suite stayed green — bind the spelled number and
+// "most" to the table.
 const NUMBER_WORD = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6 };
 const mechanicalLenses = (metaSrc.match(/tier:\s*MECHANICAL/g) ?? []).length;
 const claimedJudgment = metaBlock.match(/\b(one|two|three|four|five|six)\b\s+at\s+judgment\s+tier/i);
@@ -1154,21 +1074,11 @@ ok(!/\bmost at cheap tiers\b/.test(metaBlock) || mechanicalLenses > judgmentLens
   `review: meta's "most at cheap tiers" holds against the table (F40; ${mechanicalLenses} cheap vs ${judgmentLenses} judgment)`);
 
 // ── the id guard is APPLIED in every workflow (#60) ─────────────────────────
-// The static pin (validate_plugin.check_workflows) compares the BAD_CHARSET
-// literal across the copies, so it sees any change to the regex TEXT — but it
-// cannot see a correct regex that is never applied (the F30 vacuity shape).
-// Measured on the pre-change pair of guards: neutering a call site to
-// `false && …` left the static pin at 0 findings, and the runtime caught it
-// ONLY where an assertion existed (brainstorm 77/2, review 79/0). Three of the
-// four workflows had nothing covering it — a workflow whose guard does nothing
-// shipped with every gate green.
-//
-// That matters more now, not less: 0.8.3 removed the id-shape catalogue, so
-// BAD_CHARSET is the ONLY id guard left. There is no second regex to catch what
-// a neutered call site lets through.
-//
-// One assertion per file, each exercising that file's own call site: a shared
-// helper looping over them would pass with all but one deleted.
+// The static pin compares BAD_CHARSET text across copies but can't see a
+// regex that's never applied (F30 vacuity). Measured: neutering a call site
+// to `false && …` left the static pin at 0 findings; only assertions caught
+// it, and three of four workflows had none. 0.8.3 made BAD_CHARSET the only
+// id guard left, so this matters more, not less. One assertion per file.
 await throws(() => run(WF("review.js"), { tiers: { MECHANICAL: "not routable" } }, {}),
   "review tier: charset-bad id rejected — the guard is applied, not merely present (#60)", "outside the");
 await throws(() => run(WF("crawl.js"), { tiers: { MECHANICAL: "not routable" }, shards: ["x"] }, {}),
@@ -1178,15 +1088,13 @@ await throws(() => run(WF("plan.js"), { tiers: { MECHANICAL: "not routable" }, s
 
 // ── dispatch: one seat, one model (#55) ─────────────────────────────────────
 console.log("-- Case: dispatch.js routes a seat to a caller-supplied model (#55)");
-// The gap this closes: the plain Agent tool's `model` parameter is enum-locked
-// to sonnet|opus|haiku|fable, so a cc-proxy id is rejected BEFORE dispatch and
-// a seat cannot run on its configured tier without rendering. This workflow is
-// the one route by which a resolved id reaches a seat at all.
+// The plain Agent tool's `model` parameter is enum-locked to
+// sonnet|opus|haiku|fable, so a cc-proxy id is rejected before dispatch — this
+// workflow is the only route by which a resolved id reaches a seat.
 const DISPATCH_OK = { "dispatch:mechanic": { ok: true } };
 
-// The two things that must BOTH be right, asserted on the actual call opts
-// rather than on the return value: the seat picks the agentType, and the
-// caller's id survives to `model`. Either alone is not the feature.
+// Both must be right on the actual call opts: the seat picks the agentType,
+// and the caller's id survives to `model`.
 const { rt: dRt } = await run(WF("dispatch.js"),
   { seat: "mechanic", prompt: "do the thing", model: "deepseek:deepseek-v4-flash" },
   DISPATCH_OK);
@@ -1201,48 +1109,39 @@ const { rt: dRt2 } = await run(WF("dispatch.js"),
   { "dispatch:scout": { ok: true } });
 ok(dRt2.calls.find((c) => c.label === "dispatch:scout")?.model === "glm-5-turbo",
   "dispatch: a second seat routes independently (not a hardcoded pair)");
-// The `op-` prefix is optional everywhere else in this project; a caller
-// copying a name out of an agent filename must not be refused.
+// The `op-` prefix is optional here as everywhere else in this project.
 const { rt: dRt3 } = await run(WF("dispatch.js"),
   { seat: "op-mechanic", prompt: "p", model: "glm-5-turbo" }, DISPATCH_OK);
 ok(dRt3.calls.some((c) => c.label === "dispatch:mechanic"),
   "dispatch: the 'op-' prefix is optional, as in tiers.env and --model");
 
-// The caller-supplied id gets the SAME guard as a tiers.env binding — no more
-// and no less. Less makes this workflow a bypass around check_routable; more
-// makes it the one place that second-guesses the caller's model choice.
+// The caller-supplied id gets the SAME guard as a tiers.env binding — no more,
+// no less.
 await throws(() => run(WF("dispatch.js"),
   { seat: "mechanic", prompt: "p", model: "not routable" }, DISPATCH_OK),
   "dispatch: a charset-bad args.model is rejected", "outside the");
 await throws(() => run(WF("dispatch.js"),
   { seat: "mechanic", prompt: "p", model: 'glm-5"q' }, DISPATCH_OK),
   "dispatch: a quote-bearing args.model is rejected", "outside the");
-// ...and the inverse, which is the 0.8.3 correction: an id operator does not
-// recognise DISPATCHES. `bogus:vendor/model` was the headline reject here until
-// the guard learned it was not operator's call; `deepseek-v4-flash` is a real
-// id the old shape catalogue refused. Both must reach agent() untouched.
+// The 0.8.3 correction, inverse case: an id operator doesn't recognise
+// DISPATCHES — `bogus:vendor/model` and `deepseek-v4-flash` must reach
+// agent() untouched.
 for (const id of ["bogus:vendor/model", "deepseek-v4-flash", "qwen3.8-max"]) {
   const { rt } = await run(WF("dispatch.js"),
     { seat: "mechanic", prompt: "p", model: id }, DISPATCH_OK);
   ok(rt.calls.some((c) => c.model === id),
     `dispatch: unrecognised-but-well-formed id ${JSON.stringify(id)} reaches agent() (0.8.3)`);
 }
-// An unknown seat must REFUSE, not fall through to some default agentType:
-// args.seat is caller input, and without the literal table it would become an
-// arbitrary agentType string.
+// An unknown seat must REFUSE, not fall through to a default agentType —
+// args.seat is caller input.
 await throws(() => run(WF("dispatch.js"),
   { seat: "nosuchseat", prompt: "p", model: "glm-5-turbo" }, {}),
   "dispatch: an unknown seat is refused, never coerced into an agentType",
   "unknown seat");
-// A prototype-chain name must be refused like any other unknown seat. SEATS is
-// a plain object literal, so a bare `SEATS[seat]` returns a truthy native
-// function for `constructor`/`toString`/`valueOf`/`hasOwnProperty`/`__proto__`
-// — sailing past the `!agentType` guard and reaching agent() as a function
-// instead of a string. Found by review after 0.8.3; the file's own comment
-// claims the table BOUNDS what a caller can dispatch, so the bound has to hold
-// for every string a caller can send, not just for the ones that look like
-// seats. Each name is asserted separately: `__proto__` resolves to an object
-// rather than a function and would survive a typeof-based fix.
+// SEATS is a plain object literal, so a bare `SEATS[seat]` returns a truthy
+// native function for `constructor`/`toString`/`__proto__` etc, sailing past
+// `!agentType`. Found by review after 0.8.3; each name asserted separately
+// since `__proto__` resolves to an object, not a function.
 for (const evil of ["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__"]) {
   await throws(() => run(WF("dispatch.js"),
     { seat: evil, prompt: "p", model: "glm-5-turbo" }, {}),
@@ -1256,32 +1155,169 @@ await throws(() => run(WF("dispatch.js"), { seat: "mechanic", model: "glm-5-turb
   "must be a non-empty string");
 
 // No args.model: falls back to a tier default rather than throwing, and SAYS
-// SO. A silent fallback is how a caller who meant to pass a binding never finds
-// out they dispatched on something else.
+// SO — a silent fallback hides a caller's mistaken binding.
 const { result: dFall, rt: dFallRt } = await run(WF("dispatch.js"),
   { seat: "mechanic", prompt: "p" }, DISPATCH_OK);
-ok(dFall?.model === "claude-opus-5",
-  "dispatch: no args.model falls back to the JUDGMENT tier default");
-// The command it names must be one a user can actually TYPE. It used to say
-// `ops-render.sh --model <seat>`, which is neither installed into
-// .operator/bin/ (only the five gate CLIs are) nor reachable via
-// ${CLAUDE_PLUGIN_ROOT} in the Bash tool env (#62) — a Copilot review of this
-// PR caught the fallback pointing at a command that does not exist in a
-// project shell. Pin the seat name too: naming the wrong seat is as useless as
-// naming no command.
+ok(dFall?.model === "opus",
+  "dispatch: no args.model falls back to the JUDGMENT default — a harness ALIAS since #76 step 2, never a vendor id");
+// The fallback command must be one a user can actually type — it used to name
+// `ops-render.sh --model <seat>`, neither installed nor reachable via
+// ${CLAUDE_PLUGIN_ROOT} (#62, caught by Copilot review).
 ok(dFallRt.logs.some((m) => /no args\.model given/.test(m)
     && /\/cc-operator:tiers/.test(m) && /mechanic/.test(m)),
   "dispatch: the fallback is LOGGED and names a command a user can actually run");
 
-// A dead agent returns null. Reporting that as a result would let a caller read
-// "the seat ran and said nothing" from "the seat never ran" — the fail-open
-// shape review.js's dead-lens accounting exists to close.
+// A dead agent returns null; reporting that as a result would let a caller
+// read "ran and said nothing" from "never ran".
 const { result: dDead } = await run(WF("dispatch.js"),
   { seat: "mechanic", prompt: "p", model: "glm-5-turbo" }, {});
 ok(dDead?.dead === true && /agent died/.test(dDead?.error ?? ""),
   "dispatch: a dead agent is reported as dead, not as an empty result");
 ok(dDead?.result === undefined,
   "dispatch: a dead agent carries no `result` key a caller could read as output");
+
+// ── brainstorm: fan-out shape + the dead-agent paths ────────────────────────
+// Until the 2026-08-22 replay, brainstorm had ONE case (tier validation). Its
+// fan-out and its two dead-agent guards — the class F31/F32 exists for — had no
+// coverage at all: a laundered death here returns a bundle that reads complete.
+console.log("-- Case: brainstorm.js fan-out shape and dead-agent guards");
+
+const BS_DIR = { stance: "s", sketch: "k", tradeoffs: [], yagnis: "y" };
+const BS_BLIND = { findings: ["existing thing at a.js:1"] };
+const BS_BUNDLE = { ranked: [], sharedConstraints: [], openQuestions: ["q?"] };
+// Label-keyed returns: directions are labelled per-direction, so match loosely.
+// makeRuntime indexes this map by the agent's `label` (test_workflows.mjs:44),
+// so direction seats need their real labels — `direction <i>/<n>` — enumerated.
+const bsReturns = (n, over = {}) => {
+  const m = { blindspots: BS_BLIND, references: "ref text", converge: BS_BUNDLE, ...over };
+  for (let i = 1; i <= n; i++) m[`direction ${i}/${n}`] = over.direction ?? BS_DIR;
+  return m;
+};
+
+// Happy path: every lens returns, the bundle ships with the divergent work attached.
+const { result: bsOk, rt: bsOkRt } = await run(WF("brainstorm.js"),
+  { topic: "t", context: "c", directions: 3 }, bsReturns(3));
+ok(bsOk?.bundle != null && bsOk?.error === undefined,
+  "brainstorm: a complete run returns a bundle and no error");
+ok(Array.isArray(bsOk?.directions) && bsOk.directions.length === 3,
+  "brainstorm: args.directions=3 dispatches exactly 3 direction seats");
+ok(bsOk?.blindspots?.length === 1,
+  "brainstorm: the blindspot scan's findings reach the returned bundle");
+// The log is the only channel the operator has for what the fan-out actually did.
+ok(bsOkRt.logs.some((m) => /3 directions/.test(m) && /1 blindspots/.test(m)),
+  "brainstorm: diverge LOGS the direction/blindspot counts it actually got");
+// Direction seats must be the brainstorm seat, not a judgment seat: this is the
+// cheap-generation half of the design, and a mis-seated fan-out silently costs
+// judgment-tier spend per direction.
+const bsDirCalls = bsOkRt.calls.filter((c) => !["blindspots", "references", "converge"].includes(c.label));
+ok(bsDirCalls.length === 3 && bsDirCalls.every((c) => c.model === "haiku"),
+  "brainstorm: direction seats run on the cheap tier, converge does not");
+ok(bsOkRt.calls.find((c) => c.label === "converge")?.model === "opus",
+  "brainstorm: converge is the ONE judgment-tier dispatch");
+
+// A dead blindspots agent is byte-identical to "no blindspots found" if
+// laundered — the exact F31/F32 class. It must surface as an error and keep the
+// directions, not ship a bundle whose scan silently never ran.
+// Wrapped: removing the null guard makes the workflow THROW on
+// `blindspotsRaw.findings` rather than return, and an uncaught throw kills the
+// whole suite — the regression is caught either way, but a crash hides WHICH
+// case caught it. Convert the throw into this case's own failure.
+let bsNoBlind = null, bsNoBlindRt = { calls: [] };
+try {
+  ({ result: bsNoBlind, rt: bsNoBlindRt } = await run(WF("brainstorm.js"),
+    { topic: "t", context: "c", directions: 2 }, bsReturns(2, { blindspots: null })));
+} catch (e) {
+  ok(false, `brainstorm: a dead blindspot scan must RETURN an error, not throw (${e?.message ?? e})`);
+  bsNoBlindRt = e?.rt ?? bsNoBlindRt;
+}
+ok(/blindspots agent died/.test(bsNoBlind?.error ?? ""),
+  "brainstorm: a dead blindspot scan is reported, never laundered into an empty scan");
+ok(bsNoBlind?.bundle === undefined && bsNoBlind?.directions?.length === 2,
+  "brainstorm: the dead-blindspot return keeps the directions and ships NO bundle");
+ok(bsNoBlindRt.calls.every((c) => c.label !== "converge"),
+  "brainstorm: it does not pay for converge after the blindspot scan died");
+
+// A dead converge must keep the divergent work — it was paid for and is intact.
+let bsNoConv = null;
+try {
+  ({ result: bsNoConv } = await run(WF("brainstorm.js"),
+    { topic: "t", context: "c", directions: 2 }, bsReturns(2, { converge: null })));
+} catch (e) {
+  ok(false, `brainstorm: a dead converge must RETURN an error, not throw (${e?.message ?? e})`);
+}
+ok(/converge agent died/.test(bsNoConv?.error ?? "") && /do not re-diverge/.test(bsNoConv?.error ?? ""),
+  "brainstorm: a dead converge is reported AND says not to re-diverge");
+ok(bsNoConv?.directions?.length === 2 && bsNoConv?.blindspots?.length === 1,
+  "brainstorm: the dead-converge return preserves directions and blindspots");
+
+// args.noReferences must actually skip the lens, not merely drop its output.
+const { rt: bsNoRefRt } = await run(WF("brainstorm.js"),
+  { topic: "t", context: "c", directions: 2, noReferences: true }, bsReturns(2));
+ok(bsNoRefRt.calls.every((c) => c.label !== "references"),
+  "brainstorm: args.noReferences SKIPS the reference dispatch, not just its result");
+
+// ── crawl: shard hygiene, fan-out accounting, dead merge ────────────────────
+// crawl also had ONE case. Its shard filter and its digest accounting are what
+// stop a partial crawl from reading as a complete one.
+console.log("-- Case: crawl.js shard hygiene, digest accounting, dead merge");
+
+const CR_DIGEST = (i) => ({ shard: [`p${i}`], findings: [{ fact: `f${i}`, inferred: false }], gaps: [] });
+const CR_MERGED = { findings: [{ fact: "merged", inferred: false }], gaps: [] };
+const crReturns = (n, over = {}) => {
+  const m = { merge: CR_MERGED, ...over };
+  for (let i = 1; i <= n; i++) m[`shard ${i}/${n}`] = CR_DIGEST(i);
+  return m;
+};
+
+const { result: crOk, rt: crOkRt } = await run(WF("crawl.js"),
+  { question: "q", shards: [{ paths: ["a"] }, { paths: ["b"] }] }, crReturns(2));
+ok(crOk?.shardsRequested === 2 && crOk?.shardsReturned === 2,
+  "crawl: a complete run reports requested == returned");
+ok(crOkRt.calls.filter((c) => /^shard /.test(c.label)).every((c) => c.model === "haiku"),
+  "crawl: shard seats run on the cheap tier");
+ok(crOkRt.calls.find((c) => c.label === "merge")?.model === "opus",
+  "crawl: the merge is the ONE judgment-tier dispatch");
+
+// Malformed shards must be DROPPED AND COUNTED. Silently dropping them makes a
+// half-read corpus indistinguishable from a fully-read one.
+const { result: crDrop, rt: crDropRt } = await run(WF("crawl.js"),
+  { question: "q", shards: [{ paths: ["a"] }, { paths: [] }, {}, "nope"] }, crReturns(1));
+ok(crDropRt.logs.some((m) => /dropped 3 malformed\/empty shard/.test(m)),
+  "crawl: malformed and empty shards are dropped AND the count is logged");
+ok(crDrop?.shardsRequested === 1,
+  "crawl: shardsRequested counts the shards it actually crawled, not what was passed");
+
+// No usable shards at all is an error, not an empty-but-successful crawl.
+const { result: crNone } = await run(WF("crawl.js"),
+  { question: "q", shards: [{}, "x"] }, crReturns(0));
+ok(/no shards to crawl/.test(crNone?.error ?? ""),
+  "crawl: zero usable shards returns an error naming args.shards");
+
+// A partial fan-out must be visible in the counts — this is the number an
+// operator banks a conclusion on.
+const { result: crPartial, rt: crPartialRt } = await run(WF("crawl.js"),
+  { question: "q", shards: [{ paths: ["a"] }, { paths: ["b"] }] },
+  { "shard 1/2": CR_DIGEST(1), merge: CR_MERGED });  // shard 2/2 absent → dead
+ok(crPartial?.shardsRequested === 2 && crPartial?.shardsReturned === 1,
+  "crawl: a dead shard shows as returned < requested, never silently equal");
+ok(crPartialRt.logs.some((m) => /1\/2 shard digests returned/.test(m)),
+  "crawl: the shard-return ratio is LOGGED (F31 dead-lens accounting)");
+
+// A dead merge must not read as a clean-empty crawl after every shard was paid for.
+// Same wrapping, same reason: without the guard, `merged.findings` throws.
+let crNoMerge = null;
+try {
+  ({ result: crNoMerge } = await run(WF("crawl.js"),
+    { question: "q", shards: [{ paths: ["a"] }] }, crReturns(1, { merge: null })));
+} catch (e) {
+  ok(false, `crawl: a dead merge must RETURN an error, not throw (${e?.message ?? e})`);
+}
+ok(/merge agent died/.test(crNoMerge?.error ?? "") && /do not re-crawl/.test(crNoMerge?.error ?? ""),
+  "crawl: a dead merge is reported AND says not to re-crawl");
+ok(Array.isArray(crNoMerge?.digests) && crNoMerge.digests.length === 1,
+  "crawl: the dead-merge return hands back the un-merged digests it paid for");
+ok(crNoMerge?.findings === undefined,
+  "crawl: a dead merge ships NO findings key a caller could read as an empty result");
 
 console.log(`\n== summary: ${pass} passed, ${fail} failed ==`);
 if (fail > 0) process.exit(1);

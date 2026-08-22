@@ -1,6 +1,11 @@
 # Backlog-as-charter, the arm gate, and locked-goal autonomy — design spec
 
-> Status: **proposed**, not implemented. Target 0.7.0 (slice 1) / 0.8.0 (slice 3).
+> Status: **partially shipped, partially retired.** G1 (retro-gate) shipped in
+> 0.7.0 and remains. G2/G3 (arm gate + exemption) shipped in 0.7.0 and were
+> **deleted in 0.10** (docs/DEBLOAT-0.10.md step 6, maintainer decision) — their
+> sections below are kept as tombstones; the full design lives in the git
+> history (tree ≤ 0.9.0). The B-items (backlog integration) and A-items
+> (locked-goal autonomy) remain proposed, not implemented.
 > Register: this is rationale, read on demand — nothing here is loaded at runtime.
 > Companion reading: `docs/PLAYBOOK.md` (procedures), `docs/LANDMINES.md` (why),
 > `CLAUDE.md` (the coupling map this spec proposes to amend).
@@ -19,9 +24,9 @@ Three asks arrived together, and they are one design:
 They compose into a single sentence, which is the spec's whole claim:
 
 > **The backlog supplies the goal. Locking the bar buys autonomy. The arm gate
-> makes every write accountable to an open task. The verdict gate makes every
-> "done" accountable to evidence. The deviation gate makes every autonomous
-> judgment accountable at handoff.**
+> makes every write accountable to an open task** *(shipped 0.7.0, deleted
+> 0.10)*. **The verdict gate makes every "done" accountable to evidence. The
+> deviation gate makes every autonomous judgment accountable at handoff.**
 
 Autonomy is not the absence of oversight here. It is oversight **batched to the
 handoff** instead of interleaved into every step — and the mechanism that
@@ -179,170 +184,17 @@ Two implementation requirements, both derived from existing landmines:
   `SOWNER` supplies the owner) and the duplicate/amending row still proceed
   without a flag, exactly as today.
 
-### G2 — the arm gate: PreToolUse blocks the first unarmed write *(opt-in)*
+### G2 / G3 / G4 — the arm gate and its exemption *(shipped 0.7.0, deleted 0.10)*
 
-A new `scripts/ops-armgate-hook.sh` on `PreToolUse`, matcher
-`Write|Edit|MultiEdit|NotebookEdit`. Contract, in the house style:
-
-```
-exit 0 — allow. Cases: no .operator/ above the payload cwd; the gate is not
-         enabled; this session is armed; no JSON parser; unreadable state.
-exit 2 — deny. This session holds NO open task and is about to mutate a file.
-         stderr names the exact command to arm, and the exemption path.
-```
-
-**Polarity, stated explicitly because it is the opposite of the Stop hook's.**
-The Stop gate fails *closed* on a degenerate sentinel because an unparseable
-sentinel is a real open task. The arm gate fails **open** on every
-infrastructure failure — no parser, no `.operator/`, unreadable marker — because
-a PreToolUse hook that fails closed makes the project **unwritable**, and an
-unwritable project cannot even be repaired. Both polarities are right for the
-same reason: the failure mode you cannot recover from is the one to avoid.
-
-**Scope: structured file-mutation tools only. `Bash` is deliberately not gated.**
-Deciding whether an arbitrary shell command writes is an unwinnable
-classification problem with a large false-positive surface on a hook that
-*blocks*, and gating Bash risks deadlocking the repair path (`ops-task.sh` is
-itself a Bash call). State the consequence honestly rather than papering it:
-**this gate is an honesty rail against drift, not a sandbox against a hostile
-agent.** A session that wants to evade it can `bash -c 'cat > f'`. The threat
-model is forgetting, which is the observed failure, not evasion, which is not.
-
-#### G2.1 — how the hook asks "am I armed?" without a fourth parser
-
-The obvious implementation re-implements the mine/foreign sentinel partition a
-**fourth** time (hook, statusline, and now this). `CLAUDE.md`'s coupling table
-already carries that duplication as a known cost; a fourth copy on a hook that
-runs before *every edit* is worse than the ones we have.
-
-Instead the expensive question is answered by the **writers**, and the hook asks
-a cheap one:
-
-- `ops-task.sh --owner S` (success) and `ops-adopt.sh --owner S` → create
-  `.operator/.armed/S` (empty marker), **after** the sentinel exists. The reverse
-  order opens a window where the marker outlives no sentinel; that direction is
-  harmless (stale-true) but the correct order is free.
-- `ops-verdict.sh` (verdict **and** `--defer`) → after clearing the sentinel,
-  **under the lock it already holds**: remove `.operator/.armed/S` FIRST, then
-  rescan `pending/` for any sentinel owned by `S`, and re-create the marker if one
-  remains. The order matters and the intuitive one is wrong. Clear → rescan →
-  conditionally-remove loses this interleaving:
-
-  ```
-  verdict:  clear sentinel
-  verdict:  rescan pending/ → empty
-  task:                        creates sentinel (O_EXCL, no lock — by design)
-  task:                        creates marker
-  verdict:  rm .armed/S                          ← marker gone, sentinel present
-  ```
-
-  That is stale-FALSE, the one direction the table below calls "the one to
-  prevent", and none of the three mitigations addresses it — they are written for
-  a desync that persists, not one the recompute itself creates (and mitigation 2,
-  "the next verdict corrects it", is circular: the next verdict can lose the same
-  race). Remove-then-rescan-then-restore is safe under every interleaving: a
-  sentinel created before the rescan is seen by it, one created after brings its
-  own marker.
-- The hook's entire check is: gate enabled → `[ -e ".operator/.armed/$session" ]`
-  **or** `[ -e ".operator/.armed/$session.exempt" ]` (G3). One or two stats. No
-  parsing, no byte bounds, no partition, builtins only by construction.
-
-**Why a marker at all, rather than globbing `pending/`.** The hook must answer
-"does THIS session hold a task open", not "is `pending/` non-empty" — the
-unscoped question lets session B write freely because session A has work open,
-reintroducing the cross-session fail-open 0.4.0 closed. Answering the scoped
-question means parsing `session_id:` out of a sentinel body, and in this repo
-that is not a `grep`: it is `LC_ALL=C`, the `-L` symlink rejection, a NUL probe
-before the loop, and a 512-byte bounded read (`ops-stop-hook.sh:140-158`) — sixty
-lines that would become a **fourth** copy, on a hook that fires before every
-edit. `CLAUDE.md`'s coupling table already carries that duplication as a known
-cost at three copies. The derived marker is the cheaper trade, and its desync
-directions are analysed below rather than assumed away.
-
-This is a derived cache, and this repo's history is unkind to derived caches
-("two components disagreeing about what a task is, silently off" — audit F01).
-So the desync polarity is analysed rather than assumed:
-
-| Desync | Effect | Verdict |
-|---|---|---|
-| marker present, no owned sentinel (stale-true) | gate allows the write | **acceptable** — degrades to exactly today's behaviour; self-heals at the next `ops-verdict.sh` run, which recomputes under the lock |
-| marker absent, owned sentinel present (stale-false) | a legitimately-armed session is blocked | **the one to prevent** — see mitigations |
-
-Stale-false mitigations, all three required:
-
-1. The deny message names the recovery verbatim:
-   `.operator/bin/ops-adopt.sh --owner <sid> <task-id>` re-stamps ownership
-   **and** re-creates the marker — the existing recovery path, not a new one.
-2. `ops-verdict.sh` recomputes the marker on every run, so any desync is
-   corrected at the next verdict rather than persisting.
-3. The gate is **opt-in in 0.7.0** (`.operator/armgate.on`, absent by default).
-   A false block can only reach a project that asked for it. Confirmed as the
-   shipping default (Q1, §9): default-on would not close E1 either — `Bash` is
-   ungated at any setting — so both options deliver *closable*, and only one of
-   them can wedge a session. G1 is default-on and covers the same ground
-   retroactively, which makes opt-in G2 a second layer rather than a hole.
-
-Ownership-scoping is not optional here, and that is why the marker is keyed by
-session id: an unscoped "is `pending/` non-empty?" check would let session B
-write freely because session A holds a task open — reintroducing precisely the
-cross-session fail-open that 0.4.0 exists to close.
-
-### G3 — the exemption pays for itself at the other end
-
-A blocking gate with no override is how sessions wedge, and a wedged session is
-this repo's recurring worst outcome ("a guard that makes an existing task
-unclosable is worse than the bug it fixes"). So the arm gate ships with an
-escape hatch — and the hatch is **not free**:
-
-```
-.operator/bin/ops-task.sh --exempt "<reason>" --owner <sid>
-```
-
-writes a `GATE-EXCEPTION` line to DECISIONS.md (tagged `[sid:…]`) and creates
-the marker. Bypassing the arm gate therefore **owes a handoff presentation**,
-enforced by the stage-2 deviation gate that already ships. The hatch is real,
-one command, and auditable — which is the same shape `ops-task.sh` gave to
-opening a task in 0.3.0.
-
-Two things that phrasing hides, both decided here:
-
-- **`ops-task.sh` does not become a ledger writer.** It takes no lock today, on
-  purpose — `set -C` gives it an O_EXCL create and *"no lock needed, the kernel
-  arbitrates"* (`ops-task.sh:93`). Every DECISIONS.md append in the repo happens
-  inside `ops-verdict.sh` under `lock_acquire`, and `check_lock_parity`
-  (`validate_plugin.py:721`) pins that block across the writers that have it.
-  Giving the opener a lock copies that block to a third file and puts lock code
-  in the path that runs on every task open, for the sake of one rare flag. So
-  `--exempt` stays the operator-facing surface and **delegates the write** to
-  `ops-verdict.sh`, which already holds the lock and is already the single
-  writer. No new lock site, no `check_lock_parity` edit, and the invariant in
-  `CLAUDE.md`'s load-bearing map stays literally true.
-- **The exemption marker is a distinct file: `.armed/<sid>.exempt`.** It has to
-  be, because G2.1's recompute *derives* armed-ness from `pending/` — and an
-  exempt session by definition has nothing there, so the recompute would delete
-  a plain `.armed/<sid>` the moment any verdict ran. Two marker kinds, two
-  lifetimes: `.armed/<sid>` is derived and recomputed under the lock;
-  `.armed/<sid>.exempt` is granted and the recompute never touches it. The
-  distinction is one the earlier draft assumed without naming.
-
-**An exemption is session-scoped and expires with the session.** A `/clear`
-rotates the session id, so the marker becomes unreachable on its own and the
-deviation gate has already collected the presentation debt by then. Nothing needs
-to sweep it beyond the ordinary ephemera cleanup — and under the v2 allowlist
-`.gitignore` (§6.1) it is ignored by construction, like every other file the
-plugin creates.
-
-### G4 — what G1+G2 together do and do not achieve
-
-- **Achieved:** every write is bracketed by an open sentinel (G2) and every
-  "done" is bracketed by a row that says whether the gate ran (G1). The loop
-  closes.
-- **Not achieved until 0.8.0:** with G2 opt-in, the hole is **closable, not
-  closed.** Say this plainly in the changelog. The flip to default-on is a
-  one-line default change gated on field evidence — the same conservatism the
-  issue #9 post-mortem earned (a gate stage shipped default-on that
-  phantom-blocked every ledger with a long row, and whose clearing path was
-  unreachable).
+The arm gate (`ops-armgate-hook.sh` on PreToolUse), the `.armed/<sid>` derived
+marker, and the `--exempt` escape hatch shipped in 0.7.0 as specified here, ran
+opt-in in the field, and were deleted in 0.10 (docs/DEBLOAT-0.10.md step 6):
+no field evidence of use, and G1 — default-on, unable to wedge a session —
+covers the same ground retroactively. The design (polarity analysis, the
+derived-cache desync table, the remove-then-rescan-then-restore recompute, the
+two-marker-kinds distinction) lives in the git history (tree ≤ 0.9.0) and the
+0.7.x CHANGELOG entries. What survives: G1's GATE-EXCEPTION rows and the
+deviation gate that collects them at handoff.
 
 ---
 
@@ -799,19 +651,16 @@ workflow" — non-negotiable, build-enforced:
 
 | File | Change |
 |---|---|
-| `scripts/ops-verdict.sh` | G1 retro-gate; `FRAG_MAX_BYTES` to function scope; `.armed/` recompute (remove → rescan → restore) under the existing lock; the `--exempt` GATE-EXCEPTION write delegated here from `ops-task.sh`. **No `FRAG_OWNER` change** — see the §8b retraction |
-| `scripts/ops-task.sh` | create `.armed/<sid>` after the sentinel; `--exempt "<reason>"` (G3) — parses and validates, delegates the ledger write |
-| `scripts/ops-adopt.sh` | create `.armed/<sid>` |
-| `scripts/ops-armgate-hook.sh` | **new** — PreToolUse arm gate (G2), opt-in |
+| `scripts/ops-verdict.sh` | G1 retro-gate; `FRAG_MAX_BYTES` to function scope. **No `FRAG_OWNER` change** — see the §8b retraction. *(The `.armed/` recompute and `--exempt` delegation shipped 0.7.0, deleted 0.10)* |
+| `scripts/ops-task.sh`, `ops-adopt.sh`, `ops-armgate-hook.sh` | *(arm-gate deltas shipped 0.7.0, deleted 0.10 — git history ≤ 0.9.0)* |
 | `scripts/ops-backlog.sh` | **new** — `--audit` (B9, the A2 bar-hash verify, and B11's register pass), `--census` (B10), bar derivation helper (B3), preflight (B8) |
 | ~~`scripts/ops-bar.sh`~~ | **Not created** (Q3, decided). The lock write is `ops-verdict.sh --lock-bar`; the verify is `ops-backlog.sh --audit`. One less CLI in the install set, in `check_scripts`, and in the charter |
 | `scripts/ops-claims.sh` | `PROTECTED` gains `backlog/` (B7) — the whole directory; worker notes route through the operator (Q4) |
-| `scripts/ops-init.sh`, `ops-sessionstart-hook.sh` | install set gains `ops-backlog.sh` and `ops-armgate-hook.sh` only. **No `.gitignore` change:** the v2 allowlist ignores `*` and re-admits only evidence, so `.armed/` — and every ephemera directory added after it — is covered by construction |
-| `hooks/hooks.json` | new `PreToolUse` block |
+| `scripts/ops-init.sh`, `ops-sessionstart-hook.sh` | install set gains `ops-backlog.sh`. **No `.gitignore` change:** the v2 allowlist ignores `*` and re-admits only evidence, so every ephemera directory is covered by construction |
 | `workflows/backlog.js` | **new** (§5) |
 | `commands/backlog.md` | **new** — where the prose the charter cannot afford lives, incl. B3 bar derivation and the A3 release list |
 | `scripts/validate_plugin.py` | see 6.3 |
-| `tests/test-scripts.sh` | **§8c is the case list** — every row there is a case here, titled after its id (`G1.4`, `G2.9`, …) so a coupling row can cite it by name. Includes the cases 6.3's rows name: the *"arm gate"* cases and the extended *"ops-claims verifies diff-matches-claims"* cases |
+| `tests/test-scripts.sh` | **§8c is the case list** — every row there is a case here, titled after its id (`G1.4`, …) so a coupling row can cite it by name. Includes the extended *"ops-claims verifies diff-matches-claims"* cases |
 | `tests/test_workflows.mjs` | the B4 sequencing rows (`B4.1`, `B4.2`) and the B10 threshold rows (`B10.2`, `B10.3`) — workflow-level, not shell |
 | `CHANGELOG.md` | a `## [x.y.z]` heading in the SAME commit as each `plugin.json` version bump — the release gate fails otherwise (`CLAUDE.md` coupling row) |
 
@@ -871,8 +720,6 @@ Written in the existing table's shape so they can be pasted:
 
 | If you change…                                        | You must also…                                                                                                                                                                                                 |
 | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| the `.armed/<sid>` marker convention                  | update **all three** writers (`ops-task.sh`, `ops-adopt.sh`, `ops-verdict.sh`) and the arm hook's one-stat read; the marker is a derived cache of "this session owns ≥1 pending sentinel" — stale-true must stay fail-OPEN |
-| the arm gate's tool matcher in `hooks.json`           | keep `Bash` OUT of it (G2) and update the deny message, `commands/backlog.md`, and the *"arm gate"* cases                                                                                                        |
 | the AC↔gate-id convention `<backlog-id>#ac<N>`        | update `ops-backlog.sh --audit`, the charter's EVIDENCE GATE line, and the bar-derivation helper — the id is the join key between two projects' files                                                            |
 | `PROTECTED=` in `ops-claims.sh` (now incl. `backlog/`)| the existing row already covers it: `validate_plugin.check_claims` pins the literal AND its `matches_protected` application (F30), plus the *"ops-claims verifies diff-matches-claims"* cases                     |
 | the BAR-block hash input or its recorded boundary (A2) | update `ops-verdict.sh --lock-bar` (the only producer) and `ops-backlog.sh --audit` (the only consumer); a hash over a different byte range silently un-pins every locked bar. Note the asymmetry: `ops-verdict.sh` produces the hash but never *compares* it — A2.6 pins that it computes none on the write path |
@@ -891,8 +738,7 @@ And two checks the draft named that are **not** coupled to it:
 
 - `check_scripts` (`:421-426`) iterates its own hardcoded tuple. Adding a CLI
   there is a **separate edit**; skip it and the new scripts ship with no `bash -n`
-  and no missing-file report. `ops-armgate-hook.sh` is not a charter CLI at all,
-  so nothing would ever add it — it must be added by hand.
+  and no missing-file report.
 - `check_install_set_parity` (`:696`) extracts the install set with a regex over
   the shell scripts (`:704`), whose `[^;]*` tail already matches new CLIs. It
   never reads the Python constant and needs no edit.
@@ -901,9 +747,8 @@ Also unchanged: `check_lock_parity`. G3 delegates its ledger write to
 `ops-verdict.sh` rather than giving `ops-task.sh` a lock, so no new lock site
 appears (G3).
 
-Genuinely new: `check_armgate`, pinning the matcher set and asserting `Bash` is
-absent from it — the one property whose silent loss would turn a rail into a
-wedge. And note the charter-line consequence of the first bullet: every CLI added
+*(`check_armgate` shipped 0.7.0 and was deleted with the gate in 0.10.)*
+Note the charter-line consequence of the first bullet: every CLI added
 to `CHARTER_REQUIRED_CLIS` costs a charter line beyond §6.2's four. That is the
 argument for keeping `ops-backlog.sh` OUT of the constant — it is engagement
 setup, invoked from `commands/backlog.md`, not session mechanics the operator
@@ -924,8 +769,8 @@ what keeps the write path free of an unbounded read (A2, A2.6).
 | Slice | Contents | Risk |
 |---|---|---|
 | **0.7.0** | G1 retro-gate (default-on), B7 `PROTECTED` delta, `ops-backlog.sh --audit`, B8 preflight | low — no new blocking surface; one new gated-kind emitter |
-| **0.7.x** | G2 arm gate **opt-in**, G3 exemption, `.armed/` markers, `workflows/backlog.js`, `commands/backlog.md`, charter deltas | medium — first blocking PreToolUse hook in the repo |
-| **0.8.0** | flip G2 default-on; consider promoting B9's audit to a Stop stage | high — gated on field evidence from 0.7.x, not on a calendar |
+| **0.7.x** | G2 arm gate **opt-in**, G3 exemption, `.armed/` markers *(shipped, then deleted in 0.10 step 6)* | medium — first blocking PreToolUse hook in the repo |
+| **0.8.0** | ~~flip G2 default-on~~ *(moot — G2 deleted in 0.10)*; consider promoting B9's audit to a Stop stage | high — gated on field evidence, not a calendar |
 
 Slice 1 is independently valuable: even with no backlog and no arm gate, G1
 alone makes "the gate did not run" a fact the ledger records.
@@ -938,9 +783,7 @@ Kept in the PLAYBOOK's register — add to it when a new gap is found.
 
 | Not proven | Why |
 |---|---|
-| PreToolUse `exit 2` denies the tool call in the running Claude Code build | The Stop hook's exit-2 contract is exercised live; the PreToolUse one is not, here. Needs a live end-to-end check before G2 ships — the same class as the existing "a live SessionStart payload carries `cwd`" row. |
-| The arm gate stops a determined agent | It does not, and is not meant to (G2). Bash is ungated by design. |
-| The `.armed/` marker cannot desync | It can. The claim is only that the desync direction is analysed and the harmful direction is mitigated three ways (G2.1). |
+| ~~Three arm-gate rows~~ | *(moot — the arm gate was deleted in 0.10 step 6)* |
 | Backlog.md's flags are as documented | Read from the README on 2026-08-06 and not executed. Verify against `backlog --help` and pin the version (B-preamble). |
 | A locked bar prevents goal drift | It prevents *silent* goal drift. An operator can still fail or defer everything and hand back an honest nothing — which is the intended escape, not a hole. |
 | The retro-gate distinguishes "never armed" from "armed in another session" | It reads this session's fragment. A task armed by session A and closed by session B (after `ops-adopt.sh`) is the case to test explicitly. |
@@ -1042,31 +885,7 @@ exist yet; rows marked **(regression)** pin behaviour that must not change.
 | G1.5 | armed task, no `--owner`: `ops-verdict.sh t1 crit ev PASS` | exit 0 — the narrow scope of G1.4 is asserted, not assumed **(regression)** |
 | G1.6 | a fragment padded past `FRAG_MAX_BYTES`, then a verdict on that session | exit 0 within the lock budget; the read is refused/truncated rather than slurped — assert by timing bound and by the refusal message **(new)** |
 
-### G2 / G2.1 — the arm gate and the armed marker
-
-| # | Command | Expected |
-|---|---|---|
-| G2.1 | armgate hook with a `Write` payload, `armgate.on` absent | exit 0, no stderr — opt-in default **(new)** |
-| G2.2 | `armgate.on` present, no `.armed/$S`, `Write` payload | **exit 2**; stderr names both `ops-task.sh … --owner $S` and the `--exempt` path **(new)** |
-| G2.3 | same, with `.armed/$S` present | exit 0 **(new)** |
-| G2.4 | same, with only `.armed/$S.exempt` present | exit 0 — the exempt marker arms independently **(new)** |
-| G2.5 | `armgate.on` present, payload cwd has no `.operator/` above it | exit 0 — fails open on missing state **(new)** |
-| G2.6 | `armgate.on` present, no JSON parser on PATH | exit 0, silent — fails open on infrastructure **(new)** |
-| G2.7 | `grep -c '"Bash"' hooks/hooks.json` in the PreToolUse matcher | 0 — `Bash` is never gated; asserted by `check_armgate`, not by reading **(new)** |
-| G2.8 | open task for `$S`, verdict it, then `ls .operator/.armed/` | `$S` absent — the recompute removed it **(new)** |
-| G2.9 | two tasks open for `$S`, verdict one, then `ls .operator/.armed/` | `$S` **present** — remove-then-rescan-then-restore put it back **(new)** |
-| G2.10 | `.armed/$S` deleted by hand, then a verdict on an open task of `$S` | `$S` present again — the recompute is self-healing **(new)** |
-
-### G3 — the exemption
-
-| # | Command | Expected |
-|---|---|---|
-| G3.1 | `ops-task.sh --exempt "reason" --owner $S` | exit 0; one `GATE-EXCEPTION` line tagged `[sid:$S]` containing `reason`; `.armed/$S.exempt` exists **(new)** |
-| G3.2 | `ops-task.sh --exempt` with no reason | exit non-zero; DECISIONS.md unchanged **(new)** |
-| G3.3 | after G3.1, run the Stop hook for `$S` | **exit 2** — the exemption owes a presentation **(new)** |
-| G3.4 | after G3.1 and a `--mark-handoff`, run the Stop hook | exit 0 **(new)** |
-| G3.5 | after G3.1, verdict an unrelated open task of `$S`, then `ls .operator/.armed/` | `$S.exempt` still present — the recompute never touches a granted marker **(new)** |
-| G3.6 | `grep -c 'lock_acquire' scripts/ops-task.sh` | 0 — the opener stays lock-free; the write is delegated **(new)** |
+### G2 / G3 — *(tables removed with the arm gate, 0.10 step 6; git history ≤ 0.9.0)*
 
 ### A1 / A2 — the bar lock and its hash
 

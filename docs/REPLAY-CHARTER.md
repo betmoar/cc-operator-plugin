@@ -80,14 +80,31 @@ and failed). This is the same asymmetry CLAUDE.md records for `CLAUDE_SESSION_ID
 by hand, and use `$PR` everywhere the charter used to write the variable:
 
 ```
+ps -ax -o args= | grep '[c]laude' | head        # HOW was this session launched?
 PR="$HOME/.claude/plugins/cache/<owner>/cc-operator/<version>"
 [ -d "$PR/scripts" ] || { echo "PR does not resolve — find it: ls -d $HOME/.claude/plugins/cache/*/cc-operator/*"; }
 ```
 
-Do **not** substitute the repo's own `scripts/` here. It is the reachable-looking
-fix and it silently audits the tree instead of the installed plugin — precisely
-the build-identity confusion the next check exists to prevent. The `cmp` below is
-what licenses treating the cache copy as the tree; run it before you rely on `$PR`.
+**Check the launch line first, and prefer it over the cache path** (fourth run,
+2026-08-22). A session started with `claude --plugin-dir .` loads the plugin from
+**that directory**, not from the cache — so `$PR` is the working tree and the cache
+copy is an unrelated older install. Resolving by convention there reported 5/5
+STALE, which reads exactly like the #34 class recurring and is simply a wrong pair.
+The error is symmetric and that is what makes it dangerous: a mis-resolved `$PR`
+yields five spurious STALEs in one direction and five spurious CURRENTs in the
+other, and only the second is silent.
+
+Do **not** substitute the repo's own `scripts/` here *on a cache-loaded session*.
+It is the reachable-looking fix and it silently audits the tree instead of the
+installed plugin — precisely the build-identity confusion the next check exists to
+prevent. The `cmp` below is what licenses treating the cache copy as the tree; run
+it before you rely on `$PR`.
+
+The `--plugin-dir` case is not an exception to that rule, it is the rule applied:
+there the tree **is** the installed plugin, which the launch line establishes as a
+fact rather than an assumption. The distinction to hold onto is *why* `$PR` points
+where it does — measured from how the session was started, never picked because it
+was convenient.
 
 **Build identity — do this before any other phase.** Establish *which* code the
 run is about to test, because there are two answers and they can differ:
@@ -236,70 +253,27 @@ statusline, its segment must show this session's pending count (a mirror of the
 mine/foreign partition, not a count of `pending/`).
 
 Foreign-sentinel half: `ops-task.sh foreign-probe --owner OTHER-SESSION`, then
-attempt Stop again. Expected stderr names the task, its owner and its open time —
+attempt Stop again. Expected stderr names the task and its owner —
 `operator: 1 pending verdict(s) owned by another session (foreign-probe owned by
-OTHER-SESSION, opened <ISO-8601>) — not blocking.` — reported, and the blocking
+OTHER-SESSION) — not blocking.` — reported, and the blocking
 line for your own task still follows it. Close it: `ops-verdict.sh foreign-probe
 --defer "replay probe" --owner OTHER-SESSION`.
+
+There is **no open-time in that line, and its absence is the design**. Until
+0.8.4 the readers parsed the sentinel BODY, so `sentinel_owner` could return
+`"<owner>|<opened_at>"` in one bounded pass and the report carried a timestamp.
+0.9.0 (#76 step 1) moved ownership into the FILENAME — `pending/<sid>__<task>` —
+and the readers stopped opening the body at all, which is what makes them
+builtin-only and what closed the `session_id: EVIL` smuggling class. The open
+time went with the body read. A replayer who sees no `opened <ISO-8601>` is
+looking at a correct 0.9.0+ hook; this expectation was stale prose until the
+fourth run (2026-08-22) executed the phase and caught it.
 
 R2a proves the *script's* answer; R2b is what proves the harness honors it. Both
 are required — the charter's claim is about the pair, and R2a alone is the
 weaker claim the 2026-08-14 run mistakenly recorded as the whole phase.
 
-## R3 — Arm gate, live (G2/G3; the four controls from PR #12)
-
-Enable: `touch .operator/armgate.on`. Then, same file and same tool each time:
-
-**Use a PROBE SESSION ID, not `<sid>`.** The earlier revision of this table told
-you to unarm your own session, which R0 has already armed by opening
-`replay-run` — `.armed/<sid>` exists, so control (a) would be *allowed* and the
-table's own parenthetical wandered through three contradictory workarounds
-trying to escape that. There is nothing to escape: the arm gate keys on the
-session id in the hook payload, so a probe id that owns no task is unarmed by
-construction, and your real session keeps its tracking task throughout. Call it
-`<psid>` (any string, e.g. `ARM-PROBE-SID`).
-
-The gate is a PreToolUse hook, so drive it by feeding it a payload rather than
-by making real edits — that also lets `<psid>` differ from the session you are
-actually running in:
-
-```
-printf '{"session_id":"<psid>","cwd":"'"$PWD"'","tool_name":"Write",
-"tool_input":{"file_path":"'"$PWD"'/probe.txt"}}' \
-  | bash "$PR/scripts/ops-armgate-hook.sh"; echo "rc=$?"
-```
-
-| Control | Setup | Expected |
-|---|---|---|
-| a | gate on, `<psid>` owns no task | **denied**, rc 2; stderr carries all three repair commands verbatim |
-| b | `ops-task.sh arm-probe --owner <psid>` | same payload **allowed**, rc 0 |
-| c | `rm .operator/.armed/<psid>` (simulate desync) | denied again, rc 2 — stale-FALSE fails closed |
-| d | `ops-adopt.sh --owner <psid> arm-probe` | allowed — the deny message's own repair works |
-
-Clean up after: `ops-verdict.sh arm-probe --defer "replay R3 control probe"
---owner <psid>` and `rm -f .operator/.armed/<psid>`.
-
-Every deny is confirmed by **reading the file back** — `probe.txt` must not
-exist after (a) and (c). rc 2 with the file present would mean the hook denied
-after the write, which is a different and worse bug.
-
-**Negative control (R3):** controls (b) and (d) ARE the control — they are the
-allowed half, and without them a hook that denies unconditionally passes (a) and
-(c). Add one more, because the gate is opt-in: with `.operator/armgate.on`
-removed, the same payload from an unarmed `<psid>` must be **allowed**. A gate
-that denies while switched off is not a gate, it is a wedge.
-
-With `<psid>` doing the probing there is no ordering constraint against R2: your
-own session keeps `replay-run` open the whole time. Still exercise **G3**, on a
-third id so the grant is isolated: `ops-task.sh --exempt "replay R3" --owner
-<esid>`, expecting `exemption granted for session <esid> (GATE-EXCEPTION written
-… Stop is now blocked until you present it …)`, then confirm the same payload
-now passes for `<esid>` and that a `GATE-EXCEPTION` carrying `[sid:<esid>]`
-landed in DECISIONS.md. Present and clear it with `ops-verdict.sh
---mark-handoff --owner <esid>`. Disable the gate after: `rm
-.operator/armgate.on`, and remove `.armed/<esid>.exempt`.
-
-Record R2+R3 as verdict rows citing the observed stderr.
+## R3 — (removed in 0.10 — the arm gate was deleted; see docs/DEBLOAT-0.10.md step 6. R5's retro-gate and deviation-gate phases remain and are the gate's live-verification surface for sentinelloss closes.)
 
 ## R4 — Evidence lifecycle and the stamp (U10)
 
@@ -427,8 +401,8 @@ something if it was blocked a moment earlier.
 - Any phase red ⇒ file it as an issue with the observed vs expected output;
   the row's stamp names the tree it happened on. R0/R2 reds are
   harness-integration failures (highest blast radius — the gate is not
-  running); R3 reds distinguish hook-answer from harness-honor; R4.3 "red"
-  is almost always a misreading — reread the stamp's contract first.
+  running); R4.3 "red" is almost always a misreading — reread the stamp's
+  contract first.
 - Replay after: plugin upgrades, harness (Claude Code) upgrades, new OS/uid
   environments (#20 — run once as non-root and once as root and diff), and
   before any release that claims a live-verified gate.
@@ -530,7 +504,8 @@ having. Scorecard by stamp: 10 PASS, 1 FAIL, 0 human-verified, 0 deferred,
 **The FAIL is R7 and it is the point of the phase.** The adversarial seat
 returned REFUTED and it was right twice over: it refuted on F-A1 (an
 uncommitted fixture edit, which it *demonstrated* changes the stamp
-`ops-corpus.sh` produces rather than merely reporting the tree dirty), and it
+`ops-corpus.sh` — since deleted in 0.10 step 6 — produces rather than merely
+reporting the tree dirty), and it
 found two live defects in `corpus_hash` — code this repo had shipped one day
 earlier as the fix for the plausible-hash class:
 
@@ -579,3 +554,72 @@ designed to confirm a limitation is the one that needs no edits.
 `@8ef5d9eb26bd` gave exactly this run's eleven, with 2026-08-14's rows sitting
 above them untouched — U10's stamp doing the job it was built for, incidentally,
 in the middle of an audit about something else.
+
+## What the fourth real run changed (2026-08-22, `1677fff` → 0.10.0, inline load)
+
+Scorecard by stamp: **9 PASS, 1 deferred (R7 initially), 0 FAIL, 0 not-executed** —
+then R7 was executed after all, as the run's own R8 rule demands, and passed. The
+run's two findings both concern *this file* and the tests around it, not the gate.
+
+**R0 caught a wrong measurement before it became a wrong conclusion.** The first
+`cmp` loop reported **5/5 STALE** against
+`~/.claude/plugins/cache/betmoar/cc-operator/0.9.0`. That looked like the #34 class
+recurring. It was not: `ps` showed the session running as `claude --plugin-dir .`,
+so the working tree *is* the plugin root and the cache copy was simply a different,
+older install. Against the correct root: 5/5 CURRENT, with the negative control
+discriminating (mutate a byte in `.operator/bin/` → `STALE` for exactly that file →
+restore → CURRENT).
+
+The lesson generalizes past the inline case: **`$PR` is a claim, and R0's `cmp` is
+only as good as it.** A replayer who resolves the plugin root by convention rather
+than by checking how the session was launched will measure the wrong pair and get a
+confident, wrong answer in either direction — five spurious STALEs here, five
+spurious CURRENTs if the typo had gone the other way. Add the launch check to R0's
+resolution step: `ps` for the running `claude` invocation, and prefer what it says
+over the cache path.
+
+**R2b found this charter quoting an expectation the hook has not met since 0.9.0** —
+the `opened <ISO-8601>` clause, corrected in the R2b section above with its cause.
+It had stood through a release for the plainest possible reason: **nobody ran the
+phase.** R8 already says "before recording a phase as unexecutable, try to execute
+it"; this run is the evidence that the rule applies just as much to phases nobody
+bothered to execute at all. A charter that is never run is prose, and prose drifts.
+
+**R5 ran on genuine state rather than a manufactured probe.** The R0 verdict was
+recorded under `replay-run-R0` while the open sentinel was `replay-run` — an
+ordinary id mismatch, and the retro-gate caught it, writing a real GATE-EXCEPTION.
+So the deviation gate had two unpresented decisions to block on, one accidental and
+one deliberate, and cleared correctly on `--mark-handoff` (rc 2 → 0 through the
+hook). An accident is a better fixture than a probe.
+
+**R1's F05 control littered the repo it was auditing, again.** Running the scaffold
+from `docs/` scaffolded there — nine entries, gitignored and therefore invisible to
+`git status`. The third run recorded this same cleanup and the note was read only
+*after* re-creating the mess. Kept here in stronger terms: the F05 control's cleanup
+is part of the control, not a postscript to it.
+
+**R7 was run rather than deferred, and it is the reason the panel's claim is
+testable.** A committed artifact carried one **unlabelled** off-by-one —
+`can_afford` uses `<` where `spend()` gates on `>`, so a request for exactly the
+remaining budget is refused while `spend()` accepts it. The giveaway comment was
+stripped before committing, because a lens that only finds a defect labelled
+`DEFECT` has found the label, not the bug.
+
+Verdict **REFUTED**, `blocked: true`, all five lenses finding it independently
+(scores 95/95/95/85/85). The adversarial seat swept the boundary exhaustively — 21
+mismatches, one for every state where `n == remaining()` — and found three defects
+nobody planted: `ZeroDivisionError` at `total=0`, an unvalidated negative total, and
+a check-then-act race in `spend()`. 6 agents, 0 errors, 129,700 tokens, 120s.
+
+Two things worth carrying from it. First, the run was **un-isolated**, so F-A1
+shipped and fired correctly — it reported the replayer's own in-progress edits as
+stray paths, which is exactly its job on a run whose artifact lived elsewhere. The
+returned `isolation` block said `mode: builder-tree`, `observedCommit: null`: honest
+about what it did not do (#74). Second, R7's negative control is not optional
+ceremony. A panel returning CONFIRMED on everything is indistinguishable from a
+working one when it only ever sees clean code, and this is the phase that tells them
+apart.
+
+**What the run did NOT reach, recorded rather than glossed:** only `review` has been
+exercised against a real model (#79), and `skills/chief-operator` has no gate of any
+kind (#80). Both filed with the measurement attached.

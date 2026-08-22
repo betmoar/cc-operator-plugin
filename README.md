@@ -66,13 +66,14 @@ models. `/cc-operator:tiers` wraps both.
 scrubs/dedups/elides re-billed tool output on a strict allowlist — never
 Read/Edit/Write/NotebookEdit, never `mcp__*`, never evidence-gate output
 (ledger paths and gate CLIs are carved out by path). Elided output is spilled
-verbatim (pre-scrub) and cited, so evidence stays recoverable byte-for-byte —
-to `.operator/.compress-spill/` in an initialized project, or to a cwd-keyed
-tempdir in one that never ran `/cc-operator:start`, so the hook never
-materializes a `.operator/` in a project that did not ask for it. Either root
-carries its own `*` ignore, and `.operator/.gitignore` is an allowlist: the two
-ledgers, the `verdicts.d/` fragments and `tiers.env` are tracked; everything
-else the plugin creates is ignored by default.
+verbatim (pre-scrub) and cited, so evidence stays recoverable byte-for-byte — to
+`.operator/.compress-spill/`, and **only** there: a project that never ran
+`/cc-operator:start` gets no spill and no dedup state, and the elide says "not
+spilled" rather than writing somewhere the user never asked for (0.10 removed the
+tempdir fallback). The spill root carries its own `*` ignore, and
+`.operator/.gitignore` is an allowlist: the two ledgers, the `verdicts.d/`
+fragments and `tiers.env` are tracked; everything else the plugin creates is
+ignored by default.
 
 ## Commands
 
@@ -188,15 +189,16 @@ workflows/{review,brainstorm,plan,crawl,dispatch}.js  # the orchestration primit
 agents/op-*.md                    # tier-aliased seats: author, mechanic, reviewer, scout, verifier, brainstorm, crawler
 skills/chief-operator/SKILL.md    # thin router (front door only)
 scripts/ops-{init,task,verdict,adopt,claims,backlog}.sh  # the evidence-gate mechanism
-scripts/ops-{stop,sessionstart,armgate}-hook.sh # completion gate + session-id injection + arm gate
-scripts/ops-corpus.sh             # stamped, neutralized derived trees for measurement corpora
+scripts/ops-install-set.sh        # the .operator/bin install manifest (both writers source it)
+scripts/ops-{stop,sessionstart}-hook.sh # completion gate + session-id injection
+scripts/lib/partition.sh          # the mine/foreign partition rule — hook + statusline share it
 scripts/ops-{tiers,render}.sh     # tier resolver + project-layer agent renderer
 scripts/ops-compress.mjs          # input-axis compressor (PostToolUse)
 .claude-plugin/statusline.json    # cc-status segment manifest (name/render/order)
 scripts/statusline.sh             # the segment: open tasks, partitioned by owner
 scripts/validate_plugin.py        # contract linter — run before every PR
 scripts/release_gate.py           # tag == version == newest changelog heading
-hooks/hooks.json                  # SessionStart + Stop + PreToolUse (arm gate) + PostToolUse (compressor), via ${CLAUDE_PLUGIN_ROOT}
+hooks/hooks.json                  # SessionStart + Stop + PostToolUse (compressor), via ${CLAUDE_PLUGIN_ROOT}
 tests/                            # bash suite + stdlib Python tests + two node suites
 ```
 
@@ -218,9 +220,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for conventions and
 [CLAUDE.md](CLAUDE.md) for the maintainer handoff (the "if you touch X, update
 Y" couplings). The design spec lives under `docs/spec/`; build and pilot
 history lives in the git history (tree ≤ v0.2.0).
-[docs/INFOGRAPHICS.md](docs/INFOGRAPHICS.md) collects the visual explainers —
-one of the shipped model, two of a **target state**, each with a table saying
-which of its claims the tree actually backs today.
 
 ## License
 

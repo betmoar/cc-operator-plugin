@@ -40,9 +40,9 @@ Recurring judgement call — three CLIs validate names, and they must agree.
    justification names session ids, it does not belong in `check_bare_name`.
 3. **Apply it in all three CLIs** (`ops-task.sh`, `ops-verdict.sh`,
    `ops-adopt.sh`) — and if the rule concerns owners, **also** in the `case`
-   filter of **all three** `sentinel_owner_of_name` parsers (`ops-verdict.sh`,
-   `ops-stop-hook.sh`, `statusline.sh`) and `ops-adopt.sh`'s inline `PREV`
-   reject-set. Refusing at the CLI alone leaves hand-written and
+   filter of both `sentinel_owner_of_name` parsers (`ops-verdict.sh` —
+   standalone, Zone B — and `scripts/lib/partition.sh`, sourced by the Stop
+   hook and the statusline) plus `ops-adopt.sh`'s inline `PREV` reject-set. Refusing at the CLI alone leaves hand-written and
    merged-in sentinels unguarded, which is exactly the input class that is not
    ours.
 4. **Write the migration test before the guard.** Take a value that was legal
@@ -54,14 +54,13 @@ Recurring judgement call — three CLIs validate names, and they must agree.
 
 Any new code that reads a sentinel, a fragment, a ledger, or DECISIONS.md.
 
-> **DECISIONS.md (stage 2 deviation gate)** is now a parsed ledger too: the Stop
-> hook's `scan_deviations` and the statusline's `scan_deviations_bar` both read
-> it whole-file, byte-bounded per line, fail per the polarity split documented
-> in `ops-stop-hook.sh` (hook fails CLOSED on cap/corrupt; the bar fails toward
-> SILENCE — a bar never blocks). A new DECISIONS.md reader inherits every rule
-> below PLUS the position-based mark-clears-deviation scan. Both readers are
-> re-implementations (the sandbox-free statusline and the hook cannot share
-> code); change the partition in one and the other must move with it.
+> **DECISIONS.md (stage 2 deviation gate)** is a parsed ledger: the shared
+> `scan_deviations` in `scripts/lib/partition.sh` (sourced by the Stop hook)
+> reads it whole-file, byte-bounded, failing CLOSED on cap/corrupt; the
+> statusline's inline tail-window scanner approximates the same count and
+> fails toward SILENCE (a bar never blocks; CR5's 300ms budget is why it does
+> not call the whole-file scan). A new DECISIONS.md reader inherits every rule
+> below PLUS the position-based mark-clears-deviation scan.
 
 1. **Treat the content as untrusted.** These are ordinary files. `git merge`,
    `git checkout`, a hand-edit, a truncated write, and a stray binary can all
@@ -237,36 +236,40 @@ the unknown-tier-key guard):
 ### Adding a workflow
 
 Drop a `.js` in `workflows/`. It must: begin with `export const meta = {…}`,
-declare `const BAD_CHARSET` byte-identical to the others, declare
-`const KNOWN_TIERS = [...]` equal to the resolver's `TIER_NAMES`, and apply
-`BAD_CHARSET.test` in a tier-validation loop whose unknown-key check is
-`if (!KNOWN_TIERS.includes(name))`. It must NOT declare `const ROUTABLE`
-(see point 5 above — the validator fires on it).
-`check_workflows` + `check_workflow_parity` + `check_workflow_tier_namespace`
-enforce all three at build time.
+declare `const BAD_CHARSET` byte-identical to the others, declare a
+`const DEFAULT_TIERS = {…}` whose values are **harness aliases**
+(`opus`/`sonnet`/`haiku`/`fable`, never vendor ids), and apply
+`BAD_CHARSET.test` in a tier-validation loop. An unknown `args.tiers` key is
+**accepted and logged**, never thrown — the resolver's full map is legal input
+(F07). It must NOT declare `const ROUTABLE` (see point 5 above — the validator
+fires on it) and NOT declare a `KNOWN_TIERS` catalogue (#76 step 2 deleted it;
+a workflow has no business listing which tier names exist).
+`check_workflows` + `check_workflow_parity` + `check_workflow_default_tiers`
+enforce these at build time.
 
-### The tier-namespace coupling (audit F07, 2026-07-31)
+### The tier coupling after the #76 lift (was: the F07 namespace coupling)
 
-`KNOWN_TIERS` (what a workflow *accepts* in `args.tiers`) and the resolver's
-`TIER_NAMES` (what `ops-tiers.sh` *emits*) must be the same set, even though a
-workflow only *uses* a subset (its `DEFAULT_TIERS`). The trap: if you add a tier
-to the resolver (e.g. a fifth seat) and forget to add it to every workflow's
-`KNOWN_TIERS`, forwarding the resolver's full map throws on the new key — exactly
-the F07 bug. `check_workflow_tier_namespace` holds this, but it is a regex
-reader, so:
+Until 0.9.0 every workflow carried `KNOWN_TIERS`, a copy of the resolver's
+`TIER_NAMES`, so forwarding the resolver's full map would not throw on a
+valid-but-unused key (audit F07). #76 step 2 removed the catalogue instead of
+synchronizing it: an unknown key is now accepted-and-logged, which preserves
+the F07 property with nothing to keep in sync. What replaced the namespace
+check:
 
-- **`KNOWN_TIERS` must be a real statement, not a comment.** The check matches
-  code lines only (it strips `//` lines, like `check_reader_bounds`). A
-  `// const KNOWN_TIERS = …` in a comment does NOT satisfy it.
-- **A rename/retype of the resolver's `TIER_NAMES=` line breaks the regex.** If
-  you change it to `readonly TIER_NAMES=` or single quotes, both work (the regex
-  accepts them); anything else (an array, a different var name) makes the check
-  **fail loud** — update `_resolver_tier_names`'s regex, do not silence it. The
-  check must never fail *open* (silently pass) — that was the review-caught
-  defect in the first version of this guard.
-- **`DEFAULT_TIERS` ≠ `KNOWN_TIERS`.** DEFAULT_TIERS is what the workflow
-  dispatches (review: 2 tiers); KNOWN_TIERS is what it accepts (always all 4).
-  Do not "fix" a workflow by making them equal — that re-opens F07.
+- **`DEFAULT_TIERS` values must be harness aliases** — `check_workflow_default_tiers`
+  fires on a vendor id (`claude-opus-5`) in a workflow default. Real bindings
+  are the operator's job: `/cc-operator:tiers` resolves `tiers.env`, the result
+  arrives as `args.tiers`. Pasting an id back into a default is the reflex fix
+  that recreates the five-copy catalogue this lift deleted.
+- **The declaration must be a real statement, not a comment** — the check reads
+  code lines only, and a missing/commented `DEFAULT_TIERS` is REPORTED, never
+  silently skipped (the fail-open shape the old `_resolver_tier_names` had).
+- **The typo guard moved from throw to log.** `tiers: { Mechanical: … }` used
+  to throw; now it logs `accepted, unused`. The node case pins the log line —
+  do not "fix" a typo report by re-adding a key catalogue.
+- The resolver↔renderer `TIER_NAMES` equality (`check_resolver_renderer_parity`)
+  is unchanged — those two scripts parse the same `tiers.env` and remain the
+  only holders of the tier-name set.
 
 ### Dead agents: null is a DEATH, not an empty result (audit F31 + F32)
 
@@ -403,8 +406,7 @@ state), so it is neither a sentinel reader nor a `check_guard_parity` site.
    only YOUR Stop; untagged (legacy) ones block EVERY session (the unowned =
    blocks-all rule, mirroring sentinels). Presenting a handoff clears them via
    `.operator/bin/ops-verdict.sh --mark-handoff --owner <sid>` — a HANDOFF-MARK
-   positioned in the file AFTER the deviations it clears. The Stop hook's
-   `scan_deviations` and the statusline's `scan_deviations_bar` re-implement the
-   same mine/unowned-vs-foreign partition; the hook fails CLOSED on cap/corrupt,
-   the bar fails toward SILENCE (different strategies by design — the bar uses a
-   reverse-tail scan for the 300ms budget, the hook whole-file for accuracy).
+   positioned in the file AFTER the deviations it clears. The shared
+   `scan_deviations` (lib/partition.sh, sourced by the hook) and the statusline's
+   inline tail scanner implement the same mine/unowned-vs-foreign partition;
+   the hook fails CLOSED on cap/corrupt, the bar fails toward SILENCE.
