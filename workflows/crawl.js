@@ -62,7 +62,15 @@ if (overrides != null) {
     }
   }
 }
-const TIERS = { ...DEFAULT_TIERS, ...(overrides ?? {}) };
+// Only keys this workflow DISPATCHES reach TIERS. An unused key was logged
+// "accepted, unused" one line above and then validated one line below — so a
+// malformed value on a tier this workflow never dispatches threw anyway,
+// contradicting the log and defeating F07's whole point (Copilot, PR #78).
+// Filter, don't spread: forwarding the resolver's full map must be free.
+const TIERS = { ...DEFAULT_TIERS };
+for (const [name, id] of Object.entries(overrides ?? {})) {
+  if (name in DEFAULT_TIERS) TIERS[name] = id;
+}
 for (const [name, id] of Object.entries(TIERS)) {
   if (typeof id !== "string" || !id.trim()) {
     throw new Error(`tier ${name}=${JSON.stringify(id)} is not a model id string`);

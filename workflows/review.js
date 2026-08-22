@@ -80,7 +80,15 @@ if (overrides != null) {
     }
   }
 }
-const TIERS = { ...DEFAULT_TIERS, ...(overrides ?? {}) };
+// Only keys this workflow DISPATCHES reach TIERS. An unused key was logged
+// "accepted, unused" one line above and then validated one line below — so a
+// malformed value on a tier this workflow never dispatches threw anyway,
+// contradicting the log and defeating F07's whole point (Copilot, PR #78).
+// Filter, don't spread: forwarding the resolver's full map must be free.
+const TIERS = { ...DEFAULT_TIERS };
+for (const [name, id] of Object.entries(overrides ?? {})) {
+  if (name in DEFAULT_TIERS) TIERS[name] = id;
+}
 
 // Fail loud at resolve time, not deep inside a run: a malformed binding is
 // cheaper to report here than as a dispatch error five agents in.

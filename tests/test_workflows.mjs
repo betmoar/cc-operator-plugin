@@ -155,6 +155,32 @@ try {
     { blindspots: { findings: [] }, converge: { ranked: [], sharedConstraints: [], openQuestions: [] } });
 } catch { implOk = false; }
 ok(implOk, "brainstorm tier: IMPLEMENT accepted (F07 — resolver-map forwarding survives the catalogue deletion)");
+// The F07 case above forwards a WELL-FORMED unused key, so it never noticed
+// that an unused key was still value-validated: the workflow logged
+// "accepted, unused" and threw on it one line later (Copilot, PR #78). A tier
+// this workflow does not dispatch must not be able to fail its run at all —
+// otherwise "accepted" is a lie and forwarding the resolver's map is unsafe
+// the moment any tier in it is malformed. dispatch.js is the sharpest case:
+// it dispatches JUDGMENT alone, so every other key is unused by construction.
+{
+  let unusedOk = true;
+  try {
+    await run(WF("dispatch.js"),
+      { seat: "scout", prompt: "x", model: "glm-5-turbo",
+        tiers: { JUDGMENT: "opus", MECHANICAL: "glm 5 with spaces" } },
+      { "dispatch:scout": "ok" });
+  } catch { unusedOk = false; }
+  ok(unusedOk,
+    "dispatch tier: a malformed value on an UNDISPATCHED tier does not throw (logged unused means unused)");
+}
+// ...and the converse control: the same malformed value on a tier the
+// workflow DOES dispatch must still throw, or the filter above has simply
+// disabled the guard.
+await throws(() => run(WF("dispatch.js"),
+  { seat: "scout", prompt: "x", model: "glm-5-turbo",
+    tiers: { JUDGMENT: "glm 5 with spaces" } }, {}),
+  "dispatch tier: a malformed value on a DISPATCHED tier still throws (the filter did not neuter the guard)",
+  "outside the");
 
 // ── review: bucket + threshold filter ───────────────────────────────────────
 console.log("-- Case: review.js scoring bucket + threshold");
