@@ -6,7 +6,6 @@ import json
 import pathlib
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 import textwrap
@@ -97,8 +96,6 @@ def write(p, text):
 
 
 def make_good_tree(root):
-    # `repository` is load-bearing: check_issue_refs compares every issue link
-    # against it.
     write(root / ".claude-plugin" / "plugin.json", json.dumps({
         "name": "cc-operator", "version": "0.1.0",
         "description": "d", "license": "MIT",
@@ -561,35 +558,6 @@ class ValidatorTest(unittest.TestCase):
     def test_changelog_missing(self):
         (self.dir / "CHANGELOG.md").unlink()
         self.assertFires("CHANGELOG.md: missing")
-
-    # --- issue references (check_issue_refs) ---
-    # The good tree carries no issue refs; every test here writes what it
-    # asserts on, so the "clean tree" case doesn't carry the check's weight (F48).
-    _ISSUE_BASE = "https://github.com/betmoar/cc-operator-plugin/issues/"
-
-    def _changelog_with(self, body):
-        write(self.dir / "CHANGELOG.md",
-              "# C\n\n## [Unreleased]\n\n## [0.1.0] - 2026-07-06\n\n" + body)
-
-    def _git(self, *args):
-        return subprocess.run(("git", "-C", str(self.dir)) + args,
-                              capture_output=True, text=True)
-
-    def _init_repo(self, *tracked):
-        # SKIP, not error, when git is absent — measured on python:3.11-slim,
-        # which ships no git; every environment dependency here announces a skip
-        # instead of an unrunnable case reading as a defect.
-        if shutil.which("git") is None:
-            self.skipTest("git is not installed; the tracked-files path cannot be exercised")
-        self._git("init", "-q")
-        self._git("config", "user.email", "t@example.invalid")
-        self._git("config", "user.name", "t")
-        self._git("add", "--", *tracked)
-        self._git("commit", "-qm", "t")
-        # The listing must be non-empty, or the check silently falls back to glob.
-        listed = self._git("ls-files", "*.md").stdout.split()
-        self.assertTrue(listed, "fixture did not track any markdown")
-        return listed
 
     def test_charter_too_long(self):
         write(self.dir / "templates" / "OPERATOR.md",

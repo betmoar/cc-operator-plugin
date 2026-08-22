@@ -963,7 +963,7 @@ check "the racing owner is refused or told already-open, never a silent win" \
   "$([ "$DUPRC" -ne 0 ] || printf '%s' "$DUPMSG" | grep -q 'already open' && echo 0 || echo 1)"
 rm -f "$P/.operator/pending/SESS-X__T-RACE"
 
-# adopt vs verdict: whoever wins the lock, the loser must not damage the ledger. HONESTY: unlike the open-race
+# adopt vs verdict: whoever wins the lock, the loser must not damage the ledger. HONESTY NOTE: unlike the open-race
 # above, this does not reliably reproduce the unfixed race (microsecond window) — it's a regression guard, the
 # evidence is the code path (owner read outside the lock, Codex review), not a green run here.
 STOLEN=0
@@ -983,8 +983,9 @@ check "adopt vs verdict: lock released after the race" "$([ ! -d "$P/.operator/.
 # Stale-lock reclaim must itself be exclusive: naive rmdir+mkdir let a second waiter delete the first's fresh lock
 # (Codex review). Guard is a `.lock.reclaim` claim marker; asserted directly, not via a 30s budget wait.
 #
-# HONESTY: these do not fail against the pre-fix code — they assert the claim marker is used and cleaned up, not
-# that the two-waiter race is closed (evidence is the code path, not this test).
+# HONESTY NOTE: these do not fail against the pre-fix code — the naive reclaim also waits here, because the stale
+# .lock still blocks its mkdir. They assert the claim marker is used and cleaned up, not that the two-waiter race is
+# closed; reproducing that needs two writers both timing out at 30s. Evidence is the code path, not this test.
 mkdir -p "$P/.operator/.lock" "$P/.operator/.lock.reclaim"
 ( cd "$P" && bash "$TASK" T-RC --owner SESS-A >/dev/null 2>&1 )
 ( cd "$P" && bash "$VERDICT" T-RC crit ev PASS --owner SESS-A >/dev/null 2>&1 ) &
@@ -1031,7 +1032,7 @@ check "parser regression guard: owner still blocks its own task" "$([ "$HRC" -eq
 run_hook stop-session-b.json "$P"
 check "parser regression guard: foreign session still allowed" "$([ "$HRC" -eq 0 ] && echo 0 || echo 1)"
 rm -f "$P"/.operator/pending/*
-# HONESTY: at 32MB the unfixed hook still takes ~1s, so this does NOT discriminate (cost is linear, 256MB=8.5s
+# HONESTY NOTE: at 32MB the unfixed hook still takes ~1s, so this does NOT discriminate (cost is linear, 256MB=8.5s
 # unfixed vs 0.16s fixed); it guards the parse staying bounded and the bounded read returning the right verdict.
 { i=0; while [ "$i" -lt 32 ]; do printf '%1048576s' '' | tr ' ' 'x'; i=$((i+1)); done; } > "$P/.operator/pending/T-LONG"
 SEC0=$(date +%s)
@@ -1262,7 +1263,7 @@ rm -rf "$P" "$TMPD"
 echo "-- Case 21b: the give-up path is serialized by the fallback lock [F6]"
 # lock_acquire has two "proceed unlocked" exits (confirmed-live holder, failed reclaim) that used to return 0
 # having acquired nothing — every timed-out waiter entered the critical section together, N-wide. They now queue
-# on $LOCKDIR.fallback. HONESTY: this does not make give-up safe against the live holder (accepted liveness trade,
+# on $LOCKDIR.fallback. HONESTY NOTE: this does not make give-up safe against the live holder (accepted liveness trade,
 # reduces N to 1 not 0); the overlap assertion below is a real detector via an atomic mkdir witness dir.
 P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
 LK="$P/.operator/.lock"
