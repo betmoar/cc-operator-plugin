@@ -1,37 +1,21 @@
 #!/usr/bin/env bash
 # cc-operator statusline segment — what the Stop hook will do to you, right now.
+# op[N] mine (red, blocking) / op[N+M*] foreign (dim), dev[N] unpresented
+# decisions, wf done/started while a run is live; NOTHING outside operator
+# projects. The partition is NOT re-implemented: hook and bar source the same
+# scripts/lib/partition.sh. CONTRACT: never block, never fail loudly — the
+# hottest reader in the plugin (~300ms debounce); builtins + one optional JSON
+# parser, no lock, no write, no find.
 #
-# Renders  op[2]  when this session owns 2 open tasks (red: your stop is
-# blocked), and  op[1+2*]  when 1 is yours and 2 belong to other sessions in the
-# same tree (the `*` suffix is dim: informational, they will not block you),
-# dev[N] for N unpresented decisions, and a dim wf done/started ratio while a
-# workflow run is live. Prints NOTHING (exit 0) outside operator projects, so
-# the bar stays clean everywhere else.
-#
-# The partition (what blocks, what is foreign, what counts as unpresented) is
-# NOT re-implemented here: ops-stop-hook.sh and this script source the same
-# scripts/lib/partition.sh, so the bar describes the exact gate that runs.
-#
-# CONTRACT: never block, never fail loudly. This renders on every statusline
-# pass (~300ms debounce) — the hottest reader in the plugin. Bash builtins plus
-# one optional JSON parser, `tail`/`grep` for the deviation window and wf
-# counts; no lock, no write, no find.
-#
-# Standalone use (without cc-status composing the bar):
-#   "statusLine": { "type": "command",
-#                   "command": "bash ~/.claude/plugins/.../scripts/statusline.sh" }
+# Standalone: "statusLine": {"type":"command","command":"bash .../statusline.sh"}
 set -uo pipefail
 
-# --- read stdin; a TTY means "run by hand", not "wait forever" ----------------
-# `cat` on a terminal blocks until EOF that never comes; the BUILTIN read also
-# survives a stripped PATH (this renders ~every 300ms — an external in the hot
-# path is a hazard the Stop hook avoids for once-per-turn-end).
+# --- read stdin; a TTY means "run by hand", not "wait forever" (builtin read:
+# no PATH dependence in the hot path) ---
 IN=""
 [ -t 0 ] || IFS= read -r -d '' IN || true
 
-# --- locate the project -------------------------------------------------------
-# Prefer the payload's own view (workspace.project_dir, then cwd) so this agrees
-# with the Stop hook, which judges by the cwd IN the payload and never by $PWD.
+# --- locate the project: the payload's own view first, agreeing with the hook
 PROJ=""
 SESSION=""
 if [ -n "$IN" ]; then
@@ -39,10 +23,8 @@ if [ -n "$IN" ]; then
     PROJ="$(printf '%s' "$IN" | jq -r '.workspace.project_dir // .cwd // empty' 2>/dev/null)"
     SESSION="$(printf '%s' "$IN" | jq -r '.session_id // empty' 2>/dev/null)"
   elif command -v python3 >/dev/null 2>&1; then
-    # ONE python3 call (~30ms startup charged every 300ms), two newline-
-    # separated fields consumed by the byte-bounded builtin reads. Never eval
-    # on payload-derived text. Newlines in a path/id desynchronize the
-    # two-line contract and are unusable here anyway.
+    # ONE python3 call, two newline-separated fields, byte-bounded reads;
+    # never eval on payload-derived text
     { IFS= read -r -n 4096 PROJ; IFS= read -r -n 4096 SESSION; } < <(printf '%s' "$IN" | python3 -c '
 import sys, json
 try:
@@ -78,24 +60,14 @@ esac
 # shellcheck source=/dev/null
 . "$_libdir/partition.sh"
 
-# --- workflow liveness + progress ---------------------------------------------
-# The harness appends ~/.claude/projects/<dashed-cwd>/<session>/subagents/
-# workflows/wf_<runid>/journal.jsonl per run and never GC's them. Key on
-# SESSION alone (survives worktree isolation), pick the newest journal, and
-# call the run live when the newest file in its dir (journal OR an agent
-# transcript) changed within the window: a stopped run's dir goes quiet, while
-# a long dispatch keeps its transcript growing even though the journal is
-# silent between events. The ratio is a DISPATCHED-WORK ratio, never a % —
-# total isn't known until the last dispatch, and a % that lies is worse than
-# none. Schema is undocumented harness internals: on ANY surprise render
-# nothing (fail toward silence).
+# --- workflow liveness + progress: newest wf journal for THIS session, live =
+# dir touched within the window. Ratio is dispatched-work, never a % (total
+# unknown until the last dispatch). Undocumented harness schema: on ANY
+# surprise render nothing.
 #
-# mtime → epoch seconds, or 0. Probe the stat flavor ONCE per render, in the
-# caller's scope (every mtime call site is a subshell whose variables die with
-# it): `stat -f %m F || stat -c %Y F` is BANNED here — on GNU, `-f` prints
-# filesystem info to stdout before failing, so the fallback CONCATENATES
-# garbage (F12 class; killed this segment on Linux once). `/` as the probe
-# target: always exists, never mis-detects "none" from a vanished file.
+# stat flavor probed ONCE per render; `stat -f || stat -c` is BANNED — on GNU,
+# -f prints filesystem info to stdout before failing and the fallback
+# CONCATENATES garbage (F12; killed this segment on Linux once).
 _STAT_KIND=""
 stat_probe() { # stat_probe → sets _STAT_KIND once (gnu|bsd|none)
   [ -z "$_STAT_KIND" ] || return 0
@@ -119,13 +91,9 @@ mtime() { # mtime <path> → epoch seconds (0 on any failure)
   case "$v" in ''|*[!0-9]*) printf '0' ;; *) printf '%s' "$v" ;; esac
 }
 
-# STALL_SEC is env-overridable and lands in `[ "$stall" -gt "$live" ]`. A
-# non-numeric value makes the test error, the chain short-circuits, and the
-# stall window silently never extends — the bug the window exists to fix,
-# reintroduced by a typo. Validated HERE, at file scope: the caller wraps the
-# glob call in 2>/dev/null, so a warning raised inside would be swallowed.
-# Loud is a stderr warning plus the default, never an exit: dying over a
-# workflow knob would blank op[ and dev[ too — the parts that gate a session.
+# STALL_SEC validated at file scope (the caller swallows stderr inside the
+# glob call); warn + default, never exit — dying over a workflow knob would
+# blank op[ and dev[ too.
 STALL_SEC="${STALL_SEC:-900}"
 case "$STALL_SEC" in ''|*[!0-9]*) _stall_bad=1 ;; *) [ "$STALL_SEC" -ge 1 ] || _stall_bad=1 ;; esac
 if [ -n "${_stall_bad:-}" ]; then
@@ -134,9 +102,6 @@ if [ -n "${_stall_bad:-}" ]; then
 fi
 
 # Prints "<journal-path>\t<started>\t<result>" for a LIVE run, or nothing.
-# Counts come back from here because the wf segment needed the identical pair
-# of greps over the identical file — computing them twice doubled the render's
-# process count for no new information.
 glob_newest_live_journal() { # glob_newest_live_journal <session> [live_sec]
   [ -n "$1" ] || return 0
   local live="${2:-90}" newest="" nmtime=0
@@ -151,11 +116,8 @@ glob_newest_live_journal() { # glob_newest_live_journal <session> [live_sec]
     nmtime="$m"; newest="$j"
   done
   [ -n "$newest" ] || { shopt -u nullglob; return 0; }
-  # Liveness = max mtime across the journal and its sibling agent transcripts:
-  # the journal is appended only on DISPATCH events, so it legitimately goes
-  # quiet for minutes during a long agent run while the transcripts keep
-  # growing. Selection above stays journal-keyed (a newer run always has a
-  # newer journal).
+  # liveness = max mtime across journal + sibling transcripts (the journal is
+  # quiet during a long dispatch); selection stays journal-keyed
   local a
   for a in "${newest%/journal.jsonl}"/agent-*.jsonl; do
     [ -f "$a" ] || continue
@@ -165,13 +127,9 @@ glob_newest_live_journal() { # glob_newest_live_journal <session> [live_sec]
   done
   shopt -u nullglob
   local now; now="$(date +%s 2>/dev/null || echo 0)"
-  # UNBALANCED journal (more started than result lines) = a dispatch in flight,
-  # and mtime silence proves nothing: agents flush in coarse bursts (a measured
-  # live run went >110s with the dir untouched — the 90s window declared it
-  # dead and the segment flapped off mid-run). Unbalanced extends the window
-  # to STALL_SEC; it cannot replace the mtime check, because errored agents
-  # never write a result line (an unbalanced journal is also a failed run's
-  # signature, which would otherwise render forever).
+  # UNBALANCED journal (started > result) = dispatch in flight; extends the
+  # window to STALL_SEC (a live run measured >110s dir-untouched). It cannot
+  # REPLACE the mtime check: errored agents never write a result line.
   local stall="$STALL_SEC" ns=0 nr=0
   ns="$(grep -c '"type":"started"' "$newest" 2>/dev/null)" || ns="${ns:-0}"
   nr="$(grep -c '"type":"result"' "$newest" 2>/dev/null)" || nr="${nr:-0}"
@@ -183,31 +141,21 @@ glob_newest_live_journal() { # glob_newest_live_journal <session> [live_sec]
 
 scan_pending "$OPDIR" "$SESSION"
 
-# --- deviations: the tail-window approximation of the shared scan -------------
-# The lib's whole-file scan (what the hook gates on) is O(n) in an append-
-# forever ledger — measured 0.4s at 3000 lines, blowing the 300ms render
-# budget. The bar reads the last ~256 lines and walks them BACKWARD, stopping
-# at the first mine-or-unowned mark: O(tail) instead of O(n), the same count
-# whenever the active set fits the window, informational-only (fails toward
-# silence), while the hook still gates exactly. A NUL inside the window still
-# suppresses the count (corrupt tail — fail toward silence).
+# --- deviations: tail-window approximation of the shared scan (CR5) — the
+# whole-file scan measured 0.4s at 3000 lines vs the 300ms budget. Last ~256
+# lines, walked BACKWARD to the first mine-or-unowned mark; same count when
+# the active set fits the window; fails toward silence. Hook gates exactly.
 DEVMINE=0
 if [ -f "$OPDIR/DECISIONS.md" ] && [ ! -L "$OPDIR/DECISIONS.md" ]; then
-  # Bounded NUL probe over the SAME window the scan reads — not the whole
-  # file, which would re-introduce the O(n) cost the tail scan exists to
-  # avoid. `tail` runs twice (probe + scan) rather than once into a variable,
-  # because bash DROPS NULs from variables — a captured tail makes the probe
-  # vacuous.
+  # NUL probe over the SAME window; tail runs twice because bash drops NULs
+  # from variables — a captured tail makes the probe vacuous.
   if (LC_ALL=C _dp=0
       while IFS= read -r -d '' -n 512 _dprobe; do
         _dp=$((_dp + 1)); [ "$_dp" -le 4096 ] || exit 1
         [ "${#_dprobe}" -eq 512 ] || exit 1
       done < <(tail -n 256 "$OPDIR/DECISIONS.md" 2>/dev/null)) 2>/dev/null; then
-    # CONTINUATION ACCUMULATION (issue #9): read -n 512 splits a multi-KB row
-    # across chunks; a cap-filling chunk is a CONTINUATION (append), a shorter
-    # one completes the row. LC_ALL=C so ${#} is bytes and exactly 512 bytes
-    # iff it stopped on the count. `|| [ -n "$line" ]` flushes a final chunk
-    # at EOF without a trailing newline.
+    # continuation accumulation (#9): a cap-filling chunk is a CONTINUATION,
+    # a shorter one completes the row; LC_ALL=C so ${#} counts bytes.
     _lines=()
     _acc=""
     while IFS= read -r -n 512 line || [ -n "$line" ]; do
@@ -222,8 +170,7 @@ if [ -f "$OPDIR/DECISIONS.md" ] && [ ! -L "$OPDIR/DECISIONS.md" ]; then
     while [ "$i" -gt 0 ]; do
       i=$((i - 1))
       line="${_lines[i]%$'\r'}"
-      # A ledger ROW begins with an ISO date; " | " alone also matches header
-      # prose, which would forge a count on a fresh ledger (issue #9).
+      # a ROW begins with an ISO date — " | " alone matches header prose (#9)
       case "$line" in
         [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' | '*) ;;
         *) continue ;;
@@ -238,8 +185,7 @@ if [ -f "$OPDIR/DECISIONS.md" ] && [ ! -L "$OPDIR/DECISIONS.md" ]; then
             *) DEVMINE=$((DEVMINE + 1)) ;;
           esac ;;
         HANDOFF-MARK)
-          # Walking backwards, the FIRST mine/unowned mark is the last one in
-          # file order — it clears everything before it. Stop counting.
+          # walking backwards, the FIRST mine/unowned mark clears the rest
           case "$what" in
             "[sid:$SESSION]"*) break ;;                     # mine → clears
             "[sid:"*) : ;;                                  # foreign → keep walking

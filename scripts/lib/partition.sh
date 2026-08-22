@@ -18,9 +18,9 @@ sentinel_owner_of_name() { # <basename> → owner ("" when unowned or unwritable
   esac
   _o="${1%%__*}"
   # The F1 reject set ("" | */* | .* | *"|"* | *[[:space:]]*): our CLIs can
-  # never write these shapes (check_bare_name refuses them at construction),
-  # so a name carrying one was PLANTED. Degrade to unowned, which blocks
-  # everyone: fails CLOSED, the safe direction.
+  # never write these shapes, so a name carrying one was PLANTED — degrade to
+  # unowned, which fails CLOSED. (The comment quotes the literal on purpose:
+  # GuardParityVacuityTest proves the pin reads code, not this line.)
   case "$_o" in
     "" | */* | .* | *"|"* | *[[:space:]]*) printf '\n'; return 0 ;;
   esac
@@ -64,21 +64,13 @@ scan_pending() { # scan_pending <opdir> <session>
   shopt -u nullglob
 }
 
-# Unpresented deviations (stage 2: the second ledger the gate reads).
-# DEVIATION/ESCALATION/GATE-EXCEPTION lines record operator-taken decisions; a
-# HANDOFF-MARK records they were presented. Sets deviations_unpresented to the
-# count of THIS session's (or unowned) gated lines after the last mine-or-
-# unowned mark; foreign lines never count and foreign marks never clear.
-# deviations_scan_failed=1 means the ledger was absent/unreadable/a symlink:
-# the hook fails OPEN on it (a missing ledger is a scaffold problem, not an
-# unpresented decision) and the bar stays silent. Both globals are read by the
-# sourcing script (cross-shell contract; SC2034/2154 are expected here).
-#
-# Whole-file scan with an aggregate byte cap, fail-closed on every corrupt
-# shape (NUL ledger, over-cap): those set unpresented=1 — the hook blocks on
-# it, and the bar renders dev[1], the honest mirror of "your stop will be
-# blocked". DECISIONS.md is append-forever, so no cap is sized to "legal
-# input"; a too-big-to-scan ledger is a real problem to surface, not hide.
+# Unpresented deviations (stage 2). DEVIATION/ESCALATION/GATE-EXCEPTION lines
+# record decisions; HANDOFF-MARK records they were presented. Counts THIS
+# session's (or unowned) gated lines after the last mine-or-unowned mark;
+# foreign lines never count, foreign marks never clear. scan_failed=1 (absent/
+# unreadable/symlink ledger) fails OPEN — a scaffold problem, not a decision.
+# Corrupt shapes (NUL, over-cap) fail CLOSED: unpresented=1, surfaced not
+# hidden. Globals read by the sourcing script (SC2034/2154 expected).
 DECISIONS_MAX_BYTES=2097152   # 2 MiB — orders above any honest decisions ledger
 scan_deviations() { # scan_deviations <decisions-path> <this-session>
   local f="$1" sess="$2" line kind what n=0 bytes=0 logical
@@ -138,15 +130,10 @@ scan_deviations() { # scan_deviations <decisions-path> <this-session>
         esac ;;
     esac
   }
-  # Single forward pass with CONTINUATION ACCUMULATION (issue #9): a ledger
-  # row may be many KB, so read -n 512 FILLS on honest rows. A cap-filling
-  # chunk did not see a newline → a CONTINUATION of the current row: append
-  # and keep reading. A shorter chunk hit the newline/EOF → classify and
-  # reset. (The old per-chunk fail-closed made any HANDOFF-MARK past the
-  # first long row unreachable — an unkillable phantom block — and forgave
-  # kind-forgery across chunk boundaries; accumulating eliminates both.)
-  # Under LC_ALL=C, read -n 512 returns exactly 512 bytes iff it stopped on
-  # the count rather than a delimiter.
+  # Forward pass with CONTINUATION ACCUMULATION (#9): a cap-filling chunk saw
+  # no newline → append and continue; a shorter chunk completes the row.
+  # (Per-chunk fail-closed made a mark past the first long row unreachable —
+  # an unkillable phantom block.) LC_ALL=C: 512 bytes iff stopped on count.
   logical=""
   while IFS= read -r -n 512 line || [ -n "$line" ]; do
     n=$((n+1)); [ "$n" -le 20000 ] || { deviations_unpresented=1; return 0; }
