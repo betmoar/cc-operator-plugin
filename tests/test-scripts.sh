@@ -3306,7 +3306,9 @@ check "statusline counts a long mine DEVIATION with no trailing newline (#10 rev
 # window is equivalent for everything the bar reports.
 # STRUCTURAL first: a timing assertion is flaky under load, but re-adding the
 # whole-file redirect is a textual regression. Both probe/scan reads must be fed
-# by `tail`; no `done < "$f"` remains in scan_deviations_bar.
+# by `tail`; no whole-file `done < "$f"` remains in the bar's scan.
+# shellcheck disable=SC2016  # the path is the LITERAL text being grepped for in
+# the renderer's source; expanding it here would search for this suite's own var.
 check "no whole-file read survives in the bar's deviation scan (F10)" \
   "$(grep -q 'done < "$OPDIR/DECISIONS.md"' "$SCRIPTS/statusline.sh" && echo 1 || echo 0)"
 # shellcheck disable=SC2016  # the path is the LITERAL text being grepped for in
