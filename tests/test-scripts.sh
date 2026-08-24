@@ -3419,16 +3419,26 @@ check "SKILL.md carries a description (the trigger text)" \
 # Scanned as /<plugin>:<cmd>, NOT as /cc-operator:<cmd>. A pattern anchored on the plugin name is blind to a
 # rename of the plugin half — which is the half CLAUDE.md's coupling row is about, and the exact mutation that
 # first shipped green against this very case (2026-08-22). Both halves are checked, so either drift is caught.
+# `while read`, not `for … in $(…)`: SC2013, and the CI shellcheck gate is pinned
+# at 0.10.0 where that is a hard failure (measured via act, 2026-08-24 — the job
+# died on this line before any test ran). A pipeline's `while` body is a SUBSHELL
+# in POSIX sh, so a flag set inside is lost at the loop's end; the findings go to
+# a tempfile and the verdict is read back from its size. Redirecting from a
+# process substitution would keep the variable, but this suite targets bash 3.2
+# and plain sh alike.
 SKILL_REF_BAD=0
-for _ref in $(grep -o '/[a-z][a-z0-9-]*:[a-z-]*' "$SKILL" | sort -u); do
+_skill_refs="$(mktemp)"
+grep -o '/[a-z][a-z0-9-]*:[a-z-]*' "$SKILL" | sort -u | while read -r _ref; do
   _plug="${_ref%%:*}"; _plug="${_plug#/}"
   _cmd="${_ref##*:}"
   if [ "$_plug" != "$PLUGIN_NAME" ]; then
-    SKILL_REF_BAD=1; echo "     (wrong plugin: $_ref — this plugin is $PLUGIN_NAME)"
+    echo "     (wrong plugin: $_ref — this plugin is $PLUGIN_NAME)" >> "$_skill_refs"
   elif [ ! -f "$REPO/commands/$_cmd.md" ]; then
-    SKILL_REF_BAD=1; echo "     (unresolvable command: $_ref)"
+    echo "     (unresolvable command: $_ref)" >> "$_skill_refs"
   fi
 done
+if [ -s "$_skill_refs" ]; then SKILL_REF_BAD=1; cat "$_skill_refs"; fi
+rm -f "$_skill_refs"
 check "every slash-command ref in SKILL.md names this plugin and a command that exists" \
   "$([ "$SKILL_REF_BAD" -eq 0 ] && echo 0 || echo 1)"
 # The skill must keep disclaiming authority: its whole safety property is that nothing load-bearing lives here,
