@@ -9,6 +9,209 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-24
+
+The release where the evidence gate stops being optional, and where the thing
+that found its bugs is the thing this release ships.
+
+0.10.0 left a hole documented rather than closed: `ops-task.sh` opened a
+sentinel and the Stop hook blocked while one was pending, but **nothing opened
+one**. A session that never ran the CLI stopped clean however many files it
+rewrote. The charter REQUIRES a BAR block for multi-file work, and a rule the
+mechanism declines to enforce is prose.
+
+It is closed now, and the route there is the release's other half. A debate
+panel — three flagship models arguing blind over three rounds — reviewed the
+commit that closed it and found a defect that would have made the gate silently
+never fire again. Two more defects from Friday's audit (#81, #83) turned out to
+sit on the same code this change touches, so they land here too.
+
+### Added
+
+- **Auto-arm: the evidence gate is no longer opt-in (#85).** At Stop, a working
+  tree delta naming **>=2 changed project paths** (the charter's ENGAGEMENT
+  CONTRACT clause 1, a *count*, never the done-state clause) arms an ordinary
+  owned sentinel `pending/<sid>__autobar`. The existing mine-pending branch then
+  blocks on it with the message it already ships: no new blocking stage, no new
+  message class, no new polarity for a `partition.sh` reader.
+
+  It measures the FILESYSTEM, not the tool stream, and that is the whole design
+  decision. The property is "files changed", not "Write/Edit was called". A
+  PostToolUse counter is blind to `sed -i`, heredocs, `patch`, build scripts and
+  every subagent write, and its undercount is **silent** — it reports zero,
+  byte-identical to a session that changed nothing. That is not a smaller hole
+  than the one being closed; it is the same hole behind a counter that reports
+  green.
+
+  Bounds, stated rather than papered over: git-only (no VCS arms nothing, as the
+  source stamp already degrades to `@no-vcs`); clauses (2) multi-session and (3)
+  user-named done-state stay **uncovered**, because both mean classifying intent
+  and that is a false-positive factory on a hook that blocks; and a session can
+  still satisfy the gate by opening one throwaway task and deferring it. An
+  honesty rail against forgetting, not a sandbox against a hostile agent.
+
+- **A debate workflow and the `op-debater` seat.** N flagship models argue one
+  case over three rounds — openings independently, rebuttals against each
+  other's positions **unlabelled**, closings standing alone — then a neutral
+  fourth pass aligns the closings into agreed / contested / falseSplit /
+  decisions. `chose` is always `null` and present rather than omitted, so the
+  contract reads at the call site: paying N models to disagree and then letting
+  the workflow decide makes the other seats decoration.
+
+  Three invariants, each mutation-checked. Seats argue **blind** — no model id
+  reaches any debater prompt, because a rival's brand invites deference over
+  argument and a seat that can identify itself softens its own critique. No seat
+  receives its own position as a rival's, or self-agreement registers as
+  convergence. And `args.models` has **no fallback**: a tier default would seat
+  one model against itself and return a panel that could not have disagreed.
+
+- **A gate for `SKILL.md` (#80).** The one shipped file with none. A plugin
+  rename shipped green with a dead `/cc-operator:` reference in the front door;
+  five cases now pin the frontmatter name, the description, every slash-command
+  reference resolving to a command that exists, and the charter-is-authority
+  disclaimer.
+
+### Fixed
+
+- **A stale artifact could disarm the auto-armer permanently.** Suppression
+  first stood down on any foreign `verdicts.d/<sid>.md` fragment — append-only,
+  never wiped, so **one verdict recorded by any other session, ever**, silenced
+  the armer for the rest of the project's life, hardest in the mature projects
+  the gate most protects. Removing that left the same shape one layer down: an
+  abandoned `pending/<dead-sid>__<task>` from a crash, a kill, or a `/clear`
+  mid-task, which nothing reaps. Reachable in a single-operator project, since
+  `/clear` with an open task is routine.
+
+  Foreign-presence suppression is therefore **gone entirely**, and no third rule
+  is possible here. Splitting "working" from "died" needs a liveness oracle the
+  filesystem does not carry: a sentinel holds `cwd:` and `opened_at:` and no
+  pid, and a pid would not help — `ops-task.sh` is a subprocess that exits when
+  the CLI returns, so its `$$` is dead while the owning session runs, and
+  `kill -0` would read every sentinel, live ones included, as abandoned.
+  `kill -0` answers for the **lock** because a holder's lifetime is bounded by
+  the call that stamps it (F03); a sentinel exists to *outlive* its writer. A
+  session is a harness token, not an OS handle. An mtime clock fails on bash
+  3.2's whole-second granularity — measured: a fragment written 47ms after the
+  epoch read as "not newer".
+
+  The trade is priced both ways. Arming wrongly costs ONE arm on the session's
+  own sentinel, capped once per session, carried on the **blocking** channel and
+  cleared by one command. Suppressing wrongly cost the gate permanently, on a
+  channel that only ever printed exit-0 warnings — the suppression reason was
+  computed and **discarded**, its only reader inside the arm branch. Found by a
+  debate panel reviewing the commit that introduced it.
+
+- **The validator pinned the first assignment; bash resolves the last (#81).**
+  One appended line disarmed a guard with the build green: `PROTECTED` in
+  `ops-claims.sh` (the guard on the validator, tests, `.operator/bin/` and
+  hooks), `_OPS_TOOLS` in the install manifest (installing 1 of 5 CLIs), and
+  `TIER_NAMES`. All three now report a duplicate instead of pinning a dead line.
+  The same class exists one level up and was measured here: `_function_body()`
+  returned the FIRST definition of a re-defined shell function while bash used
+  the LAST, so appending a second `autobar_count_changed` disabled the NUL read,
+  the repo check and the `-z` flag with `all contracts hold`. A re-defined
+  function now yields an empty body, which fails every pin.
+
+- **`partition.sh` documented a polarity it does not have (#83).** The header
+  said an *unreadable* `DECISIONS.md` failed OPEN; only *absent* and *symlink*
+  do. An unreadable file takes the NUL-probe path and fails CLOSED — which is
+  the correct behaviour, since the file exists and an unpresented decision may
+  be in it, but the opposite of what the comment promised, in the paragraph you
+  read before touching this polarity. All four states are now documented and
+  pinned by a case; nothing tested `unreadable` before. `scan_deviations` also
+  declares `LC_ALL` local instead of leaking C collation to its caller.
+
+- **A CI gate that could not pass.** The #80 skill gate failed shellcheck
+  0.10.0 on SC2013 in its own loop — present from the day it shipped and
+  invisible locally, since no local run reaches the pinned container. Found by
+  running `.github/workflows/validate.yml` with `act`. The obvious fix had a
+  trap: a pipeline's `while` body is a subshell, so the flag set inside is lost
+  and the gate would pass everything while the suite stayed green.
+
+- **`verdict_cmd_for` was called twelve lines above its definition.** Bash
+  resolves a function at call time, so the new Stop-hook message shipped a blank
+  command — no error, just useless guidance.
+
+### Fixed after review
+
+A four-lens review of this release found five defects in its own new code. Each
+is fixed here with the mutation that proves the fix, because four of the five
+shipped with every gate green.
+
+- **The auto-arm counted a new DIRECTORY as one path.** Porcelain's default
+  untracked mode collapses `src/feature/{one,two,three}.js` to a single
+  `?? src/`, so the count came back 1, below the threshold, and the gate stayed
+  silent on exactly the multi-file session clause (1) exists to catch. The same
+  three files at the repo root armed correctly — that contrast is the measurement.
+  New work lands in new directories, so this was the common shape of the thing
+  being gated, not an edge case. `-uall` now lists each file.
+
+- **A failed sentinel write left the session permanently unarmed.** The marker
+  is written first (deliberately — see #85), but the sentinel write carried
+  `|| true`. Marker present, sentinel absent: `autobar_already_armed` then reads
+  the session as armed for the rest of its life, so the gate never fires again —
+  RC 0, empty stderr. Measured with `.operator/pending` replaced by a plain
+  file, and it survived REPAIRING the directory, which is what made it permanent
+  rather than transient. The write's status is now checked and a failure rolls
+  the marker back, so the next Stop retries.
+
+- **The sentinel writer followed a planted symlink.** `[ ! -e ]` is true for a
+  dangling link, so `>` created its target outside `.operator/` (measured).
+  `set -C` (O_EXCL) now applies, the same discipline `ops-task.sh`'s opener uses
+  and for the same two reasons; a pre-existing regular file still reads as this
+  session's own earlier arm, not a failure.
+
+- **`check_no_redefinitions` was promised and never existed.** `_function_body`
+  computed the diagnostic (`.fn`, `.n`) and discarded it — this repo's own
+  computed-then-discarded shape. A duplicated function produced THREE confident,
+  false problems ("does not pass `-z`", "does not use process substitution",
+  "no rev-parse check"), every one of those properties present in the live
+  definition, while the real defect went unnamed. `_report_if_redefined` now
+  names it at all three call sites, matching what `_single_assignment` has done
+  for variables since #81.
+
+- **The "hook sources autobar.sh" pin matched a mention.** Replacing the source
+  line with `echo 'autobar.sh disabled'` left the filename in the file, so the
+  validator reported 0 problems — while at runtime `set -u` aborts the hook on
+  `autobar_arm`, and exit 1 is not exit 2, so Stop is ALLOWED and the deviation
+  gate never runs either. The pin now matches a source STATEMENT.
+
+- **The stale `sentinel_owner_of_name` justification is gone.** `e839490`
+  deleted the call; `grep -c` in `autobar.sh` is 0. Four places still cited it
+  as a live reason — including a validator's own failure message, which told a
+  maintainer a mechanism that does not exist. The sourcing order is still
+  pinned, for the reason that is actually true: `autobar_decide` runs before
+  `scan_pending`, so an armed sentinel is read by the existing mine-pending
+  branch in the same fire.
+
+- **`scripts/lib/` was never linted.** All three CI paths globbed
+  `scripts/*.sh`, which does not match `scripts/lib/`, so `autobar.sh` shipped
+  unchecked. Clean under the pinned 0.10.0 once included — but that was luck,
+  not a gate.
+
+Two test gaps closed, each proven by re-running the mutation that survived
+before: the mark-before-arm ordering could be reverted with 669 bash + 189
+python + the validator all green, and `debate.js`'s closing round could be
+pushed below its threshold check with 276 node green (two of three
+structurally-identical dead-seat branches were covered; the third was not).
+
+### Verified
+
+`act push -W .github/workflows/validate.yml` → Job succeeded: shellcheck 0.10.0
+over `scripts/*.sh scripts/lib/*.sh tests/test-scripts.sh`, contracts hold, 193
+python, 675 bash, 282 + 90 node.
+
+Counts measured on both executors rather than inferred: **683 local**
+(macOS/bash 3.2.57), **675 in-container** (ubuntu 24.04/bash 5.2.21, 8 cases
+self-skip as root). A previous revision of this section claimed 662 local / 655
+in-container; neither number is produced by any run, and the discrepancy is
+itself the kind of unverifiable claim the EVIDENCE GATE exists to refuse.
+
+Live, which is the part the bash suite cannot reach: **the branch's own session
+was auto-armed by its own hook at Stop** — 2 changed paths, sentinel on the real
+session id, `.operator/` excluded from the count, closed with a PASS row through
+`ops-verdict.sh`.
+
 ## [0.10.0] - 2026-08-22
 
 The release that stops defending the codebase against its own development

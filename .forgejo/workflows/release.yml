@@ -1,0 +1,142 @@
+name: release
+
+# The Forgejo half of the release gate. Cutting a release (see CLAUDE.md): merge
+# to main with plugin.json bumped and its `## [x.y.z]` entry newest in
+# CHANGELOG.md, then push tag `v<x.y.z>`. This job fails the tag build on any
+# mismatch and re-runs the FULL validation — it must stay a superset of
+# validate.yml, which is #38's lesson: a tag build once gated LESS than any PR
+# build, and 0.7.1 shipped a regex change no release run tested a case over.
+#
+# Three departures from .github/workflows/release.yml, each forced and each
+# measured on this runner rather than assumed:
+#
+# 1. `uses:` fully qualified — a bare `actions/checkout@v4` resolves to
+#    data.forgejo.org and pulls different code. Confirmed in this repo's own job
+#    log: `git fetch 'https://github.com/actions/checkout' # ref=v4`. The cost is
+#    that `act` cannot parse the qualified form, so this file is not
+#    act-runnable; prove it by pushing a tag to `lokaal`.
+#
+# 2. No `docker run` for shellcheck. Probed: DOCKER_HOST unset inside the job,
+#    no docker CLI. (The host runs forgejo-runner-dind and the RUNNER has
+#    DOCKER_HOST set — that daemon starts job containers; the job inherits
+#    neither.) The tarball is the same pinned 0.10.0, arch-detected because the
+#    runner is aarch64.
+#
+# 3. `gh` cannot publish here — the API is Gitea-compatible, not GitHub's, and
+#    `gh` fails against it in an auth-shaped way that reads like a credentials
+#    problem. The release is created with a plain API call instead.
+#
+# And one that is not a departure but a trap the GitHub file never had to think
+# about: checkout fetches `--depth=1 --no-tags` (seen in the job log). The gate
+# reads the tag NAME from the ref, not from git, so a shallow clone is fine —
+# but anything added here that walks history or resolves a tag object must fetch
+# depth itself first.
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # Same reasoning as validate.yml, and it matters more here: this job runs
+    # the gate that decides what ships, and `unittest discover` leaves two
+    # gitignored __pycache__ dirs — a tree dirty in a way `git status` cannot
+    # show.
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: https://github.com/actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          set -e
+          if ! command -v python3 >/dev/null || ! command -v node >/dev/null \
+             || ! command -v jq >/dev/null || ! command -v git >/dev/null; then
+            apt-get update -qq
+            apt-get install -y -qq python3 nodejs jq git curl xz-utils
+          fi
+          echo "bash    $BASH_VERSION"
+          echo "python  $(python3 --version)"
+          echo "node    $(node --version)"
+          echo "arch    $(uname -m)"
+          echo "tag     ${GITHUB_REF_NAME:-<unset>}"
+
+      # FIRST, before any suite: the cheapest gate rejects the most common
+      # mistake (a tag that does not match plugin.json or the newest CHANGELOG
+      # heading), and there is no point running four suites to then refuse.
+      - name: Gate — tag == plugin.json version == newest CHANGELOG heading
+        run: python3 scripts/release_gate.py "$GITHUB_REF_NAME" --notes-out release-notes.md
+
+      - name: Shellcheck gate scripts
+        run: |
+          set -e
+          case "$(uname -m)" in
+            aarch64|arm64) SC_ARCH=aarch64 ;;
+            x86_64|amd64)  SC_ARCH=x86_64 ;;
+            *) echo "unsupported arch $(uname -m) for the pinned shellcheck tarball"; exit 1 ;;
+          esac
+          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.${SC_ARCH}.tar.xz" \
+            | tar -xJf - -C /tmp
+          /tmp/shellcheck-v0.10.0/shellcheck --version | grep version:
+          /tmp/shellcheck-v0.10.0/shellcheck scripts/*.sh scripts/lib/*.sh tests/test-scripts.sh
+
+      - name: Validate plugin contracts
+        run: python3 scripts/validate_plugin.py
+
+      - name: Run Python tests
+        run: python3 -m unittest discover -s tests
+
+      - name: Run shell script tests
+        run: bash tests/test-scripts.sh
+
+      # Kept because of #38: without these two a tag build gated less than a PR
+      # build. Superset of validate.yml, always.
+      - name: Run workflow logic tests
+        run: node tests/test_workflows.mjs
+
+      - name: Run compressor replay tests
+        run: node tests/test_compress.mjs
+
+      # `gh` does not work against Forgejo (Gitea-compatible API), so this is a
+      # plain POST. Everything it depends on was PROBED on this runner rather
+      # than assumed, and two of the four results would have broken it:
+      #
+      #   GITHUB_TOKEN       set (and masked in logs), HTTP 200 on /releases
+      #   GITHUB_REPOSITORY  ci-admin/cc-operator-plugin
+      #   GITHUB_SERVER_URL  http://forgejo:3000 — the short name, and it needs
+      #                      no rewriting: LAN DNS is authoritative for the bare
+      #                      hostname as well as the FQDN, so `forgejo` resolves
+      #                      to 192.168.178.140 and serves 200 from a laptop
+      #                      exactly as forgejo.ci.lan does (measured). The
+      #                      html_url the API returns is usable as-is.
+      #   jq                 ABSENT from the base image. Installed by Toolchain
+      #                      above — but the JSON body is built with python3
+      #                      anyway, because a release step that dies on a
+      #                      missing formatting tool after the gates have passed
+      #                      is the worst possible place to discover it.
+      #
+      # The response is CHECKED. A create that fails leaves the tag pushed and
+      # the suites green with no release object — a success-shaped run that
+      # published nothing, which is the failure this whole file exists to make
+      # impossible.
+      - name: Publish Forgejo release
+        run: |
+          set -e
+          # No heredoc: a `PY` terminator must sit at column 0, which closes the
+          # YAML block scalar this script lives in. -c with a single-quoted
+          # program keeps everything indented and parseable.
+          python3 -c 'import json,sys; tag=sys.argv[1]; notes=open(sys.argv[2],encoding="utf-8").read(); json.dump({"tag_name":tag,"name":tag,"body":notes,"draft":False,"prerelease":False}, open("/tmp/body.json","w"))' \
+            "$GITHUB_REF_NAME" release-notes.md
+          code=$(curl -sS -o /tmp/rel.json -w '%{http_code}' \
+            -X POST "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/releases" \
+            -H "Authorization: token ${GITHUB_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data @/tmp/body.json)
+          echo "HTTP $code"
+          if [ "$code" != "201" ]; then
+            echo "release creation FAILED — the tag is pushed and every gate passed, but nothing was published:"
+            cat /tmp/rel.json
+            exit 1
+          fi
+          python3 -c 'import json; r=json.load(open("/tmp/rel.json")); print("published:", r.get("name"), " ", r.get("html_url"))'

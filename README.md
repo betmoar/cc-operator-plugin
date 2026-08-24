@@ -185,8 +185,8 @@ directly:
 templates/OPERATOR.md             # the charter (materialized by /cc-operator:start)
 templates/{VERDICTS,DECISIONS}-header.md   # ledger schemas (byte-identical to the proven originals)
 commands/{start,handoff,tiers}.md # the three slash commands
-workflows/{review,brainstorm,plan,crawl,dispatch}.js  # the orchestration primitives
-agents/op-*.md                    # tier-aliased seats: author, mechanic, reviewer, scout, verifier, brainstorm, crawler
+workflows/{review,brainstorm,plan,crawl,dispatch,debate}.js  # the orchestration primitives
+agents/op-*.md                    # tier-aliased seats: author, mechanic, reviewer, scout, verifier, brainstorm, crawler, debater
 skills/chief-operator/SKILL.md    # thin router (front door only)
 scripts/ops-{init,task,verdict,adopt,claims,backlog}.sh  # the evidence-gate mechanism
 scripts/ops-install-set.sh        # the .operator/bin install manifest (both writers source it)

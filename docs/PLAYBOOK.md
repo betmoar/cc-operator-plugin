@@ -247,6 +247,92 @@ a workflow has no business listing which tier names exist).
 `check_workflows` + `check_workflow_parity` + `check_workflow_default_tiers`
 enforce these at build time.
 
+What they do NOT enforce, and what `tests/test_workflows.mjs` must therefore
+cover per workflow: **which seat each call site dispatches**.
+`check_workflow_agent_types` proves every `"cc-operator:op-*"` string names a
+shipped agent — it cannot see that a read-only seat's prompt went to an
+implementer. `debate.js` is the sharp case: hand a debater prompt to
+`op-author` (Write + Edit) and the panel can edit the artifact it is arguing
+about, with the validator green. The node case asserts the binding per label.
+Mutation-check a new workflow's cases the way `debate.js` was: retype each seat,
+delete each dead-agent guard, drop each refusal, and confirm the suite goes red
+— a guard nobody tried to break is a guard nobody knows works.
+
+### Adding a hook-level gate (the #85 auto-arm lesson)
+
+A gate that DECIDES must be testable at the point where its decision differs
+from the default outcome — not only at its effect. The auto-armer's no-git and
+empty-sid guards each stood the armer down, and "did not arm" is also what a
+clean tree produces: mutation testing found both guards deletable with every
+case green. Two of the three were then genuinely redundant (`command -v git`
+was unreachable behind `git rev-parse`; the empty-sid check inside the
+suppression scan was unreachable behind `autobar_already_armed`) and were
+collapsed into one guard each, with an `autobar_reason` string a case can
+assert. **A guard no test can reach is a guard nobody knows works** — either
+give it an observable output or delete it as redundant. Do not leave it.
+
+**Live state and archives are not the same signal.** The armer's suppression
+first counted a foreign `verdicts.d/<sid>.md` fragment as "another session is
+working here". Fragments are append-only and nothing wipes them, so one verdict
+by any other session — ever — disarmed the gate permanently, and worst in the
+mature projects it most protects. `pending/` is live; `verdicts.d/` is an
+archive. Before using a file's EXISTENCE as a presence signal, ask what removes
+it; if nothing does, it answers "happened once", not "happening now".
+
+The reflex fix is a timestamp, and it does not work here: **bash 3.2's `-nt`/
+`-ot` compare whole SECONDS** (measured — a fragment written 47ms after the
+epoch, .218 vs .171, read as "not newer"), so two events inside one second are
+indistinguishable. This repo's primitive for liveness is `kill -0`, and
+`ops-verdict.sh`'s lock says why in as many words: *"waiters ask the KERNEL, not
+the clock" (F03)*. That only works on something carrying a pid. When neither
+liveness nor a clock can answer, drop the signal and state the residual — a
+bounded false positive beats a silent permanent disarm.
+
+**`kill -0` works on a LOCK, not on a session artifact, and the difference is
+lifetime.** A lock holder exists only for the duration of one CLI call, so the
+pid it stamps is alive exactly while the lock should be held — which is what
+makes F03's kernel question answerable. A sentinel is the opposite: it exists
+to OUTLIVE the call that wrote it. `ops-task.sh` is a subprocess that exits the
+moment it returns, so a pid stamped there is dead while the session owning the
+task keeps running, and `kill -0` would read every sentinel — including a live
+session's — as abandoned. Measured 2026-08-24; the sentinel body carries `cwd:`
+and `opened_at:` and no pid, which is correct.
+
+The general rule, and it is what the commit message for #85 got wrong: **a
+session is a harness token (`session_id`), not an OS handle.** Nothing maps a
+sid to a process, so no OS primitive can answer "is that session still alive".
+Before reaching for `kill -0` on anything, check whether the artifact's lifetime
+is bounded by the process that stamped it. If it is not, the kernel has no
+opinion to offer and the answer has to come from the operator instead —
+`ops-adopt.sh` exists for exactly that re-claim.
+
+**A remedy on a non-blocking channel is not a remedy.** The suppression rule's
+successor question — a crashed session strands a sentinel that disarms the gate
+forever — looked answerable with wording: `ops-adopt.sh` exists, the Stop hook
+already names foreign sentinels, so tell the operator what to run. Two things
+killed that. First, the reason for standing down was computed and DISCARDED:
+`autobar_reason` is set on the stand-down path and its only reader sits inside
+the arm branch, so the gate went dark without ever printing why. Second, the
+foreign-sentinel line is exit 0. Advice on a channel that does not block is
+advice the run does not depend on, and the gate's FUNCTION depended on someone
+acting on it. That is the documented-limitation move the whole change existed to
+reject, wearing better clothes.
+
+The rule that came out of it: **if a mechanism's correctness depends on an
+operator noticing a message, the message must ride the channel that stops the
+run.** Otherwise remove the mechanism and price the failure it was preventing.
+
+Two mechanical traps this cost time on, both worth knowing before the next one:
+
+- **Mutate the CODE line, not the first match.** A sweep replacing the first
+  occurrence of `':(exclude).operator'` edited the COMMENT above the code and
+  reported a survivor that did not exist. Anchor on the last occurrence, or on
+  a string that appears only in code.
+- **`case … esac` inside `"$( … )"` does not parse** — the first arm's `)`
+  closes the substitution. Bash reports a syntax error that the harness scores
+  as a FAILED CASE, not as a broken test. Assemble the verdict in a variable
+  first, then pass it to `check`. (Shipped twice in one sitting.)
+
 ### The tier coupling after the #76 lift (was: the F07 namespace coupling)
 
 Until 0.9.0 every workflow carried `KNOWN_TIERS`, a copy of the resolver's

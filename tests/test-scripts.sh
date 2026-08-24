@@ -3400,6 +3400,478 @@ check "ops-verdict.sh actually implements --mark-handoff" \
   "$(grep -q -- '--mark-handoff' "$SCRIPTS/ops-verdict.sh" && echo 0 || echo 1)"
 
 ########################################################################
+echo "-- Case: skills/chief-operator/SKILL.md — the front door resolves"
+# #80: until 0.10 nothing read skills/ at all — not the validator, not this suite — so a rename following
+# CLAUDE.md's own coupling row ("update the /cc-operator: command refs in OPERATOR.md + SKILL.md") was caught
+# everywhere EXCEPT the file the row names. Measured 2026-08-22: retyping the ref to a nonexistent plugin
+# shipped green. The skill is deliberately not load-bearing; that is a reason to keep it cheap, not unchecked.
+PLUGIN_NAME="$(sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$REPO/.claude-plugin/plugin.json" | head -1)"
+SKILL="$REPO/skills/chief-operator/SKILL.md"
+check "skills/chief-operator/SKILL.md exists" "$([ -f "$SKILL" ] && echo 0 || echo 1)"
+# A skill whose frontmatter `name` disagrees with its directory does not register, and the failure is silent.
+SKILL_NAME="$(sed -n 's/^name:[[:space:]]*//p' "$SKILL" | head -1)"
+check "SKILL.md frontmatter name matches its directory" \
+  "$([ "$SKILL_NAME" = "chief-operator" ] && echo 0 || echo 1)"
+check "SKILL.md carries a description (the trigger text)" \
+  "$(grep -q '^description:[[:space:]]*[^[:space:]]' "$SKILL" && echo 0 || echo 1)"
+# THE ONE THAT CATCHES #80's MEASUREMENT: every /cc-operator:<cmd> the skill names must be a command that
+# ships. This generalizes past a plugin rename to a command deleted or renamed out from under the front door.
+# Scanned as /<plugin>:<cmd>, NOT as /cc-operator:<cmd>. A pattern anchored on the plugin name is blind to a
+# rename of the plugin half — which is the half CLAUDE.md's coupling row is about, and the exact mutation that
+# first shipped green against this very case (2026-08-22). Both halves are checked, so either drift is caught.
+# `while read`, not `for … in $(…)`: SC2013, and the CI shellcheck gate is pinned
+# at 0.10.0 where that is a hard failure (measured via act, 2026-08-24 — the job
+# died on this line before any test ran). A pipeline's `while` body is a SUBSHELL
+# in POSIX sh, so a flag set inside is lost at the loop's end; the findings go to
+# a tempfile and the verdict is read back from its size. Redirecting from a
+# process substitution would keep the variable, but this suite targets bash 3.2
+# and plain sh alike.
+SKILL_REF_BAD=0
+_skill_refs="$(mktemp)"
+grep -o '/[a-z][a-z0-9-]*:[a-z-]*' "$SKILL" | sort -u | while read -r _ref; do
+  _plug="${_ref%%:*}"; _plug="${_plug#/}"
+  _cmd="${_ref##*:}"
+  if [ "$_plug" != "$PLUGIN_NAME" ]; then
+    echo "     (wrong plugin: $_ref — this plugin is $PLUGIN_NAME)" >> "$_skill_refs"
+  elif [ ! -f "$REPO/commands/$_cmd.md" ]; then
+    echo "     (unresolvable command: $_ref)" >> "$_skill_refs"
+  fi
+done
+if [ -s "$_skill_refs" ]; then SKILL_REF_BAD=1; cat "$_skill_refs"; fi
+rm -f "$_skill_refs"
+check "every slash-command ref in SKILL.md names this plugin and a command that exists" \
+  "$([ "$SKILL_REF_BAD" -eq 0 ] && echo 0 || echo 1)"
+# The skill must keep disclaiming authority: its whole safety property is that nothing load-bearing lives here,
+# because skill activation is unreliable. If that sentence goes, the next editor has no reason not to add rules.
+check "SKILL.md still points at the materialized charter as the authority" \
+  "$(grep -q 'OPERATOR.md' "$SKILL" && echo 0 || echo 1)"
+
+########################################################################
+echo "-- Case: auto-arm (#85) — the charter's clause (1), enforced in code"
+# INVARIANT: the evidence gate is no longer opt-in. A session that changes >=2 project paths and
+# opens no task is armed AT STOP with an ordinary owned sentinel, so the EXISTING mine-pending
+# branch blocks it. Below the threshold nothing is owed and the session stops clean.
+# Filesystem delta, not a tool counter: the property is "files changed", and a PostToolUse counter
+# is blind to every Bash-mediated write while reporting zero — the same hole behind a green number.
+
+# A git project is the precondition for the whole mechanism; newproj alone is not one.
+mkgitproj() { # mkgitproj → path to a fresh initialized git project with .operator/
+  local _p; _p="$(newproj)"
+  git -C "$_p" init -q . 2>/dev/null
+  git -C "$_p" config user.email t@t 2>/dev/null; git -C "$_p" config user.name t 2>/dev/null
+  ( cd "$_p" && bash "$INIT" >/dev/null 2>&1 )
+  printf '%s\n' "$_p"
+}
+autobar_sentinel() { # autobar_sentinel <proj> <sid> → path
+  printf '%s\n' "$1/.operator/pending/$2__autobar"
+}
+
+# --- the arm itself ---------------------------------------------------------
+P="$(mkgitproj)"
+printf 'a\n' > "$P/one.txt"; printf 'b\n' > "$P/two.txt"
+run_hook stop-session-a.json "$P"
+check "two changed paths and no open task ARMS at Stop" \
+  "$([ -f "$(autobar_sentinel "$P" SESS-A)" ] && echo 0 || echo 1)"
+check "the armed sentinel BLOCKS via the existing mine-pending branch (exit 2)" \
+  "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+# An unexplained block is the one a user resolves by deleting the hook.
+# Assembled OUTSIDE the substitution: a `case` inside "$( … )" makes bash read the arm's `)`
+# as the end of the substitution (measured — a syntax error that scored as a FAIL, not an error).
+_ab_why=1
+case "$HERR" in
+  *"auto-armed 'autobar'"*) case "$HERR" in
+      *"2 changed path"*) case "$HERR" in *"clause 1"*) _ab_why=0 ;; esac ;;
+    esac ;;
+esac
+check "the block SAYS WHY — the count and the charter clause" "$_ab_why"
+
+# --- the threshold is a COUNT, and it is the charter's ----------------------
+P="$(mkgitproj)"; printf 'a\n' > "$P/only.txt"
+run_hook stop-session-a.json "$P"
+check "ONE changed path is below the threshold — no arm" \
+  "$([ -f "$(autobar_sentinel "$P" SESS-A)" ] && echo 1 || echo 0)"
+check "a one-file session stops CLEAN (exit 0)" "$([ "$HRC" -eq 0 ] && echo 0 || echo 1)"
+
+P="$(mkgitproj)"
+run_hook stop-session-a.json "$P"
+check "a session that changed NOTHING (a question) stops clean, unarmed" \
+  "$([ "$HRC" -eq 0 ] && ! [ -f "$(autobar_sentinel "$P" SESS-A)" ] && echo 0 || echo 1)"
+
+# --- THE NUL CASE: a path with a space must still count as one path ---------
+# `git status --porcelain` QUOTES a path containing a space, and a rename prints "old -> new" on
+# ONE line — so a line-counting armer mis-counts in both directions. -z fixes that, but capturing
+# it through $(…) DELETES the NUL bytes (measured on bash 3.2.57: a three-entry porcelain counted
+# 0, silently). This case is the one that catches that regression.
+P="$(mkgitproj)"
+printf 'a\n' > "$P/one two.txt"; printf 'b\n' > "$P/three four.txt"
+run_hook stop-session-a.json "$P"
+check "two SPACED paths count as 2 and arm (NUL-delimited read, not \$( ))" \
+  "$([ -f "$(autobar_sentinel "$P" SESS-A)" ] && echo 0 || echo 1)"
+
+# --- .operator/ is excluded, or the gate arms on its own bookkeeping --------
+# In a FRESH scaffold .operator/ is untracked, so porcelain prints the whole directory as ONE
+# record — below the threshold by itself, which would let this case pass however the exclusion
+# behaves. Commit the scaffold first: then its files are tracked individually and each ledger write
+# is its OWN record, which is the state a real project is in and the only one where the exclusion
+# is observable. The count is asserted directly, not the arm.
+P="$(mkgitproj)"
+git -C "$P" add -A >/dev/null 2>&1; git -C "$P" commit -qm scaffold >/dev/null 2>&1
+( cd "$P" && bash "$TASK" T-1 --owner SESS-A >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" T-1 crit ev PASS --owner SESS-A >/dev/null 2>&1 )
+check "control: the ledger writes ARE visible to a bare porcelain (the exclusion has work to do)" \
+  "$([ "$(git -C "$P" status --porcelain | grep -c '\.operator')" -ge 2 ] && echo 0 || echo 1)"
+run_hook stop-session-a.json "$P"
+check "the gate's OWN ledger writes never arm it (.operator excluded, #21's class)" \
+  "$([ -f "$(autobar_sentinel "$P" SESS-A)" ] && echo 1 || echo 0)"
+
+# --- arm ONCE: the infinite-block guard -------------------------------------
+# Recording a verdict does not un-change the files, so a second Stop sees the same >=2 delta. An
+# armer with no memory re-arms forever and the session can NEVER stop — worse than stopping
+# unaudited, and the failure a user fixes by removing the plugin.
+P="$(mkgitproj)"
+printf 'a\n' > "$P/one.txt"; printf 'b\n' > "$P/two.txt"
+run_hook stop-session-a.json "$P"
+check "first Stop arms and blocks" "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+( cd "$P" && bash "$VERDICT" autobar crit ev PASS --owner SESS-A >/dev/null 2>&1 )
+check "the verdict CLEARED the auto-armed sentinel" \
+  "$([ -f "$(autobar_sentinel "$P" SESS-A)" ] && echo 1 || echo 0)"
+run_hook stop-session-a.json "$P"
+check "the SECOND Stop does not re-arm — the session can actually stop (exit 0)" \
+  "$([ "$HRC" -eq 0 ] && ! [ -f "$(autobar_sentinel "$P" SESS-A)" ] && echo 0 || echo 1)"
+check "the arm marker records the session, not the task" \
+  "$([ -f "$P/.operator/.autobar/SESS-A" ] && echo 0 || echo 1)"
+
+# --defer is the honest exit, and it must also not re-arm.
+P="$(mkgitproj)"
+printf 'a\n' > "$P/one.txt"; printf 'b\n' > "$P/two.txt"
+run_hook stop-session-a.json "$P"
+( cd "$P" && bash "$VERDICT" autobar --defer "blocked on review" --owner SESS-A >/dev/null 2>&1 )
+run_hook stop-session-a.json "$P"
+check "--defer closes an auto-armed task and the next Stop does not re-arm" \
+  "$([ ! -f "$(autobar_sentinel "$P" SESS-A)" ] && echo 0 || echo 1)"
+
+# --- NO SUPPRESSION, and these cases pin the inversion -----------------------
+# Two foreign-presence rules were tried and both are gone. Each made ONE stale artifact darken the
+# armer for the rest of the project's life: an append-only verdicts.d fragment first, then an
+# abandoned pending/ sentinel from a session that crashed, was killed, or was /clear'd mid-task
+# (nothing reaps either). Splitting "working" from "died" needs a liveness oracle the filesystem
+# does not carry — a sentinel holds no pid, a pid would be dead anyway (ops-task.sh exits at CLI
+# return while the owning session runs), a session is a harness token with no OS handle, and bash
+# 3.2's whole-second mtime cannot separate stale from concurrent.
+#
+# The trade, priced: arming wrongly costs ONE arm on the session's own sentinel, capped once per
+# session by the marker, announced on the BLOCKING channel, cleared by one command. Suppressing
+# wrongly cost the gate, permanently, on a channel that only ever printed exit-0 warnings.
+P="$(mkgitproj)"
+printf 'a\n' > "$P/one.txt"; printf 'b\n' > "$P/two.txt"
+( cd "$P" && bash "$TASK" T-OTHER --owner SESS-B >/dev/null 2>&1 )
+run_hook stop-session-a.json "$P"
+check "a FOREIGN pending sentinel does NOT suppress — 'working OR died' is unknowable here" \
+  "$([ -f "$(autobar_sentinel "$P" SESS-A)" ] && echo 0 || echo 1)"
+check "the armed session blocks (exit 2) rather than stopping silently unarmed" \
+  "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+# The co-presence sentence is the price of dropping suppression: this block can land on a session
+# that changed nothing, and an unexplained accusation is what gets the hook deleted.
+_ab_copres=1
+case "$HERR" in *"cannot be attributed to a session"*) _ab_copres=0 ;; esac
+check "the arm message WARNS that the delta may be another session's" "$_ab_copres"
+# The abandoned-sentinel remedy must ride the same message, or it is hygiene nobody performs.
+_ab_remedy=1
+case "$HERR" in *"nothing reaps its sentinel"*) _ab_remedy=0 ;; esac
+check "the foreign 'not blocking' line carries the dead-sentinel remedy in-band" "$_ab_remedy"
+# THE CASE THE WHOLE INVERSION EXISTS FOR: an abandoned sentinel must not darken the gate forever.
+P="$(mkgitproj)"
+( cd "$P" && bash "$TASK" CRASHED --owner SESS-DEAD >/dev/null 2>&1 )
+printf 'a\n' > "$P/one.txt"; printf 'b\n' > "$P/two.txt"
+run_hook stop-session-a.json "$P"
+check "an ABANDONED foreign sentinel does not permanently disarm the armer (#85 follow-up)" \
+  "$([ -f "$(autobar_sentinel "$P" SESS-A)" ] && echo 0 || echo 1)"
+# And the remedy the message names must actually work in ONE command, with no --owner.
+( cd "$P" && bash "$VERDICT" CRASHED --defer "owner session is gone" >/dev/null 2>&1 )
+check "one --defer with NO --owner clears a foreign sentinel (not adopt-then-defer)" \
+  "$(sentinel_any "$P" CRASHED && echo 1 || echo 0)"
+
+# THE RESIDUAL, pinned so it is a decision and not a surprise. A foreign session that opened a
+# task, recorded its verdict and exited leaves NO sentinel — only a verdicts.d fragment, and its
+# diff may still be in our porcelain count. We arm anyway.
+#
+# The first version suppressed on that fragment, and it was a permanent disarm: fragments are
+# APPEND-ONLY and nothing wipes them (ops-verdict.sh appends with `>>`), so one honest verdict by
+# any other session, ever, stood the armer down for the rest of the project's life — silently,
+# and hardest in the mature projects the gate most protects. Measured 2026-08-24 (found by a
+# debate panel reviewing the commit that introduced it).
+#
+# An mtime clock was tried and removed: bash 3.2 compares whole SECONDS (a fragment written 47ms
+# after the epoch read as "not newer"), so stale and concurrent are indistinguishable inside one
+# second. The repo's own primitive for liveness is `kill -0`, not time — ops-verdict.sh's lock
+# says so in as many words ("waiters ask the KERNEL, not the clock", F03) — and a fragment carries
+# no pid, so that cannot be asked of it either.
+#
+# So: a bounded false positive (one arm, one --defer to clear) instead of a silent permanent
+# disarm. This case pins the choice; if a future change makes the armer suppress here again, it
+# has re-introduced the disarm.
+P="$(mkgitproj)"
+printf 'a\n' > "$P/one.txt"; printf 'b\n' > "$P/two.txt"
+( cd "$P" && bash "$TASK" T-OTHER --owner SESS-B >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" T-OTHER crit ev PASS --owner SESS-B >/dev/null 2>&1 )
+check "control: the foreign session left no sentinel behind" \
+  "$(sentinel_any "$P" T-OTHER && echo 1 || echo 0)"
+check "control: it DID leave a fragment (the signal the armer no longer reads)" \
+  "$([ -f "$P/.operator/verdicts.d/SESS-B.md" ] && echo 0 || echo 1)"
+run_hook stop-session-a.json "$P"
+check "a FINISHED foreign session does NOT disarm us — fragments are an archive, not presence" \
+  "$([ -f "$(autobar_sentinel "$P" SESS-A)" ] && echo 0 || echo 1)"
+
+# Our OWN fragment is not another session; suppressing on it would disarm the gate permanently
+# for every session that ever recorded a verdict.
+P="$(mkgitproj)"
+( cd "$P" && bash "$TASK" T-MINE --owner SESS-A >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" T-MINE crit ev PASS --owner SESS-A >/dev/null 2>&1 )
+printf 'a\n' > "$P/one.txt"; printf 'b\n' > "$P/two.txt"
+check "control: our own verdict left a fragment named for THIS session" \
+  "$([ -f "$P/.operator/verdicts.d/SESS-A.md" ] && echo 0 || echo 1)"
+run_hook stop-session-a.json "$P"
+check "our OWN fragment does not suppress — only a FOREIGN one does" \
+  "$([ -f "$(autobar_sentinel "$P" SESS-A)" ] && echo 0 || echo 1)"
+
+# An UNOWNED fragment (ops-verdict.sh's own name for an ownerless row) is not a second session
+# either. Suppressing on it would disarm the gate in every project that ever took a verdict with
+# no --owner, which is the pre-0.4 default.
+P="$(mkgitproj)"
+( cd "$P" && bash "$TASK" T-BARE >/dev/null 2>&1 )
+( cd "$P" && bash "$VERDICT" T-BARE crit ev PASS >/dev/null 2>&1 )
+printf 'a\n' > "$P/one.txt"; printf 'b\n' > "$P/two.txt"
+check "control: an ownerless verdict writes verdicts.d/unowned.md" \
+  "$([ -f "$P/.operator/verdicts.d/unowned.md" ] && echo 0 || echo 1)"
+run_hook stop-session-a.json "$P"
+check "an UNOWNED fragment is not a foreign session — it must not suppress" \
+  "$([ -f "$(autobar_sentinel "$P" SESS-A)" ] && echo 0 || echo 1)"
+
+# --- fail OPEN, the opposite polarity from the sentinel default -------------
+# An unowned sentinel is a REAL open task (fail closed). An unreadable baseline is a SCAFFOLD
+# problem, and arming on it blocks an honest session on a measurement that never happened.
+#
+# TESTED AT THE LIB, not through the hook, and the reason is the whole point: through the hook a
+# non-git project produces no arm because `git status` fails and yields zero records — the SAME
+# outcome as a clean tree. A case asserting only "did not arm" therefore CANNOT FAIL, whatever the
+# guard does (mutation-checked: removing both git guards left it green). The observable difference
+# is `autobar_measured`, so assert that. #21's vacuous-guard class, avoided by moving the probe to
+# where the distinction exists.
+# shellcheck source=/dev/null
+. "$SCRIPTS/lib/partition.sh"
+# shellcheck source=/dev/null
+. "$SCRIPTS/lib/autobar.sh"
+# autobar_* are OUTPUTS of the sourced lib. shellcheck cannot follow a runtime source and a
+# disable directive covers only the next command, so each read below carries its own (the same
+# per-site form ops-stop-hook.sh uses).
+
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )   # deliberately NOT a git repo
+printf 'a\n' > "$P/one.txt"; printf 'b\n' > "$P/two.txt"
+autobar_decide "$P" "$P/.operator" SESS-A
+# shellcheck disable=SC2154
+check "a non-git project is UNMEASURED — not 'clean', which is the claim that would arm wrongly" \
+  "$([ "$autobar_measured" -eq 0 ] && echo 0 || echo 1)"
+# shellcheck disable=SC2154
+check "an unmeasured tree arms nothing" "$([ "$autobar_arm" -eq 0 ] && echo 0 || echo 1)"
+# Assembled outside the substitution: a `case` arm's `)` inside "$( … )" ends the substitution.
+_ab_unmeas=1
+# shellcheck disable=SC2154
+case "$autobar_reason" in *unmeasured*) _ab_unmeas=0 ;; esac
+check "the reason SAYS unmeasured, so a maintainer can tell it apart from 'below threshold'" "$_ab_unmeas"
+run_hook stop-session-a.json "$P"
+check "a non-git project still stops clean through the hook (fail open, like @no-vcs)" \
+  "$([ "$HRC" -eq 0 ] && echo 0 || echo 1)"
+
+# The converse control: a git project with the SAME two files IS measured. Without this the
+# assertion above is satisfied by an autobar_measured that is never 1.
+P="$(mkgitproj)"
+printf 'a\n' > "$P/one.txt"; printf 'b\n' > "$P/two.txt"
+autobar_decide "$P" "$P/.operator" SESS-A
+# shellcheck disable=SC2154
+check "control: the same two files in a GIT project are measured and DO arm" \
+  "$([ "$autobar_measured" -eq 1 ] && [ "$autobar_arm" -eq 1 ] && echo 0 || echo 1)"
+
+# A payload with no session_id cannot attribute anything — every sentinel reads unowned, and an
+# armed sentinel would be one nobody can be shown to own. Same reasoning as above: asserted at the
+# lib, because "no arm" alone is also what a clean tree produces.
+P="$(mkgitproj)"
+printf 'a\n' > "$P/one.txt"; printf 'b\n' > "$P/two.txt"
+autobar_decide "$P" "$P/.operator" ""
+# shellcheck disable=SC2154
+check "an EMPTY session id stands the armer down (nothing to stamp an owner with)" \
+  "$([ "$autobar_arm" -eq 0 ] && echo 0 || echo 1)"
+# The REASON, not just the outcome: without it this assertion is also satisfied by a clean tree,
+# and the stand-down could be deleted with the case still green (measured — it was).
+_ab_nosid=1
+# shellcheck disable=SC2154
+case "$autobar_reason" in *"no session id"*) _ab_nosid=0 ;; esac
+check "the empty-sid stand-down NAMES itself (not silently indistinguishable from 'clean')" "$_ab_nosid"
+run_hook stop-basic.json "$P"
+check "a payload with NO session_id arms nothing, and stops clean" \
+  "$([ "$HRC" -eq 0 ] && ! ls "$P"/.operator/pending/*autobar* >/dev/null 2>&1 && echo 0 || echo 1)"
+
+# --- SessionStart wipes the markers ------------------------------------------
+# A marker for a session that no longer exists would keep a FUTURE session with the same id from
+# ever arming. Same reasoning as the compressor ephemera wipe beside it.
+P="$(mkgitproj)"
+printf 'a\n' > "$P/one.txt"; printf 'b\n' > "$P/two.txt"
+run_hook stop-session-a.json "$P"
+check "control: the marker exists before SessionStart" \
+  "$([ -f "$P/.operator/.autobar/SESS-A" ] && echo 0 || echo 1)"
+printf '%s' "$(sed "s|<tmp>|$P|" "$FIXTURES/sessionstart.json")" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
+check "SessionStart WIPES the arm markers (a stale one disarms a future session)" \
+  "$([ -d "$P/.operator/.autobar" ] && echo 1 || echo 0)"
+
+# --- the count sees FILES, not collapsed directories (#86 review) -----------
+# Porcelain's DEFAULT untracked mode collapses an untracked directory to ONE
+# record: three new files under src/feature/ printed as `?? src/`, the count came
+# back 1, and the gate stayed silent on exactly the multi-file session clause (1)
+# exists to catch. New work lands in new directories, so this was the COMMON
+# shape of the thing being gated, not an edge case. -uall is the fix.
+P="$(mkgitproj)"
+mkdir -p "$P/src/feature"
+printf 'a\n' > "$P/src/feature/one.js"
+printf 'b\n' > "$P/src/feature/two.js"
+printf 'c\n' > "$P/src/feature/three.js"
+run_hook stop-session-a.json "$P"
+check "three files in ONE new directory ARM (porcelain collapses them to '?? src/')" \
+  "$([ -f "$(autobar_sentinel "$P" SESS-A)" ] && echo 0 || echo 1)"
+check "the collapsed-directory arm BLOCKS like any other (exit 2)" \
+  "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+# The count must be the FILE count, not the directory's single record: a fix that
+# merely bumped the threshold to 1 would pass the two checks above while arming
+# every single-file session.
+_ab_n="$(printf '%s' "$HERR" | grep -c 'changed path(s)' || echo 0)"
+check "the message reports 3 paths, not 1 (the count is files, not records)" \
+  "$(printf '%s' "$HERR" | grep -q '3 changed path(s)' && echo 0 || echo 1)"
+check "control: the arm was announced exactly once" \
+  "$([ "$_ab_n" -ge 1 ] && echo 0 || echo 1)"
+
+# A nested directory is the same defect one level deeper — `?? a/` hides all of it.
+P="$(mkgitproj)"
+mkdir -p "$P/a/b/c"
+printf 'x\n' > "$P/a/b/c/deep.txt"; printf 'y\n' > "$P/a/b/other.txt"
+run_hook stop-session-a.json "$P"
+check "two files under a NESTED new directory arm (both are counted)" \
+  "$([ -f "$(autobar_sentinel "$P" SESS-A)" ] && echo 0 || echo 1)"
+
+# Negative control: -uall must not turn a ONE-file session into an arm. Without
+# it this whole block would pass by over-counting instead of counting right.
+P="$(mkgitproj)"
+mkdir -p "$P/solo"
+printf 'only\n' > "$P/solo/one.txt"
+run_hook stop-session-a.json "$P"
+check "control: ONE file in a new directory is still below the threshold" \
+  "$([ ! -f "$(autobar_sentinel "$P" SESS-A)" ] && [ "$HRC" -eq 0 ] && echo 0 || echo 1)"
+
+# A rename is the case the -z comment names as its reason and nothing exercised:
+# porcelain prints `old -> new` on ONE line without -z, and with it emits two
+# NUL-terminated records — correct, because a rename touched two paths.
+P="$(mkgitproj)"
+printf 'content\n' > "$P/before.txt"
+git -C "$P" add before.txt >/dev/null 2>&1; git -C "$P" commit -qm add >/dev/null 2>&1
+git -C "$P" mv before.txt after.txt >/dev/null 2>&1
+run_hook stop-session-a.json "$P"
+check "a RENAME counts as two paths and arms (the case -z exists for)" \
+  "$([ -f "$(autobar_sentinel "$P" SESS-A)" ] && echo 0 || echo 1)"
+
+# --- a failed sentinel write must ROLL THE MARKER BACK (#86 review) ---------
+# The asymmetry the mark-before-arm branch exists to prevent, in the direction it
+# did not cover: marker written, sentinel write failed, `|| true` swallowed it.
+# autobar_already_armed then reads the session as armed for the rest of its life,
+# so the gate silently never fires again — RC 0, empty stderr. Measured with
+# .operator/pending replaced by a plain file, and it survived REPAIRING the
+# directory, which is what makes it permanent rather than transient.
+P="$(mkgitproj)"
+printf 'a\n' > "$P/one.txt"; printf 'b\n' > "$P/two.txt"
+rm -rf "$P/.operator/pending"
+printf 'NOT-A-DIR\n' > "$P/.operator/pending"
+run_hook stop-session-a.json "$P"
+check "an unwritable pending/ does NOT leave the session marked as armed" \
+  "$([ ! -f "$P/.operator/.autobar/SESS-A" ] && echo 0 || echo 1)"
+check "the failed arm SAYS SO on stderr (a silent disarm is the whole defect)" \
+  "$(printf '%s' "$HERR" | grep -q 'auto-arm could not write' && echo 0 || echo 1)"
+# The rollback's only purpose: the NEXT Stop retries instead of standing down.
+rm -f "$P/.operator/pending"; mkdir -p "$P/.operator/pending"
+run_hook stop-session-a.json "$P"
+check "after the obstruction is cleared the next Stop ARMS (the marker was rolled back)" \
+  "$([ -f "$(autobar_sentinel "$P" SESS-A)" ] && echo 0 || echo 1)"
+
+# A planted dangling symlink must not be written THROUGH. `[ ! -e ]` is true for
+# one, so the plain `>` created the link's target outside .operator/ (measured).
+# autobar_mark_armed already refused symlinks; this writer, three lines away, did
+# not. set -C (O_EXCL) is the same discipline ops-task.sh's opener uses.
+P="$(mkgitproj)"
+printf 'a\n' > "$P/one.txt"; printf 'b\n' > "$P/two.txt"
+_ab_target="$P/PLANTED-OUTSIDE-OPERATOR"
+ln -s "$_ab_target" "$(autobar_sentinel "$P" SESS-A)"
+run_hook stop-session-a.json "$P"
+check "a planted dangling symlink is NOT followed (nothing written outside .operator/)" \
+  "$([ ! -e "$_ab_target" ] && echo 0 || echo 1)"
+check "the refused symlink is reported, not silently skipped" \
+  "$(printf '%s' "$HERR" | grep -q 'auto-arm could not write' && echo 0 || echo 1)"
+
+# Idempotence: a pre-existing REGULAR sentinel is this session's own earlier arm.
+# O_EXCL refuses it, and that refusal must read as success — the same reading
+# ops-task.sh's else-branch takes. Treating it as failure would roll the marker
+# back and re-arm forever, which is the infinite block from the other direction.
+P="$(mkgitproj)"
+printf 'a\n' > "$P/one.txt"; printf 'b\n' > "$P/two.txt"
+mkdir -p "$P/.operator/pending"; : > "$(autobar_sentinel "$P" SESS-A)"
+run_hook stop-session-a.json "$P"
+check "a pre-existing REGULAR sentinel is an already-open, not a write failure" \
+  "$([ -f "$P/.operator/.autobar/SESS-A" ] && echo 0 || echo 1)"
+check "no failure warning for the already-open case" \
+  "$(printf '%s' "$HERR" | grep -q 'auto-arm could not write' && echo 1 || echo 0)"
+
+echo "-- Case: the deviation gate's FOUR states (#83)"
+# INVARIANT: the polarity differs by WHY the scan could not run, and the lib's header used to
+# describe it wrongly — it claimed scan_failed=1 (fail OPEN) covered "unreadable" too. It never
+# did: an unreadable file takes the NUL-probe path and fails CLOSED, which is the CORRECT
+# behaviour (the file exists, so an unpresented decision may be in it) but the OPPOSITE of what
+# the comment promised. Nothing tested `unreadable` before this case, so a maintainer trusting
+# the header would have "restored" fail-open and quietly opened the gate.
+_dev_state() { # _dev_state <decisions-path> → "unpresented=N scan_failed=N"
+  ( # shellcheck source=/dev/null
+    . "$SCRIPTS/lib/partition.sh"
+    scan_deviations "$1" SIDA
+    # shellcheck disable=SC2154  # both are OUTPUTS of the sourced lib
+    printf 'unpresented=%s scan_failed=%s' "$deviations_unpresented" "$deviations_scan_failed" )
+}
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+D="$P/.operator/DECISIONS.md"
+
+check "readable ledger with no gated rows: allows the stop" \
+  "$([ "$(_dev_state "$D")" = "unpresented=0 scan_failed=0" ] && echo 0 || echo 1)"
+
+check "ABSENT ledger fails OPEN (scan_failed=1) — no ledger is a scaffold problem" \
+  "$([ "$(_dev_state "$P/.operator/nope.md")" = "unpresented=0 scan_failed=1" ] && echo 0 || echo 1)"
+
+ln -s /dev/null "$P/.operator/link.md"
+check "SYMLINK ledger fails OPEN — not a ledger our scaffold wrote" \
+  "$([ "$(_dev_state "$P/.operator/link.md")" = "unpresented=0 scan_failed=1" ] && echo 0 || echo 1)"
+
+# The state the header lied about. Skipped as root: chmod 000 does not refuse root a read, so the
+# case would pass for the wrong reason.
+if [ "$(id -u)" = "0" ]; then
+  echo "  skip unreadable-ledger polarity: running as root, chmod 000 does not refuse a read"
+else
+  chmod 000 "$D"
+  check "UNREADABLE ledger fails CLOSED (unpresented=1, NOT scan_failed) — the file exists" \
+    "$([ "$(_dev_state "$D")" = "unpresented=1 scan_failed=0" ] && echo 0 || echo 1)"
+  chmod 644 "$D"
+fi
+
+# The header must describe what the code does — that is the whole defect here.
+check "partition.sh documents the unreadable state as failing CLOSED" \
+  "$(grep -q 'UNREADABLE (chmod 000)' "$SCRIPTS/lib/partition.sh" && echo 0 || echo 1)"
+check "the Stop hook's mirrored claim names the unreadable case too" \
+  "$(grep -q 'present-but-UNREADABLE ledger' "$HOOK" && echo 0 || echo 1)"
+# LC_ALL must not leak to the sourcing script (#83's second half).
+check "scan_deviations declares LC_ALL local — no collation leak to the caller" \
+  "$(grep -q 'local LC_ALL=C' "$SCRIPTS/lib/partition.sh" && echo 0 || echo 1)"
+
+########################################################################
 # The measurement corpora (#24 security, #70 drift, #58 plan-align) were removed in 0.10 (docs/DEBLOAT-0.10.md
 # step 5); they live in git history (tree <= 0.9.0) and the maintainer's local .archive/dev/. ops-corpus.sh
 # followed in step 6 (decision: DELETE).

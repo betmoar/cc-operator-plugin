@@ -39,8 +39,13 @@ function makeRuntime(agentReturns = {}) {
   const agent = async (prompt, opts = {}) => {
     const label = opts.label ?? "_";
     // `isolation` is captured because #23's deliverable is WHERE the seat runs,
-    // which lives in opts, not the return value.
-    calls.push({ label, model: opts.model, prompt, isolation: opts.isolation });
+    // which lives in opts, not the return value. `agentType` for the adjacent
+    // reason: validate_plugin.check_workflow_agent_types proves the name exists
+    // as a shipped agent, but nothing there says WHICH call site gets WHICH seat
+    // — so a workflow handing a debater's prompt to an implementer seat (one
+    // with Write/Edit, able to change the artifact it is arguing about) passes
+    // that checker. The per-call-site binding only has an assertion here.
+    calls.push({ label, model: opts.model, prompt, isolation: opts.isolation, agentType: opts.agentType });
     return agentReturns[label] ?? null;
   };
   const parallel = async (thunks) => {
@@ -1318,6 +1323,214 @@ ok(Array.isArray(crNoMerge?.digests) && crNoMerge.digests.length === 1,
   "crawl: the dead-merge return hands back the un-merged digests it paid for");
 ok(crNoMerge?.findings === undefined,
   "crawl: a dead merge ships NO findings key a caller could read as an empty result");
+
+// ── debate: refusals, blind rounds, dead-seat accounting, no-winner contract ──
+console.log("-- Case: debate.js refuses a panel it cannot stage");
+
+// The two required inputs refuse BEFORE any dispatch (plan.js's args.spec move):
+// a case-less or panel-less debate would pay N seats to report NEEDS_CONTEXT.
+// `rt` is attached to the throw so the spend is assertable, not assumed.
+for (const [bad, why, frag] of [
+  [{ models: ["m1", "m2"] }, "no case", "args.case is required"],
+  [{ case: "  ", models: ["m1", "m2"] }, "whitespace case", "args.case is required"],
+  [{ case: "c" }, "no models", "args.models is required"],
+  [{ case: "c", models: "m1,m2" }, "models as a string", "must be an array"],
+  [{ case: "c", models: ["m1"] }, "one model", "a panel is 2-5"],
+  [{ case: "c", models: ["a", "b", "c", "d", "e", "f"] }, "six models", "a panel is 2-5"],
+  [{ case: "c", models: ["m1", ""] }, "empty id", "is not a model id string"],
+  [{ case: "c", models: ["m1", "m 2"] }, "charset-bad id", "outside the"],
+  [{ case: "c", models: ["m1", "m1"] }, "duplicate id", "repeats"],
+]) {
+  await throws(() => run(WF("debate.js"), bad, {}),
+    `debate: ${why} refused before dispatch`, frag);
+}
+// The refusal must be FREE. A guard that fires after the openings have run has
+// already spent the tokens it exists to save.
+try {
+  await run(WF("debate.js"), { case: "c", models: ["m1", "m1"] }, {});
+  ok(false, "debate: duplicate-model refusal spends nothing (expected throw)");
+} catch (e) {
+  ok(e.rt?.calls.length === 0,
+    `debate: a refused panel dispatches ZERO agents (got ${e.rt?.calls.length ?? "?"})`);
+}
+// There is deliberately NO models fallback: a tier default would seat one model
+// against itself and return a "panel" that could not have disagreed (F37's
+// silent-wrong shape). Pinned, because the reflex fix for the refusal above is
+// to add exactly that default.
+{
+  const src = (await import("node:fs")).readFileSync(new URL(WF("debate.js")), "utf8");
+  const code = src.split("\n").filter((l) => !l.trimStart().startsWith("//")).join("\n");
+  ok(!/A\.models\s*(\?\?|\|\|)/.test(code),
+    "debate: args.models has no `??`/`||` fallback — a defaulted panel is one model debating itself");
+}
+
+console.log("-- Case: debate.js runs three rounds and withholds authorship");
+
+const OPEN = (l) => ({ position: `pos ${l}`, evidence: `ev ${l}`, keyRisk: `risk ${l}` });
+const REBUT = (l, moved = false) => ({
+  concessions: [`conc ${l}`], objections: [`obj ${l}`], moved, positionNow: `now ${l}`,
+});
+const CLOSE = (l) => ({ position: `final ${l}`, changedSince: `chg ${l}`, overturnedBy: `ovr ${l}` });
+const SYNTH = {
+  agreed: ["shared"], contested: [{ question: "q", positions: "A says x, B says y" }],
+  falseSplit: ["same thing"], decisions: ["biggest first?", "cosmetic?"],
+};
+const FULL_PANEL = {
+  "open:A": OPEN("A"), "open:B": OPEN("B"), "open:C": OPEN("C"),
+  "rebut:A": REBUT("A"), "rebut:B": REBUT("B", true), "rebut:C": REBUT("C"),
+  "close:A": CLOSE("A"), "close:B": CLOSE("B"), "close:C": CLOSE("C"),
+  synthesis: SYNTH,
+};
+const THREE = ["glm-5.2", "claude-opus-5", "deepseek/deepseek-r1:free"];
+
+const { result: dbt, rt: dbtRt } = await run(WF("debate.js"),
+  { case: "should we ship X?", models: THREE }, FULL_PANEL);
+
+ok(dbtRt.calls.length === 10,
+  `debate: 3 models x 3 rounds + 1 synthesis = 10 dispatches (got ${dbtRt.calls.length})`);
+ok(dbt?.rounds?.length === 3 && dbt.rounds.map((r) => r.round).join(",") === "opening,rebuttal,closing",
+  "debate: returns all three rounds, in order");
+
+// Each seat runs on ITS OWN model — the whole reason this is a workflow and not
+// three Agent calls (the Agent tool's model param is enum-locked, #55).
+const modelsFor = (p) => dbtRt.calls.filter((c) => c.label.startsWith(p)).map((c) => c.model);
+ok(JSON.stringify(modelsFor("open:")) === JSON.stringify(THREE),
+  "debate: each opening seat dispatches on its own caller-supplied model id");
+ok(JSON.stringify(modelsFor("close:")) === JSON.stringify(THREE),
+  "debate: the model binding survives to the closing round (a seat is one model throughout)");
+
+// The debaters argue blind. A rebuttal prompt naming the rival's model invites
+// deference to the brand instead of the argument — and a seat that can identify
+// itself can soften its own critique.
+const rebutPrompts = dbtRt.calls.filter((c) => c.label.startsWith("rebut:")).map((c) => c.prompt);
+ok(rebutPrompts.length === 3 && rebutPrompts.every((p) => !THREE.some((m) => p.includes(m))),
+  "debate: no model id appears in any rebuttal prompt (seats argue by letter, blind)");
+ok(dbtRt.calls.every((c) => c.label === "synthesis" || !THREE.some((m) => c.prompt.includes(m))),
+  "debate: no debater prompt in ANY round leaks a model id");
+// ...but the human is not kept blind: the mapping comes back in the result.
+ok(dbt?.seats?.length === 3 && dbt.seats[1].letter === "B" && dbt.seats[1].model === THREE[1],
+  "debate: the letter→model mapping IS returned — anonymity is for the panel, not the reader");
+
+// A seat must not receive its own position back as a rival's: agreeing with
+// itself would register as convergence.
+const rebutA = rebutPrompts.find((p) => p.includes("You are seat A"));
+ok(rebutA.includes("[B]") && rebutA.includes("[C]") && !/\[A\]/.test(rebutA),
+  "debate: seat A's rebuttal packet carries B and C, never its own opening");
+// Round 1 is independent by construction — no rival text exists yet.
+const openA = dbtRt.calls.find((c) => c.label === "open:A").prompt;
+ok(!openA.includes("[B]") && !openA.includes("pos B"),
+  "debate: the opening round carries no rival positions (independent samples)");
+// Round 3 sees round 2, not a stale round 1.
+const closeA = dbtRt.calls.find((c) => c.label === "close:A").prompt;
+ok(closeA.includes("now B") && !closeA.includes("pos B"),
+  "debate: the closing packet carries round-2 positions, not the stale openings");
+
+// The synthesis seat is NOT one of the debaters: a seat summarizing a debate it
+// argued in is scoring its own position.
+const synth = dbtRt.calls.find((c) => c.label === "synthesis");
+ok(synth.model === "opus" && !THREE.includes(synth.model),
+  "debate: synthesis runs on the JUDGMENT tier, not on a debater's model");
+ok(/do NOT pick a winner/i.test(synth.prompt) && /Do not recommend/i.test(synth.prompt),
+  "debate: the synthesis prompt forbids picking a winner (twice — a strong model reads 'synthesize' as 'decide')");
+ok(dbt?.chose === null && "chose" in dbt,
+  "debate: `chose` is present and null — the contract is visible at the call site, not an omission");
+
+console.log("-- Case: debate.js dead-seat accounting (F31/F32 class)");
+
+// A dead seat is not a seat that had nothing to say. Two survivors still make a
+// panel; the roster must say the third died.
+const { result: dbt2 } = await run(WF("debate.js"),
+  { case: "c", models: THREE },
+  { ...FULL_PANEL, "open:C": null, "rebut:C": null, "close:C": null });
+ok(dbt2?.deadSeats?.opening.join(",") === "C",
+  "debate: a dead opening seat is named in deadSeats, not laundered into silence");
+ok(dbt2?.rounds[1].results.length === 2,
+  "debate: a seat dead at opening is not re-dispatched in the rebuttal");
+ok(dbt2?.synthesis != null && dbt2.chose === null,
+  "debate: two survivors still complete — a 2-way debate is a debate");
+
+// Below two, it is not a debate. Returning one voice as a 'panel' would describe
+// a solo opinion as a contest.
+const { result: dbt1 } = await run(WF("debate.js"),
+  { case: "c", models: THREE },
+  { ...FULL_PANEL, "open:B": null, "open:C": null });
+ok(dbt1?.error?.includes("debate collapsed at opening") && dbt1.synthesis === null,
+  "debate: one surviving seat collapses the run with an error, never a one-voice verdict");
+ok(dbt1?.rounds?.length === 1 && dbt1.chose === null,
+  "debate: the collapse hands back the round that DID complete, and still chooses nothing");
+// The collapse can arrive mid-debate too — seats that die between rounds.
+const { result: dbtMid } = await run(WF("debate.js"),
+  { case: "c", models: THREE },
+  { ...FULL_PANEL, "rebut:B": null, "rebut:C": null });
+ok(dbtMid?.error?.includes("debate collapsed at rebuttal") && dbtMid.rounds.length === 2,
+  "debate: a collapse at rebuttal keeps the opening round it paid for");
+// The third of three structurally-identical dead-seat branches, and the one no
+// case reached (#86 review). Every fixture that survived past rebuttal kept all
+// three closings alive, so `rounds.push("closing")` could be moved BELOW its
+// threshold check — dropping the round the panel paid for from a collapse
+// result — and 276/276 stayed green. Copy-shaped branches are not proven
+// identical by testing two of them.
+const { result: dbtClose } = await run(WF("debate.js"),
+  { case: "c", models: THREE },
+  { ...FULL_PANEL, "close:B": null, "close:C": null });
+ok(dbtClose?.error?.includes("debate collapsed at closing"),
+  "debate: a collapse at CLOSING is reported like the other two rounds");
+ok(dbtClose?.rounds?.length === 3,
+  "debate: the closing collapse keeps all three rounds — including the closing it paid for");
+ok(dbtClose?.rounds[2].round === "closing" && dbtClose.synthesis === null
+   && dbtClose.chose === null,
+  "debate: the kept closing round is the closing, and nothing is chosen from a collapse");
+// One seat dying at closing is survivable: two closings still make a panel, and
+// the roster must name the third rather than shipping a quieter debate.
+const { result: dbtClose1 } = await run(WF("debate.js"),
+  { case: "c", models: THREE }, { ...FULL_PANEL, "close:C": null });
+ok(dbtClose1?.deadSeats?.closing.join(",") === "C" && dbtClose1.synthesis != null,
+  "debate: a single seat dead at closing is named, and the debate still completes");
+
+// The upper bound is only tested from the REFUSAL side (1 and 6). An inclusive
+// off-by-one at 5 would reject a legal panel with nothing red — the success
+// side of a boundary is where that shows up.
+const FIVE = [...THREE, "qwen3.8-max", "gpt-5.6-terra-pro"];
+const PANEL5 = { ...FULL_PANEL };
+for (const l of ["D", "E"]) {
+  PANEL5[`open:${l}`] = OPEN(l);
+  PANEL5[`rebut:${l}`] = REBUT(l);
+  PANEL5[`close:${l}`] = CLOSE(l);
+}
+// Wrapped: an exclusive bound makes run() THROW rather than return, and an
+// uncaught throw kills the suite before its summary — the regression is caught
+// either way, but the case that caught it becomes invisible.
+try {
+  const { result: dbt5, rt: dbt5Rt } = await run(WF("debate.js"),
+    { case: "c", models: FIVE }, PANEL5);
+  ok(dbt5?.rounds?.length === 3 && dbt5.synthesis != null && dbt5.chose === null,
+    "debate: FIVE models is the documented maximum and completes (the bound is inclusive)");
+  ok(dbt5Rt.calls.length === 16,
+    `debate: 5 models x 3 rounds + 1 synthesis = 16 dispatches (got ${dbt5Rt.calls.length})`);
+} catch (e) {
+  ok(false, `debate: a 5-model panel is legal and must not refuse (${e?.message ?? e})`);
+}
+
+// A dead synthesis must not ship as `synthesis: null` unmarked: three intact
+// rounds read as 'no disagreement found' when the alignment never ran (F32).
+const { result: dbtNoSyn } = await run(WF("debate.js"),
+  { case: "c", models: THREE }, { ...FULL_PANEL, synthesis: null });
+ok(dbtNoSyn?.error?.includes("synthesis agent died") && dbtNoSyn.rounds.length === 3,
+  "debate: a dead synthesis is REPORTED, with all three rounds handed back intact");
+ok(/do NOT re-debate/i.test(dbtNoSyn.error),
+  "debate: the dead-synthesis error says re-run only the last pass (the rounds are paid for)");
+
+// Every debater seat must be the shipped READ-ONLY op-debater, and the
+// synthesis seat op-reviewer. check_workflow_agent_types proves both names
+// exist as shipped agents; it cannot see which call site got which, so a
+// debater's prompt handed to op-author — an implementer with Write and Edit,
+// able to change the artifact it is arguing about — ships green there. This is
+// the only assertion on that binding.
+ok(dbtRt.calls.filter((c) => c.label !== "synthesis")
+    .every((c) => c.agentType === "cc-operator:op-debater"),
+  "debate: every debater dispatch names the read-only op-debater seat (never an implementer)");
+ok(dbtRt.calls.find((c) => c.label === "synthesis").agentType === "cc-operator:op-reviewer",
+  "debate: synthesis runs on op-reviewer — a debater summarizing its own debate is scoring itself");
 
 console.log(`\n== summary: ${pass} passed, ${fail} failed ==`);
 if (fail > 0) process.exit(1);

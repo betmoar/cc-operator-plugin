@@ -118,26 +118,71 @@ esac
 # shellcheck source=/dev/null
 # shellcheck disable=SC2154  # deviations_* are assigned by the sourced lib
 . "$_libdir/partition.sh"
+# partition.sh first — but NOT because autobar.sh calls into it. It did until
+# e839490 deleted the suppression rule; today the two libs share no symbol. The
+# order that matters is below: autobar_decide runs BEFORE scan_pending, so a
+# sentinel armed here is read by the existing mine-pending branch in the same
+# fire. Keeping a deleted dependency as the stated reason is how a comment
+# starts describing a mechanism that no longer runs.
+# shellcheck source=/dev/null
+# shellcheck disable=SC2154  # autobar_* are assigned by the sourced lib
+. "$_libdir/autobar.sh"
+
+# --- auto-arm (#85): the charter's clause (1), enforced ----------------------
+# Runs BEFORE the pending scan on purpose: a sentinel armed here is an ORDINARY
+# owned sentinel, so the existing mine-pending branch below blocks on it with
+# the message it already ships. No new blocking stage, no new message class, no
+# new polarity for a partition.sh reader — the seam that already works.
+#
+# The write is inline rather than a call to ops-task.sh: this hook resolves
+# through ${CLAUDE_PLUGIN_ROOT} and the CLI lives at .operator/bin/, which an
+# older scaffold may not have. A gate that silently stops arming because a
+# project skipped an upgrade is the #34 class.
+autobar_decide "${opdir%/.operator}" "$opdir" "$session"
+# shellcheck disable=SC2154  # assigned by the sourced lib/autobar.sh
+if [ "$autobar_arm" = 1 ]; then
+  _ab_sentinel="$opdir/pending/${session}__${AUTOBAR_TASK}"
+  # Mark FIRST, arm second. The reverse order re-arms forever if the mark fails
+  # (see autobar.sh): a sentinel with no marker is re-created at the next Stop
+  # the instant the operator clears it. Better to skip an arm than to wedge.
+  if autobar_mark_armed "$opdir" "$session"; then
+    # set -C makes > use O_EXCL, the same discipline ops-task.sh's opener uses
+    # and for the same two reasons. A test-then-write is a TOCTOU, and `[ ! -e ]`
+    # is TRUE for a dangling symlink — so the plain `>` followed the link and
+    # created its target OUTSIDE .operator/ (measured). autobar_mark_armed
+    # already refuses a symlink; this writer, three lines away, did not.
+    #
+    # The write's exit status is now CHECKED. It was `|| true`, which swallowed
+    # the one asymmetry the branching above exists to prevent: the marker is
+    # already written, so autobar_already_armed reads this session as armed for
+    # the rest of its life — the gate silently never fires again, RC 0, stderr
+    # empty. Measured with .operator/pending replaced by a plain file, and it
+    # survived repairing the directory. A failed sentinel write must roll the
+    # marker back, or the failure is permanent instead of retried next Stop.
+    _ab_ok=0
+    if mkdir -p "$opdir/pending" 2>/dev/null; then
+      ( set -C; : > "$_ab_sentinel" ) 2>/dev/null && _ab_ok=1
+      # Already-open is success, not failure: O_EXCL refuses a pre-existing
+      # regular file, and that is this session's own sentinel from an earlier
+      # arm — the same reading ops-task.sh's else-branch takes.
+      [ "$_ab_ok" = 1 ] || { [ -f "$_ab_sentinel" ] && [ ! -L "$_ab_sentinel" ] && _ab_ok=1; }
+    fi
+    if [ "$_ab_ok" = 0 ]; then
+      rm -f "$opdir/.autobar/$session" 2>/dev/null
+      echo "operator: warning — auto-arm could not write $_ab_sentinel (a non-regular entry, a planted symlink, or an unwritable .operator/pending). The session marker was rolled back, so the next Stop retries rather than leaving this session permanently unarmed." >&2
+    fi
+  else
+    echo "operator: warning — auto-arm skipped, could not record the session marker under $opdir/.autobar/ (arming without it would re-block after every verdict)" >&2
+  fi
+fi
 
 scan_pending "$opdir" "$session"
 pending="$MINE_IDS"
 foreign="$FOREIGN_DESC"
 
-# Foreign tasks stay VISIBLE — that visibility is what made the collision
-# diagnosable in the field — but they never block.
-if [ -n "$foreign" ]; then
-  echo "operator: $FOREIGN_N pending verdict(s) owned by another session ($foreign) — not blocking." >&2
-fi
-
-# --- deviation gate: unpresented decisions block Stop (stage 2) ---------------
-# Either gate can block. A session_id of "" makes every DEVIATION unowned →
-# every one blocks (pre-gate lines are real unpresented decisions), mirroring
-# the unowned-sentinel default. The absent-ledger polarity is deliberately
-# OPPOSITE the sentinel default and both are right: an unowned sentinel fails
-# CLOSED (a real open task), an absent DECISIONS.md has no task to enforce
-# (fail OPEN — scaffold problem, not evidence of an unpresented decision).
-scan_deviations "$opdir/DECISIONS.md" "$session"
-
+# Defined BEFORE its first use: bash resolves a function at call time, so a
+# call above the definition expands to the empty string and the message ships
+# a blank command — no error, just useless guidance.
 verdict_cmd_for() { # → the verdict CLI path that resolves from the project cwd
   # ops-init installs it at .operator/bin/; fall back to this hook's own
   # sibling (the plugin copy) for projects scaffolded by an older ops-init.
@@ -153,8 +198,48 @@ verdict_cmd_for() { # → the verdict CLI path that resolves from the project cw
   [ -n "$script_dir" ] && printf '%s' "$script_dir/ops-verdict.sh"
 }
 
+# Foreign tasks stay VISIBLE — that visibility is what made the collision
+# diagnosable in the field — but they never block.
+if [ -n "$foreign" ]; then
+  # The remedy goes IN-BAND. A sentinel whose owner crashed, was killed, or was
+  # /clear'd mid-task sits here forever and nothing reaps it; before #85's
+  # suppression was dropped it also darkened the auto-armer permanently. It no
+  # longer does, so this is hygiene rather than a defect — but hygiene nobody
+  # is told about is hygiene nobody performs.
+  echo "operator: $FOREIGN_N pending verdict(s) owned by another session ($foreign) — not blocking. If an owner session is gone (crashed, killed, /clear'd mid-task) nothing reaps its sentinel: clear it with $(verdict_cmd_for) <id> --defer \"<reason>\" — no --owner needed, it warns and proceeds." >&2
+fi
+
+# --- deviation gate: unpresented decisions block Stop (stage 2) ---------------
+# Either gate can block. A session_id of "" makes every DEVIATION unowned →
+# every one blocks (pre-gate lines are real unpresented decisions), mirroring
+# the unowned-sentinel default. The ABSENT-ledger polarity is deliberately
+# OPPOSITE the sentinel default and both are right: an unowned sentinel fails
+# CLOSED (a real open task), an absent DECISIONS.md has no task to enforce
+# (fail OPEN — scaffold problem, not evidence of an unpresented decision).
+# ABSENT, not merely missing-from-the-scan: a present-but-UNREADABLE ledger
+# fails CLOSED, because the file exists and an unpresented decision may be in
+# it (#83 — the lib's header claimed unreadable took the fail-open path; it
+# never did, and the code was the correct half).
+scan_deviations "$opdir/DECISIONS.md" "$session"
+
+
 if [ -n "$pending" ]; then
   verdict_cmd="$(verdict_cmd_for)"
+  # The auto-armed sentinel needs its own sentence, or the operator reads
+  # "pending verdict: autobar" as a task it never opened and has no way to
+  # learn what tripped it. Name the count and the threshold: an unexplained
+  # block is the one a user resolves by removing the hook.
+  # shellcheck disable=SC2154  # assigned by the sourced lib/autobar.sh
+  if [ "$autobar_arm" = 1 ]; then
+    echo "operator: auto-armed '$AUTOBAR_TASK' — $autobar_reason, and the charter requires a BAR block before multi-file work (ENGAGEMENT CONTRACT clause 1). Record the evidence, or close it honestly with --defer \"<reason>\"." >&2
+    # CO-PRESENCE. The armer measures the TREE and cannot attribute the delta to
+    # a session, so in a shared worktree this block can land on someone who
+    # changed nothing. Say so in the same breath: an unexplained accusation
+    # against an honest operator is what gets the hook deleted, and the whole
+    # bet of dropping suppression is that this sentence is cheaper than a
+    # permanent silent disarm.
+    echo "operator: the delta is measured from the working TREE and cannot be attributed to a session — if another session is working in this worktree, these paths may not be yours; close with --defer \"another session's changes\" and it costs you one command." >&2
+  fi
   echo "operator: pending verdict(s): $pending — run $verdict_cmd <id> <criterion> <evidence> <PASS|FAIL>, or --defer \"<reason>\"" >&2
   exit 2
 fi

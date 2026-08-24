@@ -113,8 +113,8 @@ STOP. The register of record is GitHub issues (`label:unknown`) —
 
 ### spec-wf
 
-The workflow layer: review, brainstorm, plan, crawl, dispatch are the
-orchestration primitives; `/cc-operator:tiers` resolves tier→model bindings
+The workflow layer: review, brainstorm, plan, crawl, dispatch, debate are
+the orchestration primitives; `/cc-operator:tiers` resolves tier→model bindings
 (the operator's job — workflows carry harness-alias defaults only, #76
 step 2). The workflows themselves are `workflows/*.js`; their guard
 architecture is in `docs/PLAYBOOK.md` ("Adding a workflow").

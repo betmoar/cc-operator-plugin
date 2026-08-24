@@ -97,9 +97,12 @@ const JUDGMENT = TIERS.JUDGMENT;
 //    and without a table it becomes an arbitrary agentType string.
 //
 // Keys match ops-render.sh's seat_add names, so `--model <seat>` and
-// `args.seat` take the same word. op-reviewer is deliberately ABSENT: it is a
-// shipped agent but not a default seat (ops-render.sh:54 says so), and the
-// review workflow owns that fan-out.
+// `args.seat` take the same word. op-reviewer and op-debater are deliberately
+// ABSENT: both are shipped agents but neither is a default seat (grep seat_add
+// in ops-render.sh — the list is author/mechanic/scout/verifier/crawler/
+// brainstorm), and the workflow that fans them out owns them. A lone debater is
+// the sharper case: seat it here and a caller gets one model stating a position
+// with nothing to argue against, which is what `debate` exists NOT to be.
 const SEATS = {
   author: "cc-operator:op-author",
   mechanic: "cc-operator:op-mechanic",

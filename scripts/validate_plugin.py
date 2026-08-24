@@ -96,6 +96,15 @@ def shell_code(path):
         if not ln.lstrip().startswith("#"))
 
 
+class _RedefinedFunction(str):
+    """A function name defined more than once. Truthy-empty so `"x" not in body`
+    fires on every pinned literal, and carries the count for the message."""
+    def __new__(cls, fn, n):
+        o = super().__new__(cls, "")
+        o.fn, o.n = fn, n
+        return o
+
+
 def _function_body(code, fn):
     """The lines of shell function `fn`, or None if it cannot be located.
 
@@ -103,8 +112,31 @@ def _function_body(code, fn):
     silently pinning nothing. Brace-counting in our one house style; a K&R
     head or an unbalanced `{` in a string fails toward None → reported. Widen
     the locator then; do not make the caller tolerate None.
+
+    A RE-DEFINED function returns an EMPTY body (#81's class, one level up from
+    the variable pins): bash resolves the LAST definition, this locator scans
+    forward and returns the FIRST, so appending a second `f() { … }` with none
+    of the pinned properties left every caller pinning a dead body while the
+    live one shipped unguarded — measured 2026-08-24 against check_autobar,
+    which reported "all contracts hold" with the NUL read, the repo check and
+    the `-z` flag all gone. An empty body fails every `in body` test, so the
+    caller reports rather than passing; the redefinition itself is named by
+    _report_if_redefined, which every caller invokes before its own pins.
+
+    That reporting half shipped MISSING (#86 review): the docstring promised a
+    `check_no_redefinitions` that existed nowhere in the tree, and .fn/.n were
+    computed and then discarded — the exact computed-then-discarded shape this
+    repo has been bitten by before. What actually fired was three unrelated,
+    individually-worded false positives ("does not pass -z", "does not use
+    process substitution", "no rev-parse check"), none of them true, while the
+    real defect went unnamed. The sibling variable guard (_single_assignment)
+    had reported its duplicate correctly since #81; this half never did.
     """
     lines = code.splitlines()
+    heads = [i for i, ln in enumerate(lines)
+             if re.match(rf"^\s*{re.escape(fn)}\s*\(\)\s*\{{", ln)]
+    if len(heads) > 1:
+        return _RedefinedFunction(fn, len(heads))
     for i, ln in enumerate(lines):
         if re.match(rf"^\s*{re.escape(fn)}\s*\(\)\s*\{{", ln):
             depth, body = 0, []
@@ -116,6 +148,47 @@ def _function_body(code, fn):
             return "\n".join(body)
     return None
 
+
+def _report_if_redefined(body, rel, problems):
+    """Name a redefinition and tell the caller to skip its own pins.
+
+    True → the caller must NOT run its `"literal" not in body` checks: an
+    empty body fails all of them, so each would emit a confident, wrong,
+    individually-worded problem about a property that is right there in the
+    live definition. One accurate message beats N misattributed ones.
+
+    Mirrors _single_assignment's duplicate branch, which is the same defect
+    one level down (a variable assigned twice vs a function defined twice) and
+    has reported it correctly since #81.
+    """
+    if not isinstance(body, _RedefinedFunction):
+        return False
+    problems.append(
+        f"{rel}: {body.fn}() is defined {body.n} times — bash resolves the "
+        f"LAST definition and this locator reads the FIRST, so every pin here "
+        f"would check a dead body while the live one ships unguarded (#81's "
+        f"class, one level up). Keep exactly one definition")
+    return True
+
+
+def _single_assignment(code, pattern, rel, var, problems):
+    """The one match for `pattern`, or None when it is absent OR re-assigned.
+
+    #81: the validator pinned the FIRST `^VAR="…"$` and bash resolves the LAST,
+    so appending one line left the checker pinning a dead assignment while the
+    live value shipped unguarded — measured on ops-claims.sh's PROTECTED, which
+    disarmed the guard on validate_plugin.py, tests/, .operator/bin/ and hooks/
+    with `validate_plugin: all contracts hold`. A duplicate is REPORTED here so
+    the caller cannot silently pin either one.
+    """
+    ms = re.findall(pattern, code, re.MULTILINE)
+    if len(ms) > 1:
+        problems.append(
+            f"{rel}: {var} is assigned {len(ms)} times — bash resolves the LAST, "
+            f"and every pin here reads the first, so an appended line disarms "
+            f"the guard with the build green (#81). Keep exactly one assignment")
+        return None
+    return ms[0] if ms else None
 
 def load_json(path, problems):
     try:
@@ -806,6 +879,8 @@ def check_guard_parity(root, problems):
                 f"scripts/{name}: cannot locate check_bare_name()'s body — the "
                 f"`__`-separator pin has nothing to check. Reshaping the guard "
                 f"must update this locator, not silently skip it")
+        elif _report_if_redefined(body, f"scripts/{name}", problems):
+            pass
         elif "*__*" not in body:
             problems.append(
                 f"scripts/{name}: check_bare_name() does not reject '__' — it "
@@ -924,6 +999,157 @@ def check_guard_parity(root, problems):
                 f"helpers must agree; a comment-only marker does not satisfy)")
 
 
+
+def check_autobar(root, problems):
+    """The auto-arm rule (#85): the invariants that fail SILENTLY.
+
+    Each pin here exists because the regression it catches leaves every other
+    gate green and the armer merely stops working — or, worse, wedges a
+    session that can then never stop.
+    """
+    p = root / "scripts" / "lib" / "autobar.sh"
+    if not p.is_file():
+        problems.append(
+            "scripts/lib/autobar.sh is missing — the auto-arm rule is the only "
+            "thing making the evidence gate non-optional (#85); ops-stop-hook.sh "
+            "sources it and would fail to launch without it")
+        return
+    code = shell_code(p)
+
+    # (a) NUL-safe read. `$(git status --porcelain -z)` DELETES the NULs
+    # (measured, bash 3.2.57: three entries counted as 0) so the armer silently
+    # never fires. The `< <(…)` form is the fix and the thing that must not be
+    # "simplified" back into a command substitution or a pipe (a pipe puts the
+    # loop in a subshell and loses the count).
+    body = _function_body(code, "autobar_count_changed")
+    if body is None:
+        problems.append(
+            "scripts/lib/autobar.sh: cannot locate autobar_count_changed()'s "
+            "body — the NUL-safety pin has nothing to check. Reshaping it must "
+            "update this locator, not silently skip the pin")
+    elif _report_if_redefined(body, "scripts/lib/autobar.sh", problems):
+        pass
+    else:
+        if "-z" not in body:
+            problems.append(
+                "scripts/lib/autobar.sh: autobar_count_changed does not pass "
+                "`-z` to git status — the default output QUOTES a path with a "
+                "space and prints a rename as `old -> new` on one line, so the "
+                "count is wrong in both directions")
+        if "< <(" not in body:
+            problems.append(
+                "scripts/lib/autobar.sh: autobar_count_changed does not read "
+                "through process substitution `< <(…)`. Command substitution "
+                "DELETES NUL bytes (measured, bash 3.2.57: a three-entry -z "
+                "porcelain counted 0, silently) and a pipe puts the loop in a "
+                "subshell that loses the count — either way the armer never fires")
+        if "rev-parse" not in body:
+            problems.append(
+                "scripts/lib/autobar.sh: autobar_count_changed has no separate "
+                "`git rev-parse` repo check — process substitution carries no "
+                "exit status, so without it `not a repo` and `clean repo` both "
+                "arrive as zero records and unmeasured reads as clean")
+
+    # (b) the infinite-block guard. Recording a verdict does not un-change the
+    # files, so an arm with no session marker re-fires at every Stop forever.
+    for fn in ("autobar_already_armed", "autobar_mark_armed"):
+        if f"{fn}()" not in code:
+            problems.append(
+                f"scripts/lib/autobar.sh: missing {fn}() — without the "
+                f"once-per-session marker the armer re-arms after every verdict "
+                f"(recording one does not un-change the files) and the session "
+                f"can NEVER stop, which is worse than stopping unaudited")
+    decide = _function_body(code, "autobar_decide")
+    if decide is None:
+        problems.append(
+            "scripts/lib/autobar.sh: cannot locate autobar_decide()'s body — "
+            "the already-armed and suppression pins have nothing to check")
+    elif _report_if_redefined(decide, "scripts/lib/autobar.sh", problems):
+        pass
+    else:
+        if "autobar_already_armed" not in decide:
+            problems.append(
+                "scripts/lib/autobar.sh: autobar_decide never calls "
+                "autobar_already_armed — the marker exists but nothing reads "
+                "it, so every Stop re-arms (the wedge in (b))")
+        # (c) the suppression rule is GONE and must stay gone — this pin is
+        # INVERTED from the one that shipped with #85, and the inversion is the
+        # point. Two suppression signals were tried; both made ONE stale
+        # artifact (an append-only fragment, then an abandoned sentinel from a
+        # crashed or /clear'd session) darken the armer for the rest of the
+        # project's life. Splitting "working" from "died" needs a liveness
+        # oracle the filesystem does not carry: a sentinel holds no pid, a pid
+        # would be dead anyway (ops-task.sh exits at CLI return while the owning
+        # session runs), a session is a harness token with no OS handle, and
+        # bash 3.2's whole-second mtime cannot separate stale from concurrent.
+        # Re-adding suppression is the reflex fix when a shared worktree arms an
+        # innocent session — and it trades a bounded, self-clearing false
+        # positive for a permanent silent disarm. Do not.
+        if "autobar_foreign_activity" in decide:
+            problems.append(
+                "scripts/lib/autobar.sh: autobar_decide calls "
+                "autobar_foreign_activity — foreign-presence suppression was "
+                "REMOVED (#85 follow-up) and must not come back. An OPEN "
+                "foreign sentinel means 'working OR died' and nothing here can "
+                "tell those apart, so one abandoned sentinel disarmed the gate "
+                "permanently. The shared-worktree false positive it was meant "
+                "to prevent is bounded (one arm per session, cleared by one "
+                "--defer) and announced on the blocking channel; the disarm was "
+                "neither. Reopen only with a liveness signal the kernel can "
+                "answer for a SESSION")
+
+    # The lib must actually be SOURCED by the hook. The pin matches the source
+    # STATEMENT, not the bare filename: `"autobar.sh" in hcode` was satisfied by
+    # any mention, so replacing the source line with `echo 'autobar.sh disabled'`
+    # shipped 0 problems (#86 review) while the hook died at runtime — set -u
+    # aborts on autobar_arm one line later, and exit 1 is not exit 2, so the
+    # Stop is ALLOWED and the deviation gate below it never runs either.
+    hook = root / "scripts" / "ops-stop-hook.sh"
+    if hook.is_file():
+        hcode = shell_code(hook)
+        # A source STATEMENT: `.` or `source`, then a path ending in
+        # autobar.sh. Deliberately not pinned to "$_libdir/…" — the shape is
+        # the hook's business, and a pin that only matches today's spelling
+        # turns a harmless refactor into a build failure. What it must NOT
+        # match is a bare mention: an echo, a comment, a message string.
+        src_re = re.compile(r'^\s*(?:\.|source)\s+\S*autobar\.sh"?\s*$', re.MULTILINE)
+        if not src_re.search(hcode):
+            problems.append(
+                "scripts/ops-stop-hook.sh: does not SOURCE lib/autobar.sh (a "
+                "mention is not a source) — the auto-arm rule exists but "
+                "nothing runs it, so the evidence gate is opt-in again (#85). "
+                "At runtime set -u aborts the hook on autobar_arm, and exit 1 "
+                "is not exit 2, so Stop is allowed and the deviation gate never "
+                "runs — with every other gate green")
+        else:
+            # Order still pinned, but NOT for the reason this check shipped
+            # with: autobar.sh called sentinel_owner_of_name only until e839490
+            # deleted the suppression rule, and `grep -c` in autobar.sh is now
+            # 0. The libs share no symbol today. What remains is the hook's own
+            # shape — autobar_decide runs before scan_pending so an armed
+            # sentinel is picked up by the SAME mine-pending branch in the same
+            # fire, which is the seam #85 was built on. Keep the order; do not
+            # restate the deleted dependency as its reason.
+            ai, pi = hcode.find("autobar.sh"), hcode.find("partition.sh")
+            if pi == -1 or ai < pi:
+                problems.append(
+                    "scripts/ops-stop-hook.sh: lib/autobar.sh is sourced before "
+                    "lib/partition.sh. They share no symbol (autobar stopped "
+                    "calling sentinel_owner_of_name at e839490), but the hook "
+                    "arms before scan_pending so the armed sentinel is read by "
+                    "the existing mine-pending branch in the same fire. Source "
+                    "partition.sh first and keep that seam intact")
+
+    # The markers must be wiped at SessionStart: a stale one for a reused id
+    # disarms a future session permanently.
+    ss = root / "scripts" / "ops-sessionstart-hook.sh"
+    if ss.is_file() and ".autobar" not in shell_code(ss):
+        problems.append(
+            "scripts/ops-sessionstart-hook.sh: does not wipe .operator/.autobar/ "
+            "— a marker left by a session that no longer exists keeps a future "
+            "session reusing that id from ever arming (#85)")
+
+
 def check_claims(root, problems):
     r"""ops-claims.sh protected-set parity (F30 lesson + F-A2).
 
@@ -951,7 +1177,8 @@ def check_claims(root, problems):
     text = p.read_text(encoding="utf-8")
     # The canonical protected set — must byte-match the PROTECTED= literal in
     # ops-claims.sh. A divergence here is two different ideas of "the grader".
-    literal = re.search(r'^PROTECTED="(.*)"$', text, re.MULTILINE)
+    literal = _single_assignment(text, r'^PROTECTED="(.*)"$',
+                                 "scripts/ops-claims.sh", "PROTECTED", problems)
     canonical = ("scripts/validate_plugin.py tests/ .operator/bin/ hooks/ "
                  "scripts/ops-*.sh scripts/statusline.sh backlog/")
     if not literal:
@@ -959,10 +1186,10 @@ def check_claims(root, problems):
             "scripts/ops-claims.sh: PROTECTED literal not found — the "
             "gate-trespass protected set must be a single declared literal "
             "(F-A2: the builder cannot edit its own grader)")
-    elif literal.group(1) != canonical:
+    elif literal != canonical:
         problems.append(
             f"scripts/ops-claims.sh: PROTECTED literal drifted — expected "
-            f"{canonical!r}, got {literal.group(1)!r}. A divergence is two "
+            f"{canonical!r}, got {literal!r}. A divergence is two "
             f"different ideas of 'the grader' (drop a path and the gate no "
             f"longer protects it; F30: pin the literal, not a copy)")
     # The literal must be APPLIED — a `matches_protected` call inside a real
@@ -980,7 +1207,7 @@ def check_claims(root, problems):
     # statusline.sh must be in the literal — it is the F66 amendment and the
     # one a prior glob missed. Match the token, not the whole literal, so a
     # reordering stays free but dropping it fires.
-    if "statusline.sh" not in (literal.group(1) if literal else ""):
+    if "statusline.sh" not in (literal or ""):
         problems.append(
             "scripts/ops-claims.sh: PROTECTED omits scripts/statusline.sh — "
             "it is a full sentinel reader (F66); leaving it out re-opens a "
@@ -1015,8 +1242,12 @@ def check_install_set_parity(root, problems):
             "declaration both writers source (#76 step 3); without it ops-init "
             "dies and the SessionStart upgrade path skips every session")
         return
-    m = re.search(r'^_OPS_TOOLS="([^"]+)"\s*$',
-                  manifest.read_text(encoding="utf-8"), re.MULTILINE)
+    # _single_assignment, not re.search: bash resolves the LAST assignment and a
+    # first-match pin let one appended line install 1 of 5 CLIs, build green (#81).
+    _tools = _single_assignment(manifest.read_text(encoding="utf-8"),
+                                r'^_OPS_TOOLS="([^"]+)"\s*$',
+                                "scripts/ops-install-set.sh", "_OPS_TOOLS", problems)
+    m = _tools
     if not m:
         problems.append(
             "scripts/ops-install-set.sh: no plain `_OPS_TOOLS=\"…\"` assignment "
@@ -1024,7 +1255,7 @@ def check_install_set_parity(root, problems):
             "reshape (array, computed value) must update this locator AND both "
             "writers, not silence the pin")
         return
-    tools = m.group(1).split()
+    tools = m.split()
     if "ops-verdict.sh" not in tools:
         problems.append(
             f"scripts/ops-install-set.sh: install set {tools} omits "
@@ -1252,8 +1483,11 @@ def check_resolver_renderer_parity(root, problems):
 
     names = {}
     for name, text in src.items():
-        m = re.search(r"^(?:readonly\s+)?TIER_NAMES=([\"'])(.*?)\1",
-                      text, re.MULTILINE)
+        # Same #81 guard: a second TIER_NAMES= line is what bash would use.
+        _tn = _single_assignment(
+            text, r"^(?:readonly\s+)?TIER_NAMES=[\"'](.*?)[\"']",
+            name, "TIER_NAMES", problems)
+        m = _tn
         if not m:
             problems.append(
                 f"scripts/{name}: no `TIER_NAMES=\"…\"` assignment found — both "
@@ -1261,7 +1495,7 @@ def check_resolver_renderer_parity(root, problems):
                 f"a legal refactor (renaming, retyping) must update this regex, "
                 f"not silence it")
             return
-        names[name] = tuple(m.group(2).split())
+        names[name] = tuple(m.split())
     if names["ops-tiers.sh"] != names["ops-render.sh"]:
         problems.append(
             f"scripts/ops-render.sh: TIER_NAMES={list(names['ops-render.sh'])} "
@@ -1737,6 +1971,7 @@ CHECKS = (
     check_scripts,
     check_reader_bounds,
     check_guard_parity,
+    check_autobar,
     check_claims,
     check_install_set_parity,
     check_gitignore_parity,

@@ -67,17 +67,34 @@ scan_pending() { # scan_pending <opdir> <session>
 # Unpresented deviations (stage 2). DEVIATION/ESCALATION/GATE-EXCEPTION lines
 # record decisions; HANDOFF-MARK records they were presented. Counts THIS
 # session's (or unowned) gated lines after the last mine-or-unowned mark;
-# foreign lines never count, foreign marks never clear. scan_failed=1 (absent/
-# unreadable/symlink ledger) fails OPEN — a scaffold problem, not a decision.
-# Corrupt shapes (NUL, over-cap) fail CLOSED: unpresented=1, surfaced not
-# hidden. Globals read by the sourcing script (SC2034/2154 expected).
+# foreign lines never count, foreign marks never clear.
+#
+# FOUR states, and the polarity differs by WHY the scan could not run (#83 —
+# this comment used to say scan_failed=1 covered "unreadable" too, and it never
+# did; an unreadable file takes the NUL-probe path below and fails CLOSED. The
+# CODE is right and the comment was wrong, which is the worse direction: this is
+# the paragraph you read before touching the polarity, so trusting it you would
+# "restore" fail-open and quietly open the deviation gate):
+#
+#   readable, no gated rows  -> unpresented=0 scan_failed=0   (stop allowed)
+#   ABSENT or SYMLINK        -> unpresented=0 scan_failed=1   fails OPEN — no
+#                               ledger is a scaffold problem, not a decision
+#   UNREADABLE (chmod 000)   -> unpresented=1 scan_failed=0   fails CLOSED — the
+#                               file EXISTS and we cannot read it, so a real
+#                               unpresented decision may be in there
+#   corrupt (NUL, over-cap)  -> unpresented=1 scan_failed=0   fails CLOSED
+#
+# The split is "is there a ledger" versus "is there a ledger we cannot read".
+# Globals read by the sourcing script (SC2034/2154 expected).
 DECISIONS_MAX_BYTES=2097152   # 2 MiB — orders above any honest decisions ledger
 scan_deviations() { # scan_deviations <decisions-path> <this-session>
   local f="$1" sess="$2" line kind what n=0 bytes=0 logical
+  # `local`: without it this leaks C collation to the SOURCING script. Harmless
+  # at both call sites today (#83) — declared so it stays that way.
   # LC_ALL=C so read -n 512 and ${#line} count BYTES not characters: in a
   # UTF-8 locale a 512-char chunk can be 2048 bytes, evading the per-line cap
   # and loosening the DECISIONS_MAX_BYTES accumulator ~4x.
-  LC_ALL=C
+  local LC_ALL=C
   deviations_unpresented=0
   deviations_scan_failed=0
   [ -f "$f" ] || { deviations_scan_failed=1; return 0; }
