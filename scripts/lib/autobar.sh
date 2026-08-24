@@ -58,6 +58,15 @@ AUTOBAR_TASK="autobar"
 # NUL-terminated verbatim, and a rename emits its two paths as two records —
 # which is correct for this question: a rename touched two paths.
 #
+# -uall is equally load-bearing, and it shipped missing. Porcelain's DEFAULT
+# untracked mode is `normal`, which COLLAPSES an untracked directory to one
+# record: three new files under src/feature/ print as a single `?? src/`. The
+# count came back 1, below the 2-path threshold, and the gate stayed silent on
+# exactly the multi-file session clause (1) exists to catch — measured, and the
+# same three files at the repo root armed correctly, which is the negative
+# control. New work lands in new directories, so this was not an edge case: it
+# was the common shape of the very thing being gated. -uall lists each file.
+#
 # Sets: autobar_paths (count), autobar_measured (1 = the delta is trustworthy,
 # 0 = do not arm on it).
 autobar_count_changed() { # autobar_count_changed <project-root>
@@ -82,7 +91,7 @@ autobar_count_changed() { # autobar_count_changed <project-root>
   while IFS= read -r -d '' rec; do
     [ -n "$rec" ] || continue
     n=$((n + 1))
-  done < <(git -C "$root" status --porcelain -z -- ':(exclude).operator' 2>/dev/null)
+  done < <(git -C "$root" status --porcelain -z -uall -- ':(exclude).operator' 2>/dev/null)
   autobar_paths="$n"
   autobar_measured=1
 }

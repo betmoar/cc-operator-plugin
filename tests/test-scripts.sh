@@ -3722,6 +3722,108 @@ printf '%s' "$(sed "s|<tmp>|$P|" "$FIXTURES/sessionstart.json")" | "$BASH_ABS" "
 check "SessionStart WIPES the arm markers (a stale one disarms a future session)" \
   "$([ -d "$P/.operator/.autobar" ] && echo 1 || echo 0)"
 
+# --- the count sees FILES, not collapsed directories (#86 review) -----------
+# Porcelain's DEFAULT untracked mode collapses an untracked directory to ONE
+# record: three new files under src/feature/ printed as `?? src/`, the count came
+# back 1, and the gate stayed silent on exactly the multi-file session clause (1)
+# exists to catch. New work lands in new directories, so this was the COMMON
+# shape of the thing being gated, not an edge case. -uall is the fix.
+P="$(mkgitproj)"
+mkdir -p "$P/src/feature"
+printf 'a\n' > "$P/src/feature/one.js"
+printf 'b\n' > "$P/src/feature/two.js"
+printf 'c\n' > "$P/src/feature/three.js"
+run_hook stop-session-a.json "$P"
+check "three files in ONE new directory ARM (porcelain collapses them to '?? src/')" \
+  "$([ -f "$(autobar_sentinel "$P" SESS-A)" ] && echo 0 || echo 1)"
+check "the collapsed-directory arm BLOCKS like any other (exit 2)" \
+  "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+# The count must be the FILE count, not the directory's single record: a fix that
+# merely bumped the threshold to 1 would pass the two checks above while arming
+# every single-file session.
+_ab_n="$(printf '%s' "$HERR" | grep -c 'changed path(s)' || echo 0)"
+check "the message reports 3 paths, not 1 (the count is files, not records)" \
+  "$(printf '%s' "$HERR" | grep -q '3 changed path(s)' && echo 0 || echo 1)"
+check "control: the arm was announced exactly once" \
+  "$([ "$_ab_n" -ge 1 ] && echo 0 || echo 1)"
+
+# A nested directory is the same defect one level deeper — `?? a/` hides all of it.
+P="$(mkgitproj)"
+mkdir -p "$P/a/b/c"
+printf 'x\n' > "$P/a/b/c/deep.txt"; printf 'y\n' > "$P/a/b/other.txt"
+run_hook stop-session-a.json "$P"
+check "two files under a NESTED new directory arm (both are counted)" \
+  "$([ -f "$(autobar_sentinel "$P" SESS-A)" ] && echo 0 || echo 1)"
+
+# Negative control: -uall must not turn a ONE-file session into an arm. Without
+# it this whole block would pass by over-counting instead of counting right.
+P="$(mkgitproj)"
+mkdir -p "$P/solo"
+printf 'only\n' > "$P/solo/one.txt"
+run_hook stop-session-a.json "$P"
+check "control: ONE file in a new directory is still below the threshold" \
+  "$([ ! -f "$(autobar_sentinel "$P" SESS-A)" ] && [ "$HRC" -eq 0 ] && echo 0 || echo 1)"
+
+# A rename is the case the -z comment names as its reason and nothing exercised:
+# porcelain prints `old -> new` on ONE line without -z, and with it emits two
+# NUL-terminated records — correct, because a rename touched two paths.
+P="$(mkgitproj)"
+printf 'content\n' > "$P/before.txt"
+git -C "$P" add before.txt >/dev/null 2>&1; git -C "$P" commit -qm add >/dev/null 2>&1
+git -C "$P" mv before.txt after.txt >/dev/null 2>&1
+run_hook stop-session-a.json "$P"
+check "a RENAME counts as two paths and arms (the case -z exists for)" \
+  "$([ -f "$(autobar_sentinel "$P" SESS-A)" ] && echo 0 || echo 1)"
+
+# --- a failed sentinel write must ROLL THE MARKER BACK (#86 review) ---------
+# The asymmetry the mark-before-arm branch exists to prevent, in the direction it
+# did not cover: marker written, sentinel write failed, `|| true` swallowed it.
+# autobar_already_armed then reads the session as armed for the rest of its life,
+# so the gate silently never fires again — RC 0, empty stderr. Measured with
+# .operator/pending replaced by a plain file, and it survived REPAIRING the
+# directory, which is what makes it permanent rather than transient.
+P="$(mkgitproj)"
+printf 'a\n' > "$P/one.txt"; printf 'b\n' > "$P/two.txt"
+rm -rf "$P/.operator/pending"
+printf 'NOT-A-DIR\n' > "$P/.operator/pending"
+run_hook stop-session-a.json "$P"
+check "an unwritable pending/ does NOT leave the session marked as armed" \
+  "$([ ! -f "$P/.operator/.autobar/SESS-A" ] && echo 0 || echo 1)"
+check "the failed arm SAYS SO on stderr (a silent disarm is the whole defect)" \
+  "$(printf '%s' "$HERR" | grep -q 'auto-arm could not write' && echo 0 || echo 1)"
+# The rollback's only purpose: the NEXT Stop retries instead of standing down.
+rm -f "$P/.operator/pending"; mkdir -p "$P/.operator/pending"
+run_hook stop-session-a.json "$P"
+check "after the obstruction is cleared the next Stop ARMS (the marker was rolled back)" \
+  "$([ -f "$(autobar_sentinel "$P" SESS-A)" ] && echo 0 || echo 1)"
+
+# A planted dangling symlink must not be written THROUGH. `[ ! -e ]` is true for
+# one, so the plain `>` created the link's target outside .operator/ (measured).
+# autobar_mark_armed already refused symlinks; this writer, three lines away, did
+# not. set -C (O_EXCL) is the same discipline ops-task.sh's opener uses.
+P="$(mkgitproj)"
+printf 'a\n' > "$P/one.txt"; printf 'b\n' > "$P/two.txt"
+_ab_target="$P/PLANTED-OUTSIDE-OPERATOR"
+ln -s "$_ab_target" "$(autobar_sentinel "$P" SESS-A)"
+run_hook stop-session-a.json "$P"
+check "a planted dangling symlink is NOT followed (nothing written outside .operator/)" \
+  "$([ ! -e "$_ab_target" ] && echo 0 || echo 1)"
+check "the refused symlink is reported, not silently skipped" \
+  "$(printf '%s' "$HERR" | grep -q 'auto-arm could not write' && echo 0 || echo 1)"
+
+# Idempotence: a pre-existing REGULAR sentinel is this session's own earlier arm.
+# O_EXCL refuses it, and that refusal must read as success — the same reading
+# ops-task.sh's else-branch takes. Treating it as failure would roll the marker
+# back and re-arm forever, which is the infinite block from the other direction.
+P="$(mkgitproj)"
+printf 'a\n' > "$P/one.txt"; printf 'b\n' > "$P/two.txt"
+mkdir -p "$P/.operator/pending"; : > "$(autobar_sentinel "$P" SESS-A)"
+run_hook stop-session-a.json "$P"
+check "a pre-existing REGULAR sentinel is an already-open, not a write failure" \
+  "$([ -f "$P/.operator/.autobar/SESS-A" ] && echo 0 || echo 1)"
+check "no failure warning for the already-open case" \
+  "$(printf '%s' "$HERR" | grep -q 'auto-arm could not write' && echo 1 || echo 0)"
+
 echo "-- Case: the deviation gate's FOUR states (#83)"
 # INVARIANT: the polarity differs by WHY the scan could not run, and the lib's header used to
 # describe it wrongly — it claimed scan_failed=1 (fail OPEN) covered "unreadable" too. It never

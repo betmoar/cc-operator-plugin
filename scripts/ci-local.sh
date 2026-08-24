@@ -31,7 +31,7 @@ fi
 
 echo "== shellcheck 0.10.0 — the PINNED CI version, not the local one =="
 "$RUNNER" run --rm -v "$PWD":/w -w /w koalaman/shellcheck-alpine:v0.10.0 \
-  sh -c 'shellcheck --version | grep version:; shellcheck scripts/*.sh tests/test-scripts.sh'
+  sh -c 'shellcheck --version | grep version:; shellcheck scripts/*.sh scripts/lib/*.sh tests/test-scripts.sh'
 
 echo
 echo "== the suites on ubuntu: bash 5, GNU coreutils, no .operator/ =="

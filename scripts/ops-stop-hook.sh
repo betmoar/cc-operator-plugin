@@ -118,7 +118,12 @@ esac
 # shellcheck source=/dev/null
 # shellcheck disable=SC2154  # deviations_* are assigned by the sourced lib
 . "$_libdir/partition.sh"
-# autobar.sh USES sentinel_owner_of_name, so partition.sh must be sourced first.
+# partition.sh first — but NOT because autobar.sh calls into it. It did until
+# e839490 deleted the suppression rule; today the two libs share no symbol. The
+# order that matters is below: autobar_decide runs BEFORE scan_pending, so a
+# sentinel armed here is read by the existing mine-pending branch in the same
+# fire. Keeping a deleted dependency as the stated reason is how a comment
+# starts describing a mechanism that no longer runs.
 # shellcheck source=/dev/null
 # shellcheck disable=SC2154  # autobar_* are assigned by the sourced lib
 . "$_libdir/autobar.sh"
@@ -141,8 +146,30 @@ if [ "$autobar_arm" = 1 ]; then
   # (see autobar.sh): a sentinel with no marker is re-created at the next Stop
   # the instant the operator clears it. Better to skip an arm than to wedge.
   if autobar_mark_armed "$opdir" "$session"; then
-    if mkdir -p "$opdir/pending" 2>/dev/null && [ ! -e "$_ab_sentinel" ]; then
-      : > "$_ab_sentinel" 2>/dev/null || true
+    # set -C makes > use O_EXCL, the same discipline ops-task.sh's opener uses
+    # and for the same two reasons. A test-then-write is a TOCTOU, and `[ ! -e ]`
+    # is TRUE for a dangling symlink — so the plain `>` followed the link and
+    # created its target OUTSIDE .operator/ (measured). autobar_mark_armed
+    # already refuses a symlink; this writer, three lines away, did not.
+    #
+    # The write's exit status is now CHECKED. It was `|| true`, which swallowed
+    # the one asymmetry the branching above exists to prevent: the marker is
+    # already written, so autobar_already_armed reads this session as armed for
+    # the rest of its life — the gate silently never fires again, RC 0, stderr
+    # empty. Measured with .operator/pending replaced by a plain file, and it
+    # survived repairing the directory. A failed sentinel write must roll the
+    # marker back, or the failure is permanent instead of retried next Stop.
+    _ab_ok=0
+    if mkdir -p "$opdir/pending" 2>/dev/null; then
+      ( set -C; : > "$_ab_sentinel" ) 2>/dev/null && _ab_ok=1
+      # Already-open is success, not failure: O_EXCL refuses a pre-existing
+      # regular file, and that is this session's own sentinel from an earlier
+      # arm — the same reading ops-task.sh's else-branch takes.
+      [ "$_ab_ok" = 1 ] || { [ -f "$_ab_sentinel" ] && [ ! -L "$_ab_sentinel" ] && _ab_ok=1; }
+    fi
+    if [ "$_ab_ok" = 0 ]; then
+      rm -f "$opdir/.autobar/$session" 2>/dev/null
+      echo "operator: warning — auto-arm could not write $_ab_sentinel (a non-regular entry, a planted symlink, or an unwritable .operator/pending). The session marker was rolled back, so the next Stop retries rather than leaving this session permanently unarmed." >&2
     fi
   else
     echo "operator: warning — auto-arm skipped, could not record the session marker under $opdir/.autobar/ (arming without it would re-block after every verdict)" >&2

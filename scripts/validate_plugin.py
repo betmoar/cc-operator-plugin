@@ -120,8 +120,17 @@ def _function_body(code, fn):
     live one shipped unguarded — measured 2026-08-24 against check_autobar,
     which reported "all contracts hold" with the NUL read, the repo check and
     the `-z` flag all gone. An empty body fails every `in body` test, so the
-    caller reports rather than passing; the redefinition itself is reported by
-    check_no_redefinitions below, which names the file.
+    caller reports rather than passing; the redefinition itself is named by
+    _report_if_redefined, which every caller invokes before its own pins.
+
+    That reporting half shipped MISSING (#86 review): the docstring promised a
+    `check_no_redefinitions` that existed nowhere in the tree, and .fn/.n were
+    computed and then discarded — the exact computed-then-discarded shape this
+    repo has been bitten by before. What actually fired was three unrelated,
+    individually-worded false positives ("does not pass -z", "does not use
+    process substitution", "no rev-parse check"), none of them true, while the
+    real defect went unnamed. The sibling variable guard (_single_assignment)
+    had reported its duplicate correctly since #81; this half never did.
     """
     lines = code.splitlines()
     heads = [i for i, ln in enumerate(lines)
@@ -139,6 +148,27 @@ def _function_body(code, fn):
             return "\n".join(body)
     return None
 
+
+def _report_if_redefined(body, rel, problems):
+    """Name a redefinition and tell the caller to skip its own pins.
+
+    True → the caller must NOT run its `"literal" not in body` checks: an
+    empty body fails all of them, so each would emit a confident, wrong,
+    individually-worded problem about a property that is right there in the
+    live definition. One accurate message beats N misattributed ones.
+
+    Mirrors _single_assignment's duplicate branch, which is the same defect
+    one level down (a variable assigned twice vs a function defined twice) and
+    has reported it correctly since #81.
+    """
+    if not isinstance(body, _RedefinedFunction):
+        return False
+    problems.append(
+        f"{rel}: {body.fn}() is defined {body.n} times — bash resolves the "
+        f"LAST definition and this locator reads the FIRST, so every pin here "
+        f"would check a dead body while the live one ships unguarded (#81's "
+        f"class, one level up). Keep exactly one definition")
+    return True
 
 
 def _single_assignment(code, pattern, rel, var, problems):
@@ -849,6 +879,8 @@ def check_guard_parity(root, problems):
                 f"scripts/{name}: cannot locate check_bare_name()'s body — the "
                 f"`__`-separator pin has nothing to check. Reshaping the guard "
                 f"must update this locator, not silently skip it")
+        elif _report_if_redefined(body, f"scripts/{name}", problems):
+            pass
         elif "*__*" not in body:
             problems.append(
                 f"scripts/{name}: check_bare_name() does not reject '__' — it "
@@ -995,6 +1027,8 @@ def check_autobar(root, problems):
             "scripts/lib/autobar.sh: cannot locate autobar_count_changed()'s "
             "body — the NUL-safety pin has nothing to check. Reshaping it must "
             "update this locator, not silently skip the pin")
+    elif _report_if_redefined(body, "scripts/lib/autobar.sh", problems):
+        pass
     else:
         if "-z" not in body:
             problems.append(
@@ -1030,6 +1064,8 @@ def check_autobar(root, problems):
         problems.append(
             "scripts/lib/autobar.sh: cannot locate autobar_decide()'s body — "
             "the already-armed and suppression pins have nothing to check")
+    elif _report_if_redefined(decide, "scripts/lib/autobar.sh", problems):
+        pass
     else:
         if "autobar_already_armed" not in decide:
             problems.append(
@@ -1062,25 +1098,47 @@ def check_autobar(root, problems):
                 "neither. Reopen only with a liveness signal the kernel can "
                 "answer for a SESSION")
 
-    # The lib must be SOURCED by the hook, and AFTER partition.sh, whose
-    # sentinel_owner_of_name it calls. A reversed order is a runtime failure in
-    # a hook nothing here launches.
+    # The lib must actually be SOURCED by the hook. The pin matches the source
+    # STATEMENT, not the bare filename: `"autobar.sh" in hcode` was satisfied by
+    # any mention, so replacing the source line with `echo 'autobar.sh disabled'`
+    # shipped 0 problems (#86 review) while the hook died at runtime — set -u
+    # aborts on autobar_arm one line later, and exit 1 is not exit 2, so the
+    # Stop is ALLOWED and the deviation gate below it never runs either.
     hook = root / "scripts" / "ops-stop-hook.sh"
     if hook.is_file():
         hcode = shell_code(hook)
-        if "autobar.sh" not in hcode:
+        # A source STATEMENT: `.` or `source`, then a path ending in
+        # autobar.sh. Deliberately not pinned to "$_libdir/…" — the shape is
+        # the hook's business, and a pin that only matches today's spelling
+        # turns a harmless refactor into a build failure. What it must NOT
+        # match is a bare mention: an echo, a comment, a message string.
+        src_re = re.compile(r'^\s*(?:\.|source)\s+\S*autobar\.sh"?\s*$', re.MULTILINE)
+        if not src_re.search(hcode):
             problems.append(
-                "scripts/ops-stop-hook.sh: does not source lib/autobar.sh — the "
-                "auto-arm rule exists but nothing runs it, so the evidence gate "
-                "is opt-in again (#85) with every other gate green")
+                "scripts/ops-stop-hook.sh: does not SOURCE lib/autobar.sh (a "
+                "mention is not a source) — the auto-arm rule exists but "
+                "nothing runs it, so the evidence gate is opt-in again (#85). "
+                "At runtime set -u aborts the hook on autobar_arm, and exit 1 "
+                "is not exit 2, so Stop is allowed and the deviation gate never "
+                "runs — with every other gate green")
         else:
+            # Order still pinned, but NOT for the reason this check shipped
+            # with: autobar.sh called sentinel_owner_of_name only until e839490
+            # deleted the suppression rule, and `grep -c` in autobar.sh is now
+            # 0. The libs share no symbol today. What remains is the hook's own
+            # shape — autobar_decide runs before scan_pending so an armed
+            # sentinel is picked up by the SAME mine-pending branch in the same
+            # fire, which is the seam #85 was built on. Keep the order; do not
+            # restate the deleted dependency as its reason.
             ai, pi = hcode.find("autobar.sh"), hcode.find("partition.sh")
             if pi == -1 or ai < pi:
                 problems.append(
                     "scripts/ops-stop-hook.sh: lib/autobar.sh is sourced before "
-                    "lib/partition.sh — autobar calls sentinel_owner_of_name "
-                    "from partition.sh, so the suppression rule dies at runtime "
-                    "in a hook no test here launches")
+                    "lib/partition.sh. They share no symbol (autobar stopped "
+                    "calling sentinel_owner_of_name at e839490), but the hook "
+                    "arms before scan_pending so the armed sentinel is read by "
+                    "the existing mine-pending branch in the same fire. Source "
+                    "partition.sh first and keep that seam intact")
 
     # The markers must be wiped at SessionStart: a stale one for a reused id
     # disarms a future session permanently.

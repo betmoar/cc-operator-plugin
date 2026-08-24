@@ -1464,6 +1464,52 @@ const { result: dbtMid } = await run(WF("debate.js"),
   { ...FULL_PANEL, "rebut:B": null, "rebut:C": null });
 ok(dbtMid?.error?.includes("debate collapsed at rebuttal") && dbtMid.rounds.length === 2,
   "debate: a collapse at rebuttal keeps the opening round it paid for");
+// The third of three structurally-identical dead-seat branches, and the one no
+// case reached (#86 review). Every fixture that survived past rebuttal kept all
+// three closings alive, so `rounds.push("closing")` could be moved BELOW its
+// threshold check — dropping the round the panel paid for from a collapse
+// result — and 276/276 stayed green. Copy-shaped branches are not proven
+// identical by testing two of them.
+const { result: dbtClose } = await run(WF("debate.js"),
+  { case: "c", models: THREE },
+  { ...FULL_PANEL, "close:B": null, "close:C": null });
+ok(dbtClose?.error?.includes("debate collapsed at closing"),
+  "debate: a collapse at CLOSING is reported like the other two rounds");
+ok(dbtClose?.rounds?.length === 3,
+  "debate: the closing collapse keeps all three rounds — including the closing it paid for");
+ok(dbtClose?.rounds[2].round === "closing" && dbtClose.synthesis === null
+   && dbtClose.chose === null,
+  "debate: the kept closing round is the closing, and nothing is chosen from a collapse");
+// One seat dying at closing is survivable: two closings still make a panel, and
+// the roster must name the third rather than shipping a quieter debate.
+const { result: dbtClose1 } = await run(WF("debate.js"),
+  { case: "c", models: THREE }, { ...FULL_PANEL, "close:C": null });
+ok(dbtClose1?.deadSeats?.closing.join(",") === "C" && dbtClose1.synthesis != null,
+  "debate: a single seat dead at closing is named, and the debate still completes");
+
+// The upper bound is only tested from the REFUSAL side (1 and 6). An inclusive
+// off-by-one at 5 would reject a legal panel with nothing red — the success
+// side of a boundary is where that shows up.
+const FIVE = [...THREE, "qwen3.8-max", "gpt-5.6-terra-pro"];
+const PANEL5 = { ...FULL_PANEL };
+for (const l of ["D", "E"]) {
+  PANEL5[`open:${l}`] = OPEN(l);
+  PANEL5[`rebut:${l}`] = REBUT(l);
+  PANEL5[`close:${l}`] = CLOSE(l);
+}
+// Wrapped: an exclusive bound makes run() THROW rather than return, and an
+// uncaught throw kills the suite before its summary — the regression is caught
+// either way, but the case that caught it becomes invisible.
+try {
+  const { result: dbt5, rt: dbt5Rt } = await run(WF("debate.js"),
+    { case: "c", models: FIVE }, PANEL5);
+  ok(dbt5?.rounds?.length === 3 && dbt5.synthesis != null && dbt5.chose === null,
+    "debate: FIVE models is the documented maximum and completes (the bound is inclusive)");
+  ok(dbt5Rt.calls.length === 16,
+    `debate: 5 models x 3 rounds + 1 synthesis = 16 dispatches (got ${dbt5Rt.calls.length})`);
+} catch (e) {
+  ok(false, `debate: a 5-model panel is legal and must not refuse (${e?.message ?? e})`);
+}
 
 // A dead synthesis must not ship as `synthesis: null` unmarked: three intact
 // rounds read as 'no disagreement found' when the alignment never ran (F32).

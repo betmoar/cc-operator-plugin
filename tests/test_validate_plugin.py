@@ -465,11 +465,71 @@ class ValidatorTest(unittest.TestCase):
         p = self.dir / "scripts" / "ops-stop-hook.sh"
         p.write_text(p.read_text(encoding="utf-8").replace(". lib/autobar.sh\n", ""),
                      encoding="utf-8")
-        self.assertFires("does not source lib/autobar.sh")
+        self.assertFires("does not SOURCE lib/autobar.sh")
+
+    def test_autobar_hook_mentioning_not_sourcing_fires(self):
+        # The pin was `"autobar.sh" in hcode` and this exact mutation shipped 0
+        # problems (#86 review) while the hook died at runtime: set -u aborts on
+        # autobar_arm one line later, and exit 1 is not exit 2, so the Stop is
+        # ALLOWED and the deviation gate below never runs either. A mention is
+        # not a source.
+        p = self.dir / "scripts" / "ops-stop-hook.sh"
+        p.write_text(p.read_text(encoding="utf-8").replace(
+            ". lib/autobar.sh\n", "echo 'autobar.sh disabled for now'\n"),
+            encoding="utf-8")
+        self.assertFires("does not SOURCE lib/autobar.sh")
+
+    def test_autobar_commented_out_source_fires(self):
+        # Same class, the other reflex spelling: commenting the line out leaves
+        # the filename in the file.
+        p = self.dir / "scripts" / "ops-stop-hook.sh"
+        p.write_text(p.read_text(encoding="utf-8").replace(
+            ". lib/autobar.sh\n", "# . lib/autobar.sh\n"), encoding="utf-8")
+        self.assertFires("does not SOURCE lib/autobar.sh")
+
+    def test_autobar_count_redefined_is_NAMED_not_misattributed(self):
+        # #86 review: _function_body returned an empty sentinel and the promised
+        # check_no_redefinitions existed nowhere, so a duplicated function
+        # produced THREE confident, individually-worded, FALSE problems — every
+        # one of those properties present in the live definition — while the
+        # real defect went unnamed. The diagnostic was computed (.fn/.n) and
+        # discarded, this repo's own prior bug shape. Assert the redefinition is
+        # named AND the false three are gone: naming it while still emitting
+        # them would satisfy a bare "is it reported" check.
+        p = self._autobar()
+        c = p.read_text(encoding="utf-8")
+        i = c.index("autobar_count_changed() {")
+        j = c.index("\n}\n", i) + 3
+        p.write_text(c[:j] + c[i:j] + c[j:], encoding="utf-8")
+        probs = self.problems()
+        self.assertTrue(any("is defined 2 times" in x for x in probs), probs)
+        for false_claim in ("does not pass `-z`",
+                            "does not read through process substitution",
+                            "no separate `git rev-parse`"):
+            self.assertFalse(any(false_claim in x for x in probs),
+                             f"misattributed {false_claim!r} survived: {probs}")
+
+    def test_autobar_decide_redefined_is_NAMED(self):
+        # The second _function_body call site in check_autobar. Both need the
+        # branch; fixing one leaves the other reporting the wrong thing.
+        p = self._autobar()
+        c = p.read_text(encoding="utf-8")
+        i = c.index("autobar_decide() {")
+        j = c.index("\n}\n", i) + 3
+        p.write_text(c[:j] + c[i:j] + c[j:], encoding="utf-8")
+        probs = self.problems()
+        self.assertTrue(any("autobar_decide() is defined 2 times" in x
+                            for x in probs), probs)
+        self.assertFalse(any("never calls autobar_already_armed" in x
+                             for x in probs), probs)
 
     def test_autobar_sourced_before_partition_fires(self):
-        # autobar calls sentinel_owner_of_name; reversed, the suppression rule
-        # dies at runtime in a hook no test here launches.
+        # Order is still pinned, but NOT for the reason this test shipped with:
+        # autobar stopped calling sentinel_owner_of_name at e839490 and the two
+        # libs share no symbol today (`grep -c` in autobar.sh → 0). What the
+        # order protects is the hook's own seam — autobar_decide runs before
+        # scan_pending, so a sentinel armed here is read by the existing
+        # mine-pending branch in the same fire.
         p = self.dir / "scripts" / "ops-stop-hook.sh"
         p.write_text(p.read_text(encoding="utf-8").replace(
             ". lib/partition.sh\n. lib/autobar.sh\n",

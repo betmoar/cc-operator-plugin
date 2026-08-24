@@ -132,11 +132,80 @@ sit on the same code this change touches, so they land here too.
   resolves a function at call time, so the new Stop-hook message shipped a blank
   command — no error, just useless guidance.
 
+### Fixed after review
+
+A four-lens review of this release found five defects in its own new code. Each
+is fixed here with the mutation that proves the fix, because four of the five
+shipped with every gate green.
+
+- **The auto-arm counted a new DIRECTORY as one path.** Porcelain's default
+  untracked mode collapses `src/feature/{one,two,three}.js` to a single
+  `?? src/`, so the count came back 1, below the threshold, and the gate stayed
+  silent on exactly the multi-file session clause (1) exists to catch. The same
+  three files at the repo root armed correctly — that contrast is the measurement.
+  New work lands in new directories, so this was the common shape of the thing
+  being gated, not an edge case. `-uall` now lists each file.
+
+- **A failed sentinel write left the session permanently unarmed.** The marker
+  is written first (deliberately — see #85), but the sentinel write carried
+  `|| true`. Marker present, sentinel absent: `autobar_already_armed` then reads
+  the session as armed for the rest of its life, so the gate never fires again —
+  RC 0, empty stderr. Measured with `.operator/pending` replaced by a plain
+  file, and it survived REPAIRING the directory, which is what made it permanent
+  rather than transient. The write's status is now checked and a failure rolls
+  the marker back, so the next Stop retries.
+
+- **The sentinel writer followed a planted symlink.** `[ ! -e ]` is true for a
+  dangling link, so `>` created its target outside `.operator/` (measured).
+  `set -C` (O_EXCL) now applies, the same discipline `ops-task.sh`'s opener uses
+  and for the same two reasons; a pre-existing regular file still reads as this
+  session's own earlier arm, not a failure.
+
+- **`check_no_redefinitions` was promised and never existed.** `_function_body`
+  computed the diagnostic (`.fn`, `.n`) and discarded it — this repo's own
+  computed-then-discarded shape. A duplicated function produced THREE confident,
+  false problems ("does not pass `-z`", "does not use process substitution",
+  "no rev-parse check"), every one of those properties present in the live
+  definition, while the real defect went unnamed. `_report_if_redefined` now
+  names it at all three call sites, matching what `_single_assignment` has done
+  for variables since #81.
+
+- **The "hook sources autobar.sh" pin matched a mention.** Replacing the source
+  line with `echo 'autobar.sh disabled'` left the filename in the file, so the
+  validator reported 0 problems — while at runtime `set -u` aborts the hook on
+  `autobar_arm`, and exit 1 is not exit 2, so Stop is ALLOWED and the deviation
+  gate never runs either. The pin now matches a source STATEMENT.
+
+- **The stale `sentinel_owner_of_name` justification is gone.** `e839490`
+  deleted the call; `grep -c` in `autobar.sh` is 0. Four places still cited it
+  as a live reason — including a validator's own failure message, which told a
+  maintainer a mechanism that does not exist. The sourcing order is still
+  pinned, for the reason that is actually true: `autobar_decide` runs before
+  `scan_pending`, so an armed sentinel is read by the existing mine-pending
+  branch in the same fire.
+
+- **`scripts/lib/` was never linted.** All three CI paths globbed
+  `scripts/*.sh`, which does not match `scripts/lib/`, so `autobar.sh` shipped
+  unchecked. Clean under the pinned 0.10.0 once included — but that was luck,
+  not a gate.
+
+Two test gaps closed, each proven by re-running the mutation that survived
+before: the mark-before-arm ordering could be reverted with 669 bash + 189
+python + the validator all green, and `debate.js`'s closing round could be
+pushed below its threshold check with 276 node green (two of three
+structurally-identical dead-seat branches were covered; the third was not).
+
 ### Verified
 
-`act push -W .github/workflows/validate.yml` → Job succeeded: shellcheck 0.10.0,
-contracts hold, 189 python, 662 bash locally (655 in-container; 7 cases
-self-skip as root), 276 + 90 node.
+`act push -W .github/workflows/validate.yml` → Job succeeded: shellcheck 0.10.0
+over `scripts/*.sh scripts/lib/*.sh tests/test-scripts.sh`, contracts hold, 193
+python, 675 bash, 282 + 90 node.
+
+Counts measured on both executors rather than inferred: **683 local**
+(macOS/bash 3.2.57), **675 in-container** (ubuntu 24.04/bash 5.2.21, 8 cases
+self-skip as root). A previous revision of this section claimed 662 local / 655
+in-container; neither number is produced by any run, and the discrepancy is
+itself the kind of unverifiable claim the EVIDENCE GATE exists to refuse.
 
 Live, which is the part the bash suite cannot reach: **the branch's own session
 was auto-armed by its own hook at Stop** — 2 changed paths, sentinel on the real

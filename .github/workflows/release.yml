@@ -33,7 +33,7 @@ jobs:
         # 0.11). A release must not fail, or pass, on a linter nobody chose.
         run: |
           docker run --rm -v "$PWD":/w -w /w koalaman/shellcheck-alpine:v0.10.0 \
-            sh -c 'shellcheck --version | grep version:; shellcheck scripts/*.sh tests/test-scripts.sh'
+            sh -c 'shellcheck --version | grep version:; shellcheck scripts/*.sh scripts/lib/*.sh tests/test-scripts.sh'
 
       - name: Validate plugin contracts
         run: python3 scripts/validate_plugin.py
