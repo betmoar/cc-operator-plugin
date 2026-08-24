@@ -102,6 +102,7 @@ and the maintainer's local `.archive/dev/` (untracked).
 > wrong case is worse than one that points nowhere.
 > | `plugin.json` `version` | add the matching `## [x.y.z]` as the newest heading in `CHANGELOG.md`, same commit (the release gate fails otherwise) |
 > | the Stop-hook command in `hooks.json` | keep `ops-stop-hook.sh` + `${CLAUDE_PLUGIN_ROOT}` (validator check 7) |
+> | a step or glob in `.github/workflows/validate.yml` | mirror it in `.forgejo/workflows/validate.yml` — same suites, but the two files CANNOT be identical and no validator pins them. Two deliberate divergences, both measured: `uses:` must be fully qualified on Forgejo (a bare `actions/checkout@v4` pulls from `data.forgejo.org`) and `act` cannot parse that form, so the forge file is NOT act-runnable — dry-run the GitHub copy, prove the forge copy by pushing to `lokaal`. And the forge job has **no docker**: `DOCKER_HOST` unset, no CLI (probed 2026-08-25; the host's `forgejo-runner-dind` belongs to the runner, not the job), so shellcheck comes from the arch-detected release tarball, not `docker run`. The runner is aarch64. Keep BOTH glob terms (`scripts/*.sh` AND `scripts/lib/*.sh`) in every CI path including `scripts/ci-local.sh` — the missing second term is what let `lib/autobar.sh` ship unlinted through three of them (#86 review) |
 > | an agent's model/tools/NEEDS_CONTEXT | keep it project-agnostic — no `unknowns-harness`/`F1..F13` — and keep `model:` a tier alias (`opus`/`sonnet`/`haiku`), never a pinned ID (validator check 6) |
 
 ## Procedure
