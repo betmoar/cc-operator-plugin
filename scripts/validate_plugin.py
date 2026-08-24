@@ -96,6 +96,15 @@ def shell_code(path):
         if not ln.lstrip().startswith("#"))
 
 
+class _RedefinedFunction(str):
+    """A function name defined more than once. Truthy-empty so `"x" not in body`
+    fires on every pinned literal, and carries the count for the message."""
+    def __new__(cls, fn, n):
+        o = super().__new__(cls, "")
+        o.fn, o.n = fn, n
+        return o
+
+
 def _function_body(code, fn):
     """The lines of shell function `fn`, or None if it cannot be located.
 
@@ -103,8 +112,22 @@ def _function_body(code, fn):
     silently pinning nothing. Brace-counting in our one house style; a K&R
     head or an unbalanced `{` in a string fails toward None → reported. Widen
     the locator then; do not make the caller tolerate None.
+
+    A RE-DEFINED function returns an EMPTY body (#81's class, one level up from
+    the variable pins): bash resolves the LAST definition, this locator scans
+    forward and returns the FIRST, so appending a second `f() { … }` with none
+    of the pinned properties left every caller pinning a dead body while the
+    live one shipped unguarded — measured 2026-08-24 against check_autobar,
+    which reported "all contracts hold" with the NUL read, the repo check and
+    the `-z` flag all gone. An empty body fails every `in body` test, so the
+    caller reports rather than passing; the redefinition itself is reported by
+    check_no_redefinitions below, which names the file.
     """
     lines = code.splitlines()
+    heads = [i for i, ln in enumerate(lines)
+             if re.match(rf"^\s*{re.escape(fn)}\s*\(\)\s*\{{", ln)]
+    if len(heads) > 1:
+        return _RedefinedFunction(fn, len(heads))
     for i, ln in enumerate(lines):
         if re.match(rf"^\s*{re.escape(fn)}\s*\(\)\s*\{{", ln):
             depth, body = 0, []
@@ -116,6 +139,26 @@ def _function_body(code, fn):
             return "\n".join(body)
     return None
 
+
+
+def _single_assignment(code, pattern, rel, var, problems):
+    """The one match for `pattern`, or None when it is absent OR re-assigned.
+
+    #81: the validator pinned the FIRST `^VAR="…"$` and bash resolves the LAST,
+    so appending one line left the checker pinning a dead assignment while the
+    live value shipped unguarded — measured on ops-claims.sh's PROTECTED, which
+    disarmed the guard on validate_plugin.py, tests/, .operator/bin/ and hooks/
+    with `validate_plugin: all contracts hold`. A duplicate is REPORTED here so
+    the caller cannot silently pin either one.
+    """
+    ms = re.findall(pattern, code, re.MULTILINE)
+    if len(ms) > 1:
+        problems.append(
+            f"{rel}: {var} is assigned {len(ms)} times — bash resolves the LAST, "
+            f"and every pin here reads the first, so an appended line disarms "
+            f"the guard with the build green (#81). Keep exactly one assignment")
+        return None
+    return ms[0] if ms else None
 
 def load_json(path, problems):
     try:
@@ -1076,7 +1119,8 @@ def check_claims(root, problems):
     text = p.read_text(encoding="utf-8")
     # The canonical protected set — must byte-match the PROTECTED= literal in
     # ops-claims.sh. A divergence here is two different ideas of "the grader".
-    literal = re.search(r'^PROTECTED="(.*)"$', text, re.MULTILINE)
+    literal = _single_assignment(text, r'^PROTECTED="(.*)"$',
+                                 "scripts/ops-claims.sh", "PROTECTED", problems)
     canonical = ("scripts/validate_plugin.py tests/ .operator/bin/ hooks/ "
                  "scripts/ops-*.sh scripts/statusline.sh backlog/")
     if not literal:
@@ -1084,10 +1128,10 @@ def check_claims(root, problems):
             "scripts/ops-claims.sh: PROTECTED literal not found — the "
             "gate-trespass protected set must be a single declared literal "
             "(F-A2: the builder cannot edit its own grader)")
-    elif literal.group(1) != canonical:
+    elif literal != canonical:
         problems.append(
             f"scripts/ops-claims.sh: PROTECTED literal drifted — expected "
-            f"{canonical!r}, got {literal.group(1)!r}. A divergence is two "
+            f"{canonical!r}, got {literal!r}. A divergence is two "
             f"different ideas of 'the grader' (drop a path and the gate no "
             f"longer protects it; F30: pin the literal, not a copy)")
     # The literal must be APPLIED — a `matches_protected` call inside a real
@@ -1105,7 +1149,7 @@ def check_claims(root, problems):
     # statusline.sh must be in the literal — it is the F66 amendment and the
     # one a prior glob missed. Match the token, not the whole literal, so a
     # reordering stays free but dropping it fires.
-    if "statusline.sh" not in (literal.group(1) if literal else ""):
+    if "statusline.sh" not in (literal or ""):
         problems.append(
             "scripts/ops-claims.sh: PROTECTED omits scripts/statusline.sh — "
             "it is a full sentinel reader (F66); leaving it out re-opens a "
@@ -1140,8 +1184,12 @@ def check_install_set_parity(root, problems):
             "declaration both writers source (#76 step 3); without it ops-init "
             "dies and the SessionStart upgrade path skips every session")
         return
-    m = re.search(r'^_OPS_TOOLS="([^"]+)"\s*$',
-                  manifest.read_text(encoding="utf-8"), re.MULTILINE)
+    # _single_assignment, not re.search: bash resolves the LAST assignment and a
+    # first-match pin let one appended line install 1 of 5 CLIs, build green (#81).
+    _tools = _single_assignment(manifest.read_text(encoding="utf-8"),
+                                r'^_OPS_TOOLS="([^"]+)"\s*$',
+                                "scripts/ops-install-set.sh", "_OPS_TOOLS", problems)
+    m = _tools
     if not m:
         problems.append(
             "scripts/ops-install-set.sh: no plain `_OPS_TOOLS=\"…\"` assignment "
@@ -1149,7 +1197,7 @@ def check_install_set_parity(root, problems):
             "reshape (array, computed value) must update this locator AND both "
             "writers, not silence the pin")
         return
-    tools = m.group(1).split()
+    tools = m.split()
     if "ops-verdict.sh" not in tools:
         problems.append(
             f"scripts/ops-install-set.sh: install set {tools} omits "
@@ -1377,8 +1425,11 @@ def check_resolver_renderer_parity(root, problems):
 
     names = {}
     for name, text in src.items():
-        m = re.search(r"^(?:readonly\s+)?TIER_NAMES=([\"'])(.*?)\1",
-                      text, re.MULTILINE)
+        # Same #81 guard: a second TIER_NAMES= line is what bash would use.
+        _tn = _single_assignment(
+            text, r"^(?:readonly\s+)?TIER_NAMES=[\"'](.*?)[\"']",
+            name, "TIER_NAMES", problems)
+        m = _tn
         if not m:
             problems.append(
                 f"scripts/{name}: no `TIER_NAMES=\"…\"` assignment found — both "
@@ -1386,7 +1437,7 @@ def check_resolver_renderer_parity(root, problems):
                 f"a legal refactor (renaming, retyping) must update this regex, "
                 f"not silence it")
             return
-        names[name] = tuple(m.group(2).split())
+        names[name] = tuple(m.split())
     if names["ops-tiers.sh"] != names["ops-render.sh"]:
         problems.append(
             f"scripts/ops-render.sh: TIER_NAMES={list(names['ops-render.sh'])} "

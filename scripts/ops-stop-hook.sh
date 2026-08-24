@@ -185,10 +185,14 @@ fi
 # --- deviation gate: unpresented decisions block Stop (stage 2) ---------------
 # Either gate can block. A session_id of "" makes every DEVIATION unowned →
 # every one blocks (pre-gate lines are real unpresented decisions), mirroring
-# the unowned-sentinel default. The absent-ledger polarity is deliberately
+# the unowned-sentinel default. The ABSENT-ledger polarity is deliberately
 # OPPOSITE the sentinel default and both are right: an unowned sentinel fails
 # CLOSED (a real open task), an absent DECISIONS.md has no task to enforce
 # (fail OPEN — scaffold problem, not evidence of an unpresented decision).
+# ABSENT, not merely missing-from-the-scan: a present-but-UNREADABLE ledger
+# fails CLOSED, because the file exists and an unpresented decision may be in
+# it (#83 — the lib's header claimed unreadable took the fail-open path; it
+# never did, and the code was the correct half).
 scan_deviations "$opdir/DECISIONS.md" "$session"
 
 

@@ -3722,6 +3722,53 @@ printf '%s' "$(sed "s|<tmp>|$P|" "$FIXTURES/sessionstart.json")" | "$BASH_ABS" "
 check "SessionStart WIPES the arm markers (a stale one disarms a future session)" \
   "$([ -d "$P/.operator/.autobar" ] && echo 1 || echo 0)"
 
+echo "-- Case: the deviation gate's FOUR states (#83)"
+# INVARIANT: the polarity differs by WHY the scan could not run, and the lib's header used to
+# describe it wrongly — it claimed scan_failed=1 (fail OPEN) covered "unreadable" too. It never
+# did: an unreadable file takes the NUL-probe path and fails CLOSED, which is the CORRECT
+# behaviour (the file exists, so an unpresented decision may be in it) but the OPPOSITE of what
+# the comment promised. Nothing tested `unreadable` before this case, so a maintainer trusting
+# the header would have "restored" fail-open and quietly opened the gate.
+_dev_state() { # _dev_state <decisions-path> → "unpresented=N scan_failed=N"
+  ( # shellcheck source=/dev/null
+    . "$SCRIPTS/lib/partition.sh"
+    scan_deviations "$1" SIDA
+    # shellcheck disable=SC2154  # both are OUTPUTS of the sourced lib
+    printf 'unpresented=%s scan_failed=%s' "$deviations_unpresented" "$deviations_scan_failed" )
+}
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+D="$P/.operator/DECISIONS.md"
+
+check "readable ledger with no gated rows: allows the stop" \
+  "$([ "$(_dev_state "$D")" = "unpresented=0 scan_failed=0" ] && echo 0 || echo 1)"
+
+check "ABSENT ledger fails OPEN (scan_failed=1) — no ledger is a scaffold problem" \
+  "$([ "$(_dev_state "$P/.operator/nope.md")" = "unpresented=0 scan_failed=1" ] && echo 0 || echo 1)"
+
+ln -s /dev/null "$P/.operator/link.md"
+check "SYMLINK ledger fails OPEN — not a ledger our scaffold wrote" \
+  "$([ "$(_dev_state "$P/.operator/link.md")" = "unpresented=0 scan_failed=1" ] && echo 0 || echo 1)"
+
+# The state the header lied about. Skipped as root: chmod 000 does not refuse root a read, so the
+# case would pass for the wrong reason.
+if [ "$(id -u)" = "0" ]; then
+  echo "  skip unreadable-ledger polarity: running as root, chmod 000 does not refuse a read"
+else
+  chmod 000 "$D"
+  check "UNREADABLE ledger fails CLOSED (unpresented=1, NOT scan_failed) — the file exists" \
+    "$([ "$(_dev_state "$D")" = "unpresented=1 scan_failed=0" ] && echo 0 || echo 1)"
+  chmod 644 "$D"
+fi
+
+# The header must describe what the code does — that is the whole defect here.
+check "partition.sh documents the unreadable state as failing CLOSED" \
+  "$(grep -q 'UNREADABLE (chmod 000)' "$SCRIPTS/lib/partition.sh" && echo 0 || echo 1)"
+check "the Stop hook's mirrored claim names the unreadable case too" \
+  "$(grep -q 'present-but-UNREADABLE ledger' "$HOOK" && echo 0 || echo 1)"
+# LC_ALL must not leak to the sourcing script (#83's second half).
+check "scan_deviations declares LC_ALL local — no collation leak to the caller" \
+  "$(grep -q 'local LC_ALL=C' "$SCRIPTS/lib/partition.sh" && echo 0 || echo 1)"
+
 ########################################################################
 # The measurement corpora (#24 security, #70 drift, #58 plan-align) were removed in 0.10 (docs/DEBLOAT-0.10.md
 # step 5); they live in git history (tree <= 0.9.0) and the maintainer's local .archive/dev/. ops-corpus.sh
