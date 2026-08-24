@@ -247,6 +247,17 @@ a workflow has no business listing which tier names exist).
 `check_workflows` + `check_workflow_parity` + `check_workflow_default_tiers`
 enforce these at build time.
 
+What they do NOT enforce, and what `tests/test_workflows.mjs` must therefore
+cover per workflow: **which seat each call site dispatches**.
+`check_workflow_agent_types` proves every `"cc-operator:op-*"` string names a
+shipped agent — it cannot see that a read-only seat's prompt went to an
+implementer. `debate.js` is the sharp case: hand a debater prompt to
+`op-author` (Write + Edit) and the panel can edit the artifact it is arguing
+about, with the validator green. The node case asserts the binding per label.
+Mutation-check a new workflow's cases the way `debate.js` was: retype each seat,
+delete each dead-agent guard, drop each refusal, and confirm the suite goes red
+— a guard nobody tried to break is a guard nobody knows works.
+
 ### The tier coupling after the #76 lift (was: the F07 namespace coupling)
 
 Until 0.9.0 every workflow carried `KNOWN_TIERS`, a copy of the resolver's

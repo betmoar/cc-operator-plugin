@@ -43,7 +43,7 @@ route by task nature; correctness of the product beats token savings; judgment w
 below judgment tier [D:CHART-route]. One implementer at a time; read-only workers may run in
 parallel on disjoint inputs [D:CHART-r6]. Do not idle while a dispatch runs — work the main
 thread on anything not depending on its result; enough information to act means act, not survey
-[D:CHART-prose]. The review, brainstorm and plan workflows are the orchestration primitives;
+[D:CHART-prose]. The review, brainstorm, plan and debate workflows are the primitives;
 `/cc-operator:tiers` resolves the model id behind each tier [DOC:spec-wf].
 
 **Dispatch packet** — every dispatch uses exactly this [D:CHART-packet]:
