@@ -99,7 +99,21 @@ jobs:
         run: node tests/test_compress.mjs
 
       # `gh` does not work against Forgejo (Gitea-compatible API), so this is a
-      # plain POST. GITHUB_TOKEN is injected per job by the runner.
+      # plain POST. Everything it depends on was PROBED on this runner rather
+      # than assumed, and two of the four results would have broken it:
+      #
+      #   GITHUB_TOKEN       set (and masked in logs), HTTP 200 on /releases
+      #   GITHUB_REPOSITORY  ci-admin/cc-operator-plugin
+      #   GITHUB_SERVER_URL  http://forgejo:3000  ← the INTERNAL container name,
+      #                      not forgejo.ci.lan:3000. It works from the job (same
+      #                      `ci` network) but the html_url it returns is not
+      #                      reachable from a laptop, so the URL is rewritten for
+      #                      the human reading this log.
+      #   jq                 ABSENT from the base image. Installed by Toolchain
+      #                      above — but the JSON body is built with python3
+      #                      anyway, because a release step that dies on a
+      #                      missing formatting tool after the gates have passed
+      #                      is the worst possible place to discover it.
       #
       # The response is CHECKED. A create that fails leaves the tag pushed and
       # the suites green with no release object — a success-shaped run that
@@ -108,17 +122,20 @@ jobs:
       - name: Publish Forgejo release
         run: |
           set -e
+          # No heredoc: a `PY` terminator must sit at column 0, which closes the
+          # YAML block scalar this script lives in. -c with a single-quoted
+          # program keeps everything indented and parseable.
+          python3 -c 'import json,sys; tag=sys.argv[1]; notes=open(sys.argv[2],encoding="utf-8").read(); json.dump({"tag_name":tag,"name":tag,"body":notes,"draft":False,"prerelease":False}, open("/tmp/body.json","w"))' \
+            "$GITHUB_REF_NAME" release-notes.md
           code=$(curl -sS -o /tmp/rel.json -w '%{http_code}' \
             -X POST "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/releases" \
             -H "Authorization: token ${GITHUB_TOKEN}" \
             -H "Content-Type: application/json" \
-            --data "$(jq -n --arg t "$GITHUB_REF_NAME" \
-                            --rawfile b release-notes.md \
-                            '{tag_name:$t, name:$t, body:$b, draft:false, prerelease:false}')")
+            --data @/tmp/body.json)
           echo "HTTP $code"
           if [ "$code" != "201" ]; then
-            echo "release creation FAILED — the tag is pushed and the gates passed, but nothing was published:"
+            echo "release creation FAILED — the tag is pushed and every gate passed, but nothing was published:"
             cat /tmp/rel.json
             exit 1
           fi
-          jq -r '"published: \(.name)  (\(.html_url))"' /tmp/rel.json
+          python3 -c 'import json; r=json.load(open("/tmp/rel.json")); u=(r.get("html_url") or "").replace("http://forgejo:3000","http://forgejo.ci.lan:3000"); print("published:", r.get("name"), " ", u)'
