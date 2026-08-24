@@ -13,11 +13,16 @@ name: validate
 #    this file is proven by pushing to `lokaal`.
 #
 # 2. No `docker run` inside a step. The GitHub copy pins shellcheck by running
-#    the koalaman image, which needs a docker socket in the runner container.
-#    Whether this runner has one is UNMEASURED (ssh to the mini is not
-#    available from the authoring session), and a gate that fails on missing
-#    infrastructure reports something other than the code. The tarball gives
-#    the same pinned 0.10.0 with no socket and no daemon.
+#    the koalaman image. That form CANNOT work here, and it is measured rather
+#    than assumed: a probe job on this runner reported `DOCKER_HOST=<unset>`
+#    and no docker CLI in the job image. The host does run a
+#    `forgejo-runner-dind` container with `DOCKER_HOST=tcp://runner-dind:2375`
+#    — but that is the RUNNER's daemon, used to start job containers, and the
+#    job itself inherits neither the variable nor a client. A `docker run`
+#    step here fails on missing infrastructure, which reports something other
+#    than the code. The tarball is the same pinned 0.10.0 with no daemon at
+#    all, and it is why this step carries arch detection: the runner is
+#    aarch64 (measured), so the x86_64 tarball would not execute.
 
 on:
   push:
