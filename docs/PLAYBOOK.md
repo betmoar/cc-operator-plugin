@@ -288,6 +288,24 @@ the clock" (F03)*. That only works on something carrying a pid. When neither
 liveness nor a clock can answer, drop the signal and state the residual — a
 bounded false positive beats a silent permanent disarm.
 
+**`kill -0` works on a LOCK, not on a session artifact, and the difference is
+lifetime.** A lock holder exists only for the duration of one CLI call, so the
+pid it stamps is alive exactly while the lock should be held — which is what
+makes F03's kernel question answerable. A sentinel is the opposite: it exists
+to OUTLIVE the call that wrote it. `ops-task.sh` is a subprocess that exits the
+moment it returns, so a pid stamped there is dead while the session owning the
+task keeps running, and `kill -0` would read every sentinel — including a live
+session's — as abandoned. Measured 2026-08-24; the sentinel body carries `cwd:`
+and `opened_at:` and no pid, which is correct.
+
+The general rule, and it is what the commit message for #85 got wrong: **a
+session is a harness token (`session_id`), not an OS handle.** Nothing maps a
+sid to a process, so no OS primitive can answer "is that session still alive".
+Before reaching for `kill -0` on anything, check whether the artifact's lifetime
+is bounded by the process that stamped it. If it is not, the kernel has no
+opinion to offer and the answer has to come from the operator instead —
+`ops-adopt.sh` exists for exactly that re-claim.
+
 Two mechanical traps this cost time on, both worth knowing before the next one:
 
 - **Mutate the CODE line, not the first match.** A sweep replacing the first
