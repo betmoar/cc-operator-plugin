@@ -118,6 +118,36 @@ esac
 # shellcheck source=/dev/null
 # shellcheck disable=SC2154  # deviations_* are assigned by the sourced lib
 . "$_libdir/partition.sh"
+# autobar.sh USES sentinel_owner_of_name, so partition.sh must be sourced first.
+# shellcheck source=/dev/null
+# shellcheck disable=SC2154  # autobar_* are assigned by the sourced lib
+. "$_libdir/autobar.sh"
+
+# --- auto-arm (#85): the charter's clause (1), enforced ----------------------
+# Runs BEFORE the pending scan on purpose: a sentinel armed here is an ORDINARY
+# owned sentinel, so the existing mine-pending branch below blocks on it with
+# the message it already ships. No new blocking stage, no new message class, no
+# new polarity for a partition.sh reader — the seam that already works.
+#
+# The write is inline rather than a call to ops-task.sh: this hook resolves
+# through ${CLAUDE_PLUGIN_ROOT} and the CLI lives at .operator/bin/, which an
+# older scaffold may not have. A gate that silently stops arming because a
+# project skipped an upgrade is the #34 class.
+autobar_decide "${opdir%/.operator}" "$opdir" "$session"
+# shellcheck disable=SC2154  # assigned by the sourced lib/autobar.sh
+if [ "$autobar_arm" = 1 ]; then
+  _ab_sentinel="$opdir/pending/${session}__${AUTOBAR_TASK}"
+  # Mark FIRST, arm second. The reverse order re-arms forever if the mark fails
+  # (see autobar.sh): a sentinel with no marker is re-created at the next Stop
+  # the instant the operator clears it. Better to skip an arm than to wedge.
+  if autobar_mark_armed "$opdir" "$session"; then
+    if mkdir -p "$opdir/pending" 2>/dev/null && [ ! -e "$_ab_sentinel" ]; then
+      : > "$_ab_sentinel" 2>/dev/null || true
+    fi
+  else
+    echo "operator: warning — auto-arm skipped, could not record the session marker under $opdir/.autobar/ (arming without it would re-block after every verdict)" >&2
+  fi
+fi
 
 scan_pending "$opdir" "$session"
 pending="$MINE_IDS"
@@ -155,6 +185,14 @@ verdict_cmd_for() { # → the verdict CLI path that resolves from the project cw
 
 if [ -n "$pending" ]; then
   verdict_cmd="$(verdict_cmd_for)"
+  # The auto-armed sentinel needs its own sentence, or the operator reads
+  # "pending verdict: autobar" as a task it never opened and has no way to
+  # learn what tripped it. Name the count and the threshold: an unexplained
+  # block is the one a user resolves by removing the hook.
+  # shellcheck disable=SC2154  # assigned by the sourced lib/autobar.sh
+  if [ "$autobar_arm" = 1 ]; then
+    echo "operator: auto-armed '$AUTOBAR_TASK' — $autobar_reason, and the charter requires a BAR block before multi-file work (ENGAGEMENT CONTRACT clause 1). Record the evidence, or close it honestly with --defer \"<reason>\"." >&2
+  fi
   echo "operator: pending verdict(s): $pending — run $verdict_cmd <id> <criterion> <evidence> <PASS|FAIL>, or --defer \"<reason>\"" >&2
   exit 2
 fi

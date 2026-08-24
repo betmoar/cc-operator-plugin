@@ -258,6 +258,47 @@ Mutation-check a new workflow's cases the way `debate.js` was: retype each seat,
 delete each dead-agent guard, drop each refusal, and confirm the suite goes red
 — a guard nobody tried to break is a guard nobody knows works.
 
+### Adding a hook-level gate (the #85 auto-arm lesson)
+
+A gate that DECIDES must be testable at the point where its decision differs
+from the default outcome — not only at its effect. The auto-armer's no-git and
+empty-sid guards each stood the armer down, and "did not arm" is also what a
+clean tree produces: mutation testing found both guards deletable with every
+case green. Two of the three were then genuinely redundant (`command -v git`
+was unreachable behind `git rev-parse`; the empty-sid check inside the
+suppression scan was unreachable behind `autobar_already_armed`) and were
+collapsed into one guard each, with an `autobar_reason` string a case can
+assert. **A guard no test can reach is a guard nobody knows works** — either
+give it an observable output or delete it as redundant. Do not leave it.
+
+**Live state and archives are not the same signal.** The armer's suppression
+first counted a foreign `verdicts.d/<sid>.md` fragment as "another session is
+working here". Fragments are append-only and nothing wipes them, so one verdict
+by any other session — ever — disarmed the gate permanently, and worst in the
+mature projects it most protects. `pending/` is live; `verdicts.d/` is an
+archive. Before using a file's EXISTENCE as a presence signal, ask what removes
+it; if nothing does, it answers "happened once", not "happening now".
+
+The reflex fix is a timestamp, and it does not work here: **bash 3.2's `-nt`/
+`-ot` compare whole SECONDS** (measured — a fragment written 47ms after the
+epoch, .218 vs .171, read as "not newer"), so two events inside one second are
+indistinguishable. This repo's primitive for liveness is `kill -0`, and
+`ops-verdict.sh`'s lock says why in as many words: *"waiters ask the KERNEL, not
+the clock" (F03)*. That only works on something carrying a pid. When neither
+liveness nor a clock can answer, drop the signal and state the residual — a
+bounded false positive beats a silent permanent disarm.
+
+Two mechanical traps this cost time on, both worth knowing before the next one:
+
+- **Mutate the CODE line, not the first match.** A sweep replacing the first
+  occurrence of `':(exclude).operator'` edited the COMMENT above the code and
+  reported a survivor that did not exist. Anchor on the last occurrence, or on
+  a string that appears only in code.
+- **`case … esac` inside `"$( … )"` does not parse** — the first arm's `)`
+  closes the substitution. Bash reports a syntax error that the harness scores
+  as a FAILED CASE, not as a broken test. Assemble the verdict in a variable
+  first, then pass it to `check`. (Shipped twice in one sitting.)
+
 ### The tier coupling after the #76 lift (was: the F07 namespace coupling)
 
 Until 0.9.0 every workflow carried `KNOWN_TIERS`, a copy of the resolver's

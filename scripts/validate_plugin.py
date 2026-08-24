@@ -924,6 +924,116 @@ def check_guard_parity(root, problems):
                 f"helpers must agree; a comment-only marker does not satisfy)")
 
 
+
+def check_autobar(root, problems):
+    """The auto-arm rule (#85): the invariants that fail SILENTLY.
+
+    Each pin here exists because the regression it catches leaves every other
+    gate green and the armer merely stops working — or, worse, wedges a
+    session that can then never stop.
+    """
+    p = root / "scripts" / "lib" / "autobar.sh"
+    if not p.is_file():
+        problems.append(
+            "scripts/lib/autobar.sh is missing — the auto-arm rule is the only "
+            "thing making the evidence gate non-optional (#85); ops-stop-hook.sh "
+            "sources it and would fail to launch without it")
+        return
+    code = shell_code(p)
+
+    # (a) NUL-safe read. `$(git status --porcelain -z)` DELETES the NULs
+    # (measured, bash 3.2.57: three entries counted as 0) so the armer silently
+    # never fires. The `< <(…)` form is the fix and the thing that must not be
+    # "simplified" back into a command substitution or a pipe (a pipe puts the
+    # loop in a subshell and loses the count).
+    body = _function_body(code, "autobar_count_changed")
+    if body is None:
+        problems.append(
+            "scripts/lib/autobar.sh: cannot locate autobar_count_changed()'s "
+            "body — the NUL-safety pin has nothing to check. Reshaping it must "
+            "update this locator, not silently skip the pin")
+    else:
+        if "-z" not in body:
+            problems.append(
+                "scripts/lib/autobar.sh: autobar_count_changed does not pass "
+                "`-z` to git status — the default output QUOTES a path with a "
+                "space and prints a rename as `old -> new` on one line, so the "
+                "count is wrong in both directions")
+        if "< <(" not in body:
+            problems.append(
+                "scripts/lib/autobar.sh: autobar_count_changed does not read "
+                "through process substitution `< <(…)`. Command substitution "
+                "DELETES NUL bytes (measured, bash 3.2.57: a three-entry -z "
+                "porcelain counted 0, silently) and a pipe puts the loop in a "
+                "subshell that loses the count — either way the armer never fires")
+        if "rev-parse" not in body:
+            problems.append(
+                "scripts/lib/autobar.sh: autobar_count_changed has no separate "
+                "`git rev-parse` repo check — process substitution carries no "
+                "exit status, so without it `not a repo` and `clean repo` both "
+                "arrive as zero records and unmeasured reads as clean")
+
+    # (b) the infinite-block guard. Recording a verdict does not un-change the
+    # files, so an arm with no session marker re-fires at every Stop forever.
+    for fn in ("autobar_already_armed", "autobar_mark_armed"):
+        if f"{fn}()" not in code:
+            problems.append(
+                f"scripts/lib/autobar.sh: missing {fn}() — without the "
+                f"once-per-session marker the armer re-arms after every verdict "
+                f"(recording one does not un-change the files) and the session "
+                f"can NEVER stop, which is worse than stopping unaudited")
+    decide = _function_body(code, "autobar_decide")
+    if decide is None:
+        problems.append(
+            "scripts/lib/autobar.sh: cannot locate autobar_decide()'s body — "
+            "the already-armed and suppression pins have nothing to check")
+    else:
+        if "autobar_already_armed" not in decide:
+            problems.append(
+                "scripts/lib/autobar.sh: autobar_decide never calls "
+                "autobar_already_armed — the marker exists but nothing reads "
+                "it, so every Stop re-arms (the wedge in (b))")
+        # (c) the suppression rule. Porcelain measures the TREE, not the
+        # session: without this a shared worktree blocks the innocent session
+        # on someone else's diff, and a gate that blocks the honest gets
+        # disabled by the user.
+        if "autobar_foreign_activity" not in decide:
+            problems.append(
+                "scripts/lib/autobar.sh: autobar_decide never calls "
+                "autobar_foreign_activity — a working-tree delta cannot "
+                "attribute a change to a session, so in a shared worktree the "
+                "honest session is armed for work it never did (#85)")
+
+    # The lib must be SOURCED by the hook, and AFTER partition.sh, whose
+    # sentinel_owner_of_name it calls. A reversed order is a runtime failure in
+    # a hook nothing here launches.
+    hook = root / "scripts" / "ops-stop-hook.sh"
+    if hook.is_file():
+        hcode = shell_code(hook)
+        if "autobar.sh" not in hcode:
+            problems.append(
+                "scripts/ops-stop-hook.sh: does not source lib/autobar.sh — the "
+                "auto-arm rule exists but nothing runs it, so the evidence gate "
+                "is opt-in again (#85) with every other gate green")
+        else:
+            ai, pi = hcode.find("autobar.sh"), hcode.find("partition.sh")
+            if pi == -1 or ai < pi:
+                problems.append(
+                    "scripts/ops-stop-hook.sh: lib/autobar.sh is sourced before "
+                    "lib/partition.sh — autobar calls sentinel_owner_of_name "
+                    "from partition.sh, so the suppression rule dies at runtime "
+                    "in a hook no test here launches")
+
+    # The markers must be wiped at SessionStart: a stale one for a reused id
+    # disarms a future session permanently.
+    ss = root / "scripts" / "ops-sessionstart-hook.sh"
+    if ss.is_file() and ".autobar" not in shell_code(ss):
+        problems.append(
+            "scripts/ops-sessionstart-hook.sh: does not wipe .operator/.autobar/ "
+            "— a marker left by a session that no longer exists keeps a future "
+            "session reusing that id from ever arming (#85)")
+
+
 def check_claims(root, problems):
     r"""ops-claims.sh protected-set parity (F30 lesson + F-A2).
 
@@ -1737,6 +1847,7 @@ CHECKS = (
     check_scripts,
     check_reader_bounds,
     check_guard_parity,
+    check_autobar,
     check_claims,
     check_install_set_parity,
     check_gitignore_parity,

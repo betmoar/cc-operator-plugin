@@ -47,6 +47,23 @@ GOOD_PARTITION_LIB = (
     "# deviation gate: counts DEVIATION|ESCALATION|GATE-EXCEPTION (HANDOFF-MARK)\n"
     "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
     "[ ! -L \"$decisions\" ] || exit 0\n")
+# #85: the auto-arm rule. Every literal here is one check_autobar pins, and each pin
+# exists because its regression is silent — see scripts/lib/autobar.sh.
+GOOD_AUTOBAR_LIB = (
+    "#!/usr/bin/env bash\n"
+    "autobar_count_changed() {\n"
+    "  git -C \"$root\" rev-parse --git-dir >/dev/null 2>&1 || return 0\n"
+    "  while IFS= read -r -d '' rec; do n=$((n+1)); done "
+    "< <(git -C \"$root\" status --porcelain -z -- ':(exclude).operator' 2>/dev/null)\n"
+    "}\n"
+    "autobar_already_armed() { [ -f \"$opdir/.autobar/$sess\" ]; }\n"
+    "autobar_mark_armed() { : > \"$opdir/.autobar/$sess\"; }\n"
+    "autobar_foreign_activity() { autobar_foreign=0; }\n"
+    "autobar_decide() {\n"
+    "  autobar_already_armed \"$2\" \"$3\" && return 0\n"
+    "  autobar_count_changed \"$1\"\n"
+    "  autobar_foreign_activity \"$2\" \"$3\"\n"
+    "}\n")
 GOOD_STATUSLINE = (
     "#!/usr/bin/env bash\n"
     '. lib/partition.sh\n'
@@ -187,6 +204,7 @@ def make_good_tree(root):
     write(root / "scripts" / "ops-sessionstart-hook.sh",
           "#!/usr/bin/env bash\nset -eu\n" + _install_loop + JSON_GET +
           "rm -rf \"$cwd/.operator/.compress-spill\" \"$cwd/.operator/.compress-state\"\n"
+          "rm -rf \"$cwd/.operator/.autobar\"\n"
           "if ! grep -qF '# cc-operator gitignore v2 (allowlist)' \"$_gi\" 2>/dev/null; then\n"
           "  if [ -e \"$_gi.v1.bak\" ] && [ ! -f \"$_gi.v1.bak\" ]; then\n"
           "    _gi_backup_failed=1\n"
@@ -203,8 +221,9 @@ def make_good_tree(root):
     bounded = "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
     # every sentinel touchpoint carries the -L symlink rejection (F65/F66)
     nolink = "[ ! -L \"$1\" ] || exit 0\n"
+    # autobar.sh sourced AFTER partition.sh: it calls sentinel_owner_of_name.
     write(root / "scripts" / "ops-stop-hook.sh",
-          "#!/usr/bin/env bash\n. lib/partition.sh\n" + JSON_GET)
+          "#!/usr/bin/env bash\n. lib/partition.sh\n. lib/autobar.sh\n" + JSON_GET)
     write(root / "scripts" / "ops-task.sh",
           "#!/usr/bin/env bash\n" + guards + nolink)
     write(root / "scripts" / "ops-verdict.sh",
@@ -240,6 +259,7 @@ def make_good_tree(root):
           'if [ "${1:-}" = "--census" ]; then echo "files: 0"; exit 0; fi\n')
     (root / "scripts" / "lib").mkdir(exist_ok=True)
     write(root / "scripts" / "lib" / "partition.sh", GOOD_PARTITION_LIB)
+    write(root / "scripts" / "lib" / "autobar.sh", GOOD_AUTOBAR_LIB)
     write(root / "scripts" / "statusline.sh", GOOD_STATUSLINE)
     # Every shipped slash command: frontmatter plus plugin-root script paths
     # (a bare scripts/ path resolves only inside this repo).
@@ -382,6 +402,79 @@ class ValidatorTest(unittest.TestCase):
         p.write_text(p.read_text(encoding="utf-8").replace(
             "isinstance(v, bool)", "isinstance(v, wasbool)"), encoding="utf-8")
         self.assertFires("json_get() is missing the isinstance(v, bool)")
+
+    # --- #85: the auto-arm rule (check_autobar) ---
+    # Every mutation below is one a maintainer would plausibly make as a
+    # "simplification", and every one of them leaves the armer silently broken.
+    # The fixture was TAUGHT about autobar.sh when this shipped, so these cases
+    # exist to prove the checker still fires — a fixture edited only to go green
+    # would otherwise disable the check with the suite passing (F30's shape).
+    def _autobar(self):
+        return self.dir / "scripts" / "lib" / "autobar.sh"
+
+    def _mutate_autobar(self, old, new):
+        p = self._autobar()
+        text = p.read_text(encoding="utf-8")
+        self.assertIn(old, text)
+        p.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+    def test_autobar_command_substitution_fires(self):
+        # `$( )` DELETES NUL bytes (measured, bash 3.2.57: a three-entry -z
+        # porcelain counted 0), so the armer silently never fires.
+        self._mutate_autobar("< <(git -C", '<<< "$(git -C')
+        self.assertFires("process substitution")
+
+    def test_autobar_missing_z_flag_fires(self):
+        # Without -z a path with a space is QUOTED and a rename is one line.
+        self._mutate_autobar("--porcelain -z", "--porcelain")
+        self.assertFires("`-z`")
+
+    def test_autobar_missing_repo_check_fires(self):
+        # Process substitution carries no exit status: without this call
+        # "not a repo" and "clean repo" both arrive as zero records.
+        self._mutate_autobar("git -C \"$root\" rev-parse --git-dir >/dev/null 2>&1 || return 0", ":")
+        self.assertFires("rev-parse")
+
+    def test_autobar_missing_marker_fires(self):
+        # No once-per-session marker → re-arms after every verdict, forever.
+        self._mutate_autobar("autobar_mark_armed()", "autobar_mark_armedX()")
+        self.assertFires("autobar_mark_armed")
+
+    def test_autobar_decide_skips_already_armed_fires(self):
+        self._mutate_autobar('autobar_already_armed \"$2\" \"$3\" && return 0', ":")
+        self.assertFires("never calls autobar_already_armed")
+
+    def test_autobar_decide_skips_suppression_fires(self):
+        # Porcelain measures the tree, not the session: without the suppression
+        # a shared worktree blocks the innocent session on someone else's diff.
+        self._mutate_autobar('autobar_foreign_activity \"$2\" \"$3\"', ":")
+        self.assertFires("never calls autobar_foreign_activity")
+
+    def test_autobar_lib_missing_fires(self):
+        self._autobar().unlink()
+        self.assertFires("scripts/lib/autobar.sh is missing")
+
+    def test_autobar_hook_not_sourcing_fires(self):
+        p = self.dir / "scripts" / "ops-stop-hook.sh"
+        p.write_text(p.read_text(encoding="utf-8").replace(". lib/autobar.sh\n", ""),
+                     encoding="utf-8")
+        self.assertFires("does not source lib/autobar.sh")
+
+    def test_autobar_sourced_before_partition_fires(self):
+        # autobar calls sentinel_owner_of_name; reversed, the suppression rule
+        # dies at runtime in a hook no test here launches.
+        p = self.dir / "scripts" / "ops-stop-hook.sh"
+        p.write_text(p.read_text(encoding="utf-8").replace(
+            ". lib/partition.sh\n. lib/autobar.sh\n",
+            ". lib/autobar.sh\n. lib/partition.sh\n"), encoding="utf-8")
+        self.assertFires("sourced before")
+
+    def test_autobar_sessionstart_wipe_missing_fires(self):
+        # A stale marker for a reused id disarms a future session permanently.
+        p = self.dir / "scripts" / "ops-sessionstart-hook.sh"
+        p.write_text(p.read_text(encoding="utf-8").replace(
+            'rm -rf "$cwd/.operator/.autobar"\n', ""), encoding="utf-8")
+        self.assertFires("does not wipe .operator/.autobar/")
 
     # --- the U10 source-state stamp (check_source_stamp) ---
     # The last two mutations matter most: neither changes observable output.

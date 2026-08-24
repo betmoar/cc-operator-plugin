@@ -172,6 +172,14 @@ for _cdir in "$cwd/.operator/.compress-spill" "$cwd/.operator/.compress-state"; 
   [ -d "$_cdir" ] && rm -rf "$_cdir" 2>/dev/null
 done
 
+# Auto-arm markers (#85): one file per sid recording "this session was armed",
+# so the Stop hook arms ONCE instead of re-arming after every verdict. /clear
+# and /compact rotate or reuse the id, and a marker for a session that no
+# longer exists would keep a future session with the SAME id from ever arming.
+# Wiped on every fire for the same reason as the compressor ephemera above:
+# this hook is the only thing that knows a session boundary was crossed.
+[ -d "$cwd/.operator/.autobar" ] && rm -rf "$cwd/.operator/.autobar" 2>/dev/null
+
 # v1→v2 gitignore migration, every session (this is what carries a project
 # that never re-runs /cc-operator:start). The schemes contradict, so REPLACE,
 # keeping .gitignore.v1.bak; body pinned identical to ops-init's _gi_write
