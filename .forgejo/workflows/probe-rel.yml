@@ -1,0 +1,23 @@
+name: probe-rel
+on:
+  push:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: which release-relevant env vars exist?
+        run: |
+          echo "SERVER_URL   = ${GITHUB_SERVER_URL:-<unset>}"
+          echo "REPOSITORY   = ${GITHUB_REPOSITORY:-<unset>}"
+          echo "REF_NAME     = ${GITHUB_REF_NAME:-<unset>}"
+          echo "REF_TYPE     = ${GITHUB_REF_TYPE:-<unset>}"
+          echo "TOKEN set?   = ${GITHUB_TOKEN:+yes}${GITHUB_TOKEN:-NO}"
+          echo "jq present?  = $(command -v jq || echo NO)"
+          echo "curl present?= $(command -v curl || echo NO)"
+          echo "--- can the token read the API? ---"
+          if [ -n "${GITHUB_TOKEN:-}" ] && command -v curl >/dev/null; then
+            curl -sS -o /tmp/p.json -w 'HTTP %{http_code}\n' \
+              -H "Authorization: token ${GITHUB_TOKEN}" \
+              "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/releases" || true
+            head -c 200 /tmp/p.json; echo
+          fi
