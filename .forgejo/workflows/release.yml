@@ -104,11 +104,12 @@ jobs:
       #
       #   GITHUB_TOKEN       set (and masked in logs), HTTP 200 on /releases
       #   GITHUB_REPOSITORY  ci-admin/cc-operator-plugin
-      #   GITHUB_SERVER_URL  http://forgejo:3000  ← the INTERNAL container name,
-      #                      not forgejo.ci.lan:3000. It works from the job (same
-      #                      `ci` network) but the html_url it returns is not
-      #                      reachable from a laptop, so the URL is rewritten for
-      #                      the human reading this log.
+      #   GITHUB_SERVER_URL  http://forgejo:3000 — the short name, and it needs
+      #                      no rewriting: LAN DNS is authoritative for the bare
+      #                      hostname as well as the FQDN, so `forgejo` resolves
+      #                      to 192.168.178.140 and serves 200 from a laptop
+      #                      exactly as forgejo.ci.lan does (measured). The
+      #                      html_url the API returns is usable as-is.
       #   jq                 ABSENT from the base image. Installed by Toolchain
       #                      above — but the JSON body is built with python3
       #                      anyway, because a release step that dies on a
@@ -138,4 +139,4 @@ jobs:
             cat /tmp/rel.json
             exit 1
           fi
-          python3 -c 'import json; r=json.load(open("/tmp/rel.json")); u=(r.get("html_url") or "").replace("http://forgejo:3000","http://forgejo.ci.lan:3000"); print("published:", r.get("name"), " ", u)'
+          python3 -c 'import json; r=json.load(open("/tmp/rel.json")); print("published:", r.get("name"), " ", r.get("html_url"))'
