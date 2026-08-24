@@ -3550,19 +3550,46 @@ run_hook stop-session-a.json "$P"
 check "--defer closes an auto-armed task and the next Stop does not re-arm" \
   "$([ ! -f "$(autobar_sentinel "$P" SESS-A)" ] && echo 0 || echo 1)"
 
-# --- THE SUPPRESSION RULE: never block an innocent session ------------------
-# Porcelain measures the TREE, not the SESSION. Two sessions in one worktree see each other's
-# changes, so the honest one would be armed for work it never did — and could not tell. Attribution
-# is what a filesystem delta lacks, so the armer pays for it with COVERAGE: any sign of another
-# session and it stands down entirely.
+# --- NO SUPPRESSION, and these cases pin the inversion -----------------------
+# Two foreign-presence rules were tried and both are gone. Each made ONE stale artifact darken the
+# armer for the rest of the project's life: an append-only verdicts.d fragment first, then an
+# abandoned pending/ sentinel from a session that crashed, was killed, or was /clear'd mid-task
+# (nothing reaps either). Splitting "working" from "died" needs a liveness oracle the filesystem
+# does not carry — a sentinel holds no pid, a pid would be dead anyway (ops-task.sh exits at CLI
+# return while the owning session runs), a session is a harness token with no OS handle, and bash
+# 3.2's whole-second mtime cannot separate stale from concurrent.
+#
+# The trade, priced: arming wrongly costs ONE arm on the session's own sentinel, capped once per
+# session by the marker, announced on the BLOCKING channel, cleared by one command. Suppressing
+# wrongly cost the gate, permanently, on a channel that only ever printed exit-0 warnings.
 P="$(mkgitproj)"
 printf 'a\n' > "$P/one.txt"; printf 'b\n' > "$P/two.txt"
 ( cd "$P" && bash "$TASK" T-OTHER --owner SESS-B >/dev/null 2>&1 )
 run_hook stop-session-a.json "$P"
-check "a FOREIGN pending sentinel suppresses the arm entirely" \
-  "$([ -f "$(autobar_sentinel "$P" SESS-A)" ] && echo 1 || echo 0)"
-check "the suppressed session still stops clean — never blocked on another's diff" \
-  "$([ "$HRC" -eq 0 ] && echo 0 || echo 1)"
+check "a FOREIGN pending sentinel does NOT suppress — 'working OR died' is unknowable here" \
+  "$([ -f "$(autobar_sentinel "$P" SESS-A)" ] && echo 0 || echo 1)"
+check "the armed session blocks (exit 2) rather than stopping silently unarmed" \
+  "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+# The co-presence sentence is the price of dropping suppression: this block can land on a session
+# that changed nothing, and an unexplained accusation is what gets the hook deleted.
+_ab_copres=1
+case "$HERR" in *"cannot be attributed to a session"*) _ab_copres=0 ;; esac
+check "the arm message WARNS that the delta may be another session's" "$_ab_copres"
+# The abandoned-sentinel remedy must ride the same message, or it is hygiene nobody performs.
+_ab_remedy=1
+case "$HERR" in *"nothing reaps its sentinel"*) _ab_remedy=0 ;; esac
+check "the foreign 'not blocking' line carries the dead-sentinel remedy in-band" "$_ab_remedy"
+# THE CASE THE WHOLE INVERSION EXISTS FOR: an abandoned sentinel must not darken the gate forever.
+P="$(mkgitproj)"
+( cd "$P" && bash "$TASK" CRASHED --owner SESS-DEAD >/dev/null 2>&1 )
+printf 'a\n' > "$P/one.txt"; printf 'b\n' > "$P/two.txt"
+run_hook stop-session-a.json "$P"
+check "an ABANDONED foreign sentinel does not permanently disarm the armer (#85 follow-up)" \
+  "$([ -f "$(autobar_sentinel "$P" SESS-A)" ] && echo 0 || echo 1)"
+# And the remedy the message names must actually work in ONE command, with no --owner.
+( cd "$P" && bash "$VERDICT" CRASHED --defer "owner session is gone" >/dev/null 2>&1 )
+check "one --defer with NO --owner clears a foreign sentinel (not adopt-then-defer)" \
+  "$(sentinel_any "$P" CRASHED && echo 1 || echo 0)"
 
 # THE RESIDUAL, pinned so it is a decision and not a surprise. A foreign session that opened a
 # task, recorded its verdict and exited leaves NO sentinel — only a verdicts.d fragment, and its

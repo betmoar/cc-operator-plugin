@@ -87,60 +87,58 @@ autobar_count_changed() { # autobar_count_changed <project-root>
   autobar_measured=1
 }
 
-# Porcelain measures the TREE, not the SESSION. Two sessions in one worktree see
-# each other's changes, so the honest one would be armed for work it never did —
-# blocked on someone else's diff, with no way to tell. Attribution is exactly
-# what a filesystem delta does not have, so this pays for it with COVERAGE
-# instead of cleverness: a sign of another session working here and the armer
-# stands down. Never block an innocent session; lose the arm instead.
+# NO SUPPRESSION. Porcelain measures the TREE, not the SESSION, so in a shared
+# worktree this armer can arm a session for a delta another session produced.
+# That is real, and it is the LESSER failure. Two rules were tried and both are
+# gone; what follows is the record of why, because the reflex fix is to add a
+# third.
 #
-# ONE signal, and the first version had two. The second was a foreign
-# `verdicts.d/<sid>.md` fragment, on the reasoning that a session which opened,
-# verdicted and cleared still left its diff in our porcelain count. True, but
-# fragments are APPEND-ONLY and nothing wipes them (ops-verdict.sh appends with
-# `>>`; ops-sessionstart-hook.sh clears only .autobar/ and the compressor
-# ephemera). So one honest verdict recorded by any other session, EVER, stood
-# the armer down for the rest of the project's life — silently, and hardest in
-# the mature projects the gate most protects. Measured 2026-08-24: a foreign
-# session records one PASS and exits; the next session changes two files and
-# gets arm=0. (Found by a debate panel reviewing the commit that introduced it.)
+# The first stood down on a foreign `verdicts.d/<sid>.md` fragment. Fragments
+# are APPEND-ONLY and nothing wipes them, so one verdict recorded by any other
+# session, EVER, disarmed the gate for the rest of the project's life.
 #
-# The category error: `pending/` is LIVE state, `verdicts.d/` is an ARCHIVE.
-# Reading an archive as a presence signal is what made suppression permanent.
+# The second stood down on a foreign OPEN sentinel in pending/, on the reasoning
+# that `pending/` is live state where `verdicts.d/` is an archive. That reading
+# does not survive contact: an OPEN sentinel means "working OR died". A session
+# that crashes, is killed, or is /clear'd mid-task strands
+# `pending/<dead-sid>__<task>` permanently — SessionStart migrates legacy names
+# and wipes .autobar/ and the compressor ephemera, and reaps nothing owned — so
+# ONE abandoned sentinel darkened the armer for every future session. Same class
+# as the fragment bug, one layer down, and reachable in a single-operator
+# project because /clear with an open task is routine.
 #
-# An mtime clock was tried as the fix and REMOVED, because it cannot work here:
-# bash 3.2 compares whole SECONDS (measured — a fragment written 47ms after the
-# epoch, .218 vs .171, read as "not newer"), so stale and concurrent are
-# indistinguishable inside one second. The repo's own primitive for this is
-# liveness, not time — `ops-verdict.sh`'s lock asks `kill -0` and its comment
-# says why: "waiters ask the KERNEL, not the clock (F03)". Fragments carry no
-# pid, so liveness cannot be asked of them either.
+# WHY NO THIRD RULE. Splitting "working" from "died" needs a liveness oracle the
+# filesystem does not carry. A sentinel body holds `cwd:` and `opened_at:`
+# (ops-task.sh) and no pid — correctly, since a pid would not help: ops-task.sh
+# is a subprocess that exits when the CLI returns, so its `$$` is dead while the
+# owning session runs, and `kill -0` would read every sentinel, live ones
+# included, as abandoned. `kill -0` answers for the LOCK because a holder's
+# lifetime is bounded by the call that stamps it; a sentinel exists to OUTLIVE
+# its writer. A session is a harness token (`session_id`), not an OS handle, and
+# nothing maps one to a process. An mtime clock fails on the same measurement
+# the fragment fix recorded: bash 3.2 compares whole SECONDS, so stale and
+# concurrent are indistinguishable inside one second.
 #
-# So the fragment signal is GONE and the residual is stated rather than papered
-# over: a foreign session that opened a task, recorded its verdict and exited
-# leaves its diff in our porcelain with nothing to attribute it by, and we may
-# arm for it. That is a bounded false positive — one arm, clearable with one
-# --defer — against what it replaced, which was the gate silently never firing
-# again. An OPEN foreign sentinel is still live state and still suppresses.
-# Sets: autobar_foreign (1 = stand down).
-autobar_foreign_activity() { # autobar_foreign_activity <opdir> <this-session>
-  local opdir="$1" sess="$2" f name owner
-  autobar_foreign=0
-  shopt -s nullglob
-  for f in "$opdir/pending"/*; do
-    [ -f "$f" ] || continue
-    name="${f##*/}"
-    # sentinel_owner_of_name comes from partition.sh — the SAME parser the gate
-    # and the bar use. A second copy here would be a fourth site of the rule
-    # check_guard_parity exists to pin.
-    owner="$(sentinel_owner_of_name "$name")"
-    if [ -n "$owner" ] && [ "$owner" != "$sess" ]; then
-      autobar_foreign=1
-      break
-    fi
-  done
-  shopt -u nullglob
-}
+# THE TRADE, PRICED. Cost of arming wrongly: ONE spurious arm, on the session's
+# OWN sentinel, capped at one per session by the .autobar/<sid> marker, carried
+# on the blocking channel where the operator cannot miss it, and cleared by one
+# command. Cost of suppressing wrongly: the gate silently never fires again, on
+# a channel that only ever printed exit-0 warnings — the suppression reason was
+# computed and DISCARDED (its only reader sat inside the arm branch). A bounded,
+# self-announcing, self-clearing false positive beats a permanent silent disarm.
+# That is the same ruling the fragment residual already carries.
+#
+# WHAT IS NOT LOST. The concurrency guarantee lives in partition.sh's
+# scan_pending — mine blocks, unowned fails closed, foreign is reported and
+# never blocks — and in ops-verdict.sh's ownership_gate. Neither is touched.
+# Suppression only ever governed whether the armer ADDS an obligation; it never
+# decided who is blocked by whose task.
+#
+# TO REOPEN THIS: a liveness signal the kernel can answer for a SESSION, not for
+# the process that happened to write a file. Nothing in the harness offers one
+# today. A PostToolUse heartbeat is not it — a session idle at the prompt reads
+# dead past any threshold, so it degrades to this behaviour in the common case
+# while adding a hot-path writer and a tunable silence window.
 
 # ARM ONCE PER SESSION, and this is the invariant the whole feature turns on.
 # The armer runs at Stop, so the obvious shape — "delta >= 2 and no sentinel
@@ -208,11 +206,9 @@ autobar_decide() { # autobar_decide <project-root> <opdir> <this-session>
     autobar_reason="$autobar_paths changed path(s), below the $AUTOBAR_MIN_PATHS-path threshold"
     return 0
   fi
-  autobar_foreign_activity "$opdir" "$sess"
-  if [ "$autobar_foreign" = 1 ]; then
-    autobar_reason="another session is working in this tree — the delta cannot be attributed, standing down"
-    return 0
-  fi
   autobar_arm=1
-  autobar_reason="$autobar_paths changed path(s) with no foreign activity"
+  # No "with no foreign activity" any more — the armer does not look, so the
+  # reason must not imply it did (that phrasing outliving the check is exactly
+  # how a message starts describing a gate that no longer runs).
+  autobar_reason="$autobar_paths changed path(s)"
 }

@@ -58,11 +58,9 @@ GOOD_AUTOBAR_LIB = (
     "}\n"
     "autobar_already_armed() { [ -f \"$opdir/.autobar/$sess\" ]; }\n"
     "autobar_mark_armed() { : > \"$opdir/.autobar/$sess\"; }\n"
-    "autobar_foreign_activity() { autobar_foreign=0; }\n"
     "autobar_decide() {\n"
     "  autobar_already_armed \"$2\" \"$3\" && return 0\n"
     "  autobar_count_changed \"$1\"\n"
-    "  autobar_foreign_activity \"$2\" \"$3\"\n"
     "}\n")
 GOOD_STATUSLINE = (
     "#!/usr/bin/env bash\n"
@@ -444,11 +442,20 @@ class ValidatorTest(unittest.TestCase):
         self._mutate_autobar('autobar_already_armed \"$2\" \"$3\" && return 0', ":")
         self.assertFires("never calls autobar_already_armed")
 
-    def test_autobar_decide_skips_suppression_fires(self):
-        # Porcelain measures the tree, not the session: without the suppression
-        # a shared worktree blocks the innocent session on someone else's diff.
-        self._mutate_autobar('autobar_foreign_activity \"$2\" \"$3\"', ":")
-        self.assertFires("never calls autobar_foreign_activity")
+    def test_autobar_suppression_readded_fires(self):
+        # INVERTED from the pin that shipped with #85. Foreign-presence
+        # suppression was removed because an OPEN foreign sentinel means
+        # "working OR died" and nothing here can tell those apart, so one
+        # abandoned sentinel (crash, kill, /clear mid-task) disarmed the gate
+        # permanently. Re-adding it is the reflex fix when a shared worktree
+        # arms an innocent session, and it trades a bounded self-clearing false
+        # positive for a permanent silent disarm.
+        p = self._autobar()
+        p.write_text(p.read_text(encoding="utf-8").replace(
+            "autobar_decide() {\n",
+            "autobar_decide() {\n  autobar_foreign_activity \"$2\" \"$3\"\n", 1),
+            encoding="utf-8")
+        self.assertFires("calls autobar_foreign_activity")
 
     def test_autobar_lib_missing_fires(self):
         self._autobar().unlink()

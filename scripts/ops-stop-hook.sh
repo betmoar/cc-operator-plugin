@@ -153,21 +153,9 @@ scan_pending "$opdir" "$session"
 pending="$MINE_IDS"
 foreign="$FOREIGN_DESC"
 
-# Foreign tasks stay VISIBLE — that visibility is what made the collision
-# diagnosable in the field — but they never block.
-if [ -n "$foreign" ]; then
-  echo "operator: $FOREIGN_N pending verdict(s) owned by another session ($foreign) — not blocking." >&2
-fi
-
-# --- deviation gate: unpresented decisions block Stop (stage 2) ---------------
-# Either gate can block. A session_id of "" makes every DEVIATION unowned →
-# every one blocks (pre-gate lines are real unpresented decisions), mirroring
-# the unowned-sentinel default. The absent-ledger polarity is deliberately
-# OPPOSITE the sentinel default and both are right: an unowned sentinel fails
-# CLOSED (a real open task), an absent DECISIONS.md has no task to enforce
-# (fail OPEN — scaffold problem, not evidence of an unpresented decision).
-scan_deviations "$opdir/DECISIONS.md" "$session"
-
+# Defined BEFORE its first use: bash resolves a function at call time, so a
+# call above the definition expands to the empty string and the message ships
+# a blank command — no error, just useless guidance.
 verdict_cmd_for() { # → the verdict CLI path that resolves from the project cwd
   # ops-init installs it at .operator/bin/; fall back to this hook's own
   # sibling (the plugin copy) for projects scaffolded by an older ops-init.
@@ -183,6 +171,27 @@ verdict_cmd_for() { # → the verdict CLI path that resolves from the project cw
   [ -n "$script_dir" ] && printf '%s' "$script_dir/ops-verdict.sh"
 }
 
+# Foreign tasks stay VISIBLE — that visibility is what made the collision
+# diagnosable in the field — but they never block.
+if [ -n "$foreign" ]; then
+  # The remedy goes IN-BAND. A sentinel whose owner crashed, was killed, or was
+  # /clear'd mid-task sits here forever and nothing reaps it; before #85's
+  # suppression was dropped it also darkened the auto-armer permanently. It no
+  # longer does, so this is hygiene rather than a defect — but hygiene nobody
+  # is told about is hygiene nobody performs.
+  echo "operator: $FOREIGN_N pending verdict(s) owned by another session ($foreign) — not blocking. If an owner session is gone (crashed, killed, /clear'd mid-task) nothing reaps its sentinel: clear it with $(verdict_cmd_for) <id> --defer \"<reason>\" — no --owner needed, it warns and proceeds." >&2
+fi
+
+# --- deviation gate: unpresented decisions block Stop (stage 2) ---------------
+# Either gate can block. A session_id of "" makes every DEVIATION unowned →
+# every one blocks (pre-gate lines are real unpresented decisions), mirroring
+# the unowned-sentinel default. The absent-ledger polarity is deliberately
+# OPPOSITE the sentinel default and both are right: an unowned sentinel fails
+# CLOSED (a real open task), an absent DECISIONS.md has no task to enforce
+# (fail OPEN — scaffold problem, not evidence of an unpresented decision).
+scan_deviations "$opdir/DECISIONS.md" "$session"
+
+
 if [ -n "$pending" ]; then
   verdict_cmd="$(verdict_cmd_for)"
   # The auto-armed sentinel needs its own sentence, or the operator reads
@@ -192,6 +201,13 @@ if [ -n "$pending" ]; then
   # shellcheck disable=SC2154  # assigned by the sourced lib/autobar.sh
   if [ "$autobar_arm" = 1 ]; then
     echo "operator: auto-armed '$AUTOBAR_TASK' — $autobar_reason, and the charter requires a BAR block before multi-file work (ENGAGEMENT CONTRACT clause 1). Record the evidence, or close it honestly with --defer \"<reason>\"." >&2
+    # CO-PRESENCE. The armer measures the TREE and cannot attribute the delta to
+    # a session, so in a shared worktree this block can land on someone who
+    # changed nothing. Say so in the same breath: an unexplained accusation
+    # against an honest operator is what gets the hook deleted, and the whole
+    # bet of dropping suppression is that this sentence is cheaper than a
+    # permanent silent disarm.
+    echo "operator: the delta is measured from the working TREE and cannot be attributed to a session — if another session is working in this worktree, these paths may not be yours; close with --defer \"another session's changes\" and it costs you one command." >&2
   fi
   echo "operator: pending verdict(s): $pending — run $verdict_cmd <id> <criterion> <evidence> <PASS|FAIL>, or --defer \"<reason>\"" >&2
   exit 2

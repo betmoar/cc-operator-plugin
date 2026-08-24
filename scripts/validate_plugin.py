@@ -993,16 +993,31 @@ def check_autobar(root, problems):
                 "scripts/lib/autobar.sh: autobar_decide never calls "
                 "autobar_already_armed — the marker exists but nothing reads "
                 "it, so every Stop re-arms (the wedge in (b))")
-        # (c) the suppression rule. Porcelain measures the TREE, not the
-        # session: without this a shared worktree blocks the innocent session
-        # on someone else's diff, and a gate that blocks the honest gets
-        # disabled by the user.
-        if "autobar_foreign_activity" not in decide:
+        # (c) the suppression rule is GONE and must stay gone — this pin is
+        # INVERTED from the one that shipped with #85, and the inversion is the
+        # point. Two suppression signals were tried; both made ONE stale
+        # artifact (an append-only fragment, then an abandoned sentinel from a
+        # crashed or /clear'd session) darken the armer for the rest of the
+        # project's life. Splitting "working" from "died" needs a liveness
+        # oracle the filesystem does not carry: a sentinel holds no pid, a pid
+        # would be dead anyway (ops-task.sh exits at CLI return while the owning
+        # session runs), a session is a harness token with no OS handle, and
+        # bash 3.2's whole-second mtime cannot separate stale from concurrent.
+        # Re-adding suppression is the reflex fix when a shared worktree arms an
+        # innocent session — and it trades a bounded, self-clearing false
+        # positive for a permanent silent disarm. Do not.
+        if "autobar_foreign_activity" in decide:
             problems.append(
-                "scripts/lib/autobar.sh: autobar_decide never calls "
-                "autobar_foreign_activity — a working-tree delta cannot "
-                "attribute a change to a session, so in a shared worktree the "
-                "honest session is armed for work it never did (#85)")
+                "scripts/lib/autobar.sh: autobar_decide calls "
+                "autobar_foreign_activity — foreign-presence suppression was "
+                "REMOVED (#85 follow-up) and must not come back. An OPEN "
+                "foreign sentinel means 'working OR died' and nothing here can "
+                "tell those apart, so one abandoned sentinel disarmed the gate "
+                "permanently. The shared-worktree false positive it was meant "
+                "to prevent is bounded (one arm per session, cleared by one "
+                "--defer) and announced on the blocking channel; the disarm was "
+                "neither. Reopen only with a liveness signal the kernel can "
+                "answer for a SESSION")
 
     # The lib must be SOURCED by the hook, and AFTER partition.sh, whose
     # sentinel_owner_of_name it calls. A reversed order is a runtime failure in

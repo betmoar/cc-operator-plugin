@@ -306,6 +306,22 @@ is bounded by the process that stamped it. If it is not, the kernel has no
 opinion to offer and the answer has to come from the operator instead —
 `ops-adopt.sh` exists for exactly that re-claim.
 
+**A remedy on a non-blocking channel is not a remedy.** The suppression rule's
+successor question — a crashed session strands a sentinel that disarms the gate
+forever — looked answerable with wording: `ops-adopt.sh` exists, the Stop hook
+already names foreign sentinels, so tell the operator what to run. Two things
+killed that. First, the reason for standing down was computed and DISCARDED:
+`autobar_reason` is set on the stand-down path and its only reader sits inside
+the arm branch, so the gate went dark without ever printing why. Second, the
+foreign-sentinel line is exit 0. Advice on a channel that does not block is
+advice the run does not depend on, and the gate's FUNCTION depended on someone
+acting on it. That is the documented-limitation move the whole change existed to
+reject, wearing better clothes.
+
+The rule that came out of it: **if a mechanism's correctness depends on an
+operator noticing a message, the message must ride the channel that stops the
+run.** Otherwise remove the mechanism and price the failure it was preventing.
+
 Two mechanical traps this cost time on, both worth knowing before the next one:
 
 - **Mutate the CODE line, not the first match.** A sweep replacing the first
