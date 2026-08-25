@@ -47,6 +47,7 @@ when violated:
 Run from anywhere: python3 scripts/validate_plugin.py [repo-root]
 Exit 0 = all contracts hold; exit 1 = failures listed on stderr.
 """
+import ast
 import json
 import pathlib
 import re
@@ -147,6 +148,63 @@ def _function_body(code, fn):
                     break
             return "\n".join(body)
     return None
+
+
+def _embedded_python(body):
+    """The `python3 -c '…'` program inside a shell body, parsed, or None.
+
+    None means "could not read it" — every caller falls back to a substring
+    test rather than treating unparseable as absent. A locator that fails
+    toward "the guard is missing" turns a quoting change into a build failure;
+    one that fails toward "present" is the vacuity this file is fighting. The
+    fallback is the lesser of the two, and it is stated here so the choice is
+    visible rather than inferred from behaviour.
+    """
+    m = re.search(r"python3\s+-c\s+'(.*?)'\s", body, re.DOTALL)
+    if not m:
+        return None
+    try:
+        return ast.parse(m.group(1))
+    except SyntaxError:
+        return None
+
+
+def _is_bool_isinstance(node):
+    """True for an `isinstance(v, bool)` call node, however it is spelled."""
+    return (isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name) and node.func.id == "isinstance"
+            and len(node.args) == 2
+            and isinstance(node.args[0], ast.Name) and node.args[0].id == "v"
+            and isinstance(node.args[1], ast.Name) and node.args[1].id == "bool")
+
+
+def _under_dead_guard(target, tree):
+    """True when `target` sits in a branch a constant makes unreachable.
+
+    Covers `if False and X:` / `if X and False:` / `if 0:` and the ternary
+    equivalents — the dead-code family, not a general reachability analysis.
+    Anything subtler than a literal constant is not a maintainer's reflex fix,
+    and pretending to catch it would be the same overclaim as the substring
+    test this replaces.
+    """
+    def const_false(n):
+        return isinstance(n, ast.Constant) and not n.value
+
+    for node in ast.walk(tree):
+        tests = []
+        if isinstance(node, (ast.If, ast.IfExp)):
+            tests = [node.test]
+        elif isinstance(node, ast.While):
+            tests = [node.test]
+        if not tests:
+            continue
+        for t in tests:
+            dead = const_false(t) or (
+                isinstance(t, ast.BoolOp) and isinstance(t.op, ast.And)
+                and any(const_false(x) for x in t.values))
+            if dead and any(n is target for n in ast.walk(node)):
+                return True
+    return False
 
 
 def _report_if_redefined(body, rel, problems):
@@ -527,15 +585,37 @@ def check_source_stamp(root, problems):
         return
     lines = [ln for ln in section[1].splitlines()
              if not ln.lstrip().startswith("#")]
-    stamp_at = next(
-        (i for i, ln in enumerate(lines) if "source_stamp" in ln), None)
+    # EVERY stamp site, not the first. The pin read `next(...)` and was
+    # satisfied by the earliest call, so APPENDING a second
+    # `SOURCE_STAMP="$(source_stamp)"` after lock_acquire left the first one
+    # in place, kept stamp_at < lock_at true, and put an unbounded git status
+    # inside the critical section — the exact hazard this message names, at a
+    # site the pin could not see. Measured: validator green, 193 python green,
+    # 683 bash green (#86 pin audit, SN5).
+    #
+    # Appending is also the PLAUSIBLE mutation: a maintainer who wants a
+    # fresher stamp adds a line rather than moving one. Same first-vs-last
+    # shape as #81, which this file already fixed for variable assignments
+    # (_single_assignment) and function definitions (_function_body) and had
+    # never fixed for ORDER.
+    stamps = [i for i, ln in enumerate(lines) if "source_stamp" in ln]
     lock_at = next(
         (i for i, ln in enumerate(lines) if "lock_acquire" in ln), None)
-    if stamp_at is None or lock_at is None or stamp_at > lock_at:
+    if not stamps or lock_at is None:
         problems.append(
             "scripts/ops-verdict.sh: the source stamp must be resolved "
             "BEFORE lock_acquire on the verdict path — git work inside the "
-            "critical section is the PLAYBOOK's step-3 hazard")
+            "critical section is the PLAYBOOK's step-3 hazard "
+            f"(stamp sites found: {len(stamps)}, lock_acquire found: "
+            f"{lock_at is not None})")
+    elif max(stamps) > lock_at:
+        late = len([i for i in stamps if i > lock_at])
+        problems.append(
+            f"scripts/ops-verdict.sh: {late} of {len(stamps)} source_stamp "
+            "call(s) sit AFTER lock_acquire on the verdict path. git status "
+            "is unbounded work and every waiter blocks on it — the PLAYBOOK's "
+            "step-3 hazard. One call, before the lock; adding a second later "
+            "one does not make the first correct")
 
 
 # DECISIONS-header kinds: GATED (block Stop), RECORD (never block), and the
@@ -990,13 +1070,43 @@ def check_guard_parity(root, problems):
                 if ln.strip() == "}" and len(bl) > 1:
                     break
             body = "\n".join(ln for ln in bl if not ln.lstrip().startswith("#"))
-        if "isinstance(v, bool)" not in body:
+        # The WHOLE condition line, not the substring. `"isinstance(v, bool)"
+        # in body` was satisfied by `if False and isinstance(v, bool):` — the
+        # literal present, the coercion unreachable. Measured: validator green,
+        # 193 python green, 683 bash green (#86 pin audit, GN8). This checker's
+        # own comment already claimed "a comment-only marker does not satisfy",
+        # and the comment-stripping above delivers exactly that — it defended
+        # the COMMENT form of the mention while the DEAD-CODE form walked past,
+        # inside the guard written against mentions.
+        # Parse it, do not pattern-match it. A blacklist of dead spellings is
+        # the same defect one level up: `if False and …` blocked, `if 1 == 2
+        # and …` through, and a pin that suggests coverage it lacks is exactly
+        # what this fix is for. Two live forms are legitimate — the hooks write
+        # `if isinstance(v, bool):`, a compact json_get writes the ternary — so
+        # the test is whether the coercion can REACH a print, not how it is
+        # spelled. ast.literal_eval-style constant folding is not needed: a
+        # literally-false guard is a Constant node, and anything cleverer than
+        # that is not a maintainer's reflex fix.
+        live = False
+        prog = _embedded_python(body)
+        if prog is None:
+            live = "isinstance(v, bool)" in body   # unparseable: fall back
+        else:
+            for node in ast.walk(prog):
+                if not _is_bool_isinstance(node):
+                    continue
+                if not _under_dead_guard(node, prog):
+                    live = True
+                    break
+        if not live:
             problems.append(
-                f"scripts/{name}: json_get() is missing the "
-                f"isinstance(v, bool) coercion in its body — a JSON boolean "
-                f"renders Python True/False and a downstream '= \"true\"' test "
-                f"silently never matches (F14; the three hooks' json_get "
-                f"helpers must agree; a comment-only marker does not satisfy)")
+                f"scripts/{name}: json_get() has no REACHABLE "
+                f"isinstance(v, bool) coercion — a JSON boolean renders "
+                f"Python True/False and a downstream '= \"true\"' test silently "
+                f"never matches (F14; the three hooks' json_get helpers must "
+                f"agree). The body is PARSED, not grepped: a comment, or a "
+                f"branch a constant makes unreachable (`if False and …`), "
+                f"leaves the literal present and the coercion dead")
 
 
 

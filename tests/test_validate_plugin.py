@@ -399,7 +399,7 @@ class ValidatorTest(unittest.TestCase):
         p = self.dir / "scripts" / "ops-sessionstart-hook.sh"
         p.write_text(p.read_text(encoding="utf-8").replace(
             "isinstance(v, bool)", "isinstance(v, wasbool)"), encoding="utf-8")
-        self.assertFires("json_get() is missing the isinstance(v, bool)")
+        self.assertFires("json_get() has no REACHABLE isinstance(v, bool)")
 
     # --- #85: the auto-arm rule (check_autobar) ---
     # Every mutation below is one a maintainer would plausibly make as a
@@ -597,7 +597,30 @@ class ValidatorTest(unittest.TestCase):
         self._mutate_verdict(
             "SOURCE_STAMP=\"$(source_stamp)\"\nlock_acquire",
             "lock_acquire\nSOURCE_STAMP=\"$(source_stamp)\"")
-        self.assertFires("BEFORE lock_acquire")
+        self.assertFires("sit AFTER lock_acquire")
+
+    def test_source_stamp_second_call_APPENDED_inside_the_lock(self):
+        # The pin read `next(...)` — the FIRST source_stamp line — so keeping
+        # the correct call and APPENDING a second one after lock_acquire left
+        # stamp_at < lock_at true and the check satisfied, while an unbounded
+        # git status ran in the critical section: the exact hazard the message
+        # names, at a site the pin could not see. Measured green through the
+        # validator, 193 python and 683 bash (#86 pin audit, SN5).
+        #
+        # Appending is the PLAUSIBLE mutation — a maintainer wanting a fresher
+        # stamp adds a line rather than moving one — and it is #81's
+        # first-vs-last shape a third time: fixed for assignments
+        # (_single_assignment), for definitions (_function_body), never for
+        # ORDER until now.
+        self._mutate_verdict(
+            "lock_acquire\nROW=",
+            "lock_acquire\nSOURCE_STAMP=\"$(source_stamp)\"\nROW=")
+        probs = self.problems()
+        self.assertTrue(any("sit AFTER lock_acquire" in p for p in probs), probs)
+        # The count must be reported: "1 of 2" is what tells a maintainer a
+        # correct call still exists and a second one was added, which is a
+        # different repair from "the only call is in the wrong place".
+        self.assertTrue(any("1 of 2 source_stamp" in p for p in probs), probs)
 
     def test_source_stamp_verdict_path_marker_lost(self):
         # Not-found must be a reported problem, never a silent skip.
