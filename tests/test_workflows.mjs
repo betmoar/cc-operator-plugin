@@ -336,6 +336,68 @@ ok(nsCalls.filter((c) => c.label.startsWith("feas:") || c.label.startsWith("test
 ok(plan.northStar === NORTH_STAR,
   "plan northStar: returned to the operator, so the spec-coverage check has a referent");
 
+// ── plan: the feasibility lens is given the earlier tasks' produces (#73) ────
+console.log("-- Case: plan.js feasibility lens receives earlier produces (#73)");
+// The lens is ASKED "is the dependency it consumes actually produced by an
+// earlier task?" and used to be dispatched with one task and no siblings.
+// 14/21 seats returned needs-info citing dependency-missing, 5 of them against
+// a plan that was correct. The question was load-bearing, the input absent.
+//
+// Asserted on the PROMPT, not on a count: a packet that names the section and
+// carries no names satisfies any occurrence test (the MENTION-not-ACTION shape
+// this repo has shipped three times).
+const dpTask = (id, produces, consumes) => ({
+  id, title: "t", files: ["f.py"], produces, consumes, specExcerpt: "x",
+  testCycle: "run x → pass", steps: ["s"],
+});
+const depPlan = {
+  decompose: { fileStructure: "f: r", tasks: [
+    dpTask("one", ["make_alpha"], []),
+    dpTask("two", ["make_beta"], ["make_alpha"]),
+    dpTask("three", [], ["make_beta"]),
+  ] },
+  ...Object.fromEntries(["one", "two", "three"].flatMap((id) => [
+    [`feas:${id}`, { feasible: "yes", testable: "yes", issues: [] }],
+    [`test:${id}`, { feasible: "yes", testable: "yes", issues: [] }],
+  ])),
+};
+const { rt: depRt } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, depPlan);
+const feasOf = (id) => depRt.calls.find((c) => c.label === `feas:${id}`).prompt;
+// Scope every assertion to the SECTION, never to the whole prompt: the packet
+// also carries `JSON.stringify(task)`, whose own `produces` would satisfy a
+// bare `.includes()` and turn "the first task leaks nothing" into a test that
+// can only fail. Slicing to the section is what makes the negatives real.
+const earlierSection = (id) => {
+  const p = feasOf(id);
+  const start = p.indexOf("EARLIER TASKS' produces");
+  ok(start !== -1, `plan #73: feas:${id} carries the earlier-produces section at all`);
+  return p.slice(start, p.indexOf("\nTASK:\n", start));
+};
+ok(earlierSection("two").includes("make_alpha"),
+  "plan #73: task two's feasibility packet names what task one produces");
+ok(earlierSection("three").includes("make_alpha") && earlierSection("three").includes("make_beta"),
+  "plan #73: the packet accumulates — task three sees BOTH earlier tasks");
+// The direction is the whole point: a later task's produces cannot satisfy an
+// earlier consumer, and shipping them invites the lens to approve a backwards
+// dependency as satisfied.
+ok(!earlierSection("one").includes("make_alpha") && !earlierSection("one").includes("make_beta"),
+  "plan #73: the FIRST task's section lists no later produces — earlier means earlier");
+ok(!earlierSection("two").includes("make_beta"),
+  "plan #73: a task is not handed its OWN produces as an earlier task's");
+// "no earlier tasks" is an ANSWER, not missing information: an absent section
+// reads as withheld and returns needs-info again, which is the defect.
+ok(/none.*first task/i.test(earlierSection("one")),
+  "plan #73: the first task is told explicitly that there are no earlier tasks");
+// The ids travel with the names — a lens that cannot say WHICH task produces a
+// symbol cannot report an out-of-order consume in its issue detail.
+ok(earlierSection("three").includes("one:") && earlierSection("three").includes("two:"),
+  "plan #73: producers are named by task id, so an issue can cite the producer");
+// The testability lens answers a question about one task's testCycle and has no
+// dependency question — sending it the graph is tokens for nothing.
+ok(depRt.calls.filter((c) => c.label.startsWith("test:"))
+     .every((c) => !c.prompt.includes("EARLIER TASKS' produces")),
+  "plan #73: the TESTABILITY lens does not receive it — it asks no dependency question");
+
 // ── plan: the graph — edges, layers, Amdahl (#66) ────────────────────────────
 console.log("-- Case: plan.js graph — real/unverified edges, concurrency, p + ceiling");
 // Arithmetic over produces/consumes, no agent call; every part gets a

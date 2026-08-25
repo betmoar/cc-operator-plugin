@@ -2905,6 +2905,46 @@ check "#34 a current bin/ is NOT rewritten (the probe is staleness, not a timer)
   "$([ "$STALE_MTIME_BEFORE" = "$(ls -l "$STALEP/.operator/bin/ops-task.sh" 2>/dev/null)" ] && echo 0 || echo 1)"
 rm -rf "$STALEP"
 
+echo "-- Case: SessionStart does NOT stamp .version after skipping a manifest-named CLI (#82)"
+# `:146` skipped a manifest-named CLI with no shipped file WITHOUT clearing _upgrade_ok, so the stamp
+# below recorded a completed upgrade over a partial bin/. _bin_stale carried the same skip, so it never
+# reported staleness for an absent file → version == stamp forever, never retried. Measured 2026-08-24:
+# 2 of 3 copied, stamped current, no warning. This drives the REAL hook from a fake plugin root whose
+# manifest names a CLI that does not exist — the only way to reach both halves.
+GHOSTPLUG="$(newproj)"
+mkdir -p "$GHOSTPLUG/scripts" "$GHOSTPLUG/.claude-plugin"
+cp "$SCRIPTS"/*.sh "$GHOSTPLUG/scripts/" 2>/dev/null
+mkdir -p "$GHOSTPLUG/scripts/lib" && cp "$SCRIPTS"/lib/*.sh "$GHOSTPLUG/scripts/lib/" 2>/dev/null
+cp "$REPO/.claude-plugin/plugin.json" "$GHOSTPLUG/.claude-plugin/"
+printf '_OPS_TOOLS="ops-verdict.sh ops-task.sh ops-ghost.sh"\n' > "$GHOSTPLUG/scripts/ops-install-set.sh"
+GHOSTP="$(newproj)"
+( cd "$GHOSTP" && git init -q . 2>/dev/null && "$BASH_ABS" "$SCRIPTS/ops-init.sh" >/dev/null 2>&1 )
+rm -f "$GHOSTP/.operator/.version"          # force the version clause; the ghost decides the outcome
+GHOSTERR="$(sed "s|<tmp>|$GHOSTP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$GHOSTPLUG/scripts/ops-sessionstart-hook.sh" 2>&1 >/dev/null)"
+check "#82 an incomplete install set leaves .version UNSTAMPED (so the next session retries)" \
+  "$([ -f "$GHOSTP/.operator/.version" ] && echo 1 || echo 0)"
+check "#82 the skip is REPORTED, not silent — silence is what let it ship" \
+  "$(printf '%s' "$GHOSTERR" | grep -q 'ops-ghost.sh' && echo 0 || echo 1)"
+# The shipped CLIs still land: the hook is fail-OPEN, and a partial bin/ beats no bin/ at all.
+check "#82 the CLIs that DO exist are still installed (fail-open, not fail-shut)" \
+  "$([ -f "$GHOSTP/.operator/bin/ops-verdict.sh" ] && [ -f "$GHOSTP/.operator/bin/ops-task.sh" ] && echo 0 || echo 1)"
+# _bin_stale is the ONLY retry trigger once the version stops moving. If it skips an absent file the way
+# the copy loop used to, a stamped-but-partial project never retries — so the probe must call it stale.
+printf '%s\n' "$(grep -m1 '"version"' "$REPO/.claude-plugin/plugin.json" | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')" > "$GHOSTP/.operator/.version"
+GHOSTERR2="$(sed "s|<tmp>|$GHOSTP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$GHOSTPLUG/scripts/ops-sessionstart-hook.sh" 2>&1 >/dev/null)"
+check "#82 with the version stamped current, _bin_stale still fires on the absent CLI (the retry lives)" \
+  "$(printf '%s' "$GHOSTERR2" | grep -q 'ops-ghost.sh' && echo 0 || echo 1)"
+# CONTROL: the real, complete manifest must still stamp — a fix that never stamps is the same bug inverted.
+CTLP="$(newproj)"
+( cd "$CTLP" && git init -q . 2>/dev/null && "$BASH_ABS" "$SCRIPTS/ops-init.sh" >/dev/null 2>&1 )
+rm -f "$CTLP/.operator/.version"
+CTLERR="$(sed "s|<tmp>|$CTLP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>&1 >/dev/null)"
+check "#82 CONTROL: a COMPLETE install set does stamp .version" \
+  "$([ -s "$CTLP/.operator/.version" ] && echo 0 || echo 1)"
+check "#82 CONTROL: and warns about nothing" \
+  "$(printf '%s' "$CTLERR" | grep -q 'install set but not shipped' && echo 1 || echo 0)"
+rm -rf "$GHOSTPLUG" "$GHOSTP" "$CTLP"
+
 echo "-- Case: SessionStart replaces bin/ CLIs ATOMICALLY — the inode changes (F5)"
 # The upgrade used to write each CLI in place with cp (O_TRUNC, same inode), so a concurrently-executing bash
 # could be truncated mid-run (F5). Fix writes a temp file then mv's it over the target, swapping the inode.

@@ -336,6 +336,39 @@ const VET = {
   },
 };
 
+// #73: the feasibility lens is asked "is the dependency it consumes actually
+// produced by an earlier task?" and was dispatched with ONE task and no
+// siblings. It cannot answer, correctly says so, and 14/21 seats returned
+// needs-info citing dependency-missing — 5 of them against a control column
+// whose plan is correct. The question was load-bearing and the input was
+// absent; the fix is the input, not a softer question.
+//
+// What it gets is the EARLIER tasks' produces, names only: that is exactly the
+// scope of the question (a later task's produces cannot satisfy an earlier
+// consumer) and it is the cheapest faithful answer — id + names, not whole
+// task JSON, so the packet stays bounded at the judgment tier.
+//
+// Keyed by task OBJECT IDENTITY, not by a positional argument: stage-1's
+// callback signature is the runtime's to define, and a plan whose tasks repeat
+// an id would break an indexOf lookup. Built once, before the pipeline.
+const earlierProduces = new Map();
+{
+  const acc = [];
+  for (const t of tasks) {
+    earlierProduces.set(
+      t,
+      acc.length
+        ? acc.map((e) => `  ${e.id}: ${e.produces.join(", ")}`).join("\n")
+        : "",
+    );
+    const produces = Array.isArray(t?.produces) ? t.produces.filter((p) => typeof p === "string" && p) : [];
+    // A task producing nothing still occupies a position, but listing it as
+    // `id: ` teaches the lens that the id exists and produces nothing — which
+    // is true and is what stops it inventing a producer.
+    acc.push({ id: String(t?.id ?? "?"), produces });
+  }
+}
+
 // feasibility is judgment (load-bearing claims vs code); testability is
 // mechanical (is there an observable criterion). Splitting them keeps the
 // cheap tier honest and lets the two run concurrently per task.
@@ -357,6 +390,14 @@ const vetted = await pipeline(
             `risks (issue kind "risk"): shared state, load-bearing files, breaking-change exposure.\n\n` +
             (globalConstraints ? `GLOBAL CONSTRAINTS:\n${globalConstraints}\n\n` : "") +
             `SPEC EXCERPT (what this task implements):\n${(task.specExcerpt ?? "").slice(0, 2000)}\n\n` +
+            // #73: without this the dependency question above is unanswerable
+            // and the honest answer is needs-info. The empty case says so
+            // explicitly — "no earlier tasks" is an ANSWER (nothing can be
+            // consumed from earlier), while an absent section reads as
+            // withheld information and returns needs-info again.
+            `EARLIER TASKS' produces (the ONLY names this task may consume from earlier tasks; ` +
+            `anything else it consumes must already exist in the codebase — check, do not assume ` +
+            `it is missing):\n${earlierProduces.get(task) || "  (none — this is the first task; its consumes must all be pre-existing project symbols)"}\n\n` +
             `TASK:\n${JSON.stringify(task)}\n\n` +
             `Cite path:line for each issue. You are read-only.`,
           { agentType: "cc-operator:op-reviewer", model: JUDGMENT, label: `feas:${task.id}`, phase: "Vet", schema: VET },
