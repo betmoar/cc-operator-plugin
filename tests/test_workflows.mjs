@@ -1014,6 +1014,54 @@ ok(isoRes.isolation?.observedCommit === null && /adversarial\.evidence/.test(iso
 ok(isoRt.calls.filter((c) => c.label.startsWith("lens:")).every((c) => c.isolation === undefined),
   "review/#23: the panel lenses stay un-isolated — only the adversarial seat moves");
 
+// 2b. #74: the worktree is created at the DEFAULT BRANCH — the runtime option
+//     takes no commit. Two dispatches requesting different shas both printed
+//     the same nine-commits-earlier HEAD. So by default the seat must be told
+//     a mismatch is EXPECTED, or it returns REFUTED on the harness.
+const isoPrompt = isoAdvCall(isoRt).prompt;
+ok(/will NOT be/.test(isoPrompt) && isoPrompt.includes("default branch"),
+  "review/#74: by default the seat is told the worktree arrives at the default branch, not at the sha");
+ok(/do not return\s+REFUTED for it/i.test(isoPrompt),
+  "review/#74: and told NOT to refute on that mismatch — it is the harness, not the artifact");
+ok(!isoPrompt.includes("git checkout --detach"),
+  "review/#74: no checkout without the opt-in — the verifier does not mutate its tree by default");
+ok(isoRes.isolation?.atRequestedCommit === false,
+  "review/#74: atRequestedCommit is FALSE — mode+requestedCommit alone rendered both runs identically");
+ok(/atRequestedCommit is FALSE/.test(isoRes.isolation.bound),
+  "review/#74: the bound states it in words, not only in a boolean a caller may not read");
+
+// 2c. The opt-in: real commit identity, and the cost is named.
+const { result: ckRes, rt: ckRt } = await run(WF("review.js"),
+  { target: "docs/x.md", isolate: SHA, isolateCheckout: true }, { ...everyLens, ...liveAdvReturn });
+const ckPrompt = isoAdvCall(ckRt).prompt;
+ok(ckPrompt.includes(`git checkout --detach ${SHA}`),
+  "review/#74: isolateCheckout=true tells the seat to detach onto the named commit");
+ok(/checkout fails/.test(ckPrompt) && /REFUTED/.test(ckPrompt),
+  "review/#74: a failed checkout is REFUTED — an unreachable commit is not a verified one");
+ok(!/will NOT be/.test(ckPrompt),
+  "review/#74: the two branches are EXCLUSIVE — the expect-a-mismatch text must not survive the checkout");
+ok(ckRes.isolation?.atRequestedCommit === true,
+  "review/#74: the result says the run WAS at the requested commit");
+ok(/does not auto-remove/.test(ckRes.isolation.bound),
+  "review/#74: the bound names the cost (a changed worktree is left on disk), so it is priced not hidden");
+// The porcelain substitution stays refused in BOTH branches: a fresh worktree
+// is clean by construction either way (#21's vacuous-control class).
+ok(/cannot fail here and proves nothing/.test(ckPrompt) && /cannot fail here and proves nothing/.test(isoPrompt),
+  "review/#74: both branches still refuse the porcelain substitution");
+ok(!ckPrompt.includes("F-A1 tree check") && !isoPrompt.includes("F-A1 tree check"),
+  "review/#74: F-A1 stays REPLACED under isolation in both branches");
+
+// 2d. isolateCheckout alone names no commit to check out — refuse, never
+//     silently run un-isolated under a flag that says "checkout".
+await throws(() => run(WF("review.js"), { target: "docs/x.md", isolateCheckout: true }, everyLens),
+  "review/#74: isolateCheckout without isolate is refused, not silently ignored", "requires args.isolate");
+await throws(() => run(WF("review.js"), { target: "docs/x.md", isolate: SHA, isolateCheckout: "yes" }, everyLens),
+  "review/#74: a non-boolean isolateCheckout is refused", "must be true or omitted");
+const { rt: ckOffRt } = await run(WF("review.js"),
+  { target: "docs/x.md", isolate: SHA, isolateCheckout: false }, { ...everyLens, ...liveAdvReturn });
+ok(!isoAdvCall(ckOffRt).prompt.includes("git checkout --detach"),
+  "review/#74: isolateCheckout:false is an explicit opt-out, not a validation error");
+
 // 3. Guards: `true` is the silent-wrong case — an isolated run with no named
 //    commit verifies whatever HEAD happens to be.
 await throws(() => run(WF("review.js"), { target: "docs/x.md", isolate: true }, everyLens),

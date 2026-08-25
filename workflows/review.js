@@ -3,7 +3,7 @@ export const meta = {
   description:
     "Operator review panel: parallel narrow lenses, two at cheap tiers and three at judgment tier, then an adversarial verifier at judgment tier. A REFUTED verdict is a hard stop and cannot be outvoted.",
   whenToUse:
-    "After an implementation dispatch returns DONE on work that will be merged, published, or depended on by a later task. Pass the artifact path, or an array of paths, as args; pass args.doneMeans to give the spec and testability lenses the task text they ask about. For release-bound work, commit first and pass args.isolate=<sha> to run the adversarial seat in a worktree of that commit instead of the builder's tree.",
+    "After an implementation dispatch returns DONE on work that will be merged, published, or depended on by a later task. Pass the artifact path, or an array of paths, as args; pass args.doneMeans to give the spec and testability lenses the task text they ask about. For release-bound work, commit first and pass args.isolate=<sha> to run the adversarial seat in a FRESH worktree instead of the builder's tree — that buys a clean environment (no ignored build output, no stale caches, no uncommitted helpers), and the sha is what the seat reports HEAD against. It does NOT arrive at that commit: the runtime creates the worktree at the default branch (#74, measured). Add args.isolateCheckout=true to have the seat detach onto the sha first, which buys real commit identity and leaves the worktree on disk.",
   phases: [
     { title: "Panel", detail: "narrow lenses in parallel, mixed tiers" },
     { title: "Adversarial", detail: "re-run DONE MEANS, judgment tier" },
@@ -188,9 +188,63 @@ const doneMeans = (() => {
 // class, arrived at by adding a control rather than by dropping one. Under
 // isolation the tree check is therefore REPLACED by the HEAD-identity check,
 // which is the question that still has an answer in that tree.
+// #74, MEASURED 2026-08-18: the runtime's `isolation: "worktree"` option takes
+// no commit, so the worktree is created at the DEFAULT BRANCH. Two independent
+// dispatches requested 34a9f13 and 50c8024; both seats printed the same
+// nine-commits-earlier HEAD. The sha reached exactly two places — the prompt
+// text and the returned field — and neither is a checkout. So the F-A2 check
+// was sound and the capability behind it was never wired: no isolated
+// verification has ever verified the commit it named.
+//
+// Two things changed here, and the split is the design:
+//
+// 1. THE CLAIM IS NOW HONEST BY DEFAULT. `args.isolate` still buys the clean
+//    ENVIRONMENT (that part always worked — a stale __pycache__ is absent in a
+//    fresh worktree, which is what #23 measured). It does not buy commit
+//    identity. The prompt says so, and `isolation.atRequestedCommit` says so
+//    in the result, so a HEAD mismatch reads as the ENVIRONMENT defect it is
+//    rather than as an artifact defect. A control described as more than it is
+//    is worse than none — that was #23's own rule, applied to #23.
+// 2. `args.isolateCheckout: true` OPTS IN to the real thing. The seat detaches
+//    onto the named commit inside its own throwaway worktree first, then runs
+//    F-A2. That buys genuine commit identity and costs one worktree left on
+//    disk: the runtime auto-removes a worktree it finds UNCHANGED, and a
+//    checkout changes it. Default off, so no existing caller's behaviour moves
+//    and nobody pays that cost without asking for it.
+//
+// Why the seat and not this file: workflow scripts have no filesystem (review.js
+// :14, measured), so the checkout cannot happen here. And why not always: a
+// verifier mutating the tree it verifies is the objection a seat raised
+// unprompted and was right about — "re-checkout is a fix, and independence is
+// the point". Under `isolateCheckout` the mutation is the FIRST thing it does,
+// to a tree nothing else has touched, and it is announced. That is a different
+// act from repairing an artifact mid-verification, but only just, which is why
+// it is opt-in rather than default.
+const isolateCheckout = (() => {
+  const raw = typeof A === "object" && !Array.isArray(A) ? A?.isolateCheckout : undefined;
+  if (raw == null || raw === false) return false;
+  if (raw !== true) {
+    throw new Error(
+      `args.isolateCheckout must be true or omitted; got ${Array.isArray(raw) ? "array" : typeof raw}`,
+    );
+  }
+  return true;
+})();
+
 const isolate = (() => {
   const raw = typeof A === "object" && !Array.isArray(A) ? A?.isolate : undefined;
-  if (raw == null || raw === false) return "";
+  if (raw == null || raw === false) {
+    // Refuse rather than ignore: a caller passing only isolateCheckout has
+    // named no commit to check out, and silently running an un-isolated review
+    // under a flag that says "checkout" is the silent-wrong shape this whole
+    // block exists to prevent.
+    if (isolateCheckout) {
+      throw new Error(
+        "args.isolateCheckout requires args.isolate=<sha> — there is no commit to check out (#74)",
+      );
+    }
+    return "";
+  }
   // A bare `true` is refused rather than accommodated: isolation without a named
   // commit is precisely the silent-wrong case above — the seat would verify HEAD
   // whatever HEAD happens to be, and report CONFIRMED about a tree nobody chose.
@@ -374,11 +428,29 @@ const adversarial = await agent(
         `that is the point. Bound, stated so you do not overclaim: this is NOT full isolation — ` +
         `same filesystem, same $HOME, same package and toolchain caches, same PATH. It defeats ` +
         `in-tree artifacts, not a poisoned global cache.\n\n` +
-        `F-A2 commit-identity check, and do this FIRST: run \`git rev-parse HEAD\` here and confirm ` +
-        `it is ${isolate}. A worktree checks out HEAD, so if it is any other commit you are ` +
-        `verifying a tree nobody chose — REFUTED, quoting both shas. Do NOT substitute ` +
-        `\`git status --porcelain\` for this: a fresh worktree is clean by construction, so that ` +
-        `command cannot fail here and proves nothing.`
+        (isolateCheckout
+          ? // Opt-in checkout (#74): the worktree arrives at the default
+            // branch, so the seat must move it before anything else runs.
+            `F-A2 commit-identity check, and do this FIRST, before reading or running anything else:\n` +
+            `  git checkout --detach ${isolate}\n` +
+            `  git rev-parse HEAD\n` +
+            `Your worktree is created at the repository's DEFAULT BRANCH — it does NOT arrive at ` +
+            `${isolate}, so the checkout is required, not a formality. If the checkout fails, or if ` +
+            `rev-parse then prints anything other than ${isolate}, STOP and return REFUTED quoting ` +
+            `the command and its actual output: you cannot verify an artifact at a commit you could ` +
+            `not reach. Do NOT substitute \`git status --porcelain\` for this: a fresh worktree is ` +
+            `clean by construction, so that command cannot fail here and proves nothing.`
+          : // Default (#74): the environment is fresh, the commit is NOT
+            // honoured, and saying otherwise is the overclaim.
+            `F-A2 commit-identity check, and do this FIRST: run \`git rev-parse HEAD\` here and report ` +
+            `what it prints. KNOWN AND EXPECTED: it will NOT be ${isolate}. The runtime creates this ` +
+            `worktree at the repository's default branch; it cannot be pointed at a commit. So a ` +
+            `mismatch here is a property of the harness, NOT a defect in the artifact — do not return ` +
+            `REFUTED for it. Report both shas in your evidence so the operator can see which tree ` +
+            `produced this verdict, and judge the artifact on what you actually ran. If you need the ` +
+            `verdict to be about ${isolate} specifically, the operator must re-dispatch with ` +
+            `args.isolateCheckout=true. Do NOT substitute \`git status --porcelain\` for any of this: ` +
+            `a fresh worktree is clean by construction, so that command cannot fail here and proves nothing.`)
       : `F-A1 tree check: also confirm the working tree contains no changes beyond the ` +
         `reviewed artifact set (run \`git status --porcelain\`). A worker (or a read-only ` +
         `seat with Bash) touching files outside the artifact under review is an unpresented ` +
@@ -438,9 +510,23 @@ return {
   // a sha the run may never have been at. That is the overclaim this field was
   // added to prevent, reintroduced by naming (Copilot, PR #72). The observed
   // HEAD is in `adversarial.evidence`, where the seat put it; read it there.
+  //
+  // `atRequestedCommit` (#74) is the field that stops the overclaim at its
+  // source. `mode: "worktree"` + `requestedCommit: <sha>` rendered a run at the
+  // default branch and a run at that commit identically, and for the plugin's
+  // whole life it was always the former. A boolean the caller can read is what
+  // separates "clean environment" from "clean environment AT this commit".
   isolation: isolate
-    ? { mode: "worktree", requestedCommit: isolate, observedCommit: null, bound: "same filesystem, $HOME, caches and PATH — defeats in-tree artifacts, not a poisoned global cache. requestedCommit is what was ASKED for; the HEAD the seat actually observed is in adversarial.evidence (F-A2), and a mismatch there is why a REFUTED can carry a requestedCommit it never ran at" }
-    : { mode: "builder-tree", requestedCommit: null, observedCommit: null, bound: "the verdict describes the artifact AS OBSERVED FROM THE BUILDER'S ENVIRONMENT; pass args.isolate=<sha> for a worktree run (#23)" },
+    ? {
+        mode: "worktree",
+        requestedCommit: isolate,
+        atRequestedCommit: isolateCheckout,
+        observedCommit: null,
+        bound: isolateCheckout
+          ? "same filesystem, $HOME, caches and PATH — defeats in-tree artifacts, not a poisoned global cache. The seat detached onto requestedCommit ITSELF before verifying (args.isolateCheckout), so a HEAD mismatch in adversarial.evidence is a real REFUTED. Cost: the checkout leaves the worktree changed, so the runtime does not auto-remove it (#74)"
+          : "same filesystem, $HOME, caches and PATH — defeats in-tree artifacts, not a poisoned global cache. atRequestedCommit is FALSE: the runtime creates the worktree at the DEFAULT BRANCH and cannot be pointed at a commit (#74, measured), so this verdict describes the artifact in a clean environment but NOT at requestedCommit. The HEAD the seat observed is in adversarial.evidence; a mismatch there is the harness, not the artifact. Pass args.isolateCheckout=true for commit identity",
+      }
+    : { mode: "builder-tree", requestedCommit: null, atRequestedCommit: false, observedCommit: null, bound: "the verdict describes the artifact AS OBSERVED FROM THE BUILDER'S ENVIRONMENT; pass args.isolate=<sha> for a worktree run (#23)" },
   findings: scored.map((f) => ({ ...f, bucket: bucket(f) })),
   dropped: returned.flatMap((p) => p.findings).length - scored.length,
   // Non-empty means the panel ran at reduced coverage: those lenses returned
