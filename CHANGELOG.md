@@ -9,6 +9,49 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+### Fixed
+
+- **#73 — the feasibility lens now receives the input its own question needs.**
+  `plan.js` asks each vet seat "is the dependency it consumes actually produced
+  by an earlier task?" and dispatched it with one task and no siblings. 14 of 21
+  seats returned `needs-info` citing `dependency-missing`, five of them against a
+  control column whose plan is correct. Each packet now carries the earlier
+  tasks' `produces` as `id: names`, strictly earlier, with the empty case saying
+  "none — this is the first task" in words: an absent section reads as withheld
+  information and returns `needs-info` again.
+- **#82 — SessionStart no longer stamps a partial upgrade as complete.** A
+  manifest-named CLI with no shipped file was skipped without clearing
+  `_upgrade_ok`, so `.version` recorded a finished upgrade over a partial
+  `bin/`; `_bin_stale` carried the same skip, so the only retry trigger never
+  fired. Measured: 2 of 3 copied, stamped current, no warning, never retried.
+  Both halves now treat an absent source as a failed upgrade. Still fail-open —
+  the shipped CLIs land and the skip is announced.
+- **#74 — `args.isolate` never reached the commit it named.** The runtime's
+  `isolation: "worktree"` takes no commit, so the worktree is created at the
+  default branch; two dispatches requesting different shas both landed nine
+  commits earlier. The default is now honest (clean environment, NOT commit
+  identity, and the seat is told a HEAD mismatch is expected rather than
+  refutable), the result carries `atRequestedCommit`, and
+  `args.isolateCheckout: true` opts into a real `git checkout --detach` at the
+  cost of a worktree left on disk.
+
+### Changed
+
+- **The guard auditor's second run: four vacuous validator pins and one blind
+  spot, all closed.** 84 mutations across 25 checks. `check_reader_bounds`
+  counted occurrences and never read N (a 256MB "bound" passed), never asked
+  where the text was (a string literal satisfied it), and exempted
+  `read -r -d $'\n'` as if it were the stdin slurp. `check_lock_parity`
+  compared two copies and pinned no content, so inflating the holder read in
+  BOTH left them in parity — F30 inside the check whose docstring teaches F30.
+  `check_hook` accepted `true # ` in front of the command (the evidence gate off
+  in three characters) and read only entry [0] of the hooks array.
+  `check_compressor` missed `ELIDABLE.add("Read")` after the literal and an
+  emptied wipe loop whose directory names survived in a comment.
+  `check_release_gates_cover_validate` had never looked at `.forgejo/`, the job
+  that publishes on this LAN, and accepted a commented-out or `if: false` step.
+  `check_permission_guards` missed `test -w` and all of `scripts/lib/`.
+
 ## [0.11.0] - 2026-08-24
 
 The release where the evidence gate stops being optional, and where the thing
