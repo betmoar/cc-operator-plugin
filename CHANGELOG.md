@@ -9,6 +9,11 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-08-25
+
+Three open issues, and the guard auditor's second run — four validator pins
+that reported green against the exact defect they were written to catch.
+
 ### Fixed
 
 - **#73 — the feasibility lens now receives the input its own question needs.**
