@@ -364,18 +364,34 @@ const earlierProduces = new Map();
 {
   const acc = [];
   for (const t of tasks) {
-    const rendered = acc.length
-      ? acc.map((e) => `  ${e.id}: ${e.produces.join(", ")}`).join("\n")
-      : "";
-    earlierProduces.set(
-      t,
-      rendered.length <= EARLIER_MAX_CHARS
-        ? rendered
-        : rendered.slice(0, EARLIER_MAX_CHARS) +
-          `\n  [TRUNCATED at ${EARLIER_MAX_CHARS} chars — ${acc.length} earlier tasks did not fit. ` +
-          `A name you consume may be produced by one of the tasks NOT listed above: report ` +
-          `dependency-missing only if you can also show the name exists nowhere in the codebase.]`,
-    );
+    // Truncate on a LINE boundary and count what was actually dropped. The
+    // first version cut mid-line and reported `acc.length` — the total number
+    // of earlier tasks, not the number omitted (Copilot, PR #87). Both errors
+    // point the same way: a half-rendered producer line reads as a real name
+    // that is subtly wrong, and "120 tasks did not fit" under a list of 119 of
+    // them is a number the lens can only be misled by. This section exists to
+    // stop the lens inventing missing producers; a wrong count invents them
+    // back.
+    const lines = acc.map((e) => `  ${e.id}: ${e.produces.join(", ")}`);
+    const rendered = lines.join("\n");
+    let section = rendered;
+    if (rendered.length > EARLIER_MAX_CHARS) {
+      const kept = [];
+      let used = 0;
+      for (const line of lines) {
+        const cost = used ? line.length + 1 : line.length;  // +1 for the join
+        if (used + cost > EARLIER_MAX_CHARS) break;
+        kept.push(line);
+        used += cost;
+      }
+      const dropped = lines.length - kept.length;
+      section = kept.join("\n") +
+        `\n  [TRUNCATED — ${dropped} of ${lines.length} earlier tasks did not fit in ` +
+        `${EARLIER_MAX_CHARS} chars and are NOT listed above. A name you consume may be ` +
+        `produced by one of them: report dependency-missing only if you can also show the ` +
+        `name exists nowhere in the codebase.]`;
+    }
+    earlierProduces.set(t, section);
     const produces = Array.isArray(t?.produces) ? t.produces.filter((p) => typeof p === "string" && p) : [];
     // A task producing nothing still occupies a position, but listing it as
     // `id: ` teaches the lens that the id exists and produces nothing — which

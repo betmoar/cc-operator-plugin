@@ -475,10 +475,25 @@ const lastSection = (() => {
 })();
 ok(lastSection.length < 5000,
   `plan #73: the earlier-produces section is capped — got ${lastSection.length} chars for task ${BIG_N}`);
-ok(/TRUNCATED at \d+ chars/.test(lastSection),
+ok(/TRUNCATED/.test(lastSection),
   "plan #73: and it says so IN the packet — a silent cut teaches the lens a real producer does not exist");
 ok(/report\s+dependency-missing only if/.test(lastSection),
   "plan #73: the truncation notice tells the lens what NOT to conclude from an absent name");
+// The COUNT must be what was dropped, not the total: "120 of 120 did not fit"
+// under a list of 119 of them is a number the lens can only be misled by
+// (Copilot, PR #87). And the cut is on a LINE boundary — a half-rendered
+// producer reads as a real name that is subtly wrong.
+const dropClaim = lastSection.match(/TRUNCATED — (\d+) of (\d+) earlier tasks/);
+ok(dropClaim != null, "plan #73: the notice states dropped-of-total, not a bare total");
+if (dropClaim) {
+  const [, dropped, total] = dropClaim.map(Number);
+  const listed = lastSection.split("\n").filter((l) => /^ {2}t\d+:/.test(l)).length;
+  ok(total === BIG_N - 1, `plan #73: the total counts EARLIER tasks (${total} vs ${BIG_N - 1})`);
+  ok(dropped > 0 && dropped + listed === total,
+    `plan #73: dropped + listed === total (${dropped} + ${listed} = ${dropped + listed}, want ${total})`);
+}
+ok(lastSection.split("\n").filter((l) => l.startsWith("  t")).every((l) => /:/.test(l)),
+  "plan #73: the cut lands on a LINE boundary — no half-rendered producer line");
 const smallSection = (() => {
   const p = bigRt.calls.find((c) => c.label === "feas:t1").prompt;
   const s = p.indexOf("EARLIER TASKS' produces");
@@ -1151,6 +1166,29 @@ ok(silentRes.isolation?.atRequestedCommit === null,
   "review/#74: a seat that reports NO head leaves atRequestedCommit null — absence of evidence, not a false true");
 ok(/OUTCOME UNKNOWN/.test(silentRes.isolation.bound),
   "review/#74: and the bound says the identity claim is unmade, rather than implying it holds");
+// The parse used to accept 7-40 hex ANYWHERE in the evidence (Copilot,
+// PR #87). A seat writing the sha in prose then produced a 7-char
+// "observation" that failed the full-sha comparison — reported as
+// atRequestedCommit:FALSE, a false mismatch on a correct checkout. Same class
+// as the false REFUTED fixed above: null is honest, false is a claim.
+const advRaw = (evidence) => ({ adversarial: { verdict: "CONFIRMED", evidence } });
+for (const [label, evidence] of [
+  ["a 7-char prefix on its own line", `OBSERVED_HEAD: ${SHA.slice(0, 7)}`],
+  ["the full sha embedded MID-LINE in prose", `ran it, OBSERVED_HEAD: ${SHA} was the tree`],
+  ["a prefix mid-line", `note OBSERVED_HEAD: ${SHA.slice(0, 7)} here`],
+  ["trailing junk on the line", `OBSERVED_HEAD: ${SHA} (probably)`],
+]) {
+  const { result: r } = await run(WF("review.js"),
+    { target: "docs/x.md", isolate: SHA, isolateCheckout: true }, { ...everyLens, ...advRaw(evidence) });
+  ok(r.isolation?.observedCommit === null && r.isolation.atRequestedCommit === null,
+    `review/#74: ${label} is NOT an observation — null, never a false mismatch`);
+}
+// CONTROL: leading whitespace is formatting, not ambiguity, and must still parse.
+const { result: indentRes } = await run(WF("review.js"),
+  { target: "docs/x.md", isolate: SHA, isolateCheckout: true }, { ...everyLens, ...advRaw(`   OBSERVED_HEAD: ${SHA}   \nrest`) });
+ok(indentRes.isolation?.observedCommit === SHA,
+  "review/#74 control: an indented well-formed line still parses — the anchor is not a formatting trap");
+
 const WRONG = "ffffffffffffffffffffffffffffffffffffffff";
 const { result: wrongRes } = await run(WF("review.js"),
   { target: "docs/x.md", isolate: SHA, isolateCheckout: true }, { ...everyLens, ...advSaw(WRONG) });

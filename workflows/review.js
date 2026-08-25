@@ -526,7 +526,19 @@ const verified = verdict === "CONFIRMED" || verdict === "REFUTED";
 //            failure `observedCommit`'s own note warned about, PR #72)
 const observedCommit = (() => {
   const ev = typeof adversarial?.evidence === "string" ? adversarial.evidence : "";
-  const m = ev.match(/OBSERVED_HEAD:\s*([0-9a-fA-F]{7,40})\b/);
+  // ANCHORED to its own line, and to a FULL 40-char sha, because that is what
+  // the prompt asks for and what `git rev-parse HEAD` prints. The first version
+  // accepted 7-40 hex anywhere in the evidence (Copilot, PR #87), so a seat
+  // writing "…note OBSERVED_HEAD: 692888e was the tree…" in prose produced a
+  // 7-char "observation" that then failed the full-sha comparison — reported as
+  // atRequestedCommit:false, a FALSE MISMATCH on a correct checkout. Same class
+  // as the false REFUTED this branch already fixed: a partial read that looks
+  // like a measurement is worse than no measurement, because null is honest and
+  // false is a claim.
+  //
+  // A malformed line therefore yields null — "the seat did not report a head" —
+  // which is exactly the state the three-way field exists to express.
+  const m = ev.match(/^[^\S\n]*OBSERVED_HEAD:[^\S\n]*([0-9a-fA-F]{40})[^\S\n]*$/m);
   return m ? m[1].toLowerCase() : null;
 })();
 const atRequestedCommit = (() => {

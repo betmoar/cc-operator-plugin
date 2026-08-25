@@ -83,6 +83,20 @@ that reported green against the exact defect they were written to catch.
   one field over. It is now derived from the seat's `OBSERVED_HEAD:` line, with
   three distinct states (`true` / `false` / `null` for nothing observed), and
   `observedCommit` records what came back.
+- **The `OBSERVED_HEAD` parse accepted a partial read as a measurement.** It
+  matched 7–40 hex ANYWHERE in the evidence, so a seat writing the sha in prose
+  produced a 7-char "observation" that then failed the full-sha comparison —
+  reported as `atRequestedCommit: false`, a FALSE MISMATCH on a correct
+  checkout. Same class as the false REFUTED above: `null` is honest, `false` is
+  a claim. Now anchored to its own line and a full 40-char sha; anything else is
+  "nothing observed".
+- **The `#73` truncation notice counted the wrong thing and cut mid-line.** It
+  reported `acc.length` — every earlier task, not the number omitted — so a list
+  of 65 producers carried "119 of 119 did not fit", and the cut could leave half
+  a producer name that reads as a real one. Both point the same way: the section
+  exists to stop the lens inventing missing producers, and a wrong count invents
+  them back. Now line-boundary truncation with a `dropped of total` count that
+  the tests assert sums.
 - **The `#73` dependency section is capped at 4000 chars and truncates
   visibly.** It renders every earlier task into every later packet — O(T²) in
   prompt bytes, with the comment claiming "bounded" and nothing enforcing it. A
