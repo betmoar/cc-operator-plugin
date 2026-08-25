@@ -351,15 +351,30 @@ const VET = {
 // Keyed by task OBJECT IDENTITY, not by a positional argument: stage-1's
 // callback signature is the runtime's to define, and a plan whose tasks repeat
 // an id would break an indexOf lookup. Built once, before the pipeline.
+// Bounded, and the bound is the point: this renders every earlier task into
+// every later task's packet, which is O(T^2) in prompt bytes. A 60-task plan
+// would spend more of the judgment-tier context on the dependency section than
+// on the task — the comment above claimed "bounded" and nothing enforced it
+// (Copilot, PR #87). The cap is generous enough that no honest plan meets it
+// (measured corpus: 21 tasks, longest section ~700 chars) and it TRUNCATES
+// VISIBLY: a silently-cut list would teach the lens that a real producer does
+// not exist, which is the defect this whole section exists to remove.
+const EARLIER_MAX_CHARS = 4000;
 const earlierProduces = new Map();
 {
   const acc = [];
   for (const t of tasks) {
+    const rendered = acc.length
+      ? acc.map((e) => `  ${e.id}: ${e.produces.join(", ")}`).join("\n")
+      : "";
     earlierProduces.set(
       t,
-      acc.length
-        ? acc.map((e) => `  ${e.id}: ${e.produces.join(", ")}`).join("\n")
-        : "",
+      rendered.length <= EARLIER_MAX_CHARS
+        ? rendered
+        : rendered.slice(0, EARLIER_MAX_CHARS) +
+          `\n  [TRUNCATED at ${EARLIER_MAX_CHARS} chars — ${acc.length} earlier tasks did not fit. ` +
+          `A name you consume may be produced by one of the tasks NOT listed above: report ` +
+          `dependency-missing only if you can also show the name exists nowhere in the codebase.]`,
     );
     const produces = Array.isArray(t?.produces) ? t.produces.filter((p) => typeof p === "string" && p) : [];
     // A task producing nothing still occupies a position, but listing it as

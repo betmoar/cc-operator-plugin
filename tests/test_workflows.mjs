@@ -398,6 +398,95 @@ ok(depRt.calls.filter((c) => c.label.startsWith("test:"))
      .every((c) => !c.prompt.includes("EARLIER TASKS' produces")),
   "plan #73: the TESTABILITY lens does not receive it — it asks no dependency question");
 
+// The identity-keying claim was UNTESTED: every fixture id was unique, so a
+// regression keying by id or position passed every assertion above (Copilot,
+// PR #87). A decomposition repeating an id is schema-legal — the model is
+// asked for stable short ids, not for uniqueness — and under an id lookup the
+// SECOND "dup" would be handed the FIRST one's slice, i.e. too little context,
+// which is #73's own defect wearing a new hat.
+const dupPlan = {
+  decompose: { fileStructure: "f: r", tasks: [
+    dpTask("dup", ["make_alpha"], []),
+    dpTask("mid", ["make_beta"], ["make_alpha"]),
+    dpTask("dup", ["make_gamma"], ["make_beta"]),
+  ] },
+  ...Object.fromEntries(["dup", "mid"].flatMap((id) => [
+    [`feas:${id}`, { feasible: "yes", testable: "yes", issues: [] }],
+    [`test:${id}`, { feasible: "yes", testable: "yes", issues: [] }],
+  ])),
+};
+const { rt: dupRt } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, dupPlan);
+// Two calls share the label `feas:dup`; ORDER is what tells them apart, which
+// is exactly the distinction an id-keyed map destroys.
+const dupCalls = dupRt.calls.filter((c) => c.label === "feas:dup");
+ok(dupCalls.length === 2, "plan #73: a repeated id still yields one lens per TASK, not per id");
+const dupSection = (prompt) => {
+  const s = prompt.indexOf("EARLIER TASKS' produces");
+  return s === -1 ? "" : prompt.slice(s, prompt.indexOf("\nTASK:\n", s));
+};
+ok(!dupSection(dupCalls[0].prompt).includes("make_beta"),
+  "plan #73: the FIRST task sharing an id sees no later produces");
+ok(dupSection(dupCalls[1].prompt).includes("make_alpha") && dupSection(dupCalls[1].prompt).includes("make_beta"),
+  "plan #73: the SECOND task sharing an id gets ITS OWN slice — keyed by object identity, not id");
+
+// A negative control for the question itself: a task consuming a name NO task
+// produces must still be visible as unresolved. Without this, a change that
+// simply asserted every dependency satisfied would pass everything above.
+const missPlan = {
+  decompose: { fileStructure: "f: r", tasks: [
+    dpTask("first", ["make_alpha"], []),
+    dpTask("second", [], ["make_alpha", "never_produced_anywhere"]),
+  ] },
+  ...Object.fromEntries(["first", "second"].flatMap((id) => [
+    [`feas:${id}`, { feasible: "yes", testable: "yes", issues: [] }],
+    [`test:${id}`, { feasible: "yes", testable: "yes", issues: [] }],
+  ])),
+};
+const { result: missRes, rt: missRt } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, missPlan);
+const missSection = (() => {
+  const p = missRt.calls.find((c) => c.label === "feas:second").prompt;
+  const s = p.indexOf("EARLIER TASKS' produces");
+  return p.slice(s, p.indexOf("\nTASK:\n", s));
+})();
+ok(missSection.includes("make_alpha") && !missSection.includes("never_produced_anywhere"),
+  "plan #73: the section lists only what IS produced — an unproduced consume is absent from it, not invented");
+ok((missRes.graph?.consumesNoTaskProduces ?? []).some((e) => JSON.stringify(e).includes("never_produced_anywhere")),
+  "plan #73 control: an unproduced dependency still surfaces in the graph — the lens is helped, not silenced");
+
+// The section is O(T^2) in prompt bytes and the comment claimed "bounded" while
+// nothing enforced it (Copilot, PR #87). A large but schema-legal plan must
+// truncate VISIBLY: a silent cut teaches the lens that a real producer does not
+// exist, which is the defect the section exists to remove.
+const BIG_N = 120;
+const bigIds = Array.from({ length: BIG_N }, (_, i) => `t${i}`);
+const bigPlan = {
+  decompose: { fileStructure: "f: r", tasks: bigIds.map((id, i) =>
+    dpTask(id, [`produces_${id}_${"x".repeat(40)}`], i ? [`produces_t${i - 1}_${"x".repeat(40)}`] : [])) },
+  ...Object.fromEntries(bigIds.flatMap((id) => [
+    [`feas:${id}`, { feasible: "yes", testable: "yes", issues: [] }],
+    [`test:${id}`, { feasible: "yes", testable: "yes", issues: [] }],
+  ])),
+};
+const { rt: bigRt } = await run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR }, bigPlan);
+const lastSection = (() => {
+  const p = bigRt.calls.find((c) => c.label === `feas:t${BIG_N - 1}`).prompt;
+  const s = p.indexOf("EARLIER TASKS' produces");
+  return p.slice(s, p.indexOf("\nTASK:\n", s));
+})();
+ok(lastSection.length < 5000,
+  `plan #73: the earlier-produces section is capped — got ${lastSection.length} chars for task ${BIG_N}`);
+ok(/TRUNCATED at \d+ chars/.test(lastSection),
+  "plan #73: and it says so IN the packet — a silent cut teaches the lens a real producer does not exist");
+ok(/report\s+dependency-missing only if/.test(lastSection),
+  "plan #73: the truncation notice tells the lens what NOT to conclude from an absent name");
+const smallSection = (() => {
+  const p = bigRt.calls.find((c) => c.label === "feas:t1").prompt;
+  const s = p.indexOf("EARLIER TASKS' produces");
+  return p.slice(s, p.indexOf("\nTASK:\n", s));
+})();
+ok(!/TRUNCATED/.test(smallSection),
+  "plan #73 control: an early task is under the cap and carries no truncation notice");
+
 // ── plan: the graph — edges, layers, Amdahl (#66) ────────────────────────────
 console.log("-- Case: plan.js graph — real/unverified edges, concurrency, p + ceiling");
 // Arithmetic over produces/consumes, no agent call; every part gets a
@@ -1007,8 +1096,11 @@ ok(isoRes.isolation?.mode === "worktree" && isoRes.isolation.requestedCommit ===
 // may never have been at.
 ok(isoRes.isolation?.commit === undefined && "requestedCommit" in isoRes.isolation,
   "review/#23: the field is requestedCommit, not commit — it reports the ASK, not an observation");
-ok(isoRes.isolation?.observedCommit === null && /adversarial\.evidence/.test(isoRes.isolation.bound),
-  "review/#23: observedCommit is null and the bound points at where the real HEAD is recorded");
+// observedCommit is now PARSED from the seat's OBSERVED_HEAD line, not left
+// null with a note (Copilot, PR #87). This fixture reports no such line, which
+// is the "nothing observed" state and must stay distinguishable from a mismatch.
+ok(isoRes.isolation?.observedCommit === null && /observedCommit/.test(isoRes.isolation.bound),
+  "review/#23: a seat that reports no OBSERVED_HEAD leaves observedCommit null, and the bound says so");
 // The lenses are NOT isolated: they read the working tree the operator asked
 // about. Isolation is the verifier's property alone.
 ok(isoRt.calls.filter((c) => c.label.startsWith("lens:")).every((c) => c.isolation === undefined),
@@ -1031,19 +1123,59 @@ ok(/atRequestedCommit is FALSE/.test(isoRes.isolation.bound),
   "review/#74: the bound states it in words, not only in a boolean a caller may not read");
 
 // 2c. The opt-in: real commit identity, and the cost is named.
+// The seat REPORTS the HEAD it saw; the workflow parses it. A fixture that
+// stays silent is the unknown case, asserted separately below.
+const advSaw = (sha) => ({ adversarial: { verdict: "CONFIRMED", evidence: `OBSERVED_HEAD: ${sha}\nran x, saw y` } });
 const { result: ckRes, rt: ckRt } = await run(WF("review.js"),
-  { target: "docs/x.md", isolate: SHA, isolateCheckout: true }, { ...everyLens, ...liveAdvReturn });
+  { target: "docs/x.md", isolate: SHA, isolateCheckout: true }, { ...everyLens, ...advSaw(SHA) });
 const ckPrompt = isoAdvCall(ckRt).prompt;
 ok(ckPrompt.includes(`git checkout --detach ${SHA}`),
   "review/#74: isolateCheckout=true tells the seat to detach onto the named commit");
-ok(/checkout fails/.test(ckPrompt) && /REFUTED/.test(ckPrompt),
+ok(/checkout failed/.test(ckPrompt) && /REFUTED/.test(ckPrompt),
   "review/#74: a failed checkout is REFUTED — an unreachable commit is not a verified one");
+ok(/OBSERVED_HEAD:/.test(ckPrompt) && /OBSERVED_HEAD:/.test(isoPrompt),
+  "review/#74: BOTH branches ask for the parseable head line — the field is derived, so it must be reported");
 ok(!/will NOT be/.test(ckPrompt),
   "review/#74: the two branches are EXCLUSIVE — the expect-a-mismatch text must not survive the checkout");
-ok(ckRes.isolation?.atRequestedCommit === true,
-  "review/#74: the result says the run WAS at the requested commit");
+ok(ckRes.isolation?.atRequestedCommit === true && ckRes.isolation.observedCommit === SHA,
+  "review/#74: atRequestedCommit is TRUE only because the seat REPORTED that head (observed, not promised)");
 ok(/does not auto-remove/.test(ckRes.isolation.bound),
   "review/#74: the bound names the cost (a changed worktree is left on disk), so it is priced not hidden");
+
+// The field used to be the caller's own flag echoed back, so a failed checkout
+// — or a seat that ignored the instruction — still returned true: the workflow
+// asserting an identity nothing observed (Copilot, PR #87).
+const { result: silentRes } = await run(WF("review.js"),
+  { target: "docs/x.md", isolate: SHA, isolateCheckout: true }, { ...everyLens, ...liveAdvReturn });
+ok(silentRes.isolation?.atRequestedCommit === null,
+  "review/#74: a seat that reports NO head leaves atRequestedCommit null — absence of evidence, not a false true");
+ok(/OUTCOME UNKNOWN/.test(silentRes.isolation.bound),
+  "review/#74: and the bound says the identity claim is unmade, rather than implying it holds");
+const WRONG = "ffffffffffffffffffffffffffffffffffffffff";
+const { result: wrongRes } = await run(WF("review.js"),
+  { target: "docs/x.md", isolate: SHA, isolateCheckout: true }, { ...everyLens, ...advSaw(WRONG) });
+ok(wrongRes.isolation?.atRequestedCommit === false && wrongRes.isolation.observedCommit === WRONG,
+  "review/#74: a head that does not match is FALSE and the observed one is recorded");
+ok(/NOT CONFIRMED/.test(wrongRes.isolation.bound),
+  "review/#74: null and false are DIFFERENT claims and the bound distinguishes them");
+
+// An abbreviated sha is legal input (the guard accepts 7-40 hex), but
+// `git rev-parse HEAD` always prints 40 lowercase — so an exact comparison
+// would REFUTE a correct tree. The seat is told to compare by prefix, and the
+// workflow's own derivation must use the same rule (Copilot, PR #87).
+const SHORT = SHA.slice(0, 7);
+const { result: shortRes, rt: shortRt } = await run(WF("review.js"),
+  { target: "docs/x.md", isolate: SHORT, isolateCheckout: true }, { ...everyLens, ...advSaw(SHA) });
+ok(shortRes.isolation?.atRequestedCommit === true,
+  "review/#74: an ABBREVIATED isolate matches the full head it prefixes — not a false REFUTED");
+ok(/START WITH/.test(isoAdvCall(shortRt).prompt) && /ABBREVIATED/.test(isoAdvCall(shortRt).prompt),
+  "review/#74: and the seat is TOLD to compare by prefix, so it does not refute a correct tree either");
+ok(/equal .* exactly/.test(isoAdvCall(ckRt).prompt),
+  "review/#74: a full sha still demands an exact match — the prefix rule is not a blanket loosening");
+const { result: upperRes } = await run(WF("review.js"),
+  { target: "docs/x.md", isolate: SHA.toUpperCase(), isolateCheckout: true }, { ...everyLens, ...advSaw(SHA) });
+ok(upperRes.isolation?.atRequestedCommit === true,
+  "review/#74: hex is case-insensitive — an uppercase sha is not a mismatch");
 // The porcelain substitution stays refused in BOTH branches: a fresh worktree
 // is clean by construction either way (#21's vacuous-control class).
 ok(/cannot fail here and proves nothing/.test(ckPrompt) && /cannot fail here and proves nothing/.test(isoPrompt),

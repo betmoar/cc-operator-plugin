@@ -3,7 +3,7 @@ export const meta = {
   description:
     "Operator review panel: parallel narrow lenses, two at cheap tiers and three at judgment tier, then an adversarial verifier at judgment tier. A REFUTED verdict is a hard stop and cannot be outvoted.",
   whenToUse:
-    "After an implementation dispatch returns DONE on work that will be merged, published, or depended on by a later task. Pass the artifact path, or an array of paths, as args; pass args.doneMeans to give the spec and testability lenses the task text they ask about. For release-bound work, commit first and pass args.isolate=<sha> to run the adversarial seat in a FRESH worktree instead of the builder's tree — that buys a clean environment (no ignored build output, no stale caches, no uncommitted helpers), and the sha is what the seat reports HEAD against. It does NOT arrive at that commit: the runtime creates the worktree at the default branch (#74, measured). Add args.isolateCheckout=true to have the seat detach onto the sha first, which buys real commit identity and leaves the worktree on disk.",
+    "After an implementation dispatch returns DONE on work that will be merged, published, or depended on by a later task. Pass the artifact path, or an array of paths, as args; pass args.doneMeans to give the spec and testability lenses the task text they ask about. For release-bound work, commit first and pass args.isolate=<sha> to run the adversarial seat in a FRESH worktree instead of the builder's tree — that buys a clean TREE (no ignored build output, no uncommitted helpers) — NOT a clean machine: $HOME, PATH and every package/toolchain cache are shared, so a poisoned global cache survives it. The sha is what the seat reports HEAD against. It does NOT arrive at that commit: the runtime creates the worktree at the default branch (#74, measured). Add args.isolateCheckout=true to have the seat detach onto the sha first, which buys real commit identity and leaves the worktree on disk.",
   phases: [
     { title: "Panel", detail: "narrow lenses in parallel, mixed tiers" },
     { title: "Adversarial", detail: "re-run DONE MEANS, judgment tier" },
@@ -271,6 +271,24 @@ const isolate = (() => {
   return sha;
 })();
 
+// #74 follow-up (Copilot, PR #87): `git rev-parse HEAD` prints a FULL LOWERCASE
+// sha, and the guard above accepts abbreviated and uppercase ones. A seat told
+// to "confirm HEAD is 692888e" compares that against
+// 692888e12de3085960a1bd5cb7187eca2a2786d8, finds them unequal, and returns
+// REFUTED on a checkout that worked perfectly — a false REFUTED on the one
+// verdict that is supposed to be unoutvotable.
+//
+// The comparison rule travels with the value, because this file cannot run git
+// and so cannot canonicalise the sha itself. Lowercase is safe to normalise
+// here (hex is case-insensitive); length is not, so the seat is told to compare
+// by PREFIX when the caller abbreviated.
+const isolateLower = isolate.toLowerCase();
+const isolateIsFull = isolate.length === 40;
+const shaMatchRule = isolateIsFull
+  ? `it must equal ${isolateLower} exactly (compare case-insensitively — rev-parse prints lowercase)`
+  : `it must START WITH ${isolateLower} (compare case-insensitively): ${isolateLower} is an ABBREVIATED sha and ` +
+    `\`git rev-parse HEAD\` always prints the full 40 characters, so an exact string comparison would fail on a correct tree`;
+
 // Each lens is a narrow question. Narrow is what makes a cheap tier honest:
 // a lens that needs judgment is not a lens, it is a review.
 const LENSES = [
@@ -435,15 +453,23 @@ const adversarial = await agent(
             `  git checkout --detach ${isolate}\n` +
             `  git rev-parse HEAD\n` +
             `Your worktree is created at the repository's DEFAULT BRANCH — it does NOT arrive at ` +
-            `${isolate}, so the checkout is required, not a formality. If the checkout fails, or if ` +
-            `rev-parse then prints anything other than ${isolate}, STOP and return REFUTED quoting ` +
-            `the command and its actual output: you cannot verify an artifact at a commit you could ` +
-            `not reach. Do NOT substitute \`git status --porcelain\` for this: a fresh worktree is ` +
-            `clean by construction, so that command cannot fail here and proves nothing.`
+            `${isolate}, so the checkout is required, not a formality.\n\n` +
+            `HOW TO COMPARE the rev-parse output: ${shaMatchRule}. If it does not match, or the ` +
+            `checkout failed, STOP and return REFUTED quoting the command and its actual output: ` +
+            `you cannot verify an artifact at a commit you could not reach.\n\n` +
+            `REPORT THE HEAD YOU OBSERVED as the FIRST line of your evidence, on its own, exactly:\n` +
+            `  OBSERVED_HEAD: <the full sha rev-parse printed>\n` +
+            `That line is parsed. Omitting it means nothing recorded which tree produced this ` +
+            `verdict, and the result will say the commit is unconfirmed however confident your ` +
+            `prose is. Do NOT substitute \`git status --porcelain\` for any of this: a fresh ` +
+            `worktree is clean by construction, so that command cannot fail here and proves nothing.`
           : // Default (#74): the environment is fresh, the commit is NOT
             // honoured, and saying otherwise is the overclaim.
             `F-A2 commit-identity check, and do this FIRST: run \`git rev-parse HEAD\` here and report ` +
-            `what it prints. KNOWN AND EXPECTED: it will NOT be ${isolate}. The runtime creates this ` +
+            `what it prints, as the FIRST line of your evidence, on its own, exactly:\n` +
+            `  OBSERVED_HEAD: <the full sha rev-parse printed>\n` +
+            `That line is parsed; without it nothing records which tree produced this verdict.\n\n` +
+            `KNOWN AND EXPECTED: it will NOT be ${isolate}. The runtime creates this ` +
             `worktree at the repository's default branch; it cannot be pointed at a commit. So a ` +
             `mismatch here is a property of the harness, NOT a defect in the artifact — do not return ` +
             `REFUTED for it. Report both shas in your evidence so the operator can see which tree ` +
@@ -484,6 +510,33 @@ const adversarial = await agent(
 // actually defined and treat everything else as unverified.
 const verdict = adversarial?.verdict;
 const verified = verdict === "CONFIRMED" || verdict === "REFUTED";
+
+// #74 follow-up (Copilot, PR #87): `atRequestedCommit` was derived from the
+// CALLER'S FLAG, so a failed checkout, or a seat that ignored the instruction,
+// still returned `atRequestedCommit: true` — the workflow asserting an identity
+// nothing observed. That is the overclaim this whole block exists to prevent,
+// reintroduced one field over, exactly as `commit:` vs `requestedCommit:` was.
+//
+// So it is now derived from the seat's own OBSERVED_HEAD line, and the three
+// states are kept distinct rather than collapsed into a boolean:
+//   true   — a full sha was reported and it matches what was requested
+//   false  — a full sha was reported and it does NOT match (or none was asked)
+//   null   — nothing parseable came back: NOT the same claim as "it did not
+//            match", and a caller must be able to tell them apart (the exact
+//            failure `observedCommit`'s own note warned about, PR #72)
+const observedCommit = (() => {
+  const ev = typeof adversarial?.evidence === "string" ? adversarial.evidence : "";
+  const m = ev.match(/OBSERVED_HEAD:\s*([0-9a-fA-F]{7,40})\b/);
+  return m ? m[1].toLowerCase() : null;
+})();
+const atRequestedCommit = (() => {
+  if (!isolateCheckout) return false;      // never asked for; not "checked and wrong"
+  if (observedCommit == null) return null; // asked for, nothing observed
+  return isolateIsFull
+    ? observedCommit === isolateLower
+    : observedCommit.startsWith(isolateLower);
+})();
+
 return {
   blocked: !verified || verdict === "REFUTED",
   unverified: !verified || undefined,
@@ -520,11 +573,18 @@ return {
     ? {
         mode: "worktree",
         requestedCommit: isolate,
-        atRequestedCommit: isolateCheckout,
-        observedCommit: null,
-        bound: isolateCheckout
-          ? "same filesystem, $HOME, caches and PATH — defeats in-tree artifacts, not a poisoned global cache. The seat detached onto requestedCommit ITSELF before verifying (args.isolateCheckout), so a HEAD mismatch in adversarial.evidence is a real REFUTED. Cost: the checkout leaves the worktree changed, so the runtime does not auto-remove it (#74)"
-          : "same filesystem, $HOME, caches and PATH — defeats in-tree artifacts, not a poisoned global cache. atRequestedCommit is FALSE: the runtime creates the worktree at the DEFAULT BRANCH and cannot be pointed at a commit (#74, measured), so this verdict describes the artifact in a clean environment but NOT at requestedCommit. The HEAD the seat observed is in adversarial.evidence; a mismatch there is the harness, not the artifact. Pass args.isolateCheckout=true for commit identity",
+        // OBSERVED, not promised — see the derivation above. null means the
+        // seat reported no parseable OBSERVED_HEAD, which is a different claim
+        // from "it ran somewhere else".
+        atRequestedCommit,
+        observedCommit,
+        bound: !isolateCheckout
+          ? "same filesystem, $HOME, caches and PATH — defeats stale IN-TREE artifacts (ignored build output, uncommitted helpers), NOT a poisoned global cache, which is shared. atRequestedCommit is FALSE: the runtime creates the worktree at the DEFAULT BRANCH and cannot be pointed at a commit (#74, measured), so this verdict describes the artifact in a clean environment but NOT at requestedCommit. observedCommit is the HEAD the seat actually reported. Pass args.isolateCheckout=true for commit identity"
+          : atRequestedCommit === true
+            ? "same filesystem, $HOME, caches and PATH — defeats stale IN-TREE artifacts, NOT a poisoned global cache, which is shared. The seat detached onto requestedCommit and REPORTED the resulting HEAD, which is what observedCommit records — this is an observation, not the caller's promise. Cost: the checkout leaves the worktree changed, so the runtime does not auto-remove it (#74)"
+            : atRequestedCommit === false
+              ? "CHECKOUT REQUESTED BUT NOT CONFIRMED: the seat reported a HEAD (observedCommit) that is not requestedCommit. Treat this verdict as describing observedCommit's tree, whatever that is — the artifact you asked about may never have been verified (#74)"
+              : "CHECKOUT REQUESTED, OUTCOME UNKNOWN: the seat reported no parseable `OBSERVED_HEAD:` line, so nothing here observed which tree produced this verdict. This is NOT the same as a mismatch — it is an absence of evidence, and the identity claim is unmade (#74)",
       }
     : { mode: "builder-tree", requestedCommit: null, atRequestedCommit: false, observedCommit: null, bound: "the verdict describes the artifact AS OBSERVED FROM THE BUILDER'S ENVIRONMENT; pass args.isolate=<sha> for a worktree run (#23)" },
   findings: scored.map((f) => ({ ...f, bucket: bucket(f) })),

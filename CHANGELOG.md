@@ -56,6 +56,38 @@ that reported green against the exact defect they were written to catch.
   `check_release_gates_cover_validate` had never looked at `.forgejo/`, the job
   that publishes on this LAN, and accepted a commented-out or `if: false` step.
   `check_permission_guards` missed `test -w` and all of `scripts/lib/`.
+- **The review of that audit found six more, and they are the same shapes.**
+  `check_hook` read matcher group `[0]` and counted only the inner list, so a
+  second matcher group registered an unreviewed hook — index-zero blindness
+  inside the fix written against index-zero blindness; it also never checked the
+  entry's `type`, and a non-string command raised rather than reporting. The
+  lock content pin searched the RAW block, so commenting out the real
+  `while ! mkdir` and leaving the text in a comment satisfied it in both copies.
+  The compressor's reachability anchor caught only the one-line `if (false) if
+  (…)`; a multiline `if (false) { … }` walked past, and `GATE_CLIS.length = 0`
+  was not a method call. `live()` grouped steps, so a job-level `if: false`
+  disabled a whole publishing job invisibly. And every byte cap was only a byte
+  cap in the C locale — bash counts CHARACTERS outside it, so `ops-verdict.sh`'s
+  and `ops-adopt.sh`'s reads were up to 4x looser than they read on multibyte
+  input (measured: 512 chars of `é` = 1024 bytes). All six fixed, each with the
+  mutation that proves it; reachability is now brace depth against a named
+  anchor, which a substring cannot approximate.
+- **`args.isolate` could REFUTE a correct tree.** `git rev-parse HEAD` prints a
+  full lowercase sha and the guard accepts 7–40 hex, so `isolate=abc1234` was
+  compared against 40 characters and failed — a false REFUTED on the one verdict
+  that cannot be outvoted. The seat is now told to compare by prefix when the
+  caller abbreviated, and case-insensitively.
+- **`atRequestedCommit` was the caller's own flag echoed back.** A failed
+  checkout, or a seat that ignored the instruction, still returned `true`: the
+  workflow asserting an identity nothing observed — the overclaim `#74` fixed,
+  one field over. It is now derived from the seat's `OBSERVED_HEAD:` line, with
+  three distinct states (`true` / `false` / `null` for nothing observed), and
+  `observedCommit` records what came back.
+- **The `#73` dependency section is capped at 4000 chars and truncates
+  visibly.** It renders every earlier task into every later packet — O(T²) in
+  prompt bytes, with the comment claiming "bounded" and nothing enforcing it. A
+  silent cut would teach the lens that a real producer does not exist, so the
+  notice says what not to conclude from an absent name.
 
 ## [0.11.0] - 2026-08-24
 

@@ -779,16 +779,41 @@ def check_hook(root, problems):
         return
     for event, script in (("Stop", "ops-stop-hook.sh"),
                           ("SessionStart", "ops-sessionstart-hook.sh")):
-        try:
-            entries = hook["hooks"][event][0]["hooks"]
-            cmd = entries[0]["command"]
-        except (KeyError, IndexError, TypeError):
+        groups = hook.get("hooks", {}).get(event)
+        if not isinstance(groups, list) or not groups:
+            problems.append(f"hooks/hooks.json: no {event} hook command found")
+            continue
+        # EVERY matcher group, not just [0]. The first fix here read
+        # `[event][0]["hooks"]` and counted the INNER list, so appending a
+        # SECOND matcher group registered an unreviewed hook one level up with
+        # the build green (Copilot, PR #87) — the same index-zero blindness the
+        # fix was written against, one level out.
+        entries = []
+        for gi, group in enumerate(groups):
+            inner = group.get("hooks") if isinstance(group, dict) else None
+            if not isinstance(inner, list):
+                problems.append(
+                    f"hooks/hooks.json: {event} matcher group {gi} has no "
+                    f"`hooks` list — a malformed group runs nothing and the "
+                    f"gate is off")
+                continue
+            entries.extend(inner)
+        if not entries:
             problems.append(f"hooks/hooks.json: no {event} hook command found")
             continue
         # ANCHORED, not substring: the command line is shell, so any text that
         # merely CONTAINS the path can still run something else — or nothing.
         expected = 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/' + script + '"'
-        if cmd.strip() != expected:
+        cmd = entries[0].get("command") if isinstance(entries[0], dict) else None
+        # A JSON-valid non-string (null, 42, a list) reached `.strip()` and
+        # raised AttributeError, aborting the whole validator instead of
+        # reporting a contract failure — a malformed manifest must produce the
+        # normal actionable output, not a traceback.
+        if not isinstance(cmd, str):
+            problems.append(
+                f"hooks/hooks.json: {event} command is {cmd!r}, not a string — "
+                f"the harness has nothing to run and the gate is off")
+        elif cmd.strip() != expected:
             problems.append(
                 f"hooks/hooks.json: {event} command must be exactly "
                 f"{expected!r}, got {cmd!r}. This is matched WHOLE on purpose: "
@@ -796,12 +821,22 @@ def check_hook(root, problems):
                 f"path, which names the script, resolves the plugin root, and "
                 f"runs nothing — the evidence gate silently off with the build "
                 f"green (audited 2026-08-25)")
+        # `type` decides whether the harness runs the command at all: an entry
+        # carrying the exact expected string under a non-command type passes
+        # every string test and executes nothing.
+        etype = entries[0].get("type") if isinstance(entries[0], dict) else None
+        if etype != "command":
+            problems.append(
+                f"hooks/hooks.json: {event} hook type is {etype!r}, not "
+                f"'command' — the harness does not execute it, so the expected "
+                f"command string above is decoration")
         if len(entries) != 1:
             problems.append(
-                f"hooks/hooks.json: {event} has {len(entries)} hook entries; "
-                f"exactly 1 is expected. The check reads entry [0], so an "
-                f"APPENDED entry runs unreviewed — and for Stop, an appended "
-                f"`exit 0` decides the gate's verdict after ours")
+                f"hooks/hooks.json: {event} has {len(entries)} hook entries "
+                f"across {len(groups)} matcher group(s); exactly 1 is expected. "
+                f"Only entry [0] is checked, so any other runs unreviewed — and "
+                f"for Stop, an appended `exit 0` decides the gate's verdict "
+                f"after ours")
 
 
 def check_permission_guards(root, problems):
@@ -940,6 +975,20 @@ def check_reader_bounds(root, problems):
         # correct, while prose about a read ("use `read -r -n 512` here") never
         # carries it.
         bounded = 0
+        # A byte cap is only a byte cap in the C locale. bash `read -n N`
+        # counts CHARACTERS outside it, so in UTF-8 a 512-"char" read is up to
+        # 2048 bytes and every cap here is 4x looser than it reads — measured
+        # on bash 3.2.57 and 5.2.15 (512 chars of "é" = 1024 bytes). Reported
+        # once per file: LC_ALL=C must be in scope somewhere, which is the
+        # `local LC_ALL=C` idiom partition.sh already uses (Copilot, PR #87).
+        if any(re.search(r"\bIFS=\S*\s+read -r -n \d+", ln) for ln in code) \
+           and not any("LC_ALL=C" in ln for ln in code):
+            problems.append(
+                f"scripts/{name}: byte-bounded reads with no `LC_ALL=C` in the "
+                f"file — bash counts CHARACTERS outside the C locale, so the "
+                f"caps are up to 4x looser than they read on multibyte input. "
+                f"Declare `local LC_ALL=C` in the reading function (the idiom "
+                f"scripts/lib/partition.sh uses), never globally")
         for ln in code:
             for m in re.finditer(r"\bIFS=\S*\s+read -r -n (\d+)\b", ln):
                 n = int(m.group(1))
@@ -1636,8 +1685,16 @@ def check_lock_parity(root, problems):
     # so a fix applied to one is applied to both), and it is exactly what a
     # parity test cannot see.
     for name, block in blocks.items():
+        # CODE only. The content pin searched the RAW block, so commenting out
+        # the real `while ! mkdir` and leaving the identical text in a comment
+        # satisfied it in both copies while the lock was a test-then-create race
+        # (Copilot, PR #87) — MENTION-not-ACTION, inside the pin added to close
+        # MENTION-not-ACTION. Parity above still reads the raw block: a comment
+        # that differs between the copies is a real divergence to report.
+        code = "\n".join(ln for ln in block.splitlines()
+                         if not ln.lstrip().startswith("#"))
         for pat, why in CANONICAL_LOCK:
-            if not re.search(pat, block):
+            if not re.search(pat, code):
                 problems.append(
                     f"scripts/{name}: the lock block no longer contains "
                     f"/{pat}/ — {why}. Parity with the other CLI is not enough: "
@@ -2074,10 +2131,63 @@ def check_compressor(root, problems):
         # satisfied an unanchored search — the guard present, declared, and
         # unreachable (audited 2026-08-25; the DEAD BRANCH shape, which is what
         # check_workflows' AST coercion pin was added for one file over).
+        # The multiline `if (false) { … }` form is caught by the nesting-depth
+        # check below, which is what an anchor alone cannot see.
         if not re.search(r'^\s*if \(NEVER_COMPRESS\.has\(\s*tool\s*\)\s*\)\s*return null',
                          code, re.MULTILINE):
             problems.append("ops-compress.mjs: NEVER_COMPRESS.has(tool) is not the head of its own `if (…) return null;` statement — a neutered body skips the exclusion, and a preceding `if (false)` makes it unreachable while every literal pin stays green (F48; audited 2026-08-25)")
             break  # one missing call site is the same defect for all four
+
+    # REACHABILITY, not presence. The anchor above rejects the one-line
+    # `if (false) if (…)` and nothing else: wrapping the same call site in a
+    # multiline `if (false) { … }` left every guard declared, matched, and
+    # unreachable with the build green (Copilot, PR #87).
+    #
+    # Brace depth is the discriminator and it is cheap: all five guards are
+    # STRAIGHT-LINE statements in `compress()`, at the same nesting as the
+    # `const tool = payload.tool_name` line they follow. Any wrapper — dead or
+    # live, `if (false)`, a `try`, a loop — puts them deeper. So: find the
+    # anchor's depth, and require each guard to sit at exactly that depth.
+    # Not a JS parser (there is none in the stdlib), but it answers the one
+    # question a substring cannot: is this statement conditional on anything?
+    ANCHOR = "const tool = payload.tool_name"
+    GUARDS = (
+        ("NEVER_COMPRESS.has(tool)", "the never-compress exclusion"),
+        ('tool.startsWith("mcp__")', "the mcp__* exclusion"),
+        ("LOSSLESS_ONLY.has(tool)", "the Agent lossless-only branch"),
+        ("LEDGER_PATHS.some(", "the I2.2 ledger carve-out"),
+        ("GATE_CLIS.some(", "the I2.1 gate-CLI carve-out"),
+    )
+    depth, anchor_depth, guard_depths = 0, None, {}
+    for ln in code.split("\n"):
+        here = depth
+        depth += ln.count("{") - ln.count("}")
+        if anchor_depth is None and ANCHOR in ln:
+            anchor_depth = here
+            continue
+        if anchor_depth is None:
+            continue
+        for needle, _ in GUARDS:
+            if needle in ln and needle not in guard_depths:
+                guard_depths[needle] = here
+    if anchor_depth is None:
+        problems.append(
+            f"ops-compress.mjs: cannot find `{ANCHOR}` — the reachability check "
+            f"has no anchor, so it can prove nothing about the guards below it. "
+            f"Update ANCHOR in check_compressor rather than dropping the check")
+    else:
+        for needle, what in GUARDS:
+            got = guard_depths.get(needle)
+            if got is None:
+                continue  # its own presence pin above already reported this
+            if got != anchor_depth:
+                problems.append(
+                    f"ops-compress.mjs: `{needle}` sits at brace depth {got}, "
+                    f"but `{ANCHOR}` is at {anchor_depth} — {what} is nested "
+                    f"inside something, so it is CONDITIONAL where it must be "
+                    f"straight-line. A dead `if (false) {{ … }}` wrapper leaves "
+                    f"every literal and call-site pin green while the guard "
+                    f"never runs (Copilot, PR #87)")
     # ELIDABLE/NEVER_COMPRESS DISJOINTNESS — the allowlist decides what is
     # elided, so no never-compress name may appear in it (panel 5a).
     elidable_decl = re.search(r'ELIDABLE\s*=\s*new Set\(\s*\[([^\]]*)\]', code)
@@ -2100,11 +2210,21 @@ def check_compressor(root, problems):
                 f"AFTER its literal — every pin here reads the literal, so this "
                 f"changes what is elided with the build green. Edit the literal")
     for arrname in ("LEDGER_PATHS", "GATE_CLIS"):
-        for mut in re.finditer(rf"\b{arrname}\.(push|pop|splice|shift|unshift)\s*\(", code):
+        # Methods, plus the two writes that are not method calls: `.length = 0`
+        # empties the array and `[0] = "…"` replaces an entry, both leaving the
+        # literal and the `.some()` call site green (Copilot, PR #87).
+        for mut in re.finditer(
+                rf"\b{arrname}\.(push|pop|splice|shift|unshift|fill|copyWithin|sort|reverse)\s*\(", code):
             problems.append(
                 f"ops-compress.mjs: `{arrname}.{mut.group(1)}(` mutates the array "
                 f"AFTER its literal — the I2 carve-out pins read the literal. "
                 f"Edit the literal")
+        for mut in re.finditer(rf"\b{arrname}\s*(?:\.length|\[[^\]]*\])\s*=(?!=)", code):
+            problems.append(
+                f"ops-compress.mjs: `{mut.group(0).strip()}` writes into the array "
+                f"AFTER its literal — `.length = 0` empties the carve-out and an "
+                f"indexed write replaces an entry, both with every literal and "
+                f"`.some()` pin still green. Edit the literal")
     # mcp__ exclusion: the call site must have a return-null body, not a no-op.
     if not re.search(r'tool\.startsWith\(\s*"mcp__"\s*\)\s*\)\s*return null', code):
         problems.append("ops-compress.mjs: `mcp__*` exclusion is missing or has no `return null` body (a no-op body skips the exclusion — F48)")
@@ -2240,6 +2360,28 @@ def check_release_gates_cover_validate(root, problems):
                 f"exists — cannot verify that a tag build gates at least as much "
                 f"as a PR build")
             continue
+        # A job-level (or workflow-level) `if: false` sits OUTSIDE every step,
+        # so the step grouping below never sees it and every suite in a disabled
+        # publishing job still counted as coverage (Copilot, PR #87). Reported
+        # rather than silently subtracted: a release workflow with a disabled
+        # job is a configuration to fix, not a coverage number to adjust.
+        for f in (val, rel):
+            for ln in f.read_text(encoding="utf-8").splitlines():
+                s = ln.strip()
+                if s.startswith("#") or not _IF_FALSE.match(s):
+                    continue
+                # A step-level `if:` is legitimate for a conditional step and
+                # is handled by the grouping above; only a job- or
+                # workflow-level one is invisible to it. Two forms are always
+                # step-level: the list item itself (`- if: false`) and a step
+                # property, which is indented past the `- `. Job keys sit at 2
+                # spaces here, so a job-level `if:` sits at 4.
+                if not s.startswith("-") and (len(ln) - len(ln.lstrip())) <= 4:
+                    problems.append(
+                        f"{base}/workflows/{f.name}: a job- or workflow-level "
+                        f"`{s}` disables everything under it, and the suite scan "
+                        f"cannot see that from inside a step — the file would "
+                        f"report full coverage while running nothing")
         vsuites, rsuites = live(val.read_text(encoding="utf-8")), live(rel.read_text(encoding="utf-8"))
         for suite in SUITES:
             if suite in vsuites and suite not in rsuites:
