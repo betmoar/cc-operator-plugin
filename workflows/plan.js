@@ -336,6 +336,70 @@ const VET = {
   },
 };
 
+// #73: the feasibility lens is asked "is the dependency it consumes actually
+// produced by an earlier task?" and was dispatched with ONE task and no
+// siblings. It cannot answer, correctly says so, and 14/21 seats returned
+// needs-info citing dependency-missing — 5 of them against a control column
+// whose plan is correct. The question was load-bearing and the input was
+// absent; the fix is the input, not a softer question.
+//
+// What it gets is the EARLIER tasks' produces, names only: that is exactly the
+// scope of the question (a later task's produces cannot satisfy an earlier
+// consumer) and it is the cheapest faithful answer — id + names, not whole
+// task JSON, so the packet stays bounded at the judgment tier.
+//
+// Keyed by task OBJECT IDENTITY, not by a positional argument: stage-1's
+// callback signature is the runtime's to define, and a plan whose tasks repeat
+// an id would break an indexOf lookup. Built once, before the pipeline.
+// Bounded, and the bound is the point: this renders every earlier task into
+// every later task's packet, which is O(T^2) in prompt bytes. A 60-task plan
+// would spend more of the judgment-tier context on the dependency section than
+// on the task — the comment above claimed "bounded" and nothing enforced it
+// (Copilot, PR #87). The cap is generous enough that no honest plan meets it
+// (measured corpus: 21 tasks, longest section ~700 chars) and it TRUNCATES
+// VISIBLY: a silently-cut list would teach the lens that a real producer does
+// not exist, which is the defect this whole section exists to remove.
+const EARLIER_MAX_CHARS = 4000;
+const earlierProduces = new Map();
+{
+  const acc = [];
+  for (const t of tasks) {
+    // Truncate on a LINE boundary and count what was actually dropped. The
+    // first version cut mid-line and reported `acc.length` — the total number
+    // of earlier tasks, not the number omitted (Copilot, PR #87). Both errors
+    // point the same way: a half-rendered producer line reads as a real name
+    // that is subtly wrong, and "120 tasks did not fit" under a list of 119 of
+    // them is a number the lens can only be misled by. This section exists to
+    // stop the lens inventing missing producers; a wrong count invents them
+    // back.
+    const lines = acc.map((e) => `  ${e.id}: ${e.produces.join(", ")}`);
+    const rendered = lines.join("\n");
+    let section = rendered;
+    if (rendered.length > EARLIER_MAX_CHARS) {
+      const kept = [];
+      let used = 0;
+      for (const line of lines) {
+        const cost = used ? line.length + 1 : line.length;  // +1 for the join
+        if (used + cost > EARLIER_MAX_CHARS) break;
+        kept.push(line);
+        used += cost;
+      }
+      const dropped = lines.length - kept.length;
+      section = kept.join("\n") +
+        `\n  [TRUNCATED — ${dropped} of ${lines.length} earlier tasks did not fit in ` +
+        `${EARLIER_MAX_CHARS} chars and are NOT listed above. A name you consume may be ` +
+        `produced by one of them: report dependency-missing only if you can also show the ` +
+        `name exists nowhere in the codebase.]`;
+    }
+    earlierProduces.set(t, section);
+    const produces = Array.isArray(t?.produces) ? t.produces.filter((p) => typeof p === "string" && p) : [];
+    // A task producing nothing still occupies a position, but listing it as
+    // `id: ` teaches the lens that the id exists and produces nothing — which
+    // is true and is what stops it inventing a producer.
+    acc.push({ id: String(t?.id ?? "?"), produces });
+  }
+}
+
 // feasibility is judgment (load-bearing claims vs code); testability is
 // mechanical (is there an observable criterion). Splitting them keeps the
 // cheap tier honest and lets the two run concurrently per task.
@@ -357,6 +421,14 @@ const vetted = await pipeline(
             `risks (issue kind "risk"): shared state, load-bearing files, breaking-change exposure.\n\n` +
             (globalConstraints ? `GLOBAL CONSTRAINTS:\n${globalConstraints}\n\n` : "") +
             `SPEC EXCERPT (what this task implements):\n${(task.specExcerpt ?? "").slice(0, 2000)}\n\n` +
+            // #73: without this the dependency question above is unanswerable
+            // and the honest answer is needs-info. The empty case says so
+            // explicitly — "no earlier tasks" is an ANSWER (nothing can be
+            // consumed from earlier), while an absent section reads as
+            // withheld information and returns needs-info again.
+            `EARLIER TASKS' produces (the ONLY names this task may consume from earlier tasks; ` +
+            `anything else it consumes must already exist in the codebase — check, do not assume ` +
+            `it is missing):\n${earlierProduces.get(task) || "  (none — this is the first task; its consumes must all be pre-existing project symbols)"}\n\n` +
             `TASK:\n${JSON.stringify(task)}\n\n` +
             `Cite path:line for each issue. You are read-only.`,
           { agentType: "cc-operator:op-reviewer", model: JUDGMENT, label: `feas:${task.id}`, phase: "Vet", schema: VET },

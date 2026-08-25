@@ -71,6 +71,12 @@ holder_stamp() { printf '%s %s %s' "${HOSTNAME:-nohost}" "${UID:-0}" "$$"; }
 # redirected: a failed INPUT redirection reports before the command's own
 # 2>/dev/null; an empty record is the documented "cannot judge" input.
 lock_holder_read() {
+  # LC_ALL=C so `read -n N` counts BYTES, not characters: bash counts
+  # CHARACTERS outside the C locale, so in UTF-8 a 512-"char" read is up
+  # to 2048 bytes and the cap is 4x looser than it reads (measured on
+  # bash 3.2.57 and 5.2.15: 512 chars of "é" = 1024 bytes). Local, so
+  # nothing leaks to the caller — the idiom scripts/lib/partition.sh uses.
+  local LC_ALL=C
   LOCK_HOLDER_REC=""
   [ -f "$LOCKDIR/holder" ] || return 0
   { IFS= read -r -n 128 LOCK_HOLDER_REC < "$LOCKDIR/holder"; } 2>/dev/null || true
@@ -92,6 +98,12 @@ holder_state() { # holder_state <record>
 
 # Same 128-byte bound as lock_holder_read; this too runs on a spin.
 fallback_holder_read() {
+  # LC_ALL=C so `read -n N` counts BYTES, not characters: bash counts
+  # CHARACTERS outside the C locale, so in UTF-8 a 512-"char" read is up
+  # to 2048 bytes and the cap is 4x looser than it reads (measured on
+  # bash 3.2.57 and 5.2.15: 512 chars of "é" = 1024 bytes). Local, so
+  # nothing leaks to the caller — the idiom scripts/lib/partition.sh uses.
+  local LC_ALL=C
   FALLBACK_REC=""
   [ -f "$FALLBACK_DIR/holder" ] || return 0
   IFS= read -r -n 128 FALLBACK_REC < "$FALLBACK_DIR/holder" 2>/dev/null || true

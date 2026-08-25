@@ -121,10 +121,16 @@ fi
 # fix — the charter points at .operator/bin/, so THAT copy is the gate a
 # session runs. `-nt` is also true when the destination is ABSENT (the
 # never-installed case); mtime beats cmp on this every-session hot path.
+#
+# #82: a manifest-named CLI with NO shipped file is STALE, not skippable. The
+# old `|| continue` made an absent source unobservable here while the copy loop
+# below skipped it and still stamped .version — so version == stamp forever and
+# the probe, the only retry trigger, never fired. The two halves have to agree:
+# whatever the loop cannot copy, this must report.
 _bin_stale() {
   local _t
   for _t in $_OPS_TOOLS; do
-    [ -f "$_ssdir/$_t" ] || continue
+    [ -f "$_ssdir/$_t" ] || return 0
     [ "$_ssdir/$_t" -nt "$cwd/.operator/bin/$_t" ] && return 0
   done
   return 1
@@ -143,7 +149,16 @@ if [ -n "$_OPS_TOOLS" ] && [ -n "$_newver" ] && { [ "$_newver" != "$_oldver" ] |
   _upgrade_ok=1
   if [ -d "$_ssdir" ] && mkdir -p "$cwd/.operator/bin" 2>/dev/null; then
     for _tool in $_OPS_TOOLS; do
-      [ -f "$_ssdir/$_tool" ] || continue
+      # #82: a manifest-named CLI with no shipped file is a FAILED upgrade, not
+      # a skip. The comment below reasoned about an EMPTY set re-stamping
+      # unretried and guarded it; an INCOMPLETE one did exactly the same thing
+      # through this line, silently — 2 of 3 copied, stamped current, no
+      # warning, never retried, because _bin_stale carried the same skip.
+      if [ ! -f "$_ssdir/$_tool" ]; then
+        _upgrade_ok=0
+        echo "operator: warning — $_tool is named by the install set but not shipped; bin/ left partial and NOT stamped current (will retry next session)" >&2
+        continue
+      fi
       _tmp="$cwd/.operator/bin/.$_tool.tmp.$$"
       if cp "$_ssdir/$_tool" "$_tmp" 2>/dev/null \
          && chmod +x "$_tmp" 2>/dev/null \

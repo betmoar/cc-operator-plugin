@@ -41,6 +41,9 @@ GOOD_CHARTER = "# OPERATOR.md\n\n" + "\n".join(
 # the gate CLIs keep their own copies, pinned by check_guard_parity.
 GOOD_PARTITION_LIB = (
     "#!/usr/bin/env bash\n"
+    # LC_ALL=C in scope: `read -n N` counts CHARACTERS outside it, so the
+    # byte caps below are up to 4x looser than they read (Copilot, PR #87).
+    "_r() { local LC_ALL=C; :; }\n"
     "sentinel_owner_of_name() {\n"
     "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]*) printf '\\n'; return 0 ;; esac\n"
     "}\n"
@@ -64,6 +67,7 @@ GOOD_AUTOBAR_LIB = (
     "}\n")
 GOOD_STATUSLINE = (
     "#!/usr/bin/env bash\n"
+    "_r() { local LC_ALL=C; :; }\n"
     '. lib/partition.sh\n'
     "[ ! -L \"$decisions\" ] || exit 0\n"
     "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
@@ -79,9 +83,21 @@ JSON_GET = (
     "print(\"true\" if isinstance(v, bool) and v else \"false\" if isinstance(v, bool) "
     "else \"\" if v is None else v)' \"$1\"; }\n")
 
+# Carries every CANONICAL_LOCK property, because parity alone is F30's shape:
+# two copies that drift TOGETHER are trivially in parity, and inflating the
+# holder read to 999999999 in BOTH passed (audited 2026-08-25).
 GOOD_LOCK_BLOCK = (
     "# >>> LOCK BLOCK\n"
-    "lock_acquire() { mkdir \"$LOCKDIR\" 2>/dev/null; }\n"
+    "lock_holder_live() {\n"
+    "  { IFS= read -r -n 128 LOCK_HOLDER_REC < \"$LOCKDIR/holder\"; } 2>/dev/null || true\n"
+    "  IFS= read -r -n 128 FALLBACK_REC < \"$FALLBACK_DIR/holder\" 2>/dev/null || true\n"
+    "  kill -0 \"$pid\" 2>/dev/null && return 0\n"
+    "}\n"
+    "lock_acquire() {\n"
+    "  while ! mkdir \"$LOCKDIR\" 2>/dev/null; do\n"
+    "    if mkdir \"$LOCKDIR.reclaim\" 2>/dev/null; then rmdir \"$LOCKDIR.reclaim\"; fi\n"
+    "  done\n"
+    "}\n"
     "lock_release() { rm -f \"$LOCKDIR/holder\"; rmdir \"$LOCKDIR\"; }\n"
     "# <<< LOCK BLOCK\n")
 
@@ -201,7 +217,13 @@ def make_good_tree(root):
     # a v1 gitignore behind the same verified backup.
     write(root / "scripts" / "ops-sessionstart-hook.sh",
           "#!/usr/bin/env bash\nset -eu\n" + _install_loop + JSON_GET +
-          "rm -rf \"$cwd/.operator/.compress-spill\" \"$cwd/.operator/.compress-state\"\n"
+          # The shipped WIPE-LOOP form, not a flat rm: check_compressor reads
+          # the `for _cdir in …; do` word list, because emptying that list and
+          # leaving the names in a trailing comment satisfied the old raw-text
+          # test while nothing was cleared (audited 2026-08-25).
+          "for _cdir in \"$cwd/.operator/.compress-spill\" \"$cwd/.operator/.compress-state\"; do\n"
+          "  [ -d \"$_cdir\" ] && rm -rf \"$_cdir\" 2>/dev/null\n"
+          "done\n"
           "rm -rf \"$cwd/.operator/.autobar\"\n"
           "if ! grep -qF '# cc-operator gitignore v2 (allowlist)' \"$_gi\" 2>/dev/null; then\n"
           "  if [ -e \"$_gi.v1.bak\" ] && [ ! -f \"$_gi.v1.bak\" ]; then\n"
@@ -225,7 +247,7 @@ def make_good_tree(root):
     write(root / "scripts" / "ops-task.sh",
           "#!/usr/bin/env bash\n" + guards + nolink)
     write(root / "scripts" / "ops-verdict.sh",
-          "#!/usr/bin/env bash\n" + guards + nolink +
+          "#!/usr/bin/env bash\n" + "_r() { local LC_ALL=C; :; }\n" + guards + nolink +
           "sentinel_owner_of_name() {\n"
           "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]*) printf '\\n'; return 0 ;; esac\n"
           "}\n" +
@@ -300,12 +322,14 @@ def make_good_tree(root):
     write(root / "scripts" / "ops-tiers.sh",
           ROUTABLE_STUB +
           '# minimal stub; one byte-bounded read satisfies check_reader_bounds\n'
+          '_r() { local LC_ALL=C; :; }\n'
           'while IFS= read -r -n 512 line; do :; done < "$1"\n')
     # ops-render.sh: a bounded-read stub satisfies check_scripts and
     # check_reader_bounds.
     write(root / "scripts" / "ops-render.sh",
           ROUTABLE_STUB +
           '# stub renderer\n'
+          '_r() { local LC_ALL=C; :; }\n'
           'while IFS= read -r -n 256 line; do :; done\n')
     # The compressor is hook-wired, so the good tree must carry it or
     # check_compressor fires; the guard checks call sites (F48), so the stub
@@ -323,6 +347,10 @@ def make_good_tree(root):
           'const GATE_CLIS = ["ops-verdict.sh", "ops-task.sh", "ops-adopt.sh", "ops-claims.sh"];\n'
           'const SALVAGE_RE = /error|fail|not ok/i;\n'
           'function compress(tool, cmd) {\n'
+          # The reachability anchor: the guards below must sit at the SAME brace
+          # depth as this line, which is how a dead `if (false) { … }` wrapper is
+          # caught (Copilot, PR #87).
+          '  const tool = payload.tool_name;\n'
           '  if (NEVER_COMPRESS.has(tool)) return null;\n'
           '  if (tool.startsWith("mcp__")) return null;\n'
           '  const losslessOnly = LOSSLESS_ONLY.has(tool);\n'
@@ -878,7 +906,57 @@ class ValidatorTest(unittest.TestCase):
         d["hooks"]["SessionStart"][0]["hooks"][0]["command"] = \
             "bash scripts/ops-sessionstart-hook.sh"
         write(p, json.dumps(d))
-        self.assertFires("SessionStart command should use")
+        self.assertFires("SessionStart command must be exactly")
+
+    def test_hook_command_prefixed_with_true_fires(self):
+        """`true # ` names the script, resolves the plugin root, and runs
+        NOTHING — the whole evidence gate off, with both old substring tests
+        satisfied (audited 2026-08-25)."""
+        p = self.dir / "hooks" / "hooks.json"
+        d = json.loads(p.read_text())
+        d["hooks"]["Stop"][0]["hooks"][0]["command"] = \
+            'true # bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-stop-hook.sh"'
+        write(p, json.dumps(d))
+        self.assertFires("Stop command must be exactly")
+
+    def test_hook_appended_second_entry_fires(self):
+        """The check reads entry [0]; an APPENDED `exit 0` decides Stop's
+        verdict after ours and was invisible."""
+        p = self.dir / "hooks" / "hooks.json"
+        d = json.loads(p.read_text())
+        d["hooks"]["Stop"][0]["hooks"].append({"type": "command", "command": "exit 0"})
+        write(p, json.dumps(d))
+        self.assertFires("exactly 1 is expected")
+
+    def test_hook_second_matcher_group_fires(self):
+        """The first fix read `[event][0]["hooks"]` and counted the INNER list,
+        so appending a second MATCHER GROUP registered an unreviewed hook one
+        level up with the build green (Copilot, PR #87) — index-zero blindness
+        in the fix written against index-zero blindness."""
+        p = self.dir / "hooks" / "hooks.json"
+        d = json.loads(p.read_text())
+        d["hooks"]["Stop"].append({"hooks": [{"type": "command", "command": "exit 0"}]})
+        write(p, json.dumps(d))
+        self.assertFires("matcher group(s); exactly 1 is expected")
+
+    def test_hook_non_string_command_reports_not_raises(self):
+        """A JSON-valid non-string reached `.strip()` and raised
+        AttributeError, aborting the validator instead of reporting."""
+        p = self.dir / "hooks" / "hooks.json"
+        d = json.loads(p.read_text())
+        d["hooks"]["Stop"][0]["hooks"][0]["command"] = None
+        write(p, json.dumps(d))
+        self.assertFires("not a string")
+
+    def test_hook_non_command_type_fires(self):
+        """The harness runs a hook by its `type`. An entry carrying the exact
+        expected command string under another type passes every string test and
+        executes nothing."""
+        p = self.dir / "hooks" / "hooks.json"
+        d = json.loads(p.read_text())
+        d["hooks"]["Stop"][0]["hooks"][0]["type"] = "prompt"
+        write(p, json.dumps(d))
+        self.assertFires("not 'command'")
 
     # --- 8. scripts ---
     def test_script_syntax_error(self):
@@ -944,10 +1022,12 @@ class ValidatorTest(unittest.TestCase):
         """Install minimal but realistic reader scripts into the fixture tree."""
         good_hook = (
             "#!/usr/bin/env bash\n"
+            "_r() { local LC_ALL=C; :; }\n"
             ". lib/partition.sh\n"
             "[ ! -L \"$1\" ] || exit 0\n" + JSON_GET)
         good_verdict = (
             "#!/usr/bin/env bash\n"
+            "_r() { local LC_ALL=C; :; }\n"
             "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
             "check_owner_name() { :; }\n"
             "[ ! -L \"$f\" ] || exit 0\n"
@@ -963,6 +1043,7 @@ class ValidatorTest(unittest.TestCase):
             "while IFS= read -r -n 1048576 line; do :; done < \"$frag\"\n")
         good_adopt = (
             "#!/usr/bin/env bash\n"
+            "_r() { local LC_ALL=C; :; }\n"
             "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
             "check_owner_name() { :; }\n"
             "[ ! -L \"$F\" ] || exit 0\n"
@@ -998,6 +1079,67 @@ class ValidatorTest(unittest.TestCase):
             "while IFS= read -r -n 512 row; do :; done < \"$frag\"\n"))
         probs = self.bounds_problems()
         self.assertTrue(any("unbounded `read -r`" in p for p in probs), probs)
+
+    # Audited 2026-08-25: the check counted OCCURRENCES of `read -r -n \d+` and
+    # never read N, never asked where the text was, and exempted every `-d`
+    # form. Three escapes, all green against the hottest reader in the plugin.
+
+    def test_inflated_read_bound_fires(self):
+        """A 256MB "bound" is not a bound: the file is still read whole."""
+        self._write_readers(verdict_body=(
+            "#!/usr/bin/env bash\n"
+            "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
+            "check_owner_name() { :; }\n"
+            "while IFS= read -r -n 268435456 row; do :; done < \"$frag\"\n"))
+        probs = self.bounds_problems()
+        self.assertTrue(any("is not a bound" in p for p in probs), probs)
+
+    def test_read_bound_in_prose_does_not_count(self):
+        """The counter was satisfied by the STRING `read -r -n 512` in a helper
+        while the real loop had lost its bound — MENTION, not ACTION."""
+        self._write_readers(verdict_body=(
+            "#!/usr/bin/env bash\n"
+            "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
+            "check_owner_name() { :; }\n"
+            "_doc() { echo \"use read -r -n 512 here\"; }\n"))
+        probs = self.bounds_problems()
+        self.assertTrue(any("lost its bound" in p for p in probs), probs)
+
+    def test_read_d_newline_is_not_the_payload_exemption(self):
+        """`read -r -d $'\\n'` is a line-delimited read wearing the stdin-slurp
+        exemption's clothes — same unbounded behaviour as a plain `read -r`."""
+        self._write_readers(verdict_body=(
+            "#!/usr/bin/env bash\n"
+            "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
+            "check_owner_name() { :; }\n"
+            "while IFS= read -r -d $'\\n' row; do :; done < \"$frag\"\n"))
+        probs = self.bounds_problems()
+        self.assertTrue(any("unbounded `read -r`" in p for p in probs), probs)
+
+    def test_missing_lc_all_fires(self):
+        """A byte cap is only a byte cap in the C locale: bash `read -n N`
+        counts CHARACTERS outside it, so a 512-"char" read is up to 2048 bytes
+        (measured, bash 3.2.57 and 5.2.15: 512 chars of "é" = 1024 bytes) and
+        every cap is 4x looser than it reads (Copilot, PR #87)."""
+        self._write_readers(verdict_body=(
+            "#!/usr/bin/env bash\n"
+            "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
+            "check_owner_name() { :; }\n"
+            "while IFS= read -r -n 1048576 row; do :; done < \"$frag\"\n"))
+        probs = self.bounds_problems()
+        self.assertTrue(any("LC_ALL=C" in p for p in probs), probs)
+
+    def test_bare_payload_slurp_still_exempt(self):
+        """CONTROL: the real `read -r -d ''` payload slurp must stay exempt, or
+        every gate CLI reports a false unbounded read."""
+        self._write_readers(verdict_body=(
+            "#!/usr/bin/env bash\n"
+            "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
+            "check_owner_name() { :; }\n"
+            "IFS= read -r -d '' PAYLOAD || true\n"
+            "while IFS= read -r -n 1048576 row; do :; done < \"$frag\"\n"))
+        probs = self.bounds_problems()
+        self.assertFalse(any("unbounded `read -r`" in p for p in probs), probs)
 
     # The NUL probe (_np … le 40) must carry a chunk cap — an uncapped probe still
     # detects a late NUL but walks a newline-less multi-MB file first (66-70s on
@@ -1110,6 +1252,27 @@ class ValidatorTest(unittest.TestCase):
         probs = self.problems()
         self.assertTrue(any("permission test" in p and "ops-task.sh" in p
                             for p in probs), probs)
+
+    def test_test_spelled_permission_guard_fires(self):
+        """`test -w "$PWD"` has identical semantics to `[ -w … ]` and walked
+        past the bracket-only regex (audited 2026-08-25)."""
+        real = (self.dir / "scripts" / "ops-task.sh").read_text(encoding="utf-8")
+        write(self.dir / "scripts" / "ops-task.sh",
+              real.replace("#!/usr/bin/env bash\n",
+                           '#!/usr/bin/env bash\nif test -w "$PWD"; then :; fi\n', 1))
+        probs = self.problems()
+        self.assertTrue(any("permission test" in p and "ops-task.sh" in p
+                            for p in probs), probs)
+
+    def test_permission_guard_in_scripts_lib_fires(self):
+        """scripts/lib/ is sourced BY the gate, so a permission test there is a
+        permission test in the gate. The docstring said "anywhere in scripts/";
+        the glob said `scripts/*.sh` and missed both load-bearing libs."""
+        p = self.dir / "scripts" / "lib" / "partition.sh"
+        write(p, p.read_text(encoding="utf-8") + '\nif [ -w "$PWD" ]; then :; fi\n')
+        probs = self.problems()
+        self.assertTrue(any("permission test" in q and "lib/partition.sh" in q
+                            for q in probs), probs)
 
     def test_commands_dir_optional(self):
         # A plugin that ships only agents need not have commands/; absence is
@@ -1472,10 +1635,22 @@ class LockParityTest(unittest.TestCase):
     same lesson `check_reader_bounds` was written for.
     """
 
+    # Carries every CANONICAL_LOCK property: the check now pins CONTENT as
+    # well as parity, because two copies drifting together are trivially in
+    # parity — F30, measured against this very check on 2026-08-25 (the holder
+    # read inflated to 999999999 in BOTH files, build green).
     BLOCK = (
         "# >>> LOCK BLOCK\n"
         "LOCK_SPINS=300\n"
+        "lock_holder_live() {\n"
+        '  { IFS= read -r -n 128 LOCK_HOLDER_REC < "$LOCKDIR/holder"; } 2>/dev/null || true\n'
+        '  IFS= read -r -n 128 FALLBACK_REC < "$FALLBACK_DIR/holder" 2>/dev/null || true\n'
+        '  kill -0 "$pid" 2>/dev/null && return 0\n'
+        "}\n"
         "lock_acquire() {\n"
+        '  while ! mkdir "$LOCKDIR" 2>/dev/null; do\n'
+        '    mkdir "$LOCKDIR.reclaim" 2>/dev/null && rmdir "$LOCKDIR.reclaim"\n'
+        "  done\n"
         '  echo "TOOL: warning — reclaiming" >&2\n'
         "}\n"
         "# <<< LOCK BLOCK\n"
@@ -1510,6 +1685,44 @@ class LockParityTest(unittest.TestCase):
         probs = self.problems()
         self.assertTrue(any("drifted" in p for p in probs), probs)
         self.assertTrue(any("LOCK_SPINS" in p for p in probs), probs)
+
+    def test_uniform_drift_fires(self):
+        """F30, committed inside the check whose docstring teaches it: the
+        holder read inflated to 999999999 in BOTH copies left them perfectly
+        in parity with the ledger's mutual exclusion reading unbounded.
+        Measured 2026-08-25; the bash suite did not see it either."""
+        broke = self.BLOCK.replace("read -r -n 128", "read -r -n 999999999")
+        self._write(verdict=broke.replace("TOOL:", "ops-verdict:"),
+                    adopt=broke.replace("TOOL:", "ops-adopt:"))
+        probs = self.problems()
+        self.assertFalse(any("drifted" in p for p in probs),
+                         "uniform drift IS in parity — that is the point")
+        self.assertTrue(any("no longer contains" in p for p in probs), probs)
+
+    def test_canonical_lock_in_a_comment_does_not_count(self):
+        """The content pin searched the RAW block, so commenting out the real
+        `while ! mkdir` and leaving the identical text in a comment satisfied
+        it in both copies while the lock was a test-then-create race (Copilot,
+        PR #87) — MENTION-not-ACTION inside the pin added to close it."""
+        broke = self.BLOCK.replace(
+            '  while ! mkdir "$LOCKDIR" 2>/dev/null; do',
+            '  # while ! mkdir "$LOCKDIR" 2>/dev/null; do\n  while [ -d "$LOCKDIR" ]; do')
+        self._write(verdict=broke.replace("TOOL:", "ops-verdict:"),
+                    adopt=broke.replace("TOOL:", "ops-adopt:"))
+        probs = self.problems()
+        self.assertTrue(any("atomic primitive" in p for p in probs), probs)
+
+    def test_uniform_loss_of_atomic_mkdir_fires(self):
+        """A test-then-create is a race, not a lock — and applying it to both
+        copies is the realistic edit, since they are maintained by copy-paste."""
+        broke = self.BLOCK.replace('while ! mkdir "$LOCKDIR" 2>/dev/null; do',
+                                   'while [ -d "$LOCKDIR" ]; do')
+        self._write(verdict=broke.replace("TOOL:", "ops-verdict:"),
+                    adopt=broke.replace("TOOL:", "ops-adopt:"))
+        probs = self.problems()
+        self.assertTrue(any("atomic primitive" in p for p in probs), probs)
+        self.assertFalse(any("drifted" in p for p in probs),
+                         "identically-broken copies are in parity — content is what catches this")
 
     def test_missing_markers_fire(self):
         self._write(adopt="lock_acquire() { :; }\n")
@@ -1769,6 +1982,62 @@ class CompressorGuardTest(unittest.TestCase):
             '"Bash", "WebFetch", "WebSearch", "Grep", "Glob", "Read"', 1)
         probs = self._probs(src)
         self.assertTrue(any("ELIDABLE" in p for p in probs), probs)
+
+    def test_elidable_mutated_after_the_literal_fires(self):
+        """A Set literal is not a Set's contents: `ELIDABLE.add("Read")` puts a
+        never-compress tool in the allowlist while every literal pin above
+        stays green. Measured 2026-08-25 — the 90-case replay suite missed it
+        too, and the compressor is the only component that rewrites what the
+        model reads."""
+        src = self._real_comp + '\nELIDABLE.add("Read");\n'
+        probs = self._probs(src)
+        self.assertTrue(any("mutates the set" in p for p in probs), probs)
+
+    def test_never_compress_call_site_in_dead_branch_fires(self):
+        """`if (false) if (NEVER_COMPRESS.has(tool)) return null;` — declared,
+        present, unreachable. The unanchored search accepted it."""
+        src = self._real_comp.replace(
+            "if (NEVER_COMPRESS.has(tool)) return null;",
+            "if (false) if (NEVER_COMPRESS.has(tool)) return null;", 1)
+        probs = self._probs(src)
+        self.assertTrue(any("head of its own" in p for p in probs), probs)
+
+    def test_multiline_dead_branch_around_a_guard_fires(self):
+        """The anchor rejected only the ONE-LINE `if (false) if (…)`. Wrapping
+        the same call site in a multiline `if (false) { … }` left every guard
+        declared, matched, and unreachable (Copilot, PR #87) — so reachability
+        is now brace-depth against the anchor, which a substring cannot see."""
+        src = self._real_comp.replace(
+            "    if (NEVER_COMPRESS.has(tool)) return null;",
+            "    if (false) {\n    if (NEVER_COMPRESS.has(tool)) return null;\n    }", 1)
+        probs = self._probs(src)
+        self.assertTrue(any("brace depth" in p for p in probs), probs)
+
+    def test_multiline_dead_branch_around_the_carveout_fires(self):
+        """Same shape on the I2 carve-out: the ledger exemption is what keeps
+        the evidence gate's own output out of the compressor."""
+        src = self._real_comp.replace(
+            "    if (LEDGER_PATHS.some((p) => cmd.includes(p))) return null;",
+            "    if (false) {\n    if (LEDGER_PATHS.some((p) => cmd.includes(p))) return null;\n    }", 1)
+        probs = self._probs(src)
+        self.assertTrue(any("brace depth" in p for p in probs), probs)
+
+    def test_missing_reachability_anchor_reports(self):
+        """If the anchor line is renamed, the check can prove nothing — it must
+        say so rather than silently passing every guard."""
+        src = self._real_comp.replace("const tool = payload.tool_name", "const t2 = payload.tool_name", 1)
+        probs = self._probs(src)
+        self.assertTrue(any("no anchor" in p for p in probs), probs)
+
+    def test_array_length_write_fires(self):
+        """`GATE_CLIS.length = 0` empties the carve-out while the literal and
+        the `.some()` call site stay green (Copilot, PR #87)."""
+        probs = self._probs(self._real_comp + "\nGATE_CLIS.length = 0;\n")
+        self.assertTrue(any("writes into the array" in p for p in probs), probs)
+
+    def test_array_indexed_write_fires(self):
+        probs = self._probs(self._real_comp + '\nLEDGER_PATHS[0] = "nope";\n')
+        self.assertTrue(any("writes into the array" in p for p in probs), probs)
 
     def test_salvage_tap_alternative_dropped_fires(self):
         src = re.sub(r'\|not ok', '', self._real_comp, count=1)
@@ -2203,8 +2472,9 @@ class ReleaseGateCoverageTest(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)
 
-    def _write(self, validate=None, release=None):
-        wf = self.dir / ".github" / "workflows"
+    def _write(self, validate=None, release=None, base=".github"):
+        wf = self.dir / base / "workflows"
+        wf.mkdir(parents=True, exist_ok=True)
         if validate is not None:
             write(wf / "validate.yml", validate)
         if release is not None:
@@ -2246,6 +2516,71 @@ class ReleaseGateCoverageTest(unittest.TestCase):
         self._write(validate=self.VALIDATE)
         probs = self._probs()
         self.assertTrue(any("release.yml is missing" in p for p in probs), probs)
+
+    def test_commented_out_step_does_not_count(self):
+        """A YAML comment contains the suite name, and a raw substring test
+        accepted it — the tag build reads as gated in a diff and runs nothing
+        (audited 2026-08-25)."""
+        subset = self.RELEASE_FULL.replace(
+            "      - run: node tests/test_workflows.mjs\n",
+            "      # - run: node tests/test_workflows.mjs\n")
+        self._write(self.VALIDATE, subset)
+        probs = self._probs()
+        self.assertTrue(any("test_workflows.mjs" in p and "LIVE" in p for p in probs), probs)
+
+    def test_if_false_step_does_not_count(self):
+        """Present but skipped is not run — same reading in a diff, same zero
+        coverage at the tag."""
+        subset = self.RELEASE_FULL.replace(
+            "      - run: node tests/test_workflows.mjs\n",
+            "      - if: false\n        run: node tests/test_workflows.mjs\n")
+        self._write(self.VALIDATE, subset)
+        probs = self._probs()
+        self.assertTrue(any("test_workflows.mjs" in p and "LIVE" in p for p in probs), probs)
+
+    def test_forgejo_release_is_checked_too(self):
+        """`.forgejo/` is the job that actually publishes on this LAN, and the
+        check had never looked at it: gutting every suite from the forge
+        release job was green. The two forges' files cannot be identical
+        (host-qualified `uses:` on Forgejo, which act cannot parse), which is
+        why nothing else pins them."""
+        self._write(self.VALIDATE, self.RELEASE_FULL)                       # GitHub: fine
+        self._write(self.VALIDATE, "jobs:\n  release:\n    steps:\n      - run: true\n",
+                    base=".forgejo")
+        probs = self._probs()
+        self.assertTrue(probs, "the forge release job gates nothing and must be reported")
+        self.assertTrue(all(".forgejo" in p for p in probs),
+                        f"only the forge job is at fault here; got {probs}")
+        self.assertTrue(any("Forgejo" in p for p in probs), probs)
+
+    def test_forgejo_superset_passes(self):
+        """CONTROL: a forge job that runs everything is silent — the check must
+        not fire merely because a second forge exists."""
+        self._write(self.VALIDATE, self.RELEASE_FULL)
+        self._write(self.VALIDATE, self.RELEASE_FULL, base=".forgejo")
+        self.assertEqual(self._probs(), [])
+
+    def test_job_level_if_false_fires(self):
+        """`live()` groups STEPS, so a job-level `if: false` sits outside every
+        step and the suites inside a disabled publishing job still counted as
+        coverage (Copilot, PR #87)."""
+        disabled = self.RELEASE_FULL.replace(
+            "jobs:\n  release:\n", "jobs:\n  release:\n    if: false\n")
+        self._write(self.VALIDATE, disabled)
+        probs = self._probs()
+        self.assertTrue(any("job- or workflow-level" in p for p in probs), probs)
+
+    def test_step_level_if_false_is_not_reported_as_job_level(self):
+        """CONTROL: a step-level `if:` is legitimate for a conditional step and
+        is handled by the grouping — it must not be reported as a disabled job,
+        or the message sends a maintainer to the wrong line."""
+        subset = self.RELEASE_FULL.replace(
+            "      - run: node tests/test_workflows.mjs\n",
+            "      - if: false\n        run: node tests/test_workflows.mjs\n")
+        self._write(self.VALIDATE, subset)
+        probs = self._probs()
+        self.assertFalse(any("job- or workflow-level" in p for p in probs), probs)
+        self.assertTrue(any("LIVE" in p for p in probs), probs)
 
     def test_real_workflows_are_covered(self):
         probs = []

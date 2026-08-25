@@ -9,6 +9,100 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-08-25
+
+Three open issues, and the guard auditor's second run — four validator pins
+that reported green against the exact defect they were written to catch.
+
+### Fixed
+
+- **#73 — the feasibility lens now receives the input its own question needs.**
+  `plan.js` asks each vet seat "is the dependency it consumes actually produced
+  by an earlier task?" and dispatched it with one task and no siblings. 14 of 21
+  seats returned `needs-info` citing `dependency-missing`, five of them against a
+  control column whose plan is correct. Each packet now carries the earlier
+  tasks' `produces` as `id: names`, strictly earlier, with the empty case saying
+  "none — this is the first task" in words: an absent section reads as withheld
+  information and returns `needs-info` again.
+- **#82 — SessionStart no longer stamps a partial upgrade as complete.** A
+  manifest-named CLI with no shipped file was skipped without clearing
+  `_upgrade_ok`, so `.version` recorded a finished upgrade over a partial
+  `bin/`; `_bin_stale` carried the same skip, so the only retry trigger never
+  fired. Measured: 2 of 3 copied, stamped current, no warning, never retried.
+  Both halves now treat an absent source as a failed upgrade. Still fail-open —
+  the shipped CLIs land and the skip is announced.
+- **#74 — `args.isolate` never reached the commit it named.** The runtime's
+  `isolation: "worktree"` takes no commit, so the worktree is created at the
+  default branch; two dispatches requesting different shas both landed nine
+  commits earlier. The default is now honest (clean environment, NOT commit
+  identity, and the seat is told a HEAD mismatch is expected rather than
+  refutable), the result carries `atRequestedCommit`, and
+  `args.isolateCheckout: true` opts into a real `git checkout --detach` at the
+  cost of a worktree left on disk.
+
+### Changed
+
+- **The guard auditor's second run: four vacuous validator pins and one blind
+  spot, all closed.** 84 mutations across 25 checks. `check_reader_bounds`
+  counted occurrences and never read N (a 256MB "bound" passed), never asked
+  where the text was (a string literal satisfied it), and exempted
+  `read -r -d $'\n'` as if it were the stdin slurp. `check_lock_parity`
+  compared two copies and pinned no content, so inflating the holder read in
+  BOTH left them in parity — F30 inside the check whose docstring teaches F30.
+  `check_hook` accepted `true # ` in front of the command (the evidence gate off
+  in three characters) and read only entry [0] of the hooks array.
+  `check_compressor` missed `ELIDABLE.add("Read")` after the literal and an
+  emptied wipe loop whose directory names survived in a comment.
+  `check_release_gates_cover_validate` had never looked at `.forgejo/`, the job
+  that publishes on this LAN, and accepted a commented-out or `if: false` step.
+  `check_permission_guards` missed `test -w` and all of `scripts/lib/`.
+- **The review of that audit found six more, and they are the same shapes.**
+  `check_hook` read matcher group `[0]` and counted only the inner list, so a
+  second matcher group registered an unreviewed hook — index-zero blindness
+  inside the fix written against index-zero blindness; it also never checked the
+  entry's `type`, and a non-string command raised rather than reporting. The
+  lock content pin searched the RAW block, so commenting out the real
+  `while ! mkdir` and leaving the text in a comment satisfied it in both copies.
+  The compressor's reachability anchor caught only the one-line `if (false) if
+  (…)`; a multiline `if (false) { … }` walked past, and `GATE_CLIS.length = 0`
+  was not a method call. `live()` grouped steps, so a job-level `if: false`
+  disabled a whole publishing job invisibly. And every byte cap was only a byte
+  cap in the C locale — bash counts CHARACTERS outside it, so `ops-verdict.sh`'s
+  and `ops-adopt.sh`'s reads were up to 4x looser than they read on multibyte
+  input (measured: 512 chars of `é` = 1024 bytes). All six fixed, each with the
+  mutation that proves it; reachability is now brace depth against a named
+  anchor, which a substring cannot approximate.
+- **`args.isolate` could REFUTE a correct tree.** `git rev-parse HEAD` prints a
+  full lowercase sha and the guard accepts 7–40 hex, so `isolate=abc1234` was
+  compared against 40 characters and failed — a false REFUTED on the one verdict
+  that cannot be outvoted. The seat is now told to compare by prefix when the
+  caller abbreviated, and case-insensitively.
+- **`atRequestedCommit` was the caller's own flag echoed back.** A failed
+  checkout, or a seat that ignored the instruction, still returned `true`: the
+  workflow asserting an identity nothing observed — the overclaim `#74` fixed,
+  one field over. It is now derived from the seat's `OBSERVED_HEAD:` line, with
+  three distinct states (`true` / `false` / `null` for nothing observed), and
+  `observedCommit` records what came back.
+- **The `OBSERVED_HEAD` parse accepted a partial read as a measurement.** It
+  matched 7–40 hex ANYWHERE in the evidence, so a seat writing the sha in prose
+  produced a 7-char "observation" that then failed the full-sha comparison —
+  reported as `atRequestedCommit: false`, a FALSE MISMATCH on a correct
+  checkout. Same class as the false REFUTED above: `null` is honest, `false` is
+  a claim. Now anchored to its own line and a full 40-char sha; anything else is
+  "nothing observed".
+- **The `#73` truncation notice counted the wrong thing and cut mid-line.** It
+  reported `acc.length` — every earlier task, not the number omitted — so a list
+  of 65 producers carried "119 of 119 did not fit", and the cut could leave half
+  a producer name that reads as a real one. Both point the same way: the section
+  exists to stop the lens inventing missing producers, and a wrong count invents
+  them back. Now line-boundary truncation with a `dropped of total` count that
+  the tests assert sums.
+- **The `#73` dependency section is capped at 4000 chars and truncates
+  visibly.** It renders every earlier task into every later packet — O(T²) in
+  prompt bytes, with the comment claiming "bounded" and nothing enforcing it. A
+  silent cut would teach the lens that a real producer does not exist, so the
+  notice says what not to conclude from an absent name.
+
 ## [0.11.0] - 2026-08-24
 
 The release where the evidence gate stops being optional, and where the thing
