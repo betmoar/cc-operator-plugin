@@ -9,6 +9,85 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-08-27
+
+The deviation gate cost more than it bought, and four of the five defects were
+one defect: the gate could not tell whose decision it was blocking on.
+
+### Fixed
+
+- **The deviation gate no longer inherits other sessions' presented decisions
+  (#90).** Clearing is now asymmetric: a MINE row clears only on a mine/unowned
+  mark, an UNOWNED row clears on any later mark, foreign included. Nothing
+  writes the `[sid:]` tag onto a DEVIATION — the operator hand-writes those
+  rows — so untagged is the NORMAL shape, not a pre-0.4 artifact, and under the
+  old "foreign clears nothing" rule every untagged decision blocked every future
+  session forever: the session that wrote it marked under its own sid, foreign
+  to everyone after. Measured against two real ledgers as a fresh session before
+  the fix: strike-zero 6 unpresented, gtrw 2 — all long presented. Both are 0
+  now. What still blocks is the case the gate exists for: an untagged row with
+  no later mark at all. `statusline.sh` mirrors the rule on its backward walk.
+- **The block message names the rows it counted, absolutely (#93, #94).** The
+  hook asked the operator to present N decisions while withholding which, so the
+  cheapest correct response was to run `--mark-handoff` without reading — the
+  habit the gate exists to prevent; identifying the rows meant reverse-reading
+  `partition.sh`. `scan_deviations` already parsed them and threw them away. It
+  now returns them, and the hook prints up to 10 (truncated at 110 chars, with a
+  count of what it withheld — stderr is fed back to the model as guidance, and a
+  100-row dump buries the instruction). Both prescribed paths are absolute: the
+  Bash tool's cwd persists across calls, and a session sitting in a subdirectory
+  followed the old relative path, got "No such file or directory" from both the
+  CLI and a `find .` for the ledger, and concluded the charter was never
+  realized in the repo — a present gate misdiagnosed as absent.
+- **`--owner` refuses an unexpanded shell variable (#89).** A quoted heredoc
+  passed the literal two characters `$S`; `check_owner_name` accepted it, and
+  `[sid:$S]` took every reader's FOREIGN arm, so the mark cleared nothing while
+  the tool reported success. Strictly worse than not running the command, and
+  invisible until the next Stop blocked again. All three CLIs now refuse `$`,
+  backtick, quote and backslash in an owner, naming the cause.
+- **`brainstorm` and `plan` no longer discard a non-JSON `args` string (#92).**
+  Both normalizers returned `{}` from the catch, so a prose brief evaporated and
+  the run proceeded against the placeholder: measured live at 7 agents, 123,935
+  tokens, 86 seconds, every seat answering "cannot propose a direction without a
+  topic". The catch now returns the string, as the other four workflows always
+  did, and a bare string is read as the required argument the way `review.js`
+  reads its target. An absent topic/spec throws before phase 1 — a refusal that
+  spends zero agents rather than a better message after the same cost.
+
+### Fixed (second pass — PR #88 review)
+
+Four holes the first pass left, all in the fixes above rather than beside them.
+
+- **The #89 guard belonged on the READERS too, not just the three writers.** A
+  pre-0.9 sentinel carries its owner in the BODY, so `ops-sessionstart-hook.sh`'s
+  migration renamed `session_id: $S` to `$S__planted` — and both
+  `sentinel_owner_of_name` copies read that as a valid FOREIGN owner. Measured:
+  Stop returned rc 0 on a real open task, reporting `planted owned by $S`. The
+  silent disarm the branch exists to prevent, reached by the one path a writer
+  guard cannot see. The arm now sits at all six sites; writers refuse, readers
+  degrade to unowned (fails CLOSED), the migration refuses. The two halves are
+  mutation-checked separately — neither covers for the other.
+- **The absolute path is now shell-quoted.** Absolute means long enough to
+  contain a space: `/work/my repo/.operator/bin/ops-verdict.sh` pasted bare runs
+  `/work/my`, so the cwd fix would have traded one uncopyable command for
+  another.
+- **Ledger rows are sanitized before they reach stderr.** The rows are
+  hand-editable project data printed into the channel that carries this hook's
+  own instruction — a CR alone repaints the `--mark-handoff` line it is attached
+  to. C0 bytes and DEL become `?`, before measuring, so the 110-char cap stays
+  honest and cannot truncate mid-escape.
+- **`crawl`'s `question` gets the same fail-fast as `brainstorm`/`plan`.** Its
+  absent-*shards* branch returns before dispatching, which is what made it look
+  covered; an absent *question* with valid shards paid every crawler seat and the
+  merge to answer a placeholder.
+
+### Notes
+
+Every fix carries its mutation: twelve were run across both passes, each red
+against the case written for it, each restored byte-identical. Suites: 726 bash
+(was 689), 354 node (was 340), 90 compress, 222 python, validator green,
+shellcheck clean under the pinned 0.10.0.
+
 ## [0.11.1] - 2026-08-25
 
 Three open issues, and the guard auditor's second run — four validator pins

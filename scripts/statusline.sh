@@ -166,6 +166,9 @@ if [ -f "$OPDIR/DECISIONS.md" ] && [ ! -L "$OPDIR/DECISIONS.md" ]; then
       fi
     done < <(tail -n 256 "$OPDIR/DECISIONS.md" 2>/dev/null)
     [ -n "$_acc" ] && _lines+=("$_acc")
+    # Set once a FOREIGN mark is passed on the backward walk: from there down,
+    # unowned rows are already presented (the lib's asymmetric clearing).
+    _devunowned_cleared=0
     i=${#_lines[@]}
     while [ "$i" -gt 0 ]; do
       i=$((i - 1))
@@ -180,16 +183,21 @@ if [ -f "$OPDIR/DECISIONS.md" ] && [ ! -L "$OPDIR/DECISIONS.md" ]; then
       case "$kind" in
         DEVIATION|ESCALATION|GATE-EXCEPTION)
           case "$what" in
-            "[sid:$SESSION]"*) DEVMINE=$((DEVMINE + 1)) ;;   # mine/unowned → counts
+            "[sid:$SESSION]"*) DEVMINE=$((DEVMINE + 1)) ;;   # mine → counts
             "[sid:"*) : ;;                                  # foreign → never counts
-            *) DEVMINE=$((DEVMINE + 1)) ;;
+            # unowned → counts only while the unowned set is still standing;
+            # a foreign mark already seen (walking backwards) discharged it.
+            *) [ "$_devunowned_cleared" = 1 ] || DEVMINE=$((DEVMINE + 1)) ;;
           esac ;;
         HANDOFF-MARK)
-          # walking backwards, the FIRST mine/unowned mark clears the rest
+          # Walking BACKWARD, so the first mark seen is the LAST in the file.
+          # Mirrors the lib's asymmetric clearing (#90): a mine/unowned mark
+          # ends the walk entirely; a foreign mark discharges only the unowned
+          # rows below it and the walk continues for mine.
           case "$what" in
-            "[sid:$SESSION]"*) break ;;                     # mine → clears
-            "[sid:"*) : ;;                                  # foreign → keep walking
-            *) break ;;
+            "[sid:$SESSION]"*) break ;;                     # mine → clears all
+            "[sid:"*) _devunowned_cleared=1 ;;              # foreign → unowned only
+            *) break ;;                                     # unowned → clears all
           esac ;;
       esac
     done

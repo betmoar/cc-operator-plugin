@@ -33,13 +33,25 @@ const BAD_CHARSET = /[^\w./:@[\]-]/;
 // Normalize args: the Workflow tool stringifies a passed object into a JSON
 // STRING in transit (verified), so `args?.tiers` would read undefined and
 // defaults silently fire. Parse a JSON string back to an object.
+// The catch RETURNS THE STRING (#92). Returning {} discarded the operator's
+// text silently — in brainstorm that bought a 124K-token fan-out against a
+// placeholder. plan already REFUSES an absent spec, so the cost here is a
+// confusing refusal rather than a wasted run, but the discard is the same
+// defect and the four other workflows never had it.
 const A = (() => {
   if (typeof args === "string") {
-    try { return JSON.parse(args); } catch { return {}; }
+    const t = args.trim();
+    if (t.startsWith("{") || t.startsWith("[") || t.startsWith('"')) {
+      try { return JSON.parse(t); } catch { return args; }
+    }
+    return args;
   }
   return args ?? {};
 })();
-const overrides = A.tiers;
+// A is now legitimately a bare string: guard the property reads. plan takes TWO
+// required arguments (spec + northStar), so unlike brainstorm a bare string
+// cannot BE the argument — it is refused below, naming both.
+const overrides = typeof A === "object" ? A.tiers : undefined;
 if (overrides != null) {
   if (typeof overrides !== "object" || Array.isArray(overrides)) {
     throw new Error(`args.tiers must be an object, got ${typeof overrides}`);
@@ -84,14 +96,14 @@ const MECHANICAL = TIERS.MECHANICAL;
 // absent spec ran a full judgment-tier decomposition and N vet dispatches on the
 // string "(no spec provided …)", so the cheapest possible mistake bought the
 // most expensive possible no-op.
-const spec = A.spec;
+const spec = typeof A === "object" ? A.spec : undefined;
 if (typeof spec !== "string" || !spec.trim()) {
   throw new Error(
     "args.spec is required and must be a non-empty string — decomposing a " +
       "placeholder burns a judgment-tier pass and every vet seat on nothing",
   );
 }
-const repoRoot = A.repoRoot ?? ".";
+const repoRoot = (typeof A === "object" ? A.repoRoot : undefined) ?? ".";
 
 // --- the north star (#58) ---------------------------------------------------
 // One sentence naming what must be true when this work is done, plus what we
@@ -127,7 +139,7 @@ const repoRoot = A.repoRoot ?? ".";
 const MISS_CLAUSE = /\bmissed\s+if[^\S\n]*:[^\S\n]*(\S[^\n]*)/i;
 const NORTH_STAR_MIN_CHARS = 40;
 
-const northStar = A.northStar;
+const northStar = typeof A === "object" ? A.northStar : undefined;
 if (typeof northStar !== "string" || !northStar.trim()) {
   throw new Error(
     "args.northStar is required: one sentence naming what must be true when this " +
@@ -171,7 +183,7 @@ if (!missClause || missClause[1].trim().length < 10) {
 }
 // Global constraints copied verbatim from the spec — version floors, naming
 // rules, limits. Every task inherits them. Optional.
-const globalConstraints = A.globalConstraints ?? "";
+const globalConstraints = (typeof A === "object" ? A.globalConstraints : undefined) ?? "";
 
 // --- Phase 1: decompose ----------------------------------------------------
 // One judgment-tier pass turns the spec into a task list. A task is the

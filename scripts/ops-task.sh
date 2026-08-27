@@ -27,10 +27,15 @@ check_bare_name() { # check_bare_name <label> <value>
 
 # Owners refuse whitespace (a padded owner is permanently foreign — a
 # silently disarmed gate); task ids do NOT (legacy spaced ids must close).
+# Owners also refuse shell metacharacters (#89): an unexpanded `$S` from a
+# quoted heredoc reads as a foreign session id, so the sentinel it names is
+# permanently unclearable — the same hazard the whitespace rule exists for.
+# Keep identical in ops-verdict.sh + ops-adopt.sh (check_guard_parity).
 check_owner_name() { # check_owner_name <value>
   check_bare_name "owner" "$1"
   case "$1" in
     *[[:space:]]*) die "owner must not contain whitespace — it could never match a real session id, leaving the task permanently unblockable" ;;
+    *'$'* | *'`'* | *"'"* | *'"'* | *\\*) die "owner contains a shell metacharacter — this looks like an UNEXPANDED variable, not a session id. A literal like \$S is read by every ledger consumer as a foreign session, so its HANDOFF-MARK clears nothing and its sentinel is unclearable" ;;
   esac
 }
 

@@ -75,10 +75,18 @@ check_bare_name() { # check_bare_name <label> <value>
 
 # Owners refuse whitespace (a padded owner never matches a real session →
 # permanently unblockable); task ids deliberately do NOT — see ops-task.sh.
+# Owners ALSO refuse shell metacharacters (#89): a quoted heredoc passed the
+# literal two characters `$S`, which every reader classified as a FOREIGN
+# session id — so the mark cleared nothing and the operator believed the
+# deviations were presented because the tool said so. Strictly worse than not
+# running the command, and invisible: the only symptom is the next Stop
+# blocking again. No real session id contains one, so this cannot false-fire.
+# Keep identical in ops-task.sh + ops-adopt.sh (check_guard_parity).
 check_owner_name() { # check_owner_name <value>
   check_bare_name "owner" "$1"
   case "$1" in
     *[[:space:]]*) die "owner must not contain whitespace — it could never match a real session id, leaving the task permanently unblockable" ;;
+    *'$'* | *'`'* | *"'"* | *'"'* | *\\*) die "owner contains a shell metacharacter — this looks like an UNEXPANDED variable, not a session id. A literal like \$S is read by every ledger consumer as a foreign session, so its HANDOFF-MARK clears nothing and its sentinel is unclearable" ;;
   esac
 }
 
@@ -345,8 +353,12 @@ sentinel_owner_of_name() { # <basename> → owner ("" when unowned or unwritable
   # The F1 reject set: our CLIs cannot write these shapes, so degrade a
   # planted name to unowned (fails CLOSED). Literals live only in the case
   # below — a comment repeating a pinned literal absorbs the vacuity mutation.
+  # The metacharacter arm is #89's: a reader that accepts what check_owner_name
+  # refuses reads a planted `$S__task` as a valid foreign owner (measured via
+  # the SessionStart migration; Stop went rc 0 on a real open task).
   case "$_o" in
     "" | */* | .* | *"|"* | *[[:space:]]*) printf '\n'; return 0 ;;
+    *'$'* | *'`'* | *"'"* | *'"'* | *\\*) printf '\n'; return 0 ;;
   esac
   printf '%s\n' "$_o"
 }

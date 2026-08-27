@@ -317,3 +317,159 @@ being re-read every session.
   have been right and unevidenced; the run costs a minute. This is the same
   register as "a compile is not proof the feature works", applied to a report
   nobody would think to fuzz because it is advisory.
+
+## Extracted from the coupling table (0.11.2)
+
+These are the *why* halves of `CLAUDE.md`'s "If you touch X, update Y" rows. They
+were living inside the table itself, which loads into every session; the rows now
+carry the coupling and point here. Nothing below was reworded — it is the same
+reasoning, moved.
+
+- **A stale `.operator/bin/` is the gate a session actually runs.** The refresh
+  trigger in `ops-sessionstart-hook.sh` keeps TWO clauses, a version-string change
+  **or** `_bin_stale`. Version alone was #34: every intra-version fix to a gate CLI
+  stayed invisible because `plugin.json` had not moved, so a project kept running
+  the broken predecessor of a fix while the plugin tree's own tests passed. The
+  charter points the model at `.operator/bin/…`, so that copy IS the gate. Note the
+  asymmetry: **hooks** resolve through `${CLAUDE_PLUGIN_ROOT}/scripts/…` and are
+  current immediately, so hooks and `bin/` can sit at different commits at once.
+  The two halves must also agree about an ABSENT source (#82): both carried
+  `[ -f … ] || continue`, so a manifest-named CLI with no shipped file was skipped,
+  `_upgrade_ok` stayed 1, `.version` recorded a completed upgrade over a partial
+  `bin/`, and the probe — the only retry trigger once the version stops moving —
+  never reported it: `version == stamp` forever. Measured: 2 of 3 copied, stamped
+  current, no warning. The comment above the trigger reasoned about an EMPTY set
+  doing exactly this and guarded it; an INCOMPLETE one went unguarded. Fail-OPEN
+  stays: the shipped CLIs still land, and the skip is announced. The `#82` cases
+  carry both CONTROLs — a complete manifest DOES stamp and warns about nothing,
+  because a fix that never stamps is the same bug inverted.
+
+- **A pin is a hypothesis until the mutation runs red.** The `pin-auditor` agent
+  audited 25 validator checks on 2026-08-25 (84 mutations, tmpdir copies) and found
+  four VACUOUS pins with nothing behind them; reviewing that audit found six more of
+  the same shapes. The list is therefore not exhaustive, and the method — mutate,
+  watch it go red, restore byte-identically — is the point. The measured escapes:
+  - **A substring test asks "is this text present", never "does it run"** —
+    `"autobar.sh" in hcode` was satisfied by an `echo`, `true # bash "…/ops-stop-hook.sh"`
+    satisfied both of `check_hook`'s tests while running nothing, and
+    `for _cdir in ; do  # was: .compress-spill …` satisfied a raw-text test with the
+    wipe loop emptied.
+  - **A count is not a value**: `read -r -n \d+` counted occurrences and never read
+    N, so `268435456` was "a bound".
+  - **A literal is not the contents**: `new Set([…])` is mutable, and
+    `ELIDABLE.add("Read")` after the declaration changed what gets elided with every
+    literal pin green.
+  - **A parity check cannot see uniform drift** (F30): `check_lock_parity` compared
+    two copies and pinned no content, so inflating the holder read in BOTH left them
+    perfectly in parity — F30 committed inside the check whose docstring teaches F30.
+  - **A glob is narrower than the docstring**: `scripts/*.sh` does not match
+    `scripts/lib/`, where the two libs the gate sources live; `[ -w ]` does not match
+    `test -w`; `"([^"]*)"` does not match single quotes.
+  - **`if (false)` / `if 0 and` / a preceding `if (false) if (…)`** put a pinned
+    literal where it cannot run.
+  - **An ANCHOR is not reachability**: `if (false) if (…)` was rejected while
+    `if (false) { … }` walked past — the fix is brace depth against a named anchor,
+    and if the anchor is renamed the check REPORTS rather than passing.
+  - **A COMMENT-BEARING raw read is not code**: the lock pin searched the raw block,
+    so commenting out the real `while ! mkdir` and leaving the text in a comment
+    satisfied it.
+  - **A METHOD LIST is not every write**: `GATE_CLIS.length = 0` and `X[0] = …` are
+    not method calls.
+  - **INDEX ZERO is not the collection, at either level**: `hooks[event][0]["hooks"]`
+    counted the inner list while a second MATCHER GROUP registered an unreviewed hook.
+    A STEP scan likewise cannot see a JOB-level `if: false`.
+  - **A byte cap is only a byte cap in the C locale** — bash `read -n N` counts
+    CHARACTERS outside it, so every cap in a UTF-8 locale is up to 4x looser than it
+    reads (measured: 512 chars of `é` = 1024 bytes on bash 3.2.57 and 5.2.15). This
+    one is enforced now: a file with byte-bounded reads and no `LC_ALL=C` fails, and
+    the declaration belongs in the reading function (`local LC_ALL=C`), never globally.
+
+- **The seat table in `workflows/dispatch.js` is a literal map on purpose.** A
+  computed `"cc-operator:op-" + seat` is invisible to `check_workflow_agent_types`
+  (it matches the string by regex), so a typo'd or removed seat would ship green and
+  fail at dispatch — F22's class. That checker matches the VALUE, not the
+  `agentType:` key: the key form was blind to the one file that most needed it, since
+  `dispatch.js` resolves its agentType from the table and passes the shorthand
+  `agentType,` — a review measured every SEATS value retyped to a nonexistent agent
+  shipping green. It reads a comment-STRIPPED view, because `dispatch.js`'s own prose
+  quotes the concatenated form it argues against.
+
+- **A catalogue of another system's facts goes stale, and the machinery working is
+  not the same as the list being right.** Until 0.8.2 the model-id guard carried an
+  id-shape catalogue (`glm-*`, `claude-*`, `vendor/model`) plus a provider-lens
+  allowlist mirroring cc-proxy's `PROVIDER_IDS` — both lists of facts about ANOTHER
+  system, pinned in `validate_plugin.py` and held in exact agreement across seven
+  copies. Measured against a live cc-proxy serving 409 ids it refused 8 that route
+  fine (`deepseek-v4-flash`, `qwen3.8-max` — bare vendor ids with neither a known
+  prefix nor a slash), so a user binding one in `tiers.env` got a refusal citing a
+  catalogue they never asked about. What remains judges WELL-FORMEDNESS only, which
+  cannot go stale.
+
+- **The auto-arm cannot tell a dead session from a busy one, and that is why it has
+  no suppression rule.** Porcelain measures the tree, not the session, so in a shared
+  worktree `autobar` can arm a session for another's delta. Two rules were tried to
+  prevent that and both were REMOVED. The first stood down on a foreign
+  `verdicts.d/<sid>.md` fragment: append-only, never wiped, so one verdict by any
+  other session ever disarmed the gate for the project's life. The second stood down
+  on a foreign OPEN sentinel, on the reading that `pending/` is live state — but an
+  OPEN sentinel means "working OR died", nothing reaps `pending/`, and one crash or
+  `/clear` mid-task stranded a sentinel that darkened the armer permanently, in
+  single-operator projects too. No third rule is possible here: splitting the two
+  needs a liveness oracle the filesystem lacks (a sentinel carries no pid; a pid
+  would be dead anyway since `ops-task.sh` exits at CLI return while the owning
+  session runs; a session is a harness token with no OS handle; bash 3.2's
+  whole-second mtime cannot separate stale from concurrent). The trade is priced:
+  arming wrongly costs ONE arm on the session's own sentinel, capped by the
+  `.autobar/<sid>` marker, announced on the BLOCKING channel with a co-presence
+  sentence, cleared by one `--defer` (no `--owner` needed — it warns and proceeds;
+  the hard refusal fires only on a MISMATCHED owner). Suppressing wrongly cost the
+  gate permanently, on a channel that only printed exit-0 warnings — the suppression
+  reason was computed and DISCARDED, its only reader inside the arm branch. Reopen
+  only with a liveness signal the kernel can answer for a SESSION; a PostToolUse
+  heartbeat is not one — a session idle at the prompt reads dead past any threshold.
+  Two mechanical notes from the same work: a `|| true` on the sentinel write left the
+  marker set with no sentinel, and `autobar_already_armed` then read the session as
+  armed for life — a permanent silent disarm that survived repairing the obstruction.
+  And an unmarked arm re-fires at the next Stop forever, because recording a verdict
+  does not un-change the files: a session that cannot stop is worse than one that
+  stops unaudited. `-uall` shipped missing once — porcelain's default untracked mode
+  collapses a new directory to ONE record, so three files under `src/feature/` counted
+  as 1 and the gate stayed silent on the exact multi-file session it exists to catch
+  (the same three at the repo root armed, which is the control). One more correction
+  worth keeping: `autobar.sh` was sourced after `partition.sh` because it called
+  `sentinel_owner_of_name` — true only until `e839490` deleted the suppression rule.
+  Four places kept citing that dead call as the reason (the coupling row, the hook's
+  comment, `check_autobar`'s failure MESSAGE, and a test docstring), corrected in the
+  #86 review. The order still holds, for the reason that is true.
+
+- **Isolation buys a clean tree, not a commit.** The runtime's
+  `isolation: "worktree"` takes NO commit — the worktree is created at the DEFAULT
+  BRANCH, measured twice with different requested shas both landing nine commits
+  earlier. So `args.isolate` buys the clean ENVIRONMENT only, and the default prompt
+  must say so: the seat is told a HEAD mismatch is EXPECTED and must NOT be refuted,
+  because refuting the harness costs a real REFUTED nobody can act on.
+  `args.isolateCheckout: true` opts into `git checkout --detach <sha>` first, which
+  buys commit identity and leaves the worktree on disk (the runtime auto-removes only
+  an UNCHANGED one) — default off so no caller's behaviour moves. The two prompt
+  branches are EXCLUSIVE, or the seat is told both that the sha is required and that
+  missing it is fine. `atRequestedCommit` is the field that stops the overclaim:
+  `mode: "worktree"` + `requestedCommit` rendered a default-branch run and a real one
+  identically, and for the plugin's whole life it was always the former.
+
+- **The two CI files cannot be identical, and no validator pins them.**
+  `.github/workflows/validate.yml` and `.forgejo/workflows/validate.yml` run the same
+  suites with two deliberate, measured divergences. First, `uses:` must be fully
+  qualified on Forgejo (a bare `actions/checkout@v4` pulls from `data.forgejo.org`)
+  and `act` cannot parse that form — so the forge file is NOT act-runnable: dry-run
+  the GitHub copy, prove the forge copy by pushing to `lokaal`. Second, the forge job
+  has **no docker**: `DOCKER_HOST` unset, no CLI (probed 2026-08-25; the host's
+  `forgejo-runner-dind` belongs to the runner, not the job), so shellcheck comes from
+  the arch-detected release tarball, not `docker run`. The runner is aarch64. Same
+  shape for `release.yml`: the forge copy publishes with a plain POST (`gh` cannot
+  reach a Gitea API) and CHECKS the status, because an unchecked create leaves the tag
+  pushed and every suite green with no release object. `GITHUB_SERVER_URL` there is
+  `http://forgejo:3000` — the short name, which LAN DNS serves exactly like the FQDN
+  (measured), so the returned `html_url` needs no rewriting. Embedding python in a
+  `run:` block: single-line `python3 -c` only — a heredoc terminator or a continuation
+  line at column 0 closes the YAML block scalar, and since the forge files are not
+  act-runnable, `yaml.safe_load` is the only pre-push check there is.

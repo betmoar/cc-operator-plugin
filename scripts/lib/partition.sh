@@ -21,8 +21,16 @@ sentinel_owner_of_name() { # <basename> → owner ("" when unowned or unwritable
   # never write these shapes, so a name carrying one was PLANTED — degrade to
   # unowned, which fails CLOSED. (The comment quotes the literal on purpose:
   # GuardParityVacuityTest proves the pin reads code, not this line.)
+  #
+  # The metacharacter arm is #89's, and a READER needs it as much as the
+  # writers do. Measured: a pre-0.9 sentinel whose body read `session_id: $S`
+  # migrated to `$S__planted`, which this parser accepted as a valid FOREIGN
+  # owner — so a real open task stopped blocking every session, Stop rc 0.
+  # Whatever the writers refuse must read as unowned here, or a name our CLIs
+  # could never have written buys silence instead of a block.
   case "$_o" in
     "" | */* | .* | *"|"* | *[[:space:]]*) printf '\n'; return 0 ;;
+    *'$'* | *'`'* | *"'"* | *'"'* | *\\*) printf '\n'; return 0 ;;
   esac
   printf '%s\n' "$_o"
 }
@@ -65,9 +73,28 @@ scan_pending() { # scan_pending <opdir> <session>
 }
 
 # Unpresented deviations (stage 2). DEVIATION/ESCALATION/GATE-EXCEPTION lines
-# record decisions; HANDOFF-MARK records they were presented. Counts THIS
-# session's (or unowned) gated lines after the last mine-or-unowned mark;
-# foreign lines never count, foreign marks never clear.
+# record decisions; HANDOFF-MARK records they were presented. Foreign lines
+# never count.
+#
+# CLEARING IS ASYMMETRIC, and the asymmetry is the whole of #90. A gated row is
+# either MINE (`[sid:me]`) or UNOWNED (no tag at all):
+#
+#   mine row    — cleared only by a MINE or UNOWNED mark
+#   unowned row — cleared by ANY later mark, foreign included
+#
+# Until this split, a foreign mark cleared nothing and an unowned row counted
+# for everyone, so every untagged decision blocked every future session FOREVER
+# — the session that wrote it presented it under its own sid, and that mark was
+# foreign to everyone after. Measured on two real ledgers as a fresh session:
+# strike-zero 6 unpresented (6 untagged rows, 20+ tagged marks, none clearing),
+# gtrw 2. Both are 0 under the split, and both were genuinely presented.
+#
+# The rule, not the migration heuristic: nothing writes the `[sid:]` tag onto a
+# DEVIATION — the operator hand-writes those rows — so untagged is the NORMAL
+# case, not a pre-0.4 artifact, and ageing them out would leave today's rows
+# accumulating exactly as before. An unowned row belongs to nobody, so whoever
+# presented it presented it. What still blocks is the case the gate exists for:
+# an unowned row with NO later mark at all.
 #
 # FOUR states, and the polarity differs by WHY the scan could not run (#83 —
 # this comment used to say scan_failed=1 covered "unreadable" too, and it never
@@ -88,7 +115,8 @@ scan_pending() { # scan_pending <opdir> <session>
 # Globals read by the sourcing script (SC2034/2154 expected).
 DECISIONS_MAX_BYTES=2097152   # 2 MiB — orders above any honest decisions ledger
 scan_deviations() { # scan_deviations <decisions-path> <this-session>
-  local f="$1" sess="$2" line kind what n=0 bytes=0 logical
+  local f="$1" sess="$2" line kind what n=0 bytes=0 logical date eng
+  local _mine_rows _unowned_rows
   # `local`: without it this leaks C collation to the SOURCING script. Harmless
   # at both call sites today (#83) — declared so it stays that way.
   # LC_ALL=C so read -n 512 and ${#line} count BYTES not characters: in a
@@ -97,6 +125,16 @@ scan_deviations() { # scan_deviations <decisions-path> <this-session>
   local LC_ALL=C
   deviations_unpresented=0
   deviations_scan_failed=0
+  # The counted rows themselves (#93/#94): the hook asked the operator to
+  # present N decisions while withholding WHICH — so the cheapest correct
+  # response was to mark without reading, the habit the gate exists to prevent.
+  # One line per row, `date | engagement | KIND | what`, capped and truncated by
+  # the caller. Reset here so a second call cannot append to the first's list.
+  deviations_rows=""
+  deviations_mine=0
+  deviations_unowned=0
+  _mine_rows=""
+  _unowned_rows=""
   [ -f "$f" ] || { deviations_scan_failed=1; return 0; }
   # A symlinked DECISIONS.md is not a ledger our scaffold wrote (`-f` follows
   # it); treat as absent → fail OPEN, never scan through a link (F65 class).
@@ -126,24 +164,42 @@ scan_deviations() { # scan_deviations <decisions-path> <this-session>
     esac
     # kind (field 3) and what (field 4) by splitting on " | " — a glob's `*`
     # would consume the delimiter. The sid lives in the what-cell as a
-    # leading [sid:<id>] tag.
+    # leading [sid:<id>] tag. date/eng are fields 1-2, carried only so a
+    # counted row can NAME itself in the block message (#93/#94).
+    date="${line%% | *}"
+    eng="${line#* | }"; eng="${eng%% | *}"
     kind="${line#* | }"; kind="${kind#* | }"; kind="${kind%% | *}"
     what="${line#* | }"; what="${what#* | }"; what="${what#* | }"; what="${what%% | *}"
     case "$kind" in
       DEVIATION|ESCALATION|GATE-EXCEPTION)
-        # mine (sid matches) or unowned (no tag) → counts; foreign never does.
+        # Mine and unowned counted SEPARATELY: they clear differently (header).
         case "$what" in
-          "[sid:$sess]"*) : ;;
+          "[sid:$sess]"*)
+            deviations_mine=$((deviations_mine + 1))
+            _mine_rows="${_mine_rows}${date} | ${eng} | ${kind} | ${what}
+" ;;
           "[sid:"*) return ;;
-          *) : ;;
-        esac
-        deviations_unpresented=$((deviations_unpresented + 1)) ;;
+          *)
+            deviations_unowned=$((deviations_unowned + 1))
+            _unowned_rows="${_unowned_rows}${date} | ${eng} | ${kind} | ${what}
+" ;;
+        esac ;;
       HANDOFF-MARK)
-        # Only a mine-or-unowned mark clears; a foreign mark clears nothing.
         case "$what" in
-          "[sid:$sess]"*) deviations_unpresented=0 ;;
-          "[sid:"*) : ;;
-          *) deviations_unpresented=0 ;;
+          # Mine, or unowned (no tag): presented by me or by nobody in
+          # particular — discharges everything standing.
+          "[sid:$sess]"*)
+            deviations_mine=0; deviations_unowned=0
+            _mine_rows=""; _unowned_rows="" ;;
+          # FOREIGN: discharges the UNOWNED set only (#90). An untagged row
+          # belongs to nobody, so another session presenting it is the only
+          # way it is ever presented — otherwise it blocks every future
+          # session forever. My own tagged rows are untouched.
+          "[sid:"*)
+            deviations_unowned=0; _unowned_rows="" ;;
+          *)
+            deviations_mine=0; deviations_unowned=0
+            _mine_rows=""; _unowned_rows="" ;;
         esac ;;
     esac
   }
@@ -164,4 +220,9 @@ scan_deviations() { # scan_deviations <decisions-path> <this-session>
   done < "$f"
   # Flush a final row left mid-accumulation at EOF.
   [ -z "$logical" ] || _dec_line "$logical"
+  # The two sets are summed only HERE: every early return above is a
+  # fail-CLOSED path that sets deviations_unpresented=1 directly and must not
+  # be overwritten by a count of rows it never finished reading.
+  deviations_unpresented=$((deviations_mine + deviations_unowned))
+  deviations_rows="${_mine_rows}${_unowned_rows}"
 }

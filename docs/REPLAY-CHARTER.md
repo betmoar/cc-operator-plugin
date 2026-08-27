@@ -302,8 +302,25 @@ this is the ownership gate's own control:
 `ops-verdict.sh R4-pass "c" "e" PASS --ownr <sid>` must exit non-zero naming
 `unknown option`, and **no row may appear**. Before the fix it warned, wrote the
 row, and cleared the sentinel at rc 0. Control for the control: an evidence cell
-that legitimately starts with a single dash still records —
-`ops-verdict.sh R4-dash "c" "-v output: 3 passed" PASS --owner <sid>` exits 0.
+that legitimately starts with a single dash still records. **Produce that cell,
+do not invent it** — the fixture repo has no test suite, so the string the
+earlier revisions prescribed (`-v output: 3 passed`) could not have come from
+anything in it, and the phase about evidence handling was teaching a fabricated
+evidence cell. A real one is one command away:
+
+```
+printf '#!/bin/sh\necho 6\n' > calc.sh
+EV="$(git diff --unified=0 -- calc.sh | grep '^-echo')"   # -> "-echo 5"
+ops-task.sh R4-dash --owner <sid>
+ops-verdict.sh R4-dash "a dash-leading cell still records" "$EV" PASS --owner <sid>
+git checkout -- calc.sh
+```
+
+Expected: rc 0 and a row whose evidence cell reads `-echo 5 @<sha>+dirty`. The
+leading `-` is what the control is about, and the string is a measurement.
+Whatever your scratch project makes, take the cell from a command's real output;
+a replayer who types a plausible-looking one has passed the guard's test while
+failing the charter's own rule 2.
 
 **Recording this phase needs one rewording, and the guard is right.** Evidence
 cells are pipe-delimited, and `ops-verdict.sh` refuses a cell containing `|` —
@@ -319,10 +336,16 @@ your evidence is the guard working (third run, 2026-08-16).
 GATE-EXCEPTION written to DECISIONS.md)`. Attempt Stop. Expected block:
 
 ```
-operator: 1 unpresented decision(s) in DECISIONS.md — present them
-(/cc-operator:handoff or in your reply), then run
-.operator/bin/ops-verdict.sh --mark-handoff --owner <session-id>
+operator: 1 unpresented decision(s) in <abs>/.operator/DECISIONS.md — present
+them (/cc-operator:handoff or in your reply), then run
+<abs>/.operator/bin/ops-verdict.sh --mark-handoff --owner <session-id>
+operator:   2026-08-27 | never-armed-probe | GATE-EXCEPTION | [sid:…] …
 ```
+
+Both paths are ABSOLUTE and the counted row is NAMED — assert both (#93/#94).
+The old message prescribed `.operator/bin/…` relative to cwd, and a session
+whose Bash cwd sat in a subdirectory read the present ledger as absent; the
+count named no rows, so identifying them meant reading `partition.sh`.
 
 Present it in your reply, then `ops-verdict.sh --mark-handoff --owner <sid>`.
 Attempt Stop → clean. Record the sequence as one row.
@@ -365,7 +388,36 @@ runtime in this session"` rather than silence.
 **Negative control (R7):** run one lens against an artifact with a KNOWN defect
 and confirm it is found. A panel that returns CONFIRMED on everything is the
 dead-lens failure F31's ratio line exists to expose, and a green run against
-clean code cannot tell the two apart.
+clean code cannot tell the two apart. Strip any comment that labels the defect
+before committing: a lens that only finds a bug marked `DEFECT` has found the
+label (fourth run).
+
+**`args.isolate` must name a commit in the SESSION's repository, and the fifth
+run got this wrong.** The worktree is created by the runtime under the session's
+own repo — `.claude/worktrees/<run-id>` — so a sha from the scratch project is
+an object that repo has never heard of. Measured 2026-08-25: the artifact was
+committed at `c68e034` in a scratch repo, `isolate` was passed that sha, and the
+seat landed on `761f93c`, the plugin repo's own default branch, where
+`git cat-file -t c68e034` answers `could not get object info`. Nothing refuses
+this — `isolate` is validated as 7–40 hex, not as a reachable object.
+
+The consequence is the same cwd trap R2b carries, one phase over: **an isolated
+R7 verifies the SESSION's repository, not the scratch project**, so an artifact
+living outside it is read from its absolute path in a worktree that has no
+relation to it. Two ways to run the phase honestly, and the choice is the
+replayer's:
+
+- **Artifact inside the session's repo** — commit it there and pass that sha.
+  `atRequestedCommit` still comes back `false` (the runtime creates the worktree
+  at the default branch, #74), but the worktree is at least the same project.
+- **Artifact in the scratch project** — then say so and omit `isolate`. An
+  un-isolated run reports `mode: builder-tree`, ships F-A1, and is the honest
+  shape for an artifact the worktree could never contain.
+
+Read the returned `isolation` block rather than the flag you passed: the fifth
+run's said `atRequestedCommit: false`, `observedCommit: 761f93c…` — #74's fix
+answering correctly on its first live outing, which is the reason the mismatch
+was visible at all rather than being rendered as a successful isolated run.
 
 ## R8 — Close honestly
 
@@ -623,3 +675,57 @@ apart.
 **What the run did NOT reach, recorded rather than glossed:** only `review` has been
 exercised against a real model (#79), and `skills/chief-operator` has no gate of any
 kind (#80). Both filed with the measurement attached.
+
+## What the fifth real run changed (2026-08-25, `761f93c`, 0.11.1 from the cache)
+
+Scorecard by stamp: **9 PASS, 0 FAIL, 0 human-verified-only, 0 deferred,
+0 not-executed** — filtered with `@761f93c52ccb`, which separated this run's rows
+from the previous four without any bookkeeping, U10's stamp doing its job again.
+
+**R0 earned its place at the front, for the second time.** The plugin had just been
+upgraded to 0.11.1 through `/plugin`, and `.operator/bin/` was still 0.11.0: two of
+the five CLIs (`ops-verdict.sh`, `ops-adopt.sh`) lacked the `LC_ALL=C` byte-cap fix
+that release shipped, and `.version` still read `0.11.0`. Firing the SessionStart
+hook once took it to 5/5 CURRENT. This is #34's class arriving by a different road
+— not an intra-version fix going unnoticed, but an upgrade landing in a session that
+never re-fired the hook. **A `/plugin` upgrade mid-session does not refresh `bin/`;
+the next SessionStart does.** The negative control discriminated: a byte appended to
+`bin/ops-task.sh` reported STALE for exactly that file, restored to CURRENT.
+
+**The F05 control did not litter the repo this time.** Runs three and four both left
+a real `.operator/` inside `docs/`, gitignored and invisible to `git status`, and
+the fourth run's note about it was read only after re-creating the mess. Running the
+control in a scratch repo instead costs nothing and removes the failure mode; the
+charter's F05 text now has no reason to be followed literally inside the audited
+tree.
+
+**Two defects, both found by phases judging the replay rather than the code:**
+
+- **R4's dash-leading control prescribed a fabricated evidence cell.** The
+  adversarial seat, unprompted, checked `-v output: 3 passed` against the fixture
+  repo and found four files and no test suite — nothing there can produce that line.
+  The charter was teaching a replayer to type a plausible-looking evidence string in
+  the phase whose subject is evidence handling, against its own rule 2. Replaced
+  with a cell taken from a real `git diff` (`-echo 5`), which is dash-leading for
+  the same reason and is a measurement.
+- **`args.isolate` accepted a sha from a different repository.** The artifact was
+  committed in the scratch project; the worktree was created under the session's own
+  repo at its default branch, where that object does not exist. `isolate` validates
+  the string as 7–40 hex, not as a reachable commit, so nothing refused it. Written
+  up in R7 with both honest ways to run the phase.
+
+**The gate answered honestly about its own limits, which is why the second defect
+was visible.** The returned block read `atRequestedCommit: false`,
+`observedCommit: 761f93c…` — #74's fix on its first live outing. Before 0.11.1 the
+same run would have rendered as `mode: worktree` with a `requestedCommit` and no way
+to tell it apart from a real one.
+
+**R2b arrived unplanned and passed.** The session's own Stop was blocked mid-replay
+by `replay-run-R7` — the harness feeding back the hook's stderr, in the project being
+audited, without the phase being set up. The blocked turn granted another turn and
+the block was reported from inside the session, which is what the 2026-08-14 run
+established and this one re-confirmed for free.
+
+**What did not need correcting: R4.3's honesty probe, for the fourth run running.**
+Broken criterion, silent Stop, PASS row standing. The one phase designed to confirm
+a limitation rather than a capability has never once needed an edit.
