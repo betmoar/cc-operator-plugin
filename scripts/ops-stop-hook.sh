@@ -183,6 +183,33 @@ foreign="$FOREIGN_DESC"
 # Defined BEFORE its first use: bash resolves a function at call time, so a
 # call above the definition expands to the empty string and the message ships
 # a blank command — no error, just useless guidance.
+# Single-quote a path for pasting into a shell. Builtin-only (no printf %q,
+# which is bash-4 and renders `$'…'` forms a user cannot read back).
+shq() { # shq <string> → '<string>' with embedded quotes escaped
+  printf "'%s'" "${1//\'/\'\\\'\'}"
+}
+
+# Render an UNTRUSTED ledger row safe for stderr. The rows are hand-editable
+# project data, and this hook's stderr is fed back to the model as guidance —
+# so an embedded ESC, CR or backspace could repaint the very instruction it is
+# attached to (a CR alone rewrites the "run … --mark-handoff" line). Replace
+# every C0 byte and DEL with `?`: the row is an INDEX into DECISIONS.md, never
+# the thing acted on, so losing exotic bytes costs nothing. `tr` is not used —
+# a lost PATH must not disarm the sanitizer, and this hook is builtin-only
+# everywhere else for the same reason.
+sanitize_row() { # sanitize_row <row> → row with control bytes replaced
+  local _s="$1" _out="" _c _i=0
+  while [ "$_i" -lt "${#_s}" ]; do
+    _c="${_s:$_i:1}"
+    case "$_c" in
+      [[:cntrl:]] | $'\177') _out="${_out}?" ;;
+      *) _out="${_out}${_c}" ;;
+    esac
+    _i=$((_i + 1))
+  done
+  printf '%s' "$_out"
+}
+
 verdict_cmd_for() { # → the verdict CLI path that resolves from the project cwd
   # ops-init installs it at .operator/bin/; fall back to this hook's own
   # sibling (the plugin copy) for projects scaffolded by an older ops-init.
@@ -193,8 +220,14 @@ verdict_cmd_for() { # → the verdict CLI path that resolves from the project cw
   # `find .` for the ledger, and concluded the charter was never realized here —
   # a PRESENT gate misdiagnosed as absent, the exact inversion of its purpose.
   # $opdir is already absolute: it comes from `cd -P` on the payload cwd.
+  #
+  # SINGLE-QUOTED, because absolute means "long enough to contain a space".
+  # `/work/my repo/.operator/bin/ops-verdict.sh` pasted bare runs `/work/my`,
+  # so the relative→absolute fix would have traded one uncopyable command for
+  # another. An embedded `'` is closed, escaped and reopened, the one form that
+  # survives any path a filesystem permits.
   if [ -f "$opdir/bin/ops-verdict.sh" ]; then
-    printf '%s/bin/ops-verdict.sh' "$opdir"
+    shq "$opdir/bin/ops-verdict.sh"
     return 0
   fi
   case "${BASH_SOURCE[0]}" in
@@ -202,7 +235,7 @@ verdict_cmd_for() { # → the verdict CLI path that resolves from the project cw
     *)   script_dir="." ;;                    # invoked bare: script is in cwd
   esac
   script_dir="$(cd "$script_dir" 2>/dev/null && pwd)" || script_dir=""
-  [ -n "$script_dir" ] && printf '%s' "$script_dir/ops-verdict.sh"
+  [ -n "$script_dir" ] && shq "$script_dir/ops-verdict.sh"
 }
 
 # Foreign tasks stay VISIBLE — that visibility is what made the collision
@@ -265,10 +298,17 @@ if [ "$deviations_scan_failed" = 0 ] && [ "$deviations_unpresented" -gt 0 ]; the
   # Capped at 10 and truncated to ~110 chars: stderr is fed back to the model as
   # guidance, and a 100-row ledger dumped into it buries the instruction above.
   # The full rows are in the file, which the line above now names absolutely.
+  #
+  # SANITIZE BEFORE MEASURING. The rows are hand-editable project data printed
+  # into the channel that carries this hook's own instruction, so a control byte
+  # could repaint it. Sanitizing first also keeps the 110 cap honest: a row of
+  # escapes is short on screen and long in bytes, and truncating mid-escape is
+  # its own hazard.
   if [ -n "$deviations_rows" ]; then
     _dn=0
     while IFS= read -r _drow; do
       [ -n "$_drow" ] || continue
+      _drow="$(sanitize_row "$_drow")"
       _dn=$((_dn + 1))
       if [ "$_dn" -gt 10 ]; then
         echo "operator:   … and $((deviations_unpresented - 10)) more — read $opdir/DECISIONS.md" >&2

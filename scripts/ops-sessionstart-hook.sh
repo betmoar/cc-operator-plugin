@@ -79,9 +79,15 @@ if [ -d "$cwd/.operator/pending" ]; then
     done < "$_s"
     [ -n "$_sid" ] || continue                    # genuinely unowned: leave it
     # the writers' reject-set (check_owner_name) plus `__`: a stamped sid
-    # containing it would build a name the writers refuse
+    # containing it would build a name the writers refuse. The metacharacter
+    # arm is #89's, and it is load-bearing HERE for a different reason than at
+    # the writers: a body reading `session_id: $S` migrated to `$S__planted`,
+    # which both parsers then read as a valid FOREIGN owner — so the open task
+    # stopped blocking anyone (measured: Stop rc 0, "planted owned by $S").
+    # The writers' guard cannot reach this path; the body is untrusted input.
     case "$_sid" in
       "" | */* | .* | *"|"* | *[[:space:]]* | *[[:cntrl:]]* | *__*) continue ;;
+      *'$'* | *'`'* | *"'"* | *'"'* | *\\*) continue ;;
     esac
     mv "$_s" "$cwd/.operator/pending/${_sid}__${_s##*/}" 2>/dev/null || true
   done

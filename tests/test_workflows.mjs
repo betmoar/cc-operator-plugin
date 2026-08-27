@@ -1604,6 +1604,26 @@ const { result: planOk } = await run(WF("plan.js"),
   { decompose: { tasks: [] } });
 ok(planOk != null, "#92 CONTROL plan: the object form still runs");
 
+// crawl carried the SAME paid-placeholder path, and the first pass at #92
+// missed it (Copilot, PR #88). Its absent-SHARDS branch returns before
+// dispatching, which is what made it look covered — but with valid shards and
+// no question it paid every crawler seat AND the merge to answer
+// "(no question given …)". Same shape as brainstorm's, same fix.
+await throws(() => run(WF("crawl.js"), { shards: [{ paths: ["a.js"] }] }, {}),
+  "#92 crawl: an absent question is refused", "args.question is required");
+await throws(() => run(WF("crawl.js"), { question: "   ", shards: [{ paths: ["a.js"] }] }, {}),
+  "#92 crawl: a whitespace-only question is refused", "args.question is required");
+let crSpend = null;
+try { await run(WF("crawl.js"), { shards: [{ paths: ["a.js"] }] }, {}); } catch (e) { crSpend = e?.rt ?? null; }
+ok(crSpend != null && crSpend.calls.length === 0,
+  "#92 crawl: the refusal spends ZERO agents — not one seat, not the merge");
+// A bare string IS the question, as in brainstorm. Without shards it still
+// returns the no-shards error, which is the CORRECT next complaint: it proves
+// the question was accepted and the run got past this guard.
+const { result: crStr } = await run(WF("crawl.js"), "how does auth work", {});
+ok(/no shards/.test(crStr?.error ?? ""),
+  "#92 crawl: a bare string is the question — the next complaint is shards, not question");
+
 // ── crawl: shard hygiene, fan-out accounting, dead merge ────────────────────
 // crawl also had ONE case. Its shard filter and its digest accounting are what
 // stop a partial crawl from reading as a complete one.

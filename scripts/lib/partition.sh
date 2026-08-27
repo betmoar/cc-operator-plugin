@@ -21,8 +21,16 @@ sentinel_owner_of_name() { # <basename> → owner ("" when unowned or unwritable
   # never write these shapes, so a name carrying one was PLANTED — degrade to
   # unowned, which fails CLOSED. (The comment quotes the literal on purpose:
   # GuardParityVacuityTest proves the pin reads code, not this line.)
+  #
+  # The metacharacter arm is #89's, and a READER needs it as much as the
+  # writers do. Measured: a pre-0.9 sentinel whose body read `session_id: $S`
+  # migrated to `$S__planted`, which this parser accepted as a valid FOREIGN
+  # owner — so a real open task stopped blocking every session, Stop rc 0.
+  # Whatever the writers refuse must read as unowned here, or a name our CLIs
+  # could never have written buys silence instead of a block.
   case "$_o" in
     "" | */* | .* | *"|"* | *[[:space:]]*) printf '\n'; return 0 ;;
+    *'$'* | *'`'* | *"'"* | *'"'* | *\\*) printf '\n'; return 0 ;;
   esac
   printf '%s\n' "$_o"
 }

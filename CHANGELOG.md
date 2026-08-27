@@ -54,11 +54,39 @@ one defect: the gate could not tell whose decision it was blocking on.
   reads its target. An absent topic/spec throws before phase 1 — a refusal that
   spends zero agents rather than a better message after the same cost.
 
+### Fixed (second pass — PR #88 review)
+
+Four holes the first pass left, all in the fixes above rather than beside them.
+
+- **The #89 guard belonged on the READERS too, not just the three writers.** A
+  pre-0.9 sentinel carries its owner in the BODY, so `ops-sessionstart-hook.sh`'s
+  migration renamed `session_id: $S` to `$S__planted` — and both
+  `sentinel_owner_of_name` copies read that as a valid FOREIGN owner. Measured:
+  Stop returned rc 0 on a real open task, reporting `planted owned by $S`. The
+  silent disarm the branch exists to prevent, reached by the one path a writer
+  guard cannot see. The arm now sits at all six sites; writers refuse, readers
+  degrade to unowned (fails CLOSED), the migration refuses. The two halves are
+  mutation-checked separately — neither covers for the other.
+- **The absolute path is now shell-quoted.** Absolute means long enough to
+  contain a space: `/work/my repo/.operator/bin/ops-verdict.sh` pasted bare runs
+  `/work/my`, so the cwd fix would have traded one uncopyable command for
+  another.
+- **Ledger rows are sanitized before they reach stderr.** The rows are
+  hand-editable project data printed into the channel that carries this hook's
+  own instruction — a CR alone repaints the `--mark-handoff` line it is attached
+  to. C0 bytes and DEL become `?`, before measuring, so the 110-char cap stays
+  honest and cannot truncate mid-escape.
+- **`crawl`'s `question` gets the same fail-fast as `brainstorm`/`plan`.** Its
+  absent-*shards* branch returns before dispatching, which is what made it look
+  covered; an absent *question* with valid shards paid every crawler seat and the
+  merge to answer a placeholder.
+
 ### Notes
 
-Every fix carries its mutation: seven were run, each red against the case
-written for it, each restored byte-identical. Suites: 715 bash (was 689), 350
-node (was 340), 90 compress, 222 python, validator green.
+Every fix carries its mutation: twelve were run across both passes, each red
+against the case written for it, each restored byte-identical. Suites: 726 bash
+(was 689), 354 node (was 340), 90 compress, 222 python, validator green,
+shellcheck clean under the pinned 0.10.0.
 
 ## [0.11.1] - 2026-08-25
 

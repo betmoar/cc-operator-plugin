@@ -335,6 +335,7 @@ for ID in ${IDS+"${IDS[@]}"}; do
   # carry terminal escapes; our writers cannot produce these shapes.
   case "${PREV:-}" in
     */* | .* | *"|"* | *[[:space:]]* | *[[:cntrl:]]*) PREV="<invalid>" ;;
+    *'$'* | *'`'* | *"'"* | *'"'* | *\\*) PREV="<invalid>" ;;   # #89's arm
   esac
   DEST="$OPDIR/pending/${OWNER}__$ID"
 

@@ -353,8 +353,12 @@ sentinel_owner_of_name() { # <basename> → owner ("" when unowned or unwritable
   # The F1 reject set: our CLIs cannot write these shapes, so degrade a
   # planted name to unowned (fails CLOSED). Literals live only in the case
   # below — a comment repeating a pinned literal absorbs the vacuity mutation.
+  # The metacharacter arm is #89's: a reader that accepts what check_owner_name
+  # refuses reads a planted `$S__task` as a valid foreign owner (measured via
+  # the SessionStart migration; Stop went rc 0 on a real open task).
   case "$_o" in
     "" | */* | .* | *"|"* | *[[:space:]]*) printf '\n'; return 0 ;;
+    *'$'* | *'`'* | *"'"* | *'"'* | *\\*) printf '\n'; return 0 ;;
   esac
   printf '%s\n' "$_o"
 }

@@ -86,12 +86,27 @@ const JUDGMENT = TIERS.JUDGMENT;
 // shards before invoking: each shard is { paths: [...], } sized to ~150K chars
 // of whole files. The workflow cannot do this itself — it has no filesystem
 // (spec M5). args.question is the crawl question every shard answers.
-const question = A.question ?? "(no question given — the operator must pass args.question)";
+// REFUSED, not defaulted (#92). The absent-shards branch below already returns
+// rather than dispatching, but an absent QUESTION did not: with valid shards it
+// paid every crawler seat AND the merge to answer a placeholder — the same
+// shape brainstorm's normalizer defect produced, and measured there at 7 agents
+// and 123,935 tokens. A bare string IS the question, as brainstorm reads its
+// topic and review.js:117 reads its target. `throw` rather than the `{error}`
+// return used below: that branch reports a run that happened, this one stops a
+// run from starting, and the distinction is what a caller reads back.
+const question = (typeof A === "string" ? A : A?.question) ?? "";
+if (typeof question !== "string" || !question.trim()) {
+  throw new Error(
+    "args.question is required and must be a non-empty string — every shard " +
+      "would be crawled and merged against a placeholder, which costs the whole " +
+      "fan-out to learn what this line says",
+  );
+}
 // Element shape is validated, not just the container: a shard of {} or
 // {paths:"x"} used to dispatch a paid crawler agent with an empty YOUR SHARD
 // section — cost with no value (audit F27.6). Malformed/empty shards are
 // dropped; dropping everything is the same error as passing nothing.
-const rawShards = Array.isArray(A.shards) ? A.shards : [];
+const rawShards = Array.isArray(A?.shards) ? A.shards : [];
 const shards = rawShards.filter((s) => s && Array.isArray(s.paths) && s.paths.length);
 if (shards.length < rawShards.length) {
   log(`crawl: dropped ${rawShards.length - shards.length} malformed/empty shard(s) (want {paths:[...]} with >=1 path)`);
