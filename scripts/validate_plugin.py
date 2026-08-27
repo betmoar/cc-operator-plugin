@@ -1701,6 +1701,83 @@ def check_lock_parity(root, problems):
                     f"identically-broken copies are trivially in parity (F30)")
 
 
+CANONICAL_ROOT = (
+    (r'\[ -d "\$_walk/\.operator" \]',
+     "the walk must look for .operator/, which is what makes a directory a "
+     "project — anything else resolves a different tree than the Stop hook"),
+    (r'cd "\$_walk"',
+     "it must CD, not merely export an absolute OPDIR: the source stamp's "
+     "`git status -- ':(exclude).operator'` pathspec is REPO-relative, so an "
+     "absolute-OPDIR fix leaves every row from a subdirectory falsely +dirty "
+     "while every ledger path looks correct (mutation-measured)"),
+    (r'\[ -e "\$_walk/\.git" \] && break',
+     "the .git boundary stops the walk: a nested repo is its own project, and "
+     "without this a CLI run inside a vendored repo writes into the OUTER "
+     "project's ledger"),
+    (r'\[ "\$_walk" = "/" \] && break',
+     "the filesystem root bounds the loop"),
+    (r'pwd -P',
+     "-P resolves symlinks, so a planted link cannot redirect the walk"),
+)
+
+
+def check_root_parity(root, problems):
+    """The three gate CLIs must resolve the project the SAME way, and it must be
+    the right way.
+
+    OPDIR was relative to the caller's cwd until 0.11.3, so every CLI worked
+    from the project root and nowhere else — including through the absolute
+    path the Stop hook prescribes (#95, measured from `apps/viewer/`). The walk
+    now mirrors ops-stop-hook.sh's, and three copies maintained by copy-paste
+    drift the way the lock block would.
+    """
+    blocks = {}
+    for name in ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh"):
+        p = root / "scripts" / name
+        if not p.is_file():
+            return  # missing-file is already reported by check_scripts
+        text = p.read_text(encoding="utf-8")
+        start = text.find("# >>> PROJECT ROOT BLOCK")
+        end = text.find("# <<< PROJECT ROOT BLOCK")
+        if start < 0 or end < 0:
+            problems.append(
+                f"scripts/{name}: no `# >>> PROJECT ROOT BLOCK` … "
+                f"`# <<< PROJECT ROOT BLOCK` markers — the CLI resolves the "
+                f"project from the caller's cwd, so it works from the project "
+                f"root and nowhere else (#95; see docs/PLAYBOOK.md)")
+            return
+        tool = name[:-3]
+        blocks[name] = text[start:end].replace(f"{tool}:", "TOOL:")
+    ref_name, ref = next(iter(blocks.items()))
+    for name, block in blocks.items():
+        if block != ref:
+            ref_lines, b_lines = ref.splitlines(), block.splitlines()
+            detail = "differing line counts"
+            for i, (x, y) in enumerate(zip(ref_lines, b_lines), 1):
+                if x != y:
+                    detail = (f"first difference at block line {i}: "
+                              f"{x.strip()[:60]!r} vs {y.strip()[:60]!r}")
+                    break
+            problems.append(
+                f"scripts/{name} vs {ref_name}: project-root resolution has "
+                f"drifted — two CLIs disagreeing about which project they serve "
+                f"write into different ledgers ({detail})")
+    # Per-copy content pin: these blocks are maintained by copy-paste, so
+    # uniform drift is the realistic failure and is exactly what parity above
+    # cannot see (F30). CODE only — a commented-out walk left as text satisfied
+    # the equivalent lock pin once already (Copilot, PR #87).
+    for name, block in blocks.items():
+        code = "\n".join(ln for ln in block.splitlines()
+                         if not ln.lstrip().startswith("#"))
+        for pat, why in CANONICAL_ROOT:
+            if not re.search(pat, code):
+                problems.append(
+                    f"scripts/{name}: the project-root block no longer contains "
+                    f"/{pat}/ — {why}. Parity across the three copies is not "
+                    f"enough: identically-broken copies are trivially in "
+                    f"parity (F30)")
+
+
 def check_resolver_renderer_parity(root, problems):
     """
     ops-tiers.sh and ops-render.sh must agree on check_routable and the tier
@@ -2418,6 +2495,7 @@ CHECKS = (
     check_gitignore_parity,
     check_compressor,
     check_lock_parity,
+    check_root_parity,
     check_resolver_renderer_parity,
     check_workflows,
     check_workflow_parity,

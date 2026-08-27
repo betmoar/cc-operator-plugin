@@ -2788,6 +2788,70 @@ check "#89 CONTROL the cleanly-migrated sentinel reads foreign (does not block)"
 rm -rf "$P"
 
 ########################################################################
+echo "-- Case: the gate CLIs resolve the project by WALKING UP, not from cwd (#95)"
+# 0.11.2 made the Stop hook prescribe an ABSOLUTE path to ops-verdict.sh, which
+# resolves fine from anywhere — and the pasted command STILL failed from a
+# subdirectory with "missing .operator/DECISIONS.md — run ops-init.sh first",
+# because OPDIR=".operator" is relative to the CALLER's cwd. The path said where
+# the CLI lives, never which project it serves; the Bash tool's cwd persists
+# across calls, so a session is routinely somewhere else. Found by running the
+# 0.11.2 release test rather than by a suite (every case cd'd to the root first).
+P="$(newproj)/a project"; mkdir -p "$P/apps/viewer"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+SID="SESS-95"
+( cd "$P/apps/viewer" && bash "$TASK" w95 --owner "$SID" >/dev/null 2>&1 ); W95A=$?
+check "#95 ops-task.sh works from a subdirectory" "$([ "$W95A" = 0 ] && echo 0 || echo 1)"
+check "#95 the sentinel lands in the PROJECT's pending/, not a new one" \
+  "$([ -f "$P/.operator/pending/${SID}__w95" ] && echo 0 || echo 1)"
+check "#95 no stray .operator/ was created in the subdirectory" \
+  "$([ -d "$P/apps/viewer/.operator" ] && echo 1 || echo 0)"
+( cd "$P/apps/viewer" && bash "$VERDICT" w95 crit "evidence" PASS --owner "$SID" >/dev/null 2>&1 ); W95B=$?
+check "#95 ops-verdict.sh works from a subdirectory" "$([ "$W95B" = 0 ] && echo 0 || echo 1)"
+check "#95 the row landed in the project's VERDICTS.md" \
+  "$(grep -q '^| w95 |' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
+check "#95 the sentinel was cleared from the project's pending/" \
+  "$([ -f "$P/.operator/pending/${SID}__w95" ] && echo 1 || echo 0)"
+# ops-adopt too — recovery is exactly when you are least likely to be at the root.
+( cd "$P" && bash "$TASK" w95b --owner "OLD-SESS" >/dev/null 2>&1 )
+( cd "$P/apps/viewer" && bash "$ADOPT" --owner "$SID" w95b >/dev/null 2>&1 ); W95C=$?
+check "#95 ops-adopt.sh works from a subdirectory" "$([ "$W95C" = 0 ] && echo 0 || echo 1)"
+check "#95 adopt re-stamped the sentinel in the project's pending/" \
+  "$([ -f "$P/.operator/pending/${SID}__w95b" ] && echo 0 || echo 1)"
+# The BOUND: a nested repo is its own project, so the walk stops at .git rather
+# than reaching an ancestor's ledger. Without it a CLI run deep inside a
+# vendored repo would write rows into the OUTER project's ledger.
+mkdir -p "$P/nested/sub" && ( cd "$P/nested" && git init -q . 2>/dev/null )
+( cd "$P/nested/sub" && bash "$TASK" leak --owner "$SID" >/dev/null 2>&1 ); W95D=$?
+check "#95 BOUND a nested repo stops the walk (refuses, does not climb out)" \
+  "$([ "$W95D" != 0 ] && echo 0 || echo 1)"
+check "#95 BOUND nothing was written into the outer project's pending/" \
+  "$([ -f "$P/.operator/pending/${SID}__leak" ] && echo 1 || echo 0)"
+# The message must say the walk happened — "in cwd" sends the operator to the
+# wrong diagnosis (they are in the project, just not at its root).
+E95="$( ( cd "$P/nested/sub" && bash "$TASK" leak2 --owner "$SID" ) 2>&1 )"
+check "#95 the refusal says it searched the parents, not just cwd" \
+  "$(printf '%s' "$E95" | grep -q 'any parent' && echo 0 || echo 1)"
+# CONTROL — the root still works. Without this the block could `die` always.
+( cd "$P" && bash "$TASK" w95root --owner "$SID" >/dev/null 2>&1 ); W95E=$?
+check "#95 CONTROL running from the project root still works" \
+  "$([ "$W95E" = 0 ] && echo 0 || echo 1)"
+# CONTROL — the source stamp's git pathspec is REPO-relative, so a CLI that
+# merely made OPDIR absolute (instead of cd'ing) would stop excluding .operator/
+# and pin every row from a subdirectory to +dirty. Assert the stamp is unchanged
+# by WHERE it ran: same tree, same stamp, root vs subdirectory.
+GP="$(newproj)"; ( cd "$GP" && git init -q . && bash "$INIT" >/dev/null 2>&1 \
+  && git add -A >/dev/null 2>&1 && git -c user.email=t@t -c user.name=t commit -qm base >/dev/null 2>&1 )
+mkdir -p "$GP/deep/er"
+( cd "$GP" && bash "$TASK" g1 --owner "$SID" >/dev/null 2>&1 && bash "$VERDICT" g1 c e PASS --owner "$SID" >/dev/null 2>&1 )
+( cd "$GP/deep/er" && bash "$TASK" g2 --owner "$SID" >/dev/null 2>&1 && bash "$VERDICT" g2 c e PASS --owner "$SID" >/dev/null 2>&1 )
+G1S="$(grep '^| g1 |' "$GP/.operator/VERDICTS.md" | sed 's/.*@//; s/ |.*//')"
+G2S="$(grep '^| g2 |' "$GP/.operator/VERDICTS.md" | sed 's/.*@//; s/ |.*//')"
+check "#95 CONTROL the source stamp is identical from root and subdirectory" \
+  "$([ -n "$G1S" ] && [ "$G1S" = "$G2S" ] && echo 0 || echo 1)"
+check "#95 CONTROL and it is NOT falsely +dirty (the .operator exclusion survived)" \
+  "$(printf '%s' "$G2S" | grep -q 'dirty' && echo 1 || echo 0)"
+rm -rf "$P" "$GP"
+
+########################################################################
 echo "-- Case: the block message survives a hostile ledger and a spaced path (PR #88 review)"
 # Two ways the new #93/#94 output could be turned against its own reader.
 P="$(newproj)/a project"; mkdir -p "$P"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
