@@ -2605,7 +2605,11 @@ echo "-- Case: a FOREIGN mark clears UNOWNED deviations but never mine (#90)"
 P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
 DEC="$P/.operator/DECISIONS.md"
 SID="SESS-90"
-payload() { printf '{"session_id":"%s","stop_hook_active":false,"cwd":"%s"}' "$SID" "$P"; }
+# `payload()` is the one defined above (deviation-gate case) — it reads $SID and
+# $P at CALL time, so reassigning them is the whole parameterization. Do NOT
+# re-declare it here: shellcheck 0.10.0 (what CI pins) reads a second identical
+# definition as SC2218 against every earlier call site, and the local 0.11.0
+# does not — the exact version drift the pinned gate exists to catch.
 
 # THE FIX: untagged deviation + a later FOREIGN mark → cleared.
 { printf '2026-08-04 | e.t | DEVIATION | pre-gate decision, no sid | r\n'
