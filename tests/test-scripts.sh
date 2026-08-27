@@ -2595,6 +2595,151 @@ printf '# Decisions\n' > "$DEC"
 rm -rf "$P"
 
 ########################################################################
+echo "-- Case: a FOREIGN mark clears UNOWNED deviations but never mine (#90)"
+# Pre-fix an untagged DEVIATION counted for every session and was cleared only by a
+# mine-or-unowned mark. Nothing writes the [sid:] tag onto a DEVIATION — the operator
+# hand-writes those rows — so untagged is the NORMAL shape, and the session that
+# presented one marked under its OWN sid, which is foreign to everyone after. Result:
+# every untagged decision blocked every future session forever. Measured on two real
+# ledgers as a fresh sid before this fix: strike-zero 6, gtrw 2 — all long presented.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+DEC="$P/.operator/DECISIONS.md"
+SID="SESS-90"
+payload() { printf '{"session_id":"%s","stop_hook_active":false,"cwd":"%s"}' "$SID" "$P"; }
+
+# THE FIX: untagged deviation + a later FOREIGN mark → cleared.
+{ printf '2026-08-04 | e.t | DEVIATION | pre-gate decision, no sid | r\n'
+  printf '2026-08-04 | h | HANDOFF-MARK | [sid:SESS-OTHER] 2026-08-04T00:00:00Z | presented\n'; } > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; N90A=$?
+check "#90 untagged deviation + later FOREIGN mark → cleared (Stop allowed)" \
+  "$([ "$N90A" = 0 ] && echo 0 || echo 1)"
+
+# THE BOUND, and the reason this is not a blanket loosening: a MINE deviation is
+# NOT cleared by a foreign mark. Another session cannot discharge a decision I own.
+{ printf '2026-08-04 | e.t | DEVIATION | [sid:%s] mine | r\n' "$SID"
+  printf '2026-08-04 | h | HANDOFF-MARK | [sid:SESS-OTHER] 2026-08-04T00:00:00Z | presented\n'; } > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; N90B=$?
+check "#90 MINE deviation + foreign mark → still blocks (foreign never clears mine)" \
+  "$([ "$N90B" = 2 ] && echo 0 || echo 1)"
+
+# CONTROL — the property the gate exists for survives: an untagged deviation with NO
+# later mark at all still blocks. If this flips, the fix became "never count untagged".
+printf '2026-08-04 | e.t | DEVIATION | genuinely unpresented, no mark | r\n' > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; N90C=$?
+check "#90 CONTROL untagged deviation with NO mark → still blocks" \
+  "$([ "$N90C" = 2 ] && echo 0 || echo 1)"
+
+# CONTROL — position still matters: an untagged deviation written AFTER the foreign
+# mark is a new decision, not a presented one.
+{ printf '2026-08-04 | e.t | DEVIATION | old, presented | r\n'
+  printf '2026-08-04 | h | HANDOFF-MARK | [sid:SESS-OTHER] 2026-08-04T00:00:00Z | presented\n'
+  printf '2026-08-05 | e.t | DEVIATION | new, after the mark | r\n'; } > "$DEC"
+payload | bash "$HOOK" >/dev/null 2>&1; N90D=$?
+check "#90 CONTROL untagged deviation AFTER the foreign mark → blocks (position rule)" \
+  "$([ "$N90D" = 2 ] && echo 0 || echo 1)"
+
+# The bar mirrors the gate — a bar describing a different gate is worse than no bar.
+{ printf '2026-08-04 | e.t | DEVIATION | untagged | r\n'
+  printf '2026-08-04 | h | HANDOFF-MARK | [sid:SESS-OTHER] ts | presented\n'; } > "$DEC"
+N90BAR="$(printf '{"session_id":"%s","cwd":"%s","workspace":{"project_dir":"%s"}}' "$SID" "$P" "$P" \
+  | "$BASH_ABS" "$SCRIPTS/statusline.sh" 2>/dev/null | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g')"
+check "#90 bar mirror: foreign mark clears the unowned row → no dev[ rendered" \
+  "$(printf '%s' "$N90BAR" | grep -q 'dev\[' || echo 0)"
+{ printf '2026-08-04 | e.t | DEVIATION | [sid:%s] mine | r\n' "$SID"
+  printf '2026-08-04 | h | HANDOFF-MARK | [sid:SESS-OTHER] ts | presented\n'; } > "$DEC"
+N90BAR2="$(printf '{"session_id":"%s","cwd":"%s","workspace":{"project_dir":"%s"}}' "$SID" "$P" "$P" \
+  | "$BASH_ABS" "$SCRIPTS/statusline.sh" 2>/dev/null | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g')"
+check "#90 bar mirror: foreign mark does NOT clear mine → dev[1]" \
+  "$(printf '%s' "$N90BAR2" | grep -q 'dev\[1\]' && echo 0 || echo 1)"
+
+########################################################################
+echo "-- Case: the block message NAMES the counted rows and an absolute path (#93/#94)"
+# The hook asked the operator to present N decisions while withholding WHICH, so the
+# cheapest correct response was to mark without reading — the habit the gate exists to
+# prevent. And the prescribed path was cwd-relative: a session whose Bash cwd sat in a
+# subdirectory followed it, got "No such file or directory" from both the CLI and a
+# `find .` for the ledger, and concluded the charter was never realized in the repo.
+{ printf '2026-08-04 | eng-alpha | DEVIATION | [sid:%s] chose the lock-free path | r\n' "$SID"
+  printf '2026-08-05 | eng-beta | ESCALATION | untagged escalation here | r\n'; } > "$DEC"
+MSG="$(payload | bash "$HOOK" 2>&1 >/dev/null)"
+check "#93 the message names the first row's engagement" \
+  "$(printf '%s' "$MSG" | grep -q 'eng-alpha' && echo 0 || echo 1)"
+check "#93 the message names the second row's engagement" \
+  "$(printf '%s' "$MSG" | grep -q 'eng-beta' && echo 0 || echo 1)"
+check "#93 the message names the row KINDS, not just the count" \
+  "$(printf '%s' "$MSG" | grep -q 'ESCALATION' && echo 0 || echo 1)"
+# The hook resolves the project with `cd -P`, so on macOS $P (/var/...) and the
+# path it prints (/private/var/...) differ by the symlink. Compare against the
+# resolved form — the assertion is "absolute", not "textually equal to $P".
+PRES="$(cd -P "$P" && pwd)"
+check "#94 the prescribed verdict path is ABSOLUTE (not cwd-relative)" \
+  "$(printf '%s' "$MSG" | grep -q "$PRES/.operator/bin/ops-verdict.sh" && echo 0 || echo 1)"
+check "#94 the ledger is named absolutely too" \
+  "$(printf '%s' "$MSG" | grep -q "$PRES/.operator/DECISIONS.md" && echo 0 || echo 1)"
+# CONTROL — the bare relative form must be GONE, or the check above passes on a
+# message that still ships the path a subdirectory session cannot resolve.
+check "#94 CONTROL the bare relative '.operator/bin/...' form is gone" \
+  "$(printf '%s' "$MSG" | grep -q '[^/]\.operator/bin/ops-verdict\.sh' && echo 1 || echo 0)"
+# CONTROL — the count is still there; naming rows must not replace the instruction.
+check "#93 CONTROL the count and the clearing command survive" \
+  "$(printf '%s' "$MSG" | grep -q '2 unpresented decision' && printf '%s' "$MSG" | grep -q -- '--mark-handoff' && echo 0 || echo 1)"
+# CONTROL — a FOREIGN row is not counted, so it must not be named either.
+{ printf '2026-08-04 | eng-mine | DEVIATION | [sid:%s] mine | r\n' "$SID"
+  printf '2026-08-04 | eng-theirs | DEVIATION | [sid:SESS-OTHER] theirs | r\n'; } > "$DEC"
+MSG2="$(payload | bash "$HOOK" 2>&1 >/dev/null)"
+check "#93 CONTROL a foreign row is neither counted nor named" \
+  "$(printf '%s' "$MSG2" | grep -q 'eng-theirs' && echo 1 || echo 0)"
+# The listing is CAPPED: stderr is fed back to the model as guidance, and a 100-row
+# dump buries the instruction it is attached to.
+: > "$DEC"; i=0
+while [ "$i" -lt 25 ]; do i=$((i+1)); printf '2026-08-04 | eng-%s | DEVIATION | untagged row %s | r\n' "$i" "$i" >> "$DEC"; done
+MSG3="$(payload | bash "$HOOK" 2>&1 >/dev/null)"
+check "#93 the listing is capped at 10 rows" \
+  "$([ "$(printf '%s\n' "$MSG3" | grep -c 'operator:   2026-08-04')" -eq 10 ] && echo 0 || echo 1)"
+check "#93 the cap says how many it withheld" \
+  "$(printf '%s' "$MSG3" | grep -q 'and 15 more' && echo 0 || echo 1)"
+rm -rf "$P"
+
+########################################################################
+echo "-- Case: an owner that is an UNEXPANDED shell variable is refused (#89)"
+# A quoted heredoc passed the literal two characters `$S`. check_owner_name accepted
+# it, and `[sid:$S]` took every reader's FOREIGN arm — so the mark cleared NOTHING.
+# Strictly worse than not running the command: the Stop hook still blocks, the tool
+# reported success, and the bad row stays in an append-only ledger looking like a
+# real session. The only symptom is the next Stop blocking again.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+# shellcheck disable=SC2016  # NOT expanding is the point: these are the literal
+# characters an operator's quoted heredoc leaks, which is the defect under test.
+for _bad in '$S' '`id`' 'a"b' "a'b" 'a\b'; do
+  ( cd "$P" && bash "$VERDICT" --mark-handoff --owner "$_bad" >/dev/null 2>&1 ); R89=$?
+  check "#89 --mark-handoff refuses owner '$_bad'" "$([ "$R89" != 0 ] && echo 0 || echo 1)"
+done
+# The message must NAME the cause: "invalid owner" sends the operator hunting the id.
+E89="$( ( cd "$P" && bash "$VERDICT" --mark-handoff --owner '$S' ) 2>&1 )"
+check "#89 the refusal names the unexpanded-variable cause" \
+  "$(printf '%s' "$E89" | grep -q 'UNEXPANDED' && echo 0 || echo 1)"
+# Nothing was written: a refused mark must not leave a row behind. Match a ROW
+# (leading ISO date), not the string — the scaffolded header names the kind in a
+# comment, so a bare grep is satisfied by the template and can never fail.
+check "#89 the refused mark wrote no HANDOFF-MARK row" \
+  "$(grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2} \|.*HANDOFF-MARK' "$P/.operator/DECISIONS.md" && echo 1 || echo 0)"
+# The same guard on the other two writers — a bad owner there makes the SENTINEL
+# permanently unclearable, which is the case the whitespace rule already exists for.
+( cd "$P" && bash "$TASK" t89 --owner '$S' >/dev/null 2>&1 ); T89=$?
+check "#89 ops-task.sh refuses the same owner" "$([ "$T89" != 0 ] && echo 0 || echo 1)"
+( cd "$P" && bash "$TASK" t89ok --owner "SESS-89" >/dev/null 2>&1 )
+( cd "$P" && bash "$ADOPT" --owner '$S' t89ok >/dev/null 2>&1 ); A89=$?
+check "#89 ops-adopt.sh refuses the same owner" "$([ "$A89" != 0 ] && echo 0 || echo 1)"
+# CONTROL — a real session id (uuid shape) still passes all three. Without this the
+# guard could be `die` on every owner and the four checks above would still pass.
+( cd "$P" && bash "$TASK" t89c --owner "b48dda3f-097a-427a-9d0e-a641d31cf337" >/dev/null 2>&1 ); C89A=$?
+( cd "$P" && bash "$ADOPT" --owner "b48dda3f-097a-427a-9d0e-a641d31cf337" t89ok >/dev/null 2>&1 ); C89B=$?
+( cd "$P" && bash "$VERDICT" --mark-handoff --owner "b48dda3f-097a-427a-9d0e-a641d31cf337" >/dev/null 2>&1 ); C89C=$?
+check "#89 CONTROL a real uuid session id passes all three writers" \
+  "$([ "$C89A" = 0 ] && [ "$C89B" = 0 ] && [ "$C89C" = 0 ] && echo 0 || echo 1)"
+rm -rf "$P"
+
+########################################################################
 echo "-- Case: G1 retro-gate — three-state arm check (never-armed → GATE-EXCEPTION)"
 # A verdict with no open sentinel is either never-armed (→ GATE-EXCEPTION) or a duplicate/amending row (→ warning).
 # A never-armed verdict with no --owner is refused: the exception must carry a [sid:] tag.

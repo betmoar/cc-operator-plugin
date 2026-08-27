@@ -336,10 +336,16 @@ your evidence is the guard working (third run, 2026-08-16).
 GATE-EXCEPTION written to DECISIONS.md)`. Attempt Stop. Expected block:
 
 ```
-operator: 1 unpresented decision(s) in DECISIONS.md — present them
-(/cc-operator:handoff or in your reply), then run
-.operator/bin/ops-verdict.sh --mark-handoff --owner <session-id>
+operator: 1 unpresented decision(s) in <abs>/.operator/DECISIONS.md — present
+them (/cc-operator:handoff or in your reply), then run
+<abs>/.operator/bin/ops-verdict.sh --mark-handoff --owner <session-id>
+operator:   2026-08-27 | never-armed-probe | GATE-EXCEPTION | [sid:…] …
 ```
+
+Both paths are ABSOLUTE and the counted row is NAMED — assert both (#93/#94).
+The old message prescribed `.operator/bin/…` relative to cwd, and a session
+whose Bash cwd sat in a subdirectory read the present ledger as absent; the
+count named no rows, so identifying them meant reading `partition.sh`.
 
 Present it in your reply, then `ops-verdict.sh --mark-handoff --owner <sid>`.
 Attempt Stop → clean. Record the sequence as one row.

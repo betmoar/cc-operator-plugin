@@ -186,8 +186,15 @@ foreign="$FOREIGN_DESC"
 verdict_cmd_for() { # → the verdict CLI path that resolves from the project cwd
   # ops-init installs it at .operator/bin/; fall back to this hook's own
   # sibling (the plugin copy) for projects scaffolded by an older ops-init.
+  #
+  # ABSOLUTE, not `.operator/bin/...` (#94). The Bash tool's cwd persists across
+  # calls, so a session sitting in a subdirectory when the hook fires followed
+  # the relative path, got "No such file or directory" from both the CLI and a
+  # `find .` for the ledger, and concluded the charter was never realized here —
+  # a PRESENT gate misdiagnosed as absent, the exact inversion of its purpose.
+  # $opdir is already absolute: it comes from `cd -P` on the payload cwd.
   if [ -f "$opdir/bin/ops-verdict.sh" ]; then
-    printf '.operator/bin/ops-verdict.sh'
+    printf '%s/bin/ops-verdict.sh' "$opdir"
     return 0
   fi
   case "${BASH_SOURCE[0]}" in
@@ -249,7 +256,33 @@ fi
 # shellcheck disable=SC2154  # assigned by the sourced lib/partition.sh
 if [ "$deviations_scan_failed" = 0 ] && [ "$deviations_unpresented" -gt 0 ]; then
   verdict_cmd="$(verdict_cmd_for)"
-  echo "operator: $deviations_unpresented unpresented decision(s) in DECISIONS.md — present them (/cc-operator:handoff or in your reply), then run $verdict_cmd --mark-handoff --owner <session-id>" >&2
+  echo "operator: $deviations_unpresented unpresented decision(s) in $opdir/DECISIONS.md — present them (/cc-operator:handoff or in your reply), then run $verdict_cmd --mark-handoff --owner <session-id>" >&2
+  # NAME the rows (#93/#94). The count alone was unauditable: identifying which
+  # rows it meant took reading partition.sh, so the cheapest correct response
+  # was to mark without reading — the habit the gate exists to prevent. The
+  # scanner already parsed them; it used to discard them.
+  #
+  # Capped at 10 and truncated to ~110 chars: stderr is fed back to the model as
+  # guidance, and a 100-row ledger dumped into it buries the instruction above.
+  # The full rows are in the file, which the line above now names absolutely.
+  if [ -n "$deviations_rows" ]; then
+    _dn=0
+    while IFS= read -r _drow; do
+      [ -n "$_drow" ] || continue
+      _dn=$((_dn + 1))
+      if [ "$_dn" -gt 10 ]; then
+        echo "operator:   … and $((deviations_unpresented - 10)) more — read $opdir/DECISIONS.md" >&2
+        break
+      fi
+      if [ "${#_drow}" -gt 110 ]; then
+        echo "operator:   ${_drow:0:110}…" >&2
+      else
+        echo "operator:   $_drow" >&2
+      fi
+    done <<EOF
+$deviations_rows
+EOF
+  fi
   exit 2
 fi
 

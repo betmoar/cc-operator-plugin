@@ -15,9 +15,21 @@ export const meta = {
 // transit (verified: passing {topic:"x"} arrives as args === '{"topic":"x"}').
 // So `args?.topic` reads undefined and defaults silently fire. Normalize once:
 // if args is a JSON string, parse it; if absent, {}. Every workflow does this.
+// The catch RETURNS THE STRING, it does not discard it (#92). Returning {} sent
+// a 4,000-character prose brief to /dev/null and ran the full fan-out against
+// the placeholder: 7 agents, 123,935 tokens, 86 seconds, every seat answering
+// "cannot propose a direction without a topic". The convergence seat diagnosed
+// it correctly — after the whole fan-out had been paid for. Kept identical to
+// crawl/debate/dispatch/review, which never had this shape.
 const A = (() => {
   if (typeof args === "string") {
-    try { return JSON.parse(args); } catch { return {}; }
+    const t = args.trim();
+    // `"` too: the tool JSON-encodes a passed scalar, so a bare string arrives
+    // with its quotes attached.
+    if (t.startsWith("{") || t.startsWith("[") || t.startsWith('"')) {
+      try { return JSON.parse(t); } catch { return args; }
+    }
+    return args;
   }
   return args ?? {};
 })();
@@ -40,7 +52,9 @@ const DEFAULT_TIERS = {
 // 0.8.3. What remains tests the STRING, so it cannot go stale: whitespace or a
 // quote means the tiers.env line is malformed, not that the model is unknown.
 const BAD_CHARSET = /[^\w./:@[\]-]/;
-const overrides = A.tiers;
+// `typeof A === "object"` guard: A is now legitimately a bare string (#92),
+// and `"str".tiers` is undefined rather than an error only by luck of JS.
+const overrides = typeof A === "object" ? A.tiers : undefined;
 if (overrides != null) {
   if (typeof overrides !== "object" || Array.isArray(overrides)) {
     throw new Error(`args.tiers must be an object, got ${typeof overrides}`);
@@ -82,12 +96,26 @@ const RECON = TIERS.RECON;
 // one-sentence idea; args.context is what the operator already gathered (files,
 // recent commits, existing patterns) — the operator's job per the charter's
 // SOLO MODE, not a cheap agent's.
-const topic = A.topic ?? "(no topic given — the operator must pass args.topic)";
-const ctx = A.context ?? "(no codebase context provided)";
+// A bare string IS the topic — the one required argument, the way review.js
+// reads its target. Without this branch the permissive normalizer above still
+// lands on the placeholder, so the two halves are one fix.
+const topic = (typeof A === "string" ? A : A.topic) ?? "";
+// REFUSE rather than dispatch (#92). Nothing downstream can succeed without a
+// topic, and the run is not cheap: the measured cost of discovering this from
+// the output instead of the input was 124K tokens. Throw before phase 1.
+if (typeof topic !== "string" || !topic.trim()) {
+  throw new Error(
+    "args.topic is required and must be a non-empty string — every seat would " +
+      "return 'cannot propose a direction without a topic', which costs a full " +
+      "fan-out (measured: 7 agents, ~124K tokens) to learn what this line says. " +
+      "Pass {topic: \"…\"} or the brief as a bare string.",
+  );
+}
+const ctx = (typeof A === "string" ? undefined : A.context) ?? "(no codebase context provided)";
 // Coerce to a number: a non-numeric `directions` ("abc") would make Math.max
 // return NaN and Array.from({length: NaN}) silently yield zero directions.
 // Default 4, clamped to 2–6.
-const _d = Number(A.directions);
+const _d = Number(typeof A === "object" ? A.directions : undefined);
 const N = Math.min(Math.max(Number.isFinite(_d) ? _d : 4, 2), 6);
 
 // --- Phase 1: diverge ------------------------------------------------------
@@ -189,7 +217,7 @@ const blindspots = blindspotsRaw.findings ?? [];
 // (c) reference search — the "unknown knowns" from outside this repo. Kept
 // optional/short; the operator can drop it by passing args.noReferences.
 let references = [];
-if (!A.noReferences) {
+if (!(typeof A === "object" && A.noReferences)) {
   references = await agent(
     `Search for prior art and established solutions to this problem outside this codebase. ` +
       `Libraries, patterns, published designs. For each: name it, one-line what it does, and ` +

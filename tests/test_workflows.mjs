@@ -105,7 +105,7 @@ async function brainstormN(directions) {
   const source = fs.readFileSync(new URL(WF("brainstorm.js")), "utf8").replace(/\bexport\s+const\s+meta\b/, "const meta");
   const fn = new Function("args", "agent", "parallel", "pipeline", "phase", "log",
     `return (async () => {\n${source}\n})();`);
-  await fn({ directions }, rt.agent, rt.parallel, rt.pipeline, rt.phase, rt.log);
+  await fn({ topic: "t", directions }, rt.agent, rt.parallel, rt.pipeline, rt.phase, rt.log);
   return rt.calls.filter((l) => l?.startsWith("direction")).length;
 }
 ok((await brainstormN("abc")) === 4, "brainstorm N: non-numeric 'abc' → 4 directions (F04)");
@@ -118,7 +118,7 @@ ok((await brainstormN(undefined)) === 4, "brainstorm N: undefined → default 4"
 // (F07 resolver-map forwarding) but LOGGED, since a typo'd key silently keeps
 // the default. Assertion pins the log, not a throw.
 {
-  const { rt: typoRt } = await run(WF("brainstorm.js"), { tiers: { Mechanical: "glm-5" } },
+  const { rt: typoRt } = await run(WF("brainstorm.js"), { topic: "t", tiers: { Mechanical: "glm-5" } },
     { blindspots: { findings: [] }, converge: { ranked: [], sharedConstraints: [], openQuestions: [] } });
   ok(typoRt.logs.some((m) => m.includes("'Mechanical'") && m.includes("accepted, unused")),
     "brainstorm tier: typo 'Mechanical' accepted but LOGGED as unused (#76 step 2 — was a throw)");
@@ -126,7 +126,7 @@ ok((await brainstormN(undefined)) === 4, "brainstorm N: undefined → default 4"
 // Every whitespace/quote shape lands on the ONE guard (0.8.3 removed the
 // id-shape catalogue); the pre-0.8.3 suite mislabelled which guard fired.
 for (const bad of ["glm 5", "glm-5 turbo", "vendor/model x", 'glm-5"q', "claude-opus 5"]) {
-  await throws(() => run(WF("brainstorm.js"), { tiers: { MECHANICAL: bad } }, {}),
+  await throws(() => run(WF("brainstorm.js"), { topic: "t", tiers: { MECHANICAL: bad } }, {}),
     `brainstorm tier: charset-bad ${JSON.stringify(bad)} rejected (F01)`,
     "outside the");
 }
@@ -134,7 +134,7 @@ for (const bad of ["glm 5", "glm-5 turbo", "vendor/model x", 'glm-5"q', "claude-
 // class includes a literal `]`, contra a prior Copilot review).
 let bracketOk = true;
 try {
-  await run(WF("brainstorm.js"), { tiers: { MECHANICAL: "glm-5.2[1m]" } },
+  await run(WF("brainstorm.js"), { topic: "t", tiers: { MECHANICAL: "glm-5.2[1m]" } },
     { blindspots: { findings: [] }, converge: { ranked: [], sharedConstraints: [], openQuestions: [] } });
 } catch { bracketOk = false; }
 ok(bracketOk, "brainstorm tier: bracket-marked id 'glm-5.2[1m]' accepted (charset allows ])");
@@ -147,7 +147,7 @@ for (const good of ["glm-5.2", "claude-opus-5", "deepseek/deepseek-r1:free",
                     "bogus:vendor/model"]) {
   let accepted = true;
   try {
-    await run(WF("brainstorm.js"), { tiers: { MECHANICAL: good } },
+    await run(WF("brainstorm.js"), { topic: "t", tiers: { MECHANICAL: good } },
       { blindspots: { findings: [] }, converge: { ranked: [], sharedConstraints: [], openQuestions: [] } });
   } catch { accepted = false; }
   ok(accepted, `brainstorm tier: id ${JSON.stringify(good)} accepted — operator does not gate the catalogue (0.8.3)`);
@@ -156,7 +156,7 @@ for (const good of ["glm-5.2", "claude-opus-5", "deepseek/deepseek-r1:free",
 // workflow never dispatches) must not throw.
 let implOk = true;
 try {
-  await run(WF("brainstorm.js"), { tiers: { IMPLEMENT: "claude-sonnet-5" } },
+  await run(WF("brainstorm.js"), { topic: "t", tiers: { IMPLEMENT: "claude-sonnet-5" } },
     { blindspots: { findings: [] }, converge: { ranked: [], sharedConstraints: [], openQuestions: [] } });
 } catch { implOk = false; }
 ok(implOk, "brainstorm tier: IMPLEMENT accepted (F07 — resolver-map forwarding survives the catalogue deletion)");
@@ -1540,6 +1540,69 @@ const { rt: bsNoRefRt } = await run(WF("brainstorm.js"),
   { topic: "t", context: "c", directions: 2, noReferences: true }, bsReturns(2));
 ok(bsNoRefRt.calls.every((c) => c.label !== "references"),
   "brainstorm: args.noReferences SKIPS the reference dispatch, not just its result");
+
+// ── brainstorm/plan: a non-JSON args string must not evaporate (#92) ─────────
+// Both normalizers parsed `args` in a try and returned {} from the catch, so a
+// prose brief was DISCARDED silently and the run proceeded against the
+// placeholder. Measured live: 7 agents, 123,935 tokens, 86 seconds, every seat
+// answering "cannot propose a direction without a topic". The stub suite could
+// not see it — a stub agent returns its canned object whether or not the prompt
+// it was handed is a placeholder — so these cases assert the INPUT path.
+console.log("-- Case: a non-JSON args string is kept, not discarded (#92)");
+
+// The fix, half one: a bare prose string survives the normalizer AND is read as
+// the one required argument, the way review.js reads its target.
+// Wrapped for the reason the dead-agent cases are: restoring the discarding
+// catch makes the topic absent, so the workflow THROWS here rather than
+// returning a wrong value — and an uncaught throw kills the suite before its
+// summary, hiding which case caught the regression. Convert it into a failure.
+const BS_BRIEF = "CONTEXT — a prose brief with no JSON at all, four sub-questions.";
+let bsStr = null, bsStrRt = { calls: [] };
+try {
+  ({ result: bsStr, rt: bsStrRt } = await run(WF("brainstorm.js"), BS_BRIEF, bsReturns(4)));
+} catch (e) {
+  ok(false, `#92 brainstorm: a bare prose string must survive the normalizer (${e?.message ?? e})`);
+  bsStrRt = e?.rt ?? bsStrRt;
+}
+ok(bsStr?.topic === BS_BRIEF,
+  "#92 brainstorm: a bare prose string IS the topic (was discarded to {})");
+ok(bsStrRt.calls.some((c) => c.prompt?.includes(BS_BRIEF)),
+  "#92 brainstorm: the brief reaches the dispatched prompts, not just the return value");
+// CONTROL — the object form still works and still wins over the string branch.
+const { result: bsObj } = await run(WF("brainstorm.js"), { topic: "obj-topic" }, bsReturns(4));
+ok(bsObj?.topic === "obj-topic", "#92 CONTROL brainstorm: {topic} still read from an object");
+// CONTROL — a JSON string still parses to the object (the branch that worked).
+const { result: bsJson } = await run(WF("brainstorm.js"), '{"topic":"json-topic"}', bsReturns(4));
+ok(bsJson?.topic === "json-topic", "#92 CONTROL brainstorm: a JSON string still parses");
+
+// The fix, half two: with no topic at all, REFUSE before dispatching. Nothing
+// downstream can succeed, and discovering that from the output cost 124K tokens.
+await throws(() => run(WF("brainstorm.js"), {}, bsReturns(4)),
+  "#92 brainstorm: an absent topic is refused", "args.topic is required");
+// The refusal must be FREE: a throw after the fan-out would fix the message and
+// keep the entire cost, which is the defect.
+let bsSpend = null;
+try { await run(WF("brainstorm.js"), {}, bsReturns(4)); } catch (e) { bsSpend = e?.rt ?? null; }
+ok(bsSpend != null && bsSpend.calls.length === 0,
+  "#92 brainstorm: the refusal spends ZERO agents (the 124K tokens were the defect)");
+// Whitespace is not a topic — the placeholder came back as a non-empty string too.
+await throws(() => run(WF("brainstorm.js"), { topic: "   " }, bsReturns(4)),
+  "#92 brainstorm: a whitespace-only topic is refused", "args.topic is required");
+
+// plan: same normalizer, same discard. plan already refused an absent spec, so
+// the cost here was a confusing refusal rather than a wasted run — but a bare
+// string reaching `A.spec` on a STRING is the same latent shape.
+await throws(() => run(WF("plan.js"), "a prose spec with no JSON", {}),
+  "#92 plan: a bare string is refused naming the required arg", "args.spec is required");
+let planSpend = null;
+try { await run(WF("plan.js"), "a prose spec with no JSON", {}); } catch (e) { planSpend = e?.rt ?? null; }
+ok(planSpend != null && planSpend.calls.length === 0,
+  "#92 plan: the refusal spends zero agents");
+// CONTROL — plan's object path is untouched by the normalizer change.
+const { result: planOk } = await run(WF("plan.js"),
+  { spec: "s", northStar: "The gate blocks only my own rows. Missed if: a fresh session inherits." },
+  { decompose: { tasks: [] } });
+ok(planOk != null, "#92 CONTROL plan: the object form still runs");
 
 // ── crawl: shard hygiene, fan-out accounting, dead merge ────────────────────
 // crawl also had ONE case. Its shard filter and its digest accounting are what

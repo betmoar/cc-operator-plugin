@@ -265,10 +265,15 @@ check_bare_name() { # check_bare_name <label> <value>
 }
 
 # Owners refuse whitespace; task ids do NOT (recovery must name legacy ids).
+# Owners also refuse shell metacharacters (#89): adopting a task under an
+# unexpanded `$S` re-stamps the sentinel to a name no session can ever match,
+# turning a recovery command into a permanent block. Keep identical in
+# ops-task.sh + ops-verdict.sh (check_guard_parity).
 check_owner_name() { # check_owner_name <value>
   check_bare_name "owner" "$1"
   case "$1" in
     *[[:space:]]*) die "owner must not contain whitespace — it could never match a real session id, leaving the task permanently unblockable" ;;
+    *'$'* | *'`'* | *"'"* | *'"'* | *\\*) die "owner contains a shell metacharacter — this looks like an UNEXPANDED variable, not a session id. A literal like \$S is read by every ledger consumer as a foreign session, so its HANDOFF-MARK clears nothing and its sentinel is unclearable" ;;
   esac
 }
 

@@ -75,10 +75,18 @@ check_bare_name() { # check_bare_name <label> <value>
 
 # Owners refuse whitespace (a padded owner never matches a real session →
 # permanently unblockable); task ids deliberately do NOT — see ops-task.sh.
+# Owners ALSO refuse shell metacharacters (#89): a quoted heredoc passed the
+# literal two characters `$S`, which every reader classified as a FOREIGN
+# session id — so the mark cleared nothing and the operator believed the
+# deviations were presented because the tool said so. Strictly worse than not
+# running the command, and invisible: the only symptom is the next Stop
+# blocking again. No real session id contains one, so this cannot false-fire.
+# Keep identical in ops-task.sh + ops-adopt.sh (check_guard_parity).
 check_owner_name() { # check_owner_name <value>
   check_bare_name "owner" "$1"
   case "$1" in
     *[[:space:]]*) die "owner must not contain whitespace — it could never match a real session id, leaving the task permanently unblockable" ;;
+    *'$'* | *'`'* | *"'"* | *'"'* | *\\*) die "owner contains a shell metacharacter — this looks like an UNEXPANDED variable, not a session id. A literal like \$S is read by every ledger consumer as a foreign session, so its HANDOFF-MARK clears nothing and its sentinel is unclearable" ;;
   esac
 }
 
