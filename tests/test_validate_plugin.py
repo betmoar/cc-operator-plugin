@@ -101,6 +101,26 @@ GOOD_LOCK_BLOCK = (
     "lock_release() { rm -f \"$LOCKDIR/holder\"; rmdir \"$LOCKDIR\"; }\n"
     "# <<< LOCK BLOCK\n")
 
+# The #95 project-root walk (check_root_parity): byte-identical across the
+# three gate CLIs, and it must CD rather than merely compute an absolute OPDIR.
+GOOD_ROOT_BLOCK = (
+    "# >>> PROJECT ROOT BLOCK\n"
+    "_ops_cd_project_root() {\n"
+    "  _walk=\"$(pwd -P 2>/dev/null)\" || _walk=\"\"\n"
+    "  while [ -n \"$_walk\" ]; do\n"
+    "    if [ -d \"$_walk/.operator\" ]; then\n"
+    "      cd \"$_walk\" 2>/dev/null || die \"could not cd\"\n"
+    "      return 0\n"
+    "    fi\n"
+    "    [ -e \"$_walk/.git\" ] && break\n"
+    "    [ \"$_walk\" = \"/\" ] && break\n"
+    "    _walk=\"${_walk%/*}\"; [ -n \"$_walk\" ] || _walk=\"/\"\n"
+    "  done\n"
+    "  return 1\n"
+    "}\n"
+    "_ops_cd_project_root || :\n"
+    "# <<< PROJECT ROOT BLOCK\n")
+
 # The U10 source-state stamp (check_source_stamp): resolver, markers, the
 # `.operator` dirty-exclusion, the 4-cell row, and stamp-before-lock_acquire.
 GOOD_SOURCE_STAMP = (
@@ -245,7 +265,7 @@ def make_good_tree(root):
     write(root / "scripts" / "ops-stop-hook.sh",
           "#!/usr/bin/env bash\n. lib/partition.sh\n. lib/autobar.sh\n" + JSON_GET)
     write(root / "scripts" / "ops-task.sh",
-          "#!/usr/bin/env bash\n" + guards + nolink)
+          "#!/usr/bin/env bash\n" + guards + nolink + GOOD_ROOT_BLOCK)
     write(root / "scripts" / "ops-verdict.sh",
           "#!/usr/bin/env bash\n" + "_r() { local LC_ALL=C; :; }\n" + guards + nolink +
           "sentinel_owner_of_name() {\n"
@@ -259,12 +279,12 @@ def make_good_tree(root):
           "while IFS= read -r -n 1048576 row; do :; done < \"$frag\"\n"
           "while IFS= read -r -n 1048576 line; do :; done < \"$frag\"\n" +
           "# --mark-handoff writes a HANDOFF-MARK line under the lock\n" +
-          GOOD_LOCK_BLOCK + GOOD_SOURCE_STAMP)
+          GOOD_LOCK_BLOCK + GOOD_SOURCE_STAMP + GOOD_ROOT_BLOCK)
     write(root / "scripts" / "ops-adopt.sh",
           "#!/usr/bin/env bash\n" + guards + nolink +
           "# PREV reject-set (F15): carries *.exempt like the sentinel_owner parsers\n"
           'case "${PREV:-}" in */* | .* | *"|"* | *[[:space:]]* | *[[:cntrl:]]* | *.exempt) PREV="<invalid>" ;; esac\n'
-          + GOOD_LOCK_BLOCK)
+          + GOOD_LOCK_BLOCK + GOOD_ROOT_BLOCK)
     # ops-claims.sh: check_claims pins its PROTECTED literal and requires
     # matches_protected applied to $p.
     write(root / "scripts" / "ops-claims.sh",
@@ -1733,6 +1753,114 @@ class LockParityTest(unittest.TestCase):
         # Guards the shipped tree, not just a fixture.
         probs = []
         vp.check_lock_parity(ROOT, probs)
+        self.assertEqual(probs, [])
+
+
+class RootParityTest(unittest.TestCase):
+    """The three gate CLIs must resolve the project the same way, and it must
+    be the right way (#95).
+
+    Until 0.11.3 OPDIR was relative to the caller's cwd, so every CLI worked
+    from the project root and nowhere else — including through the ABSOLUTE
+    path the Stop hook prescribes, which is how it was found: the 0.11.2
+    release test pasted that command from `apps/viewer/` and got "missing
+    .operator/DECISIONS.md".
+    """
+
+    BLOCK = (
+        "# >>> PROJECT ROOT BLOCK\n"
+        "_ops_cd_project_root() {\n"
+        '  _walk="$(pwd -P 2>/dev/null)" || _walk=""\n'
+        '  while [ -n "$_walk" ]; do\n'
+        '    if [ -d "$_walk/.operator" ]; then\n'
+        '      cd "$_walk" 2>/dev/null || die "TOOL: could not cd"\n'
+        "      return 0\n"
+        "    fi\n"
+        '    [ -e "$_walk/.git" ] && break\n'
+        '    [ "$_walk" = "/" ] && break\n'
+        '    _walk="${_walk%/*}"; [ -n "$_walk" ] || _walk="/"\n'
+        "  done\n"
+        "  return 1\n"
+        "}\n"
+        "_ops_cd_project_root || :\n"
+        "# <<< PROJECT ROOT BLOCK\n"
+    )
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        (self.dir / "scripts").mkdir(parents=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _write(self, **over):
+        for name in ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh"):
+            key = name[:-3].replace("-", "_")
+            body = over.get(key, self.BLOCK.replace("TOOL:", name[:-3] + ":"))
+            write(self.dir / "scripts" / name, "#!/usr/bin/env bash\n" + body)
+
+    def problems(self):
+        probs = []
+        vp.check_root_parity(self.dir, probs)
+        return probs
+
+    def test_identical_blocks_pass(self):
+        self._write()
+        self.assertEqual(self.problems(), [])
+
+    def test_drifted_copy_fires(self):
+        self._write(ops_adopt=self.BLOCK.replace("TOOL:", "ops-adopt:")
+                    .replace('_walk=""', '_walk="/"'))
+        probs = self.problems()
+        self.assertTrue(any("drifted" in p for p in probs), probs)
+
+    def test_uniform_loss_of_cd_fires(self):
+        """The REFLEX fix: make OPDIR absolute instead of cd'ing. Every ledger
+        path then looks right, and only the source stamp breaks — its
+        `git status -- ':(exclude).operator'` pathspec is REPO-relative, so
+        every row written from a subdirectory reads +dirty. Measured: the bash
+        suite's two stamp CONTROLs are the only cases that fall over."""
+        broke = self.BLOCK.replace('      cd "$_walk" 2>/dev/null || die "TOOL: could not cd"',
+                                   '      OPDIR="$_walk/.operator"')
+        self._write(ops_task=broke.replace("TOOL:", "ops-task:"),
+                    ops_verdict=broke.replace("TOOL:", "ops-verdict:"),
+                    ops_adopt=broke.replace("TOOL:", "ops-adopt:"))
+        probs = self.problems()
+        self.assertFalse(any("drifted" in p for p in probs),
+                         "uniform drift IS in parity — that is the point")
+        self.assertTrue(any("REPO-relative" in p for p in probs), probs)
+
+    def test_uniform_loss_of_git_boundary_fires(self):
+        """Without the .git stop a CLI run inside a vendored repo walks out and
+        writes into the OUTER project's ledger."""
+        broke = self.BLOCK.replace('    [ -e "$_walk/.git" ] && break\n', "")
+        self._write(ops_task=broke.replace("TOOL:", "ops-task:"),
+                    ops_verdict=broke.replace("TOOL:", "ops-verdict:"),
+                    ops_adopt=broke.replace("TOOL:", "ops-adopt:"))
+        probs = self.problems()
+        self.assertTrue(any("nested repo" in p for p in probs), probs)
+
+    def test_walk_in_a_comment_does_not_count(self):
+        """MENTION-not-ACTION, the shape that already defeated the lock pin
+        once (Copilot, PR #87): commenting the cd out leaves the literal in the
+        block, so the content pin must read CODE only."""
+        broke = self.BLOCK.replace(
+            '      cd "$_walk" 2>/dev/null || die "TOOL: could not cd"',
+            '      # cd "$_walk" 2>/dev/null || die "TOOL: could not cd"\n      :')
+        self._write(ops_task=broke.replace("TOOL:", "ops-task:"),
+                    ops_verdict=broke.replace("TOOL:", "ops-verdict:"),
+                    ops_adopt=broke.replace("TOOL:", "ops-adopt:"))
+        probs = self.problems()
+        self.assertTrue(any("REPO-relative" in p for p in probs), probs)
+
+    def test_missing_markers_fire(self):
+        self._write(ops_task="OPDIR='.operator'\n")
+        probs = self.problems()
+        self.assertTrue(any("PROJECT ROOT BLOCK" in p for p in probs), probs)
+
+    def test_real_scripts_are_in_parity(self):
+        probs = []
+        vp.check_root_parity(ROOT, probs)
         self.assertEqual(probs, [])
 
 

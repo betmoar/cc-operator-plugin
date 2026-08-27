@@ -9,6 +9,52 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-08-28
+
+0.11.2's own release test found the half of #94 that fix did not reach.
+
+### Fixed
+
+- **The gate CLIs resolve the project by walking up, not from cwd (#95).**
+  `ops-task.sh`, `ops-verdict.sh` and `ops-adopt.sh` set `OPDIR=".operator"` —
+  relative to the *caller's* cwd — so they worked from the project root and
+  nowhere else. 0.11.2 made the Stop hook prescribe an ABSOLUTE path to
+  `ops-verdict.sh`, which resolves fine from anywhere, and the pasted command
+  still failed from a subdirectory:
+
+  ```
+  $ cd 'a project/apps/viewer'
+  $ '…/a project/.operator/bin/ops-verdict.sh' --mark-handoff --owner FRESH
+  ops-verdict: missing .operator/DECISIONS.md — run ops-init.sh first
+  rc=2
+  ```
+
+  The absolute path said where the CLI *lives*, never which project it
+  *serves*. The three now walk up to the nearest ancestor holding `.operator/`
+  and `cd` there — the same resolution `ops-stop-hook.sh` has always used,
+  bounded the same way: stop at a `.git` boundary (a nested repo is its own
+  project) and at the filesystem root, `pwd -P` so a planted symlink cannot
+  redirect the walk.
+
+  `cd`, not an absolute `OPDIR`: the source stamp's
+  `git status --porcelain -- ':(exclude).operator'` pathspec is **repo-relative**,
+  so the reflex fix leaves every ledger path looking correct while silently
+  pinning every row written from a subdirectory to `+dirty`. That variant is
+  mutation-measured — it fails only the two stamp controls — and is now refused
+  by `check_root_parity`, which pins the block across all three copies plus its
+  canonical contents (uniform drift is what parity alone cannot see, F30).
+
+  The not-found message says the walk happened: "no `.operator/` here or in any
+  parent up to the repo boundary". The old "in cwd" sent the operator to the
+  wrong diagnosis — they *are* in the project, just not at its root.
+
+### Notes
+
+Three script mutations (revert the block, the absolute-`OPDIR` reflex fix, drop
+the `.git` boundary) and four validator-pin mutations, each red against the case
+written for it, each restored. Suites: 740 bash (was 726), 354 node, 90
+compress, 229 python (was 222), validator green.
+
 ## [0.11.2] - 2026-08-27
 
 The deviation gate cost more than it bought, and four of the five defects were

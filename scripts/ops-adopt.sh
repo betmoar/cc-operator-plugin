@@ -12,6 +12,50 @@ LOCKDIR="$OPDIR/.lock"
 
 die() { echo "ops-adopt: $1" >&2; exit 2; }
 
+# >>> PROJECT ROOT BLOCK — byte-identical in ops-task.sh, ops-verdict.sh and
+# ops-adopt.sh (check_root_parity + the bash suite compare the markers' span).
+#
+# WALK UP to the nearest ancestor holding .operator/, then cd there — the way
+# git finds its own root, and the way ops-stop-hook.sh has always resolved the
+# project. Without this every path below is relative to the caller's cwd, so
+# the CLI worked from the project root and NOWHERE else.
+#
+# That is not hypothetical: the Stop hook's #94 fix made it prescribe an
+# ABSOLUTE path to this CLI, which resolves fine from a subdirectory — and the
+# command still failed there with "missing .operator/DECISIONS.md — run
+# ops-init.sh first", because the path said where the CLI lives, never which
+# project it serves. Measured on 0.11.2 from `apps/viewer/`. The Bash tool's
+# cwd persists across calls, so a session is routinely somewhere else.
+#
+# `cd`, not an absolute OPDIR: every other relative path comes right for free —
+# the sentinel glob, the fragment dir, the lock, and `git status --porcelain --
+# ':(exclude).operator'` in the source stamp, whose pathspec is repo-relative
+# and would silently stop excluding the ledger from a subdirectory.
+#
+# Bounded exactly like the hook's copy: stop at a .git boundary (a nested repo
+# is its own project) and at the filesystem root. `cd -P` resolves symlinks, so
+# the walk cannot be redirected by a planted link.
+_ops_cd_project_root() {
+  _walk="$(pwd -P 2>/dev/null)" || _walk=""
+  while [ -n "$_walk" ]; do
+    if [ -d "$_walk/.operator" ]; then
+      # Refuse rather than operate on a project we cannot enter: a silent
+      # failure here would leave every path below resolving against the
+      # caller's cwd, which is the defect this block exists to remove.
+      cd "$_walk" 2>/dev/null || die "found $_walk/.operator but could not cd there"
+      return 0
+    fi
+    [ -e "$_walk/.git" ] && break
+    [ "$_walk" = "/" ] && break
+    _walk="${_walk%/*}"; [ -n "$_walk" ] || _walk="/"
+  done
+  return 1
+}
+# A miss is NOT fatal here: the per-command guards below already die with the
+# message that names ops-init.sh, and they stay the single place that decides.
+_ops_cd_project_root || :
+# <<< PROJECT ROOT BLOCK
+
 # Adoption takes the SAME lock as ops-verdict.sh, and must: verdict validates
 # ownership then clears the sentinel, and an adopt landing between those steps
 # would let the former owner delete the new owner's sentinel.
@@ -297,7 +341,7 @@ done
 check_owner_name "$OWNER"
 # ${IDS+…}: bash 3.2 treats "${EMPTY[@]}" under set -u as unbound.
 [ "${#IDS[@]}" -gt 0 ] || die "name at least one task-id — there is no bulk adopt"
-[ -d "$OPDIR" ] || die "no $OPDIR/ in cwd — run ops-init.sh first"
+[ -d "$OPDIR" ] || die "no $OPDIR/ here or in any parent up to the repo boundary — run ops-init.sh first (from the project root)"
 
 for ID in ${IDS+"${IDS[@]}"}; do
   check_bare_name "task-id" "$ID"
