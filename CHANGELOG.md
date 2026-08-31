@@ -9,6 +9,8 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.4] - 2026-08-31
+
 A principal-architect audit (2026-08-31, autonomous) — 34 findings, all logged
 with evidence in `AUDIT_LOG.md`; every fix landed with a test run RED against
 the pre-fix code.
