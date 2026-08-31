@@ -211,7 +211,7 @@ const failRes = compress({ ...bash("y".repeat(50000)), tool_input: { command: "n
   { env: {}, cwd: badCwd });
 {
   const failOut = failRes?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
-  ok(/no spill copy exists/.test(failOut),
+  ok(/NO spill copy/.test(failOut),
     "elided output whose spill failed carries the explicit no-spill marker");
   ok(!/full output spilled to/.test(failOut),
     "a failed spill never cites a spill file that does not exist");
@@ -248,7 +248,7 @@ console.log("-- Case: ephemera are self-ignoring and never materialize .operator
   const vout = vres?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
   ok(!fs.existsSync(path.join(virgin, ".operator")),
     "a project that never ran /cc-operator:start gets NO .operator/ directory");
-  ok(/chars elided/.test(vout) && /no spill copy exists/.test(vout),
+  ok(/chars elided/.test(vout) && /NO spill copy/.test(vout),
     "elide still fires outside an operated project, marked 'not spilled'");
   ok(!/full output spilled to/.test(vout),
     "no spill cite in an un-operated project (there is no spill file to cite)");
@@ -361,7 +361,7 @@ console.log("-- Case: F18 a vanished spill-dir entry does not fail the spill");
   const rText = raceRes?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
   ok(/full output spilled to/.test(rText),
     "spill() still returns a valid, non-null path when a listed entry has already vanished");
-  ok(!/no spill copy exists/.test(rText),
+  ok(!/NO spill copy/.test(rText),
     "the vanished entry does not throw spill() into the outer no-spill branch");
 }
 
@@ -407,7 +407,7 @@ console.log("-- Case: #59 the F18 guard is ENTERED — an entry listed but unsta
   // a spill cite even though the write succeeded.
   ok(/full output spilled to/.test(wText),
     "#59 spill still cites a real path when an entry is listed but unstattable");
-  ok(!/no spill copy exists/.test(wText),
+  ok(!/NO spill copy/.test(wText),
     "#59 the unstattable entry does not collapse the spill into the no-spill branch");
   // And the spill file is really on disk — a cite pointing at nothing would
   // satisfy the regex above while the guard did nothing useful.
@@ -457,6 +457,95 @@ console.log("-- Case: #59b the unstattable entry sorts OLDEST — evicted, not k
   // the deletion would pass a bound that evicted everything.
   ok(after.includes(`f${String(KEEP - 1).padStart(3, "0")}`),
     "#59b a real spill file was NOT evicted in the ghost's place");
+}
+
+// ── audit F120: scrub must not eat plain text — the ESC anchor is the regex ──
+console.log("-- Case: F120 scrub is lossless on ]-bearing plain text, still strips real ANSI");
+{
+  // 0.10.0 stripped the raw ESC bytes from scrub's regex literals; without the
+  // anchor the OSC pattern matched from the first bare `]` to end-of-string
+  // (measured: a 3KB "[ok]…[FAIL]" log came back as ONE char, no marker, no
+  // spill — the I2.3 falsification class). Plain text with brackets must come
+  // back untouched: nothing to scrub means nothing to shrink means null.
+  const lines = [];
+  for (let i = 0; i < 40; i++) lines.push(`[ok] test ${i} passed (case-${i})`);
+  lines.push("array literal: [1, 2, 3] and a bare ] plus [x");
+  lines.push("[FAIL] CRITICAL: data corruption in refund path");
+  const bracketText = lines.join("\n") + "\n";
+  const bres = run({ ...bash(bracketText), tool_input: { command: "npm test" } });
+  ok(bres === null,
+    "F120 ]-bearing plain text is untouched (scrub lossless → below MIN_SHRINK → skip)");
+  // The complement: REAL ANSI/OSC sequences are still removed and the payload
+  // around them survives — the pin must not pass by scrub doing nothing at all.
+  let ansi = "\x1b]0;window title\x07";
+  for (let i = 0; i < 60; i++) ansi += `\x1b[31m[FAIL]\x1b[0m case ${i} evidence-${i}\n`;
+  const ares = run({ ...bash(ansi), tool_input: { command: "npm test" } });
+  const atext = ares?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
+  ok(ares !== null && !atext.includes("\x1b"),
+    "F120 real ANSI escapes are stripped (scrub still scrubs)");
+  ok(atext.includes("[FAIL] case 7 evidence-7"),
+    "F120 the text AROUND the escapes survives the strip");
+}
+
+// ── audit F121: a spilled output must not also claim it was not spilled ─────
+console.log("-- Case: F121 spilled output carries the spill cite and no contradicting marker");
+{
+  const sres = run({ ...bash(big), tool_input: { command: "npm test" } });
+  const stext = sres?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
+  ok(/full output spilled to/.test(stext),
+    "F121 an operated project's elide cites its spill path");
+  ok(!/not spilled/.test(stext) && !/NO spill copy/.test(stext),
+    "F121 the elide marker no longer contradicts the spill cite (neutral marker)");
+}
+
+// ── audit F122: a symlinked .operator/ is never ours — no spill through it ──
+console.log("-- Case: F122 symlinked .operator/ refused (spills stay inside the project)");
+{
+  const symBase = fs.mkdtempSync(path.join(os.tmpdir(), "opssym-"));
+  const symTarget = fs.mkdtempSync(path.join(os.tmpdir(), "opssymtarget-"));
+  fs.symlinkSync(symTarget, path.join(symBase, ".operator"));
+  const symRes = compress({ ...bash(big), tool_input: { command: "npm test" } },
+    { env: {}, cwd: symBase });
+  const symText = symRes?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
+  ok(/NO spill copy/.test(symText) && !/full output spilled to/.test(symText),
+    "F122 a symlinked .operator/ is treated as absent (elide fires, nothing spilled)");
+  ok(!fs.existsSync(path.join(symTarget, ".compress-spill")),
+    "F122 nothing was written through the link into the target");
+  fs.rmSync(symBase, { recursive: true, force: true });
+  fs.rmSync(symTarget, { recursive: true, force: true });
+}
+
+// ── Copilot PR #97: NESTED symlinks refused too — root-only lstat was not
+// containment; a planted link at the ephemera root, the session dir, or the
+// spill file itself still carried unredacted output outside the project.
+console.log("-- Case: nested symlinks under .operator/ are refused (spill root + session dir)");
+{
+  const nb = fs.mkdtempSync(path.join(os.tmpdir(), "opsnest-"));
+  const nt = fs.mkdtempSync(path.join(os.tmpdir(), "opsnesttarget-"));
+  fs.mkdirSync(path.join(nb, ".operator"));
+  fs.symlinkSync(nt, path.join(nb, ".operator", ".compress-spill"));
+  const nres = compress({ ...bash(big), tool_input: { command: "npm test" } },
+    { env: {}, cwd: nb });
+  const ntext = nres?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
+  ok(/NO spill copy/.test(ntext) && !/full output spilled to/.test(ntext),
+    "a symlinked spill ROOT under a real .operator/ is refused (no spill cite)");
+  ok(fs.readdirSync(nt).length === 0,
+    "nothing was written through the root link into the target");
+  fs.rmSync(nb, { recursive: true, force: true });
+  const sb = fs.mkdtempSync(path.join(os.tmpdir(), "opsnestsess-"));
+  const st2 = fs.mkdtempSync(path.join(os.tmpdir(), "opsnesstarget2-"));
+  fs.mkdirSync(path.join(sb, ".operator", ".compress-spill"), { recursive: true });
+  const sessPayload = { ...bash(big), tool_input: { command: "npm test" } };
+  fs.symlinkSync(st2, path.join(sb, ".operator", ".compress-spill", sessPayload.session_id));
+  const sres = compress(sessPayload, { env: {}, cwd: sb });
+  const stext = sres?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
+  ok(/NO spill copy/.test(stext) && !/full output spilled to/.test(stext),
+    "a symlinked SESSION dir is refused (no spill cite)");
+  ok(fs.readdirSync(st2).length === 0,
+    "nothing was written through the session link into the target");
+  fs.rmSync(sb, { recursive: true, force: true });
+  fs.rmSync(nt, { recursive: true, force: true });
+  fs.rmSync(st2, { recursive: true, force: true });
 }
 
 fs.rmSync(TMP, { recursive: true, force: true });

@@ -43,7 +43,7 @@ safe default, and what pre-0.4 sentinels degrade to.
 
 ## Orchestration layer (0.5.0)
 
-Five **workflows** are the operator's dispatch primitives — deterministic
+Six **workflows** are the operator's dispatch primitives — deterministic
 scripts that fan agent seats across model tiers and converge on judgment:
 
 | Workflow | Shape | Use |
@@ -52,6 +52,7 @@ scripts that fan agent seats across model tiers and converge on judgment:
 | `cc-operator:brainstorm` | N divergent directions + blindspot scan + reference search → converge | before a spec exists |
 | `cc-operator:plan` | decompose an approved spec into TDD tasks → parallel feasibility/testability vetting | after a spec is approved |
 | `cc-operator:crawl` | one cheap crawler per shard → judgment-tier merge | digesting a large corpus fast |
+| `cc-operator:debate` | 2–5 caller-named models argue blind over three rounds → reviewer synthesis, `chose` always null | a decision worth paying rival flagships to disagree about |
 | `cc-operator:dispatch` | one seat, one caller-supplied model id | running a seat on its configured tier without rendering (#55) |
 
 **Tier system.** Seats are pinned to tiers (`JUDGMENT`, `IMPLEMENT`,

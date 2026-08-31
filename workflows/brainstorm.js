@@ -166,6 +166,22 @@ const directions = await parallel(
   ),
 ).then((rs) => rs.filter(Boolean));
 
+// Zero survivors is a DEAD FAN-OUT, not a thin one. Proceeding paid the
+// blindspot scan and the judgment-tier converge to rank an empty list, and the
+// bundle that came back read as a completed exploration of nothing (audit
+// F104). Same error-return shape as the dead-blindspots branch below;
+// blindspots/references are omitted because neither has run yet — the return
+// fires BEFORE either is dispatched, so nothing further is paid for.
+if (directions.length === 0) {
+  return {
+    error:
+      `all ${N} direction agents died — nothing survived to converge; ` +
+      `re-diverge to retry (a dead seat is usually a refused model id or a timeout)`,
+    topic,
+    directions,
+  };
+}
+
 // (b) blindspot scan — the "unknown unknowns" quadrant. A recon agent sweeps
 // the codebase for what already exists that the design would duplicate or
 // collide with (a rate limiter, a naming convention, an existing abstraction).
@@ -193,8 +209,10 @@ const BLINDSPOTS = {
 // to surface, with no signal the lens failed. This is the F31/F32 dead-agent
 // class, fixed for converge (:233), crawl merge, and review lenses — blindspots
 // was the one direct `await agent()` in divergence with no null guard. The
-// adjacent `references` lens below signals via .catch+log; this one now signals
-// the same way, by surfacing the death rather than laundering it.
+// adjacent `references` lens below handles its null return in the .then and
+// logs the death — its .catch sees only a THROWN dispatch error, never the
+// null a dead agent resolves to (audit F109); this one signals the same way,
+// by surfacing the death rather than laundering it.
 const blindspotsRaw = await agent(
   `Blindspot scan: find what ALREADY EXISTS in this codebase that a design for the topic ` +
     `would duplicate, collide with, or ignorantly rebuild. Existing abstractions, conventions, ` +
@@ -224,12 +242,24 @@ if (!(typeof A === "object" && A.noReferences)) {
       `the one idea worth stealing. Do not recommend adopting wholesale — extract the move.\n\nTOPIC: ${topic}`,
     { model: RECON, effort: "low", label: "references", phase: "Diverge" },
   )
-    .then((t) => (typeof t === "string" ? t.trim() : ""))
+    // A non-string here is a DEAD lens (agent() resolves null on schema
+    // mismatch or timeout; the .catch below never sees it). Coercing it to ""
+    // silently made a dead lens byte-identical to "no prior art found" —
+    // log the death, then proceed without prior art (audit F109).
+    .then((t) => {
+      if (typeof t !== "string") {
+        log("references lens died — proceeding without prior art");
+        return "";
+      }
+      return t.trim();
+    })
     .catch((e) => { log("references lens failed: " + (e?.message ?? e)); return ""; });
 }
 
+// returned/requested, not a bare count: a partial fan-out must be visible in
+// the one channel that reports what the diverge actually did (audit F104).
 log(
-  `diverge: ${directions.length} directions, ${blindspots.length} blindspots, ` +
+  `diverge: ${directions.length}/${N} directions, ${blindspots.length} blindspots, ` +
     `${references ? "references found" : "no references"}`,
 );
 
@@ -302,6 +332,9 @@ if (bundle == null) {
 return {
   topic,
   directions,
+  // What was asked for, beside what survived — directions.length alone cannot
+  // show a partial fan-out (audit F104).
+  directionsRequested: N,
   blindspots,
   references: references || null,
   bundle,

@@ -4,8 +4,11 @@
 # decisions, wf done/started while a run is live; NOTHING outside operator
 # projects. The partition is NOT re-implemented: hook and bar source the same
 # scripts/lib/partition.sh. CONTRACT: never block, never fail loudly — the
-# hottest reader in the plugin (~300ms debounce); builtins + one optional JSON
-# parser, no lock, no write, no find.
+# hottest reader in the plugin (~300ms debounce); no lock, no write, no find.
+# The SENTINEL/OWNER half is builtin-only (a lost PATH must not blank op[);
+# the dev[/wf segments use stat/tail/grep/date, every call failure-guarded so
+# they degrade to silence, never to a broken bar (audit F117 — the old header
+# claimed builtins-only for the whole file, which was false).
 #
 # Standalone: "statusLine": {"type":"command","command":"bash .../statusline.sh"}
 set -uo pipefail
@@ -57,6 +60,12 @@ case "$0" in
   */*) _libdir="${0%/*}/lib" ;;
   *)   _libdir="lib" ;;
 esac
+# A renderer with no lib beside it must render NOTHING, not die (audit F125):
+# an unguarded source failed loudly (rc 1, unbound MINE under set -u) and a
+# failing renderer is one cc-status may drop silently thereafter. The file
+# test keeps the source STATEMENT below pristine for the validator's
+# statement-anchored pin.
+[ -f "$_libdir/partition.sh" ] || exit 0
 # shellcheck source=/dev/null
 . "$_libdir/partition.sh"
 
@@ -148,12 +157,17 @@ scan_pending "$OPDIR" "$SESSION"
 DEVMINE=0
 if [ -f "$OPDIR/DECISIONS.md" ] && [ ! -L "$OPDIR/DECISIONS.md" ]; then
   # NUL probe over the SAME window; tail runs twice because bash drops NULs
-  # from variables — a captured tail makes the probe vacuous.
+  # from variables — a captured tail makes the probe vacuous. The window is
+  # byte-bounded BEFORE it is line-bounded (audit F124): `tail -n 256` alone
+  # returns a multi-MB newline-less final line whole, and the probe chewed it
+  # at ~500ms against the 300ms budget. 256KiB covers 256 healthy rows with
+  # room; past it the bar's answer is the approximation failing toward
+  # silence, which is its documented deal (CR5).
   if (LC_ALL=C _dp=0
       while IFS= read -r -d '' -n 512 _dprobe; do
         _dp=$((_dp + 1)); [ "$_dp" -le 4096 ] || exit 1
         [ "${#_dprobe}" -eq 512 ] || exit 1
-      done < <(tail -n 256 "$OPDIR/DECISIONS.md" 2>/dev/null)) 2>/dev/null; then
+      done < <(tail -c 262144 "$OPDIR/DECISIONS.md" 2>/dev/null | tail -n 256 2>/dev/null)) 2>/dev/null; then
     # continuation accumulation (#9): a cap-filling chunk is a CONTINUATION,
     # a shorter one completes the row; LC_ALL=C so ${#} counts bytes.
     _lines=()
@@ -164,7 +178,7 @@ if [ -f "$OPDIR/DECISIONS.md" ] && [ ! -L "$OPDIR/DECISIONS.md" ]; then
       else
         _lines+=("${_acc}${line}"); _acc=""
       fi
-    done < <(tail -n 256 "$OPDIR/DECISIONS.md" 2>/dev/null)
+    done < <(tail -c 262144 "$OPDIR/DECISIONS.md" 2>/dev/null | tail -n 256 2>/dev/null)
     [ -n "$_acc" ] && _lines+=("$_acc")
     # Set once a FOREIGN mark is passed on the backward walk: from there down,
     # unowned rows are already presented (the lib's asymmetric clearing).

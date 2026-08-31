@@ -54,7 +54,25 @@ cwd="$(json_get cwd)"
 
 # Everything below operates ON .operator/ — a project without one has nothing
 # to upgrade, migrate, or clean.
-[ -d "$cwd/.operator" ] || exit 0
+#
+# Resolve the project by WALKING UP from the payload cwd, exactly like the Stop
+# hook (audit F101): the exact-match `$cwd/.operator` was the F01 class on this
+# hook's side — a session launched in a subdirectory got NO id banner, NO
+# legacy-sentinel migration, NO bin/ upgrade and NO ephemera wipes, all
+# silently, while the Stop hook from the same cwd walked up and blocked.
+# Bounded the same way: a .git boundary (a nested repo is its own project) and
+# the filesystem root; `cd -P` resolves symlinks.
+_ssroot=""
+_sswalk="$(cd -P "$cwd" 2>/dev/null && pwd)" || _sswalk=""
+while [ -n "$_sswalk" ]; do
+  if [ -d "$_sswalk/.operator" ]; then _ssroot="$_sswalk"; break; fi
+  [ -e "$_sswalk/.git" ] && break
+  [ "$_sswalk" = "/" ] && break
+  _sswalk="${_sswalk%/*}"; [ -n "$_sswalk" ] || _sswalk="/"
+done
+[ -n "$_ssroot" ] || exit 0
+# Every later `$cwd/.operator` reference now points at the resolved project.
+cwd="$_ssroot"
 
 # --- legacy sentinel migration (ownership moved into the filename) -----------
 # A pre-0.9 sentinel carries session_id in its BODY and reads as UNOWNED
@@ -210,18 +228,30 @@ done
 _gi="$cwd/.operator/.gitignore"
 _gi_migrated=0
 _gi_backup_failed=0
+_gi_write_failed=0
 if [ -f "$_gi" ] && ! grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi" 2>/dev/null; then
   # BACKUP FIRST, overwrite ONLY on success, set the notice flag only AFTER
   # the replacement — the old order destroyed rules with no backup while
   # reporting success (#32, one layer down). No set -e: a dying hook costs the
   # id injection. Symlink backup path refused: -f follows links, so cp would
   # overwrite the target instead of writing a backup.
+  #
+  # The replacement is ATOMIC — heredoc into a temp, mv on success (Copilot
+  # review on PR #97): a cat that died mid-write (ENOSPC, EIO) left the LIVE
+  # .gitignore truncated with no marker and no flag set, so the failure was
+  # silent AND the next session's retry copied the truncated file over the
+  # good .v1.bak — destroying the recovery copy the notice promises. With the
+  # temp+mv the live file is always either the old v1 or the complete v2, so
+  # a retry's backup re-copy is the same intact v1. The temp path is refused
+  # if anything non-regular sits there (a planted symlink would carry the
+  # write elsewhere — the same F65 class as the backup path above).
   if [ -L "$_gi.v1.bak" ] || { [ -e "$_gi.v1.bak" ] && [ ! -f "$_gi.v1.bak" ]; }; then
     _gi_backup_failed=1
   elif ! cp "$_gi" "$_gi.v1.bak" 2>/dev/null; then
     _gi_backup_failed=1
-  else
-  cat > "$_gi" <<'EOF' 2>/dev/null
+  elif [ -L "$_gi.v2.tmp" ] || { [ -e "$_gi.v2.tmp" ] && [ ! -f "$_gi.v2.tmp" ]; }; then
+    _gi_write_failed=1
+  elif cat > "$_gi.v2.tmp" 2>/dev/null <<'EOF'
 # cc-operator gitignore v2 (allowlist)
 # Ignore everything under .operator/ by default, then re-admit the evidence.
 # New machine state is ignored automatically — that is the point of the
@@ -237,12 +267,37 @@ if [ -f "$_gi" ] && ! grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi" 2
 !verdicts.d/*.md
 !handoff-*.md
 EOF
-    # notice flag: only after the replacement happened and the backup exists
-    [ -s "$_gi" ] && _gi_migrated=1
+  then
+    # notice flag: only after the replacement happened and the backup exists.
+    # The marker grep probes the COMPLETE temp (audit F119: `[ -s ]` was true
+    # for a partial write), then the same-dir mv swaps it in atomically.
+    if grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi.v2.tmp" 2>/dev/null \
+       && mv -f "$_gi.v2.tmp" "$_gi" 2>/dev/null; then
+      _gi_migrated=1
+    else
+      rm -f "$_gi.v2.tmp" 2>/dev/null
+      _gi_write_failed=1
+    fi
+  else
+    # A failed temp write is REPORTED, not silent, and under its OWN flag —
+    # the backup-refusal notice would claim the backup could not be written,
+    # which is false here (the backup landed; the v2 write did not).
+    rm -f "$_gi.v2.tmp" 2>/dev/null
+    _gi_write_failed=1
   fi
 fi
 
-ctx="cc-operator: this session's id is ${session}. Pass --owner ${session} when opening or closing tracked tasks — .operator/bin/ops-task.sh <id> --owner ${session}, .operator/bin/ops-verdict.sh <id> ... --owner ${session}. Sentinels you open are then yours alone: the Stop hook blocks only on your own open tasks and reports other sessions' as informational. After a /clear your id changes — run .operator/bin/ops-adopt.sh --owner ${session} <id>... to re-claim tasks you are still working."
+# ABSOLUTE, single-quoted command paths (audit F102 — the #94 shape): the Bash
+# tool's cwd persists across calls, so a session sitting in a subdirectory that
+# pastes a relative `.operator/bin/...` command gets file-not-found, and #94's
+# field history shows the model then misdiagnoses a PRESENT gate as absent.
+# The Stop hook's verdict_cmd_for went absolute+quoted for exactly this;
+# the charter stays relative on purpose (committed, machine-portable).
+_ss_shq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
+_ss_task="$(_ss_shq "$cwd/.operator/bin/ops-task.sh")"
+_ss_verdict="$(_ss_shq "$cwd/.operator/bin/ops-verdict.sh")"
+_ss_adopt="$(_ss_shq "$cwd/.operator/bin/ops-adopt.sh")"
+ctx="cc-operator: this session's id is ${session}. Pass --owner ${session} when opening or closing tracked tasks — ${_ss_task} <id> --owner ${session}, ${_ss_verdict} <id> ... --owner ${session}. Sentinels you open are then yours alone: the Stop hook blocks only on your own open tasks and reports other sessions' as informational. After a /clear your id changes — run ${_ss_adopt} --owner ${session} <id>... to re-claim tasks you are still working."
 
 # The migration notice (#32): name the backup path — the allowlist hides it
 # from a bare `git status`.
@@ -258,6 +313,16 @@ if [ "$_gi_backup_failed" = 1 ]; then
   ctx="$ctx
 
 cc-operator: .operator/.gitignore is still the v1 blocklist — migration to the v2 allowlist was REFUSED this session because the backup at .operator/.gitignore.v1.bak could not be written (the directory may be read-only, or something that is not a regular file already sits at that path). Nothing was overwritten. Until this is resolved the project keeps v1 semantics, which track machine state (bin/, pending/, .lock/) by default. Fix the path or the permissions and start a new session."
+fi
+
+# A failed v2 WRITE is its own notice (Copilot review on PR #97): the backup
+# landed and the live file is untouched, so the backup-refusal wording above
+# would be false — and silence here is what let the pre-atomic variant strand
+# a truncated live file for the next session's retry to copy over the backup.
+if [ "$_gi_write_failed" = 1 ]; then
+  ctx="$ctx
+
+cc-operator: .operator/.gitignore is still the v1 blocklist — the v2 allowlist could not be written this session (disk full, I/O error, or something that is not a regular file at .operator/.gitignore.v2.tmp). The v1 file is UNCHANGED and the backup at .operator/.gitignore.v1.bak is intact; the migration retries next session."
 fi
 
 if [ "$PARSER" = "jq" ]; then

@@ -128,5 +128,6 @@ Any other `$ARGUMENTS` — print the `argument-hint` and stop.
 
 The four tiers: `JUDGMENT` (opus-class review/verdict), `IMPLEMENT`
 (sonnet-class authoring), `MECHANICAL` (cheap lenses, crawls, generation),
-`RECON` (haiku-class search). See `docs/spec/2026-07-29-workflow-orchestration-design.md`
-and `docs/spec/2026-07-28-cc-operator-orchestration-design.md` §3.4 (renderer).
+`RECON` (haiku-class search). Rationale: `docs/spec/TAGS.md` (`spec-wf`,
+`spec-D2`) — the original orchestration-design spec files were never
+committed and exist in no checkout (audit F111).

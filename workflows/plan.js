@@ -455,6 +455,12 @@ const vetted = await pipeline(
         ),
     ]).then(([f, t]) => ({
       taskId: task.id,
+      // The task's index in the decomposition array, resolved by OBJECT
+      // IDENTITY like the #73 packet map — ids are schema-legal to repeat, and
+      // a row carrying only taskId made two rows for a repeated id
+      // byte-identical in blocked/needsInfo/vettingIncomplete, so the operator
+      // could not tell WHICH occurrence a verdict named (audit F110).
+      taskIndex: tasks.indexOf(task),
       feasible: f?.feasible,
       testable: t?.testable,
       // A lens that dies (schema mismatch, timeout, rate limit) resolves its
@@ -759,11 +765,14 @@ return {
   //  2. Resolve every `blocked` task before any implementation dispatch — a
   //     blocked task is a plan-level contradiction, which reaches the human.
   //  3. Write the plan to docs/spec/ or docs/plans/ and open the human-review gate.
-  blocked: blocked.map((v) => ({ taskId: v.taskId, issues: v.issues })),
-  needsInfo: needsInfo.map((v) => v.taskId),
+  //     Every row below carries taskIndex beside taskId (audit F110): a
+  //     decomposer repeating an id is schema-legal, and bare ids collapsed the
+  //     occurrences so a verdict could not name which task it was about.
+  blocked: blocked.map((v) => ({ taskId: v.taskId, taskIndex: v.taskIndex, issues: v.issues })),
+  needsInfo: needsInfo.map((v) => ({ taskId: v.taskId, taskIndex: v.taskIndex })),
   //  4. A vetting-incomplete task is NOT a clear task: its lens failed to
   //     return, so nothing is known about it. Re-vet before dispatching it.
-  vettingIncomplete: incomplete.map((v) => v.taskId),
+  vettingIncomplete: incomplete.map((v) => ({ taskId: v.taskId, taskIndex: v.taskIndex })),
   //  5. The graph. REPORT ONLY — nothing here can block a task, by design (#66).
   graph: {
     edges,

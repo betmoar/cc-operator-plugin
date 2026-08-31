@@ -84,10 +84,16 @@ const capLines = (s, cap) =>
 // consecutive lines → 1 + a count. No information lost, so it is safe on the
 // LOSSLESS_ONLY tools too.
 function scrub(text) {
+  // Both regexes MUST carry the \x1b anchor (audit F120): the 0.10.0 debloat
+  // stripped the raw ESC bytes out of these literals, and without the anchor
+  // the OSC pattern's empty alternation matched from the first bare `]` to
+  // end-of-string — a 3KB test log came back as one character, no marker, no
+  // spill. The OSC body is lazy and needs a real terminator (BEL or ESC-\):
+  // an unterminated escape stays visible, which is the lossless direction.
   // eslint-disable-next-line no-control-regex
-  let out = text.replace(/\][^]*(?:|\\)/g, "")
+  let out = text.replace(/\x1b\][^]*?(?:\x07|\x1b\\)/g, "")
     // eslint-disable-next-line no-control-regex
-    .replace(/\[[0-9;?]*[A-Za-z]/g, "");
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
   out = out.replace(/(?:[ \t]*\n){3,}/g, "\n\n");
   const lines = out.split("\n");
   const kept = [];
@@ -121,7 +127,11 @@ function elide(text, K) {
   }
   const dropped = Math.max(0, middle.length);
   const parts = [capLines(head, K.LINE_CHARS)];
-  parts.push(`\n[… ${dropped} chars elided — no .operator/, not spilled …]`);
+  // NEUTRAL marker (audit F121): elide cannot know whether the caller spilled,
+  // and the old "no .operator/, not spilled" text shipped alongside a real
+  // "[full output spilled to …]" line — contradictory provenance. The caller's
+  // appended line is the single source of spill status.
+  parts.push(`\n[… ${dropped} chars elided …]`);
   if (salvaged.length) parts.push(`[salvaged from the elided middle]\n${salvaged.join("\n")}`);
   parts.push(capLines(tail, K.LINE_CHARS));
   return parts.join("\n");
@@ -134,11 +144,29 @@ function elide(text, K) {
 // without depending on ops-init ever having run.
 function ephemeralRoot(cwd, kind) {
   const opdir = path.join(cwd, ".operator");
-  if (!fs.existsSync(opdir)) return null;
+  // lstat, not existsSync (audit F122): a symlinked .operator/ would redirect
+  // spills (unredacted tool output) and dedup state outside the project —
+  // partition.sh refuses a symlinked ledger for the same F65 class. A link is
+  // never ours; treat it as "no .operator/" (no spill, no dedup).
+  let st = null;
+  try { st = fs.lstatSync(opdir); } catch { return null; }
+  if (!st.isDirectory()) return null;
   const root = path.join(opdir, kind);
   fs.mkdirSync(root, { recursive: true });
+  // Re-verify AFTER the mkdir (Copilot review on PR #97): checking only
+  // `.operator` does not keep the ephemera inside it — a PRE-EXISTING symlink
+  // at `.compress-spill`/`.compress-state` survives `mkdirSync(recursive)`
+  // and every later write follows it out of the project. Same for the
+  // per-session dir, checked by the callers via this helper.
+  if (!ownedDir(root)) return null;
   writeSelfIgnore(root);
   return root;
+}
+
+// A directory OUR writers may put ephemera in: exists and is a real
+// directory at lstat (a symlink is never ours — F65's class, audit F122).
+function ownedDir(p) {
+  try { return fs.lstatSync(p).isDirectory(); } catch { return false; }
 }
 
 // `*` ignores the directory's whole contents including itself; best-effort —
@@ -174,8 +202,13 @@ function spill(original, { cwd, session, toolUseId, keep }) {
     if (!base) return null;   // not an operated project — caller marks "not spilled"
     const dir = path.join(base, sanitizeSessionId(base, session));
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    // A planted symlink at the session dir or the file itself would carry the
+    // UNREDACTED spill outside the project (Copilot review on PR #97) — the
+    // root is verified by ephemeralRoot; this dir and file are ours to verify.
+    if (!ownedDir(dir)) return null;
     const name = String(toolUseId || `t${Date.now()}`).replace(/[^A-Za-z0-9_.-]/g, "_");
     const file = path.join(dir, name);
+    try { if (!fs.lstatSync(file).isFile()) return null; } catch { /* absent — fine */ }
     // 0600: the spill holds the UNREDACTED tool output. `writeFileSync`'s mode
     // applies only at creation, so an existing file is re-tightened explicitly.
     fs.writeFileSync(file, original, { mode: 0o600 });
@@ -218,7 +251,11 @@ function dedupCheck(text, { cwd, session, tool }) {
     if (!base) return false;   // not operated → no dedup; never a false HIT
     const dir = path.join(base, sanitizeSessionId(base, session));
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    // Same containment as spill() (Copilot review on PR #97): a symlinked
+    // session dir or state file must not carry writes outside the project.
+    if (!ownedDir(dir)) return false;
     const f = path.join(dir, String(tool).replace(/[^A-Za-z0-9_.-]/g, "_"));
+    try { if (!fs.lstatSync(f).isFile()) return false; } catch { /* absent — fine */ }
     const h = crypto.createHash("sha256").update(text).digest("hex");
     const prev = fs.existsSync(f) ? fs.readFileSync(f, "utf8").trim() : "";
     fs.writeFileSync(f, h, { mode: 0o600 });
@@ -320,9 +357,12 @@ export function compress(payload, opts = {}) {
       // A failed spill must not read as a complete output: elided text with no
       // marker is indistinguishable from short text that was never touched —
       // the I2.3 falsification class through the failure path.
+      // The no-spill wording must not assert a cause it cannot know (audit
+      // F121): a FAILED spill in an operated project took this branch too, and
+      // "a project with no .operator/" was then simply false.
       text += spillPath
         ? `\n[full output spilled to ${spillPath} — evidence quoted from this output MUST cite that file]`
-        : `\n[output elided in a project with no .operator/ — no spill copy exists; re-run the command if the elided middle matters]`;
+        : `\n[output elided with NO spill copy (no .operator/ here, or the spill could not be written) — re-run the command if the elided middle matters]`;
     }
 
     // I4 — never credit savings the harness refused to apply.

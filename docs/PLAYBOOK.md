@@ -496,3 +496,23 @@ state), so it is neither a sentinel reader nor a `check_guard_parity` site.
    `scan_deviations` (lib/partition.sh, sourced by the hook) and the statusline's
    inline tail scanner implement the same mine/unowned-vs-foreign partition;
    the hook fails CLOSED on cap/corrupt, the bar fails toward SILENCE.
+
+## Decision procedure: renaming or editing a validator constant / pin (audit F108, F126–F130)
+
+1. **Before renaming**, sweep the prose pointers: `grep -n '<old-name>' CLAUDE.md docs/`.
+   The coupling table references validator constants BY NAME; a renamed constant
+   with a stale table row sends the next maintainer to a grep that returns
+   nothing, and the table's credibility is the product (F108: `DECISIONS_KINDS`
+   pointed at a constant deleted in a refactor — the split into
+   GATED/RECORD/MARKER was itself load-bearing and the row hid it).
+2. **Any new or edited pin gets its vacuity probe run BEFORE it is believed**:
+   copy the repo to /tmp, apply the exact mutation the pin exists to catch, run
+   the validator, require RED **with the right check named** (a red from an
+   unrelated syntax error is not a firing pin). Then encode that mutation as a
+   python case beside its green control.
+3. **Know the three vacuity shapes the 2026-08-31 audit measured** (seven pins
+   in one pass): raw-text pins satisfied by comments → run on the
+   comment-stripped view (`shell_code`); presence-only pins (a function or arm
+   EXISTS) → pin the arm literal AND its die/return polarity from the function
+   body; unanchored pins → anchor through the next syntactic token (`; do`,
+   end-of-line), or the pin accepts arbitrary suffixes.

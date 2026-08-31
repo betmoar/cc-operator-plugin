@@ -473,3 +473,56 @@ reasoning, moved.
   `run:` block: single-line `python3 -c` only — a heredoc terminator or a continuation
   line at column 0 closes the YAML block scalar, and since the forge files are not
   act-runnable, `yaml.safe_load` is the only pre-push check there is.
+
+## From the 2026-08-31 principal audit (F101–F134)
+
+- **A "lossless" tier is one stripped byte from a destroyer, and raw control
+  bytes in a regex literal do not survive handling.** `scrub()`'s two ANSI
+  regexes carried their ESC anchors as RAW `\x1b` bytes; the 0.10.0 debloat
+  commit re-emitted the file without them, and the OSC pattern's empty
+  alternation then matched from the first bare `]` to end-of-string. Every
+  `]`-bearing tool output over 1KB — test logs, JSON, build output — was
+  silently replaced with garbage (measured: a 3KB `[ok]…[FAIL]` log became the
+  single character `k`), with no marker and no spill, because the destruction
+  happened in the tier whose name promised it could not. The suite stayed green
+  for a full release because no test input contained a bare `]`, and its one
+  ANSI case asserted only the spill's fidelity, never the in-context text
+  (audit F120, P0). Three rules fall out: control characters in source live as
+  ESCAPES (`\x1b`), never as bytes; a "lossless" transformation gets a
+  does-nothing-on-plain-text test (the identity property IS the contract); and
+  a validator pin on the anchor (`check_compressor`) because the byte is
+  enforced, not remembered — the same ruling as the C-locale byte caps.
+
+- **A vacuity probe is cheap, and seven pins failed it in one afternoon.** The
+  2026-08-25 pin-audit found ten vacuous pins and this repo wrote the METHOD
+  into CLAUDE.md; the 2026-08-31 audit ran the method against 12 more pins and
+  seven were mention-satisfiable, presence-only, or prefix-satisfiable (audit
+  F126–F130, F132): a comment naming `partition.sh` satisfied the sourcing pin
+  while the source line was an `echo`; a gutted `check_owner_name(){ :; }`
+  passed guard parity; `for tool in $_OPS_TOOLS statusline.sh` passed the
+  manifest-loop pin. The recurring shapes: a pin that greps RAW text is
+  satisfied by comments (run pins on the comment-stripped view); a pin that
+  proves a function EXISTS proves nothing about its arms (pin the arm literals
+  and their die-polarity); a pin without an anchor after the load-bearing token
+  accepts arbitrary suffixes (anchor through the next syntactic element). The
+  fixed pins each carry the exact escape as a red python test.
+
+- **Two hooks that define "the project" differently re-create F01 on whichever
+  side kept the old definition.** The Stop hook got the walk-up in the F01 fix;
+  the SessionStart hook kept the exact match for another year, so a session
+  launched in a subdirectory lost the id banner (sentinels opened unowned),
+  the legacy migration, the bin/ upgrade (#34's delivery channel), and the
+  ephemera wipes — every one silently, while the Stop hook from the same cwd
+  gated correctly (audit F101). When a resolution rule is fixed in one
+  component, grep for the OTHER components that answer the same question:
+  "who else decides what the project is?" was answerable by `grep -l
+  '.operator" ] || exit'` the whole time.
+
+- **The seat-identity spread order in a fan-out is a security boundary.** A
+  workflow that records `{...pins, ...(agentOutput)}` lets the agent overwrite
+  the pins — in debate.js a returned `model:` key re-routed the seat's later
+  rounds onto an agent-chosen id (bypassing BAD_CHARSET, the only id guard
+  left), a returned `letter:` emptied both rival pools so a seat "converged"
+  with itself, and a returned `dead:true` removed a live seat (audit F103).
+  Output spreads FIRST, pins come LAST, at every round — and the stub-runtime
+  test carries exactly those three forged keys.

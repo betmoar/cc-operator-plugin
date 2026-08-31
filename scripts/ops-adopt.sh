@@ -150,7 +150,10 @@ fallback_holder_read() {
   local LC_ALL=C
   FALLBACK_REC=""
   [ -f "$FALLBACK_DIR/holder" ] || return 0
-  IFS= read -r -n 128 FALLBACK_REC < "$FALLBACK_DIR/holder" 2>/dev/null || true
+  # Brace-wrapped like lock_holder_read (audit F116): without the braces a
+  # holder file removed between the -f test and the open reports a raw bash
+  # error before 2>/dev/null applies — the twin was hardened, this copy not.
+  { IFS= read -r -n 128 FALLBACK_REC < "$FALLBACK_DIR/holder"; } 2>/dev/null || true
   FALLBACK_REC="${FALLBACK_REC%$'\r'}"
 }
 

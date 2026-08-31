@@ -44,7 +44,9 @@ check() { # check <desc> <0|1 condition-result>
 }
 
 # Fresh temp project; return its path.
-newproj() { mktemp -d "${TMPDIR:-/tmp}/opstest.XXXXXX"; }
+# `cd -P` inside every hook/CLI: on macOS $TMPDIR is /var/folders/... which resolves to
+# /private/var/folders/..., so an unresolved path here makes a correct banner look wrong (F102).
+newproj() { local d; d="$(mktemp -d "${TMPDIR:-/tmp}/opstest.XXXXXX")" && (cd -P "$d" && pwd -P); }
 
 # Ownership lives in the sentinel's NAME (<owner>__<task>, or bare <task> when unowned); one helper for the convention.
 sentinel_any() { # sentinel_any <proj> <task> → 0 when a sentinel exists under any owner
@@ -2565,8 +2567,8 @@ check "statusline counts a long mine DEVIATION with no trailing newline (#10 rev
 check "no whole-file read survives in the bar's deviation scan (F10)" \
   "$(grep -q 'done < "$OPDIR/DECISIONS.md"' "$SCRIPTS/statusline.sh" && echo 1 || echo 0)"
 # shellcheck disable=SC2016  # same reason as above — literal grep target, not this suite's variable.
-check "the bar's NUL probe is fed by tail -n 256, like the scan (F10)" \
-  "$([ "$(grep -c 'done < <(tail -n 256 "$OPDIR/DECISIONS.md" 2>/dev/null)' "$SCRIPTS/statusline.sh")" -eq 2 ] && echo 0 || echo 1)"
+check "the bar's NUL probe is fed by the SAME byte-then-line-bounded tail as the scan (F10, audit F124)" \
+  "$([ "$(grep -c 'done < <(tail -c 262144 "$OPDIR/DECISIONS.md" 2>/dev/null | tail -n 256 2>/dev/null)' "$SCRIPTS/statusline.sh")" -eq 2 ] && echo 0 || echo 1)"
 # SEMANTIC: a NUL inside the tail window still classifies the ledger as corrupt, so no dev[ renders.
 F10DEC="$DEVPROJ/.operator/DECISIONS.md"
 { printf '# Decisions\n'
@@ -3313,6 +3315,48 @@ else
     "$([ -e "$MIGW/.operator/.gitignore.v1.bak" ] && echo 1 || echo 0)"
 fi
 rm -rf "$MIGW"
+
+echo "-- Case: a backed-up-but-FAILED gitignore write is reported (the third state)"
+# F119 made the hook check `cat`'s exit status, but the flag set had only TWO states — migrated and
+# backup-failed — and `_gi_backup_failed` is scoped to the two elif branches ABOVE the write. So the
+# third outcome (backup SUCCEEDED, write failed) fell through both notices: measured 2026-08-31, the
+# hook exited 0 with no gitignore line in additionalContext at all. The write is now atomic
+# (temp + mv), which removes the truncated-live-file shape entirely — but the notice is what makes
+# the remaining failure legible, and a flag nothing reports is the same silence.
+# TRIGGER: a non-regular entry at the temp path, which the hook refuses by design. A read-only
+# .gitignore is NOT a trigger any more — `mv -f` needs directory permission, not file permission,
+# so that case now migrates successfully (measured).
+GIW="$(newproj)"
+mkdir -p "$GIW/.operator"
+printf '# cc-operator gitignore (v1)\nbin/\n!my-own-rule.md\n' > "$GIW/.operator/.gitignore"
+mkdir -p "$GIW/.operator/.gitignore.v2.tmp"          # a DIRECTORY at the temp path
+GIWOUT="$(sed "s|<tmp>|$GIW|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+check "failed write: the hook SAYS the v2 file could not be written (silence was the defect)" \
+  "$(printf '%s' "$GIWOUT" | grep -q 'could not be written this session' && echo 0 || echo 1)"
+check "failed write: it does NOT claim MIGRATED over a file it never replaced" \
+  "$(printf '%s' "$GIWOUT" | grep -q 'was MIGRATED' && echo 1 || echo 0)"
+check "failed write: it does NOT claim the BACKUP was refused (that backup succeeded)" \
+  "$(printf '%s' "$GIWOUT" | grep -q 'REFUSED this session' && echo 1 || echo 0)"
+check "failed write: the user's v1 rule survives untouched" \
+  "$(grep -q 'my-own-rule' "$GIW/.operator/.gitignore" && echo 0 || echo 1)"
+check "failed write: the backup exists and still holds the v1 rules (the retry must not eat it)" \
+  "$(grep -q 'my-own-rule' "$GIW/.operator/.gitignore.v1.bak" 2>/dev/null && echo 0 || echo 1)"
+check "failed write: the session id is still injected (a hook must never die)" \
+  "$(printf '%s' "$GIWOUT" | grep -q "this session's id is" && echo 0 || echo 1)"
+rm -rf "$GIW"
+
+# CONTROL: the SUCCESSFUL migration must NOT trip the new failure notice.
+GIOK="$(newproj)"
+mkdir -p "$GIOK/.operator"
+printf '# cc-operator gitignore (v1)\nbin/\n!my-own-rule.md\n' > "$GIOK/.operator/.gitignore"
+GIOKOUT="$(sed "s|<tmp>|$GIOK|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+check "CONTROL: a writable migration reports MIGRATED" \
+  "$(printf '%s' "$GIOKOUT" | grep -q 'was MIGRATED' && echo 0 || echo 1)"
+check "CONTROL: a writable migration does NOT report a write failure" \
+  "$(printf '%s' "$GIOKOUT" | grep -q 'could not be written this session' && echo 1 || echo 0)"
+check "CONTROL: the temp file does not survive a successful migration" \
+  "$([ -e "$GIOK/.operator/.gitignore.v2.tmp" ] && echo 1 || echo 0)"
+rm -rf "$GIOK"
 
 echo "-- Case: ops-init refuses the same migration it cannot back up"
 # Same defect, same fix, in the other writer — Copilot flagged only the hook.
@@ -4197,6 +4241,70 @@ check "the Stop hook's mirrored claim names the unreadable case too" \
 # LC_ALL must not leak to the sourcing script (#83's second half).
 check "scan_deviations declares LC_ALL local — no collation leak to the caller" \
   "$(grep -q 'local LC_ALL=C' "$SCRIPTS/lib/partition.sh" && echo 0 || echo 1)"
+
+echo "-- Case: SessionStart resolves the project by WALKING UP, like the Stop hook (audit F101)"
+# The exact-match `$cwd/.operator` was the F01 class on this hook's side: a session launched in a
+# subdirectory got no id banner, no legacy migration, no bin/ upgrade and no ephemera wipes — all
+# silently — while the Stop hook from the same cwd walked up and blocked. Measured on 0.11.3.
+WUP="$(newproj)"
+mkdir -p "$WUP/.operator/pending" "$WUP/apps/viewer"
+printf 'session_id: SESS-OLD\n' > "$WUP/.operator/pending/legacywalk"
+WUPOUT="$(printf '{"hook_event_name":"SessionStart","source":"startup","cwd":"%s","session_id":"SESS-W"}' "$WUP/apps/viewer" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+check "F101 subdir cwd still gets the id banner" \
+  "$(printf '%s' "$WUPOUT" | grep -q "this session's id is SESS-W" && echo 0 || echo 1)"
+check "F101 subdir cwd still runs the legacy-sentinel migration" \
+  "$([ -f "$WUP/.operator/pending/SESS-OLD__legacywalk" ] && echo 0 || echo 1)"
+# CONTROL 1: no .operator anywhere above → silent (the hook must not invent a project).
+WUPN="$(newproj)"
+WUPNOUT="$(printf '{"hook_event_name":"SessionStart","source":"startup","cwd":"%s","session_id":"SESS-W"}' "$WUPN" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+check "F101 CONTROL: cwd outside any operator project stays silent" \
+  "$([ -z "$WUPNOUT" ] && echo 0 || echo 1)"
+# CONTROL 2: a .git boundary stops the walk — a nested repo is its own project.
+mkdir -p "$WUP/vendored/pkg"
+: > "$WUP/vendored/.git"
+WUPGOUT="$(printf '{"hook_event_name":"SessionStart","source":"startup","cwd":"%s","session_id":"SESS-W"}' "$WUP/vendored/pkg" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+check "F101 CONTROL: the walk stops at a .git boundary (nested repo is its own project)" \
+  "$([ -z "$WUPGOUT" ] && echo 0 || echo 1)"
+rm -rf "$WUP" "$WUPN"
+
+echo "-- Case: the SessionStart banner prescribes ABSOLUTE, quoted CLI paths (audit F102, the #94 shape)"
+# The Bash tool's cwd persists across calls; a relative `.operator/bin/...` pasted from a subdirectory
+# is file-not-found, and #94's field history shows the model then misdiagnoses a present gate as absent.
+# The Stop hook's verdict_cmd_for went absolute+single-quoted for exactly this; the banner must match.
+ABP="$(newproj)"
+mkdir -p "$ABP/.operator"
+ABOUT="$(sed "s|<tmp>|$ABP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+check "F102 banner names the absolute ops-task.sh path" \
+  "$(printf '%s' "$ABOUT" | grep -qF "$ABP/.operator/bin/ops-task.sh" && echo 0 || echo 1)"
+check "F102 banner names the absolute ops-verdict.sh path" \
+  "$(printf '%s' "$ABOUT" | grep -qF "$ABP/.operator/bin/ops-verdict.sh" && echo 0 || echo 1)"
+check "F102 banner names the absolute ops-adopt.sh path" \
+  "$(printf '%s' "$ABOUT" | grep -qF "$ABP/.operator/bin/ops-adopt.sh" && echo 0 || echo 1)"
+check "F102 banner paths are single-quoted (absolute means long enough to hold a space)" \
+  "$(printf '%s' "$ABOUT" | grep -qF "'$ABP/.operator/bin/ops-task.sh'" && echo 0 || echo 1)"
+rm -rf "$ABP"
+
+echo "-- Case: a renderer with no lib beside it renders NOTHING instead of dying (audit F125)"
+# The unguarded source failed loudly (rc 1, unbound MINE under set -u) — and a renderer that fails is
+# one cc-status may drop silently thereafter. Silence is the contract; rc 0 is the assertion.
+LONE="$(newproj)"
+cp "$SCRIPTS/statusline.sh" "$LONE/statusline.sh"
+LONEP="$(newproj)"; mkdir -p "$LONEP/.operator/pending"
+LONEOUT="$(printf '{"session_id":"SESS-L","cwd":"%s"}' "$LONEP" | "$BASH_ABS" "$LONE/statusline.sh" 2>&1)"; LONERC=$?
+check "F125 lone renderer exits 0" "$([ "$LONERC" -eq 0 ] && echo 0 || echo 1)"
+check "F125 lone renderer prints nothing (no raw bash error reaches the bar)" \
+  "$([ -z "$LONEOUT" ] && echo 0 || echo 1)"
+rm -rf "$LONE" "$LONEP"
+
+echo "-- Case: the fallback holder read is brace-wrapped like its twin (audit F116)"
+# lock_holder_read wraps the whole compound so a failed INPUT redirection is silenced; the fallback
+# copy shipped without the braces, so a holder file vanishing between -f and the open printed a raw
+# bash error. The LOCK BLOCK is byte-identical across both CLIs, so assert in both.
+for _f116 in "$VERDICT" "$ADOPT"; do
+  # shellcheck disable=SC2016  # the single-quoted $FALLBACK_DIR is grep -qF's LITERAL needle — the exact source line, never an expansion
+  check "F116 $(basename "$_f116"): fallback read is brace-wrapped" \
+    "$(grep -qF '{ IFS= read -r -n 128 FALLBACK_REC < "$FALLBACK_DIR/holder"; } 2>/dev/null || true' "$_f116" && echo 0 || echo 1)"
+done
 
 ########################################################################
 # The measurement corpora (#24 security, #70 drift, #58 plan-align) were removed in 0.10 (docs/DEBLOAT-0.10.md

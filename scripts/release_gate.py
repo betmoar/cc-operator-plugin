@@ -34,6 +34,18 @@ CODE_SPAN_RE = re.compile(r"^[ \t]*(```|~~~).*?^[ \t]*\1[ \t]*$|`+[^`\n]*`+",
                           re.DOTALL | re.MULTILINE)
 
 
+def _mask_code(text):
+    """Code spans/fences blanked to spaces, OFFSETS PRESERVED (newlines kept).
+
+    For searches that must slice the ORIGINAL text at the match position —
+    CODE_SPAN_RE.sub("") shifts every later offset, so a terminator located in
+    the stripped view cannot be applied to the raw body. A def-shaped line
+    inside a fence is an EXAMPLE, not a terminator (Copilot review on PR #97:
+    the F131a terminator scanned raw Markdown, so `[#99]: url` quoted in a
+    fence still cut the section mid-fence and dropped every later note)."""
+    return CODE_SPAN_RE.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
+
+
 def extract_section(changelog_text, version):
     """Return the CHANGELOG body between '## [version]' and the next
     '## [' heading or the trailing link-reference block.
@@ -78,15 +90,28 @@ def extract_section_checked(changelog_text, version):
     if not start:
         return "", []
     rest = changelog_text[start.end():]
-    stop = re.search(r"^## \[|^\[", rest, re.MULTILINE)
+    # audit F131a: terminate only on a heading or a DEFINITION line
+    # (`[#N]: url` / `[label]: url`). The old `^\[` terminator truncated the
+    # section at any body line that merely STARTED with a reference —
+    # `[#27] fixed …` as a bullet's first token cut every later bullet out of
+    # the published notes, silently.
+    # The terminator is located in the code-MASKED view (offsets preserved) and
+    # applied to the raw text: a heading or def line inside a fence is quoted
+    # content, not a section boundary.
+    stop = re.search(r"^## \[|^\[#?\w+\]:\s", _mask_code(rest), re.MULTILINE)
     body = (rest[:stop.start()] if stop else rest).strip()
 
     scannable = CODE_SPAN_RE.sub("", body)
     used = set(re.findall(r"\[#(\d+)\](?![:(])", scannable))
     if not used:
         return body, []
+    # audit F131b: scan for definitions in the code-stripped view too — a def
+    # quoted inside a code fence/span is an EXAMPLE, not a definition, yet it
+    # counted as resolving the reference, so the published body kept its dead
+    # literal `[#N]` with the gate green.
     known = dict(re.findall(r"^\[#(\d+)\]:[ \t]*(\S+)",
-                            changelog_text, re.MULTILINE))
+                            CODE_SPAN_RE.sub("", changelog_text),
+                            re.MULTILINE))
     unresolved = sorted(used - set(known), key=int)
     defs = [f"[#{n}]: {known[n]}" for n in sorted(used & set(known), key=int)]
     notes = body + "\n\n" + "\n".join(defs) if defs else body
