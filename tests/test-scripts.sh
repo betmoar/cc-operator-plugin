@@ -4257,6 +4257,7 @@ echo "-- Case: the fallback holder read is brace-wrapped like its twin (audit F1
 # copy shipped without the braces, so a holder file vanishing between -f and the open printed a raw
 # bash error. The LOCK BLOCK is byte-identical across both CLIs, so assert in both.
 for _f116 in "$VERDICT" "$ADOPT"; do
+  # shellcheck disable=SC2016  # the single-quoted $FALLBACK_DIR is grep -qF's LITERAL needle — the exact source line, never an expansion
   check "F116 $(basename "$_f116"): fallback read is brace-wrapped" \
     "$(grep -qF '{ IFS= read -r -n 128 FALLBACK_REC < "$FALLBACK_DIR/holder"; } 2>/dev/null || true' "$_f116" && echo 0 || echo 1)"
 done
