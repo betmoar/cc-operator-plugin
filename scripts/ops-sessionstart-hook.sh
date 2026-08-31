@@ -54,7 +54,25 @@ cwd="$(json_get cwd)"
 
 # Everything below operates ON .operator/ — a project without one has nothing
 # to upgrade, migrate, or clean.
-[ -d "$cwd/.operator" ] || exit 0
+#
+# Resolve the project by WALKING UP from the payload cwd, exactly like the Stop
+# hook (audit F101): the exact-match `$cwd/.operator` was the F01 class on this
+# hook's side — a session launched in a subdirectory got NO id banner, NO
+# legacy-sentinel migration, NO bin/ upgrade and NO ephemera wipes, all
+# silently, while the Stop hook from the same cwd walked up and blocked.
+# Bounded the same way: a .git boundary (a nested repo is its own project) and
+# the filesystem root; `cd -P` resolves symlinks.
+_ssroot=""
+_sswalk="$(cd -P "$cwd" 2>/dev/null && pwd)" || _sswalk=""
+while [ -n "$_sswalk" ]; do
+  if [ -d "$_sswalk/.operator" ]; then _ssroot="$_sswalk"; break; fi
+  [ -e "$_sswalk/.git" ] && break
+  [ "$_sswalk" = "/" ] && break
+  _sswalk="${_sswalk%/*}"; [ -n "$_sswalk" ] || _sswalk="/"
+done
+[ -n "$_ssroot" ] || exit 0
+# Every later `$cwd/.operator` reference now points at the resolved project.
+cwd="$_ssroot"
 
 # --- legacy sentinel migration (ownership moved into the filename) -----------
 # A pre-0.9 sentinel carries session_id in its BODY and reads as UNOWNED
@@ -220,8 +238,7 @@ if [ -f "$_gi" ] && ! grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi" 2
     _gi_backup_failed=1
   elif ! cp "$_gi" "$_gi.v1.bak" 2>/dev/null; then
     _gi_backup_failed=1
-  else
-  cat > "$_gi" <<'EOF' 2>/dev/null
+  elif cat > "$_gi" 2>/dev/null <<'EOF'
 # cc-operator gitignore v2 (allowlist)
 # Ignore everything under .operator/ by default, then re-admit the evidence.
 # New machine state is ignored automatically — that is the point of the
@@ -237,12 +254,26 @@ if [ -f "$_gi" ] && ! grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi" 2
 !verdicts.d/*.md
 !handoff-*.md
 EOF
-    # notice flag: only after the replacement happened and the backup exists
-    [ -s "$_gi" ] && _gi_migrated=1
+  then
+    # notice flag: only after the replacement happened and the backup exists.
+    # cat's EXIT STATUS is the probe, then the marker line (audit F119): the
+    # old `[ -s ]` was true for a partial write on a full disk, so the notice
+    # claimed MIGRATED over a truncated allowlist.
+    grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi" 2>/dev/null && _gi_migrated=1
   fi
 fi
 
-ctx="cc-operator: this session's id is ${session}. Pass --owner ${session} when opening or closing tracked tasks — .operator/bin/ops-task.sh <id> --owner ${session}, .operator/bin/ops-verdict.sh <id> ... --owner ${session}. Sentinels you open are then yours alone: the Stop hook blocks only on your own open tasks and reports other sessions' as informational. After a /clear your id changes — run .operator/bin/ops-adopt.sh --owner ${session} <id>... to re-claim tasks you are still working."
+# ABSOLUTE, single-quoted command paths (audit F102 — the #94 shape): the Bash
+# tool's cwd persists across calls, so a session sitting in a subdirectory that
+# pastes a relative `.operator/bin/...` command gets file-not-found, and #94's
+# field history shows the model then misdiagnoses a PRESENT gate as absent.
+# The Stop hook's verdict_cmd_for went absolute+quoted for exactly this;
+# the charter stays relative on purpose (committed, machine-portable).
+_ss_shq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
+_ss_task="$(_ss_shq "$cwd/.operator/bin/ops-task.sh")"
+_ss_verdict="$(_ss_shq "$cwd/.operator/bin/ops-verdict.sh")"
+_ss_adopt="$(_ss_shq "$cwd/.operator/bin/ops-adopt.sh")"
+ctx="cc-operator: this session's id is ${session}. Pass --owner ${session} when opening or closing tracked tasks — ${_ss_task} <id> --owner ${session}, ${_ss_verdict} <id> ... --owner ${session}. Sentinels you open are then yours alone: the Stop hook blocks only on your own open tasks and reports other sessions' as informational. After a /clear your id changes — run ${_ss_adopt} --owner ${session} <id>... to re-claim tasks you are still working."
 
 # The migration notice (#32): name the backup path — the allowlist hides it
 # from a bare `git status`.
