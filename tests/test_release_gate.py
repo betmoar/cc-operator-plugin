@@ -251,6 +251,23 @@ class ReleaseGateTest(unittest.TestCase):
         self.assertIn("the following bullet survives", notes)
         self.assertIn("[#27]: https://x/issues/27", notes)
 
+    def test_def_inside_a_fence_does_not_TERMINATE_the_section(self):
+        # Copilot review on PR #97: the F131a terminator scanned RAW Markdown,
+        # so a column-0 `[#99]: url` inside a fenced example still matched and
+        # cut the section mid-fence — every later bullet and the real def
+        # block silently dropped from the published notes. The fenced-def test
+        # below checks only `unresolved`, so it was blind to the data loss.
+        # The terminator is now located in the code-MASKED view (offsets
+        # preserved) and applied to the raw body.
+        notes, unresolved = rg.extract_section_checked(
+            "# C\n\n## [0.1.0] - x\n\n- fixed [#7]\n- def syntax example:\n\n"
+            "```\n[#99]: https://example.com/quoted\n```\n\n"
+            "- bullet AFTER the fence that must survive\n\n"
+            "[#7]: https://real.example/7\n", "0.1.0")
+        self.assertEqual(unresolved, [])
+        self.assertIn("bullet AFTER the fence that must survive", notes)
+        self.assertIn("[#7]: https://real.example/7", notes)
+
     def test_def_only_inside_a_code_fence_does_not_resolve(self):
         # audit F131b: the known-defs scan read RAW text, so a definition
         # quoted inside a fenced code block — an EXAMPLE, per the same

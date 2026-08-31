@@ -153,8 +153,20 @@ function ephemeralRoot(cwd, kind) {
   if (!st.isDirectory()) return null;
   const root = path.join(opdir, kind);
   fs.mkdirSync(root, { recursive: true });
+  // Re-verify AFTER the mkdir (Copilot review on PR #97): checking only
+  // `.operator` does not keep the ephemera inside it — a PRE-EXISTING symlink
+  // at `.compress-spill`/`.compress-state` survives `mkdirSync(recursive)`
+  // and every later write follows it out of the project. Same for the
+  // per-session dir, checked by the callers via this helper.
+  if (!ownedDir(root)) return null;
   writeSelfIgnore(root);
   return root;
+}
+
+// A directory OUR writers may put ephemera in: exists and is a real
+// directory at lstat (a symlink is never ours — F65's class, audit F122).
+function ownedDir(p) {
+  try { return fs.lstatSync(p).isDirectory(); } catch { return false; }
 }
 
 // `*` ignores the directory's whole contents including itself; best-effort —
@@ -190,8 +202,13 @@ function spill(original, { cwd, session, toolUseId, keep }) {
     if (!base) return null;   // not an operated project — caller marks "not spilled"
     const dir = path.join(base, sanitizeSessionId(base, session));
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    // A planted symlink at the session dir or the file itself would carry the
+    // UNREDACTED spill outside the project (Copilot review on PR #97) — the
+    // root is verified by ephemeralRoot; this dir and file are ours to verify.
+    if (!ownedDir(dir)) return null;
     const name = String(toolUseId || `t${Date.now()}`).replace(/[^A-Za-z0-9_.-]/g, "_");
     const file = path.join(dir, name);
+    try { if (!fs.lstatSync(file).isFile()) return null; } catch { /* absent — fine */ }
     // 0600: the spill holds the UNREDACTED tool output. `writeFileSync`'s mode
     // applies only at creation, so an existing file is re-tightened explicitly.
     fs.writeFileSync(file, original, { mode: 0o600 });
@@ -234,7 +251,11 @@ function dedupCheck(text, { cwd, session, tool }) {
     if (!base) return false;   // not operated → no dedup; never a false HIT
     const dir = path.join(base, sanitizeSessionId(base, session));
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    // Same containment as spill() (Copilot review on PR #97): a symlinked
+    // session dir or state file must not carry writes outside the project.
+    if (!ownedDir(dir)) return false;
     const f = path.join(dir, String(tool).replace(/[^A-Za-z0-9_.-]/g, "_"));
+    try { if (!fs.lstatSync(f).isFile()) return false; } catch { /* absent — fine */ }
     const h = crypto.createHash("sha256").update(text).digest("hex");
     const prev = fs.existsSync(f) ? fs.readFileSync(f, "utf8").trim() : "";
     fs.writeFileSync(f, h, { mode: 0o600 });

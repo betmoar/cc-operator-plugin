@@ -82,10 +82,12 @@ row (`@<sha>`) bounds which rows are affected.
    SessionStart's upgrade path changed. First step: follow
    docs/REPLAY-CHARTER.md R0 in a scratch project. Done-when: every phase
    recorded as a verdict row through the gate it audits.
-2. **Release 0.11.4** — context: CHANGELOG's `[Unreleased]` section is written;
-   the release gate needs the version bump in the same commit as the heading
-   rename. First step: bump plugin.json, retitle the section, run
-   `release_gate.py 0.11.4`. Done-when: both forges' release workflows green.
+2. **Publish 0.11.4** — context: the version bump and the `[0.11.4]` heading
+   already landed on this branch (CI's `test_real_repo_gate_passes` forced
+   them in the same commit); what remains is the publish itself. First step:
+   after merge, verify locally with `python3 scripts/release_gate.py v0.11.4`
+   (the argument is the TAG, `v`-prefixed), then tag `v0.11.4` on the merge
+   commit. Done-when: both forges' release workflows green.
 3. **F118 design call** — context: AUDIT_LOG.md F118; decide whether
    `sentinel_owner_of_name` should degrade a double-`__` remainder to unowned
    (fails closed, names a clearable path) or scan_pending should flag the id as

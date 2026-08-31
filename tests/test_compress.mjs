@@ -515,6 +515,39 @@ console.log("-- Case: F122 symlinked .operator/ refused (spills stay inside the 
   fs.rmSync(symTarget, { recursive: true, force: true });
 }
 
+// ── Copilot PR #97: NESTED symlinks refused too — root-only lstat was not
+// containment; a planted link at the ephemera root, the session dir, or the
+// spill file itself still carried unredacted output outside the project.
+console.log("-- Case: nested symlinks under .operator/ are refused (spill root + session dir)");
+{
+  const nb = fs.mkdtempSync(path.join(os.tmpdir(), "opsnest-"));
+  const nt = fs.mkdtempSync(path.join(os.tmpdir(), "opsnesttarget-"));
+  fs.mkdirSync(path.join(nb, ".operator"));
+  fs.symlinkSync(nt, path.join(nb, ".operator", ".compress-spill"));
+  const nres = compress({ ...bash(big), tool_input: { command: "npm test" } },
+    { env: {}, cwd: nb });
+  const ntext = nres?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
+  ok(/NO spill copy/.test(ntext) && !/full output spilled to/.test(ntext),
+    "a symlinked spill ROOT under a real .operator/ is refused (no spill cite)");
+  ok(fs.readdirSync(nt).length === 0,
+    "nothing was written through the root link into the target");
+  fs.rmSync(nb, { recursive: true, force: true });
+  const sb = fs.mkdtempSync(path.join(os.tmpdir(), "opsnestsess-"));
+  const st2 = fs.mkdtempSync(path.join(os.tmpdir(), "opsnesstarget2-"));
+  fs.mkdirSync(path.join(sb, ".operator", ".compress-spill"), { recursive: true });
+  const sessPayload = { ...bash(big), tool_input: { command: "npm test" } };
+  fs.symlinkSync(st2, path.join(sb, ".operator", ".compress-spill", sessPayload.session_id));
+  const sres = compress(sessPayload, { env: {}, cwd: sb });
+  const stext = sres?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
+  ok(/NO spill copy/.test(stext) && !/full output spilled to/.test(stext),
+    "a symlinked SESSION dir is refused (no spill cite)");
+  ok(fs.readdirSync(st2).length === 0,
+    "nothing was written through the session link into the target");
+  fs.rmSync(sb, { recursive: true, force: true });
+  fs.rmSync(nt, { recursive: true, force: true });
+  fs.rmSync(st2, { recursive: true, force: true });
+}
+
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log(`\n== summary: ${pass} passed, ${fail} failed ==`);
 if (fail > 0) process.exit(1);

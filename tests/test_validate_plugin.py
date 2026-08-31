@@ -45,7 +45,8 @@ GOOD_PARTITION_LIB = (
     # byte caps below are up to 4x looser than they read (Copilot, PR #87).
     "_r() { local LC_ALL=C; :; }\n"
     "sentinel_owner_of_name() {\n"
-    "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]*) printf '\\n'; return 0 ;; esac\n"
+    "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]*) printf '\\n'; return 0 ;;\n"
+    "    *'$'* | *'`'* | *\"'\"* | *'\"'* | *\\\\*) printf '\\n'; return 0 ;; esac\n"
     "}\n"
     # The deviation gate's kind scan, in CODE: check_decisions_schema reads the
     # comment-stripped view since audit F127, so a comment naming the enum no
@@ -248,6 +249,15 @@ def make_good_tree(root):
           "  [ -d \"$_cdir\" ] && rm -rf \"$_cdir\" 2>/dev/null\n"
           "done\n"
           "rm -rf \"$cwd/.operator/.autobar\"\n"
+          # the legacy-sentinel migration's reject-set: the #89 metacharacter
+          # arm is pinned at the MIGRATION site too (audit F128, Copilot
+          # review on PR #97 — a body reading `session_id: $S` migrated to a
+          # name both parsers read as a valid foreign owner).
+          "for _s in \"$cwd/.operator/pending\"/*; do\n"
+          "  case \"$_sid\" in\n"
+          "    *'$'* | *'`'* | *\"'\"* | *'\"'* | *\\\\*) continue ;;\n"
+          "  esac\n"
+          "done\n"
           "if ! grep -qF '# cc-operator gitignore v2 (allowlist)' \"$_gi\" 2>/dev/null; then\n"
           "  if [ -e \"$_gi.v1.bak\" ] && [ ! -f \"$_gi.v1.bak\" ]; then\n"
           "    _gi_backup_failed=1\n"
@@ -272,7 +282,8 @@ def make_good_tree(root):
     write(root / "scripts" / "ops-verdict.sh",
           "#!/usr/bin/env bash\n" + "_r() { local LC_ALL=C; :; }\n" + guards + nolink +
           "sentinel_owner_of_name() {\n"
-          "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]*) printf '\\n'; return 0 ;; esac\n"
+          "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]*) printf '\\n'; return 0 ;;\n"
+    "    *'$'* | *'`'* | *\"'\"* | *'\"'* | *\\\\*) printf '\\n'; return 0 ;; esac\n"
           "}\n" +
           "# F2: refuse a symlink fragment before the write + skip on both reads\n"
           '[ -L "$FRAGDIR/$who.md" ] && exit 1\n'
@@ -1082,7 +1093,8 @@ class ValidatorTest(unittest.TestCase):
             "check_owner_name() { case \"$1\" in *[[:space:]]*) die x ;; *'$'* | *'`'* | *\"'\"* | *'\"'* | *\\\\*) die x ;; esac; }\n"
             "[ ! -L \"$f\" ] || exit 0\n"
             "sentinel_owner_of_name() {\n"
-          "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]*) printf '\\n'; return 0 ;; esac\n"
+          "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]*) printf '\\n'; return 0 ;;\n"
+    "    *'$'* | *'`'* | *\"'\"* | *'\"'* | *\\\\*) printf '\\n'; return 0 ;; esac\n"
           "}\n"
             "# F2: refuse a symlink fragment before the write + skip on both reads\n"
             '[ -L "$FRAGDIR/$who.md" ] && exit 1\n'
@@ -2803,6 +2815,63 @@ class AuditPinRemediationTest(unittest.TestCase):
     def test_f128_control_real_clis_are_clean(self):
         self._install(*self._GUARD_SCRIPTS)
         self.assertEqual(self._run(vp.check_guard_parity), [])
+
+    # --- F128 reader/migration half (Copilot review on PR #97): the arm
+    # belongs at all SIX sites — the writer pins alone left the reader
+    # parsers and the SessionStart migration unpinned, recreating the exact
+    # measured bypass (a planted `$S__task` read as a valid foreign owner,
+    # Stop rc 0 on a real open task).
+
+    _READER_ARM = "*'$'* | *'`'* | *\"'\"* | *'\"'* | *\\\\*) printf '\\n'; return 0 ;;"
+
+    def test_f128_reader_metachar_arm_removed_fires(self):
+        for name in ("lib/partition.sh", "ops-verdict.sh"):
+            with self.subTest(reader=name):
+                self._install(*self._GUARD_SCRIPTS)
+                # the READER arm (degrade-to-unowned), never the writer's die
+                # arm — ops-verdict.sh carries both shapes.
+                self._mutate(name, self._READER_ARM, "")
+                probs = self._run(vp.check_guard_parity)
+                self.assertTrue(
+                    any(name in q and "degrading to unowned" in q
+                        for q in probs),
+                    f"{name}: reader metachar arm removed and "
+                    f"check_guard_parity stayed silent — {probs}")
+
+    def test_f128_migration_metachar_arm_removed_fires(self):
+        self._install(*self._GUARD_SCRIPTS, "ops-sessionstart-hook.sh")
+        self._mutate("ops-sessionstart-hook.sh",
+                     "*'$'* | *'`'* | *\"'\"* | *'\"'* | *\\\\*) continue ;;",
+                     "")
+        probs = self._run(vp.check_guard_parity)
+        self.assertTrue(any("ops-sessionstart-hook.sh" in q
+                            and "migration" in q for q in probs), probs)
+
+    def test_f128_migration_control_is_clean(self):
+        self._install(*self._GUARD_SCRIPTS, "ops-sessionstart-hook.sh")
+        self.assertEqual(self._run(vp.check_guard_parity), [])
+
+    # --- source pins are FILENAME-anchored (Copilot review on PR #97):
+    # `\S*partition\.sh` was suffix-satisfiable, so sourcing a renamed
+    # `fakepartition.sh` kept the validator green with the shared lib gone.
+
+    def test_suffix_named_partition_lib_does_not_satisfy_the_source_pin(self):
+        self._install("ops-stop-hook.sh", "statusline.sh", "ops-verdict.sh",
+                      "lib/partition.sh")
+        self._mutate("ops-stop-hook.sh", '. "$_libdir/partition.sh"',
+                     '. "$_libdir/fakepartition.sh"')
+        probs = self._run(vp.check_decisions_schema)
+        self.assertTrue(any("ops-stop-hook.sh" in q
+                            and "SOURCE lib/partition.sh" in q
+                            for q in probs), probs)
+
+    def test_suffix_named_autobar_lib_does_not_satisfy_the_source_pin(self):
+        self._install("ops-stop-hook.sh", "lib/partition.sh", "lib/autobar.sh")
+        self._mutate("ops-stop-hook.sh", '. "$_libdir/autobar.sh"',
+                     '. "$_libdir/fakeautobar.sh"')
+        probs = self._run(vp.check_autobar)
+        self.assertTrue(any("SOURCE lib/autobar.sh" in q for q in probs),
+                        probs)
 
     # --- F129: check_claims never read matches_protected's body ------------
 

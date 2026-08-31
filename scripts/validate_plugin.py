@@ -678,9 +678,15 @@ def check_decisions_schema(root, problems):
     # source line with `echo "partition.sh unavailable"` shipped green while
     # the consumer ran without the partition at all (the autobar src_re
     # lesson, one lib over). Comment-stripped view, `.`/`source` at statement
-    # head, path ending in partition.sh.
-    _part_src_re = re.compile(r'^\s*(?:\.|source)\s+\S*partition\.sh"?\s*$',
-                              re.MULTILINE)
+    # head. The FILENAME is anchored at a path boundary (Copilot review on PR
+    # #97): `\S*partition\.sh` was suffix-satisfiable — sourcing
+    # `fakepartition.sh` matched, so renaming the sourced lib kept the
+    # validator green with the shared partition gone. An optional
+    # `/`-terminated prefix and a balanced optional quote are the only shapes
+    # a real source statement takes.
+    _part_src_re = re.compile(
+        r'^\s*(?:\.|source)\s+("?)(?:\S*/)?partition\.sh\1\s*$',
+        re.MULTILINE)
     for name in ("ops-stop-hook.sh", "statusline.sh"):
         p = root / "scripts" / name
         if not p.is_file():
@@ -1157,6 +1163,44 @@ def check_guard_parity(root, problems):
                 "[[:space:]] "
                 "whitespace owners — an owner that can never match a real "
                 "session id makes its task permanently non-blocking")
+    # The #89 metacharacter arm at the READER and MIGRATION sites (Copilot
+    # review on PR #97: the F128 arm-effect pins covered only the three
+    # writers' check_owner_name, but the arm belongs at all SIX sites — a
+    # reader that accepts what the writers refuse reads a planted `$S__task`
+    # as a valid FOREIGN owner, and the measured result was Stop rc 0 on a
+    # real open task, reached through the migration path no writer guard can
+    # see). Readers DEGRADE to unowned (fails closed: `printf '\n'`), the
+    # migration REFUSES the rename (`continue`) — pin each site's own
+    # polarity, never `die`.
+    for name, fn in (("lib/partition.sh", "sentinel_owner_of_name"),
+                     ("ops-verdict.sh", "sentinel_owner_of_name")):
+        p = root / "scripts" / name
+        if not p.is_file():
+            continue
+        rbody = _function_body(shell_code(p), fn)
+        if rbody is None:
+            problems.append(
+                f"scripts/{name}: cannot locate {fn}()'s body — the #89 "
+                f"reader-arm pin has nothing to check. Reshaping the parser "
+                f"must update this locator, not silently skip it")
+        elif isinstance(rbody, _RedefinedFunction):
+            pass  # already reported by _report_if_redefined at other sites
+        elif not re.search(r"\*'\$'\*[^\n]*\)\s*printf\s+'\\n'", rbody):
+            problems.append(
+                f"scripts/{name}: {fn}() has no `*'$'*` metacharacter arm "
+                f"degrading to unowned (#89) — a reader accepting what the "
+                f"writers refuse reads a planted `$S__task` as a valid "
+                f"foreign owner and the gate opens (audit F128, reader half)")
+    ss = root / "scripts" / "ops-sessionstart-hook.sh"
+    if ss.is_file():
+        sscode = shell_code(ss)
+        if not re.search(r"\*'\$'\*[^\n]*\)\s*continue\b", sscode):
+            problems.append(
+                "scripts/ops-sessionstart-hook.sh: the legacy-sentinel "
+                "migration has no `*'$'*` metacharacter arm refusing the "
+                "rename (#89) — a body reading `session_id: $S` migrates to "
+                "`$S__task`, which both parsers then read as a valid foreign "
+                "owner (audit F128, migration half)")
     # The -L symlink rejection: the opener plus every sentinel reader (`-f`
     # follows a planted symlink; F65/F66). The Stop hook's pending/ enumeration
     # lives in lib/partition.sh since 0.10, so its obligation moved there.
@@ -1405,12 +1449,18 @@ def check_autobar(root, problems):
     hook = root / "scripts" / "ops-stop-hook.sh"
     if hook.is_file():
         hcode = shell_code(hook)
-        # A source STATEMENT: `.` or `source`, then a path ending in
+        # A source STATEMENT: `.` or `source`, then a path whose FILENAME is
         # autobar.sh. Deliberately not pinned to "$_libdir/…" — the shape is
         # the hook's business, and a pin that only matches today's spelling
         # turns a harmless refactor into a build failure. What it must NOT
-        # match is a bare mention: an echo, a comment, a message string.
-        src_re = re.compile(r'^\s*(?:\.|source)\s+\S*autobar\.sh"?\s*$', re.MULTILINE)
+        # match is a bare mention (an echo, a comment, a message string) or a
+        # different file wearing the name as a SUFFIX — `\S*autobar\.sh` let
+        # `fakeautobar.sh` satisfy the pin (Copilot review on PR #97, same
+        # class as the partition src_re one function over): the filename sits
+        # at a path boundary, prefix optional and `/`-terminated.
+        src_re = re.compile(
+            r'^\s*(?:\.|source)\s+("?)(?:\S*/)?autobar\.sh\1\s*$',
+            re.MULTILINE)
         if not src_re.search(hcode):
             problems.append(
                 "scripts/ops-stop-hook.sh: does not SOURCE lib/autobar.sh (a "
