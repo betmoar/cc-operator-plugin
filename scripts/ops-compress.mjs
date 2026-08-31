@@ -84,10 +84,16 @@ const capLines = (s, cap) =>
 // consecutive lines → 1 + a count. No information lost, so it is safe on the
 // LOSSLESS_ONLY tools too.
 function scrub(text) {
+  // Both regexes MUST carry the \x1b anchor (audit F120): the 0.10.0 debloat
+  // stripped the raw ESC bytes out of these literals, and without the anchor
+  // the OSC pattern's empty alternation matched from the first bare `]` to
+  // end-of-string — a 3KB test log came back as one character, no marker, no
+  // spill. The OSC body is lazy and needs a real terminator (BEL or ESC-\):
+  // an unterminated escape stays visible, which is the lossless direction.
   // eslint-disable-next-line no-control-regex
-  let out = text.replace(/\][^]*(?:|\\)/g, "")
+  let out = text.replace(/\x1b\][^]*?(?:\x07|\x1b\\)/g, "")
     // eslint-disable-next-line no-control-regex
-    .replace(/\[[0-9;?]*[A-Za-z]/g, "");
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
   out = out.replace(/(?:[ \t]*\n){3,}/g, "\n\n");
   const lines = out.split("\n");
   const kept = [];
@@ -121,7 +127,11 @@ function elide(text, K) {
   }
   const dropped = Math.max(0, middle.length);
   const parts = [capLines(head, K.LINE_CHARS)];
-  parts.push(`\n[… ${dropped} chars elided — no .operator/, not spilled …]`);
+  // NEUTRAL marker (audit F121): elide cannot know whether the caller spilled,
+  // and the old "no .operator/, not spilled" text shipped alongside a real
+  // "[full output spilled to …]" line — contradictory provenance. The caller's
+  // appended line is the single source of spill status.
+  parts.push(`\n[… ${dropped} chars elided …]`);
   if (salvaged.length) parts.push(`[salvaged from the elided middle]\n${salvaged.join("\n")}`);
   parts.push(capLines(tail, K.LINE_CHARS));
   return parts.join("\n");
@@ -134,7 +144,13 @@ function elide(text, K) {
 // without depending on ops-init ever having run.
 function ephemeralRoot(cwd, kind) {
   const opdir = path.join(cwd, ".operator");
-  if (!fs.existsSync(opdir)) return null;
+  // lstat, not existsSync (audit F122): a symlinked .operator/ would redirect
+  // spills (unredacted tool output) and dedup state outside the project —
+  // partition.sh refuses a symlinked ledger for the same F65 class. A link is
+  // never ours; treat it as "no .operator/" (no spill, no dedup).
+  let st = null;
+  try { st = fs.lstatSync(opdir); } catch { return null; }
+  if (!st.isDirectory()) return null;
   const root = path.join(opdir, kind);
   fs.mkdirSync(root, { recursive: true });
   writeSelfIgnore(root);
@@ -320,9 +336,12 @@ export function compress(payload, opts = {}) {
       // A failed spill must not read as a complete output: elided text with no
       // marker is indistinguishable from short text that was never touched —
       // the I2.3 falsification class through the failure path.
+      // The no-spill wording must not assert a cause it cannot know (audit
+      // F121): a FAILED spill in an operated project took this branch too, and
+      // "a project with no .operator/" was then simply false.
       text += spillPath
         ? `\n[full output spilled to ${spillPath} — evidence quoted from this output MUST cite that file]`
-        : `\n[output elided in a project with no .operator/ — no spill copy exists; re-run the command if the elided middle matters]`;
+        : `\n[output elided with NO spill copy (no .operator/ here, or the spill could not be written) — re-run the command if the elided middle matters]`;
     }
 
     // I4 — never credit savings the harness refused to apply.
