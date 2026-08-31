@@ -9,6 +9,60 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+A principal-architect audit (2026-08-31, autonomous) — 34 findings, all logged
+with evidence in `AUDIT_LOG.md`; every fix landed with a test run RED against
+the pre-fix code.
+
+### Fixed
+
+- **The compressor's "lossless" scrub tier was destroying output (P0, audit
+  F120).** The 0.10.0 debloat stripped the raw ESC bytes out of `scrub()`'s two
+  ANSI regex literals; without the `\x1b` anchor the OSC pattern's empty
+  alternation matched from the first bare `]` to end-of-string, so virtually
+  every real `]`-bearing tool output over 1KB was silently replaced with
+  garbage (measured: a 3KB `[ok]…[FAIL]` log came back as the single character
+  `k`) — no marker, no spill, suite green because no test input contained a
+  bare `]`. Anchors restored as escapes, identity-on-plain-text and
+  real-ANSI-strip tests added, and `check_compressor` now pins both anchors.
+- **SessionStart resolves the project by walking up, like the Stop hook (audit
+  F101/F102).** The exact-match `$cwd/.operator` made the hook a silent no-op
+  from any subdirectory — no id banner, no legacy migration, no `bin/` upgrade,
+  no ephemera wipes. The banner also prescribes ABSOLUTE single-quoted CLI
+  paths now (the #94 shape).
+- **Seven vacuous validator pins now fire (audit F126–F130, F132–F134).**
+  Mention-satisfiable sourcing pin (a comment naming `partition.sh` passed a
+  gutted hook), presence-only guard-parity pins (a `check_owner_name(){ :; }`
+  shipped green), a prefix-satisfiable install-set loop pin, raw-text
+  kind/marker pins, a missing `-uall` pin, a template-literal meta escape, and
+  comment-view compressor defaults — each repaired pin carries its exact escape
+  as a red python test beside a green control.
+- **Workflow hardening (audit F103–F110).** debate: agent output can no longer
+  overwrite a seat's pinned letter/model/dead (spread first, pin last);
+  brainstorm: zero surviving directions error-returns before the judgment-tier
+  converge is paid, and results carry `directionsRequested`; crawl: shard path
+  ELEMENTS must be non-empty strings; review: the adversarial seat carries the
+  untrusted-data rule and OBSERVED_HEAD provenance, and a non-array `findings`
+  no longer kills the paid panel; plan: vet rows carry `taskIndex` so duplicate
+  ids stay distinguishable.
+- **`release_gate.py` (audit F131):** the section terminator no longer
+  truncates notes at a body line starting with `[`, and definitions inside
+  code fences/spans no longer count as resolving a reference.
+- Smaller: neutral elide marker + honest no-spill wording (F121), symlinked
+  `.operator/` refused by the compressor (F122), gitignore-migration success
+  probed by exit status + marker (F119), statusline byte-bounded tail window /
+  guarded lib source / honest header (F124/F125/F117), brace-wrapped fallback
+  holder read in both LOCK BLOCK copies (F116).
+
+### Docs
+
+- CLAUDE.md coupling table repaired (`DECISIONS_KINDS` never existed; the
+  install-set map bullet now points at the manifest) and extended with rows
+  for the scrub anchors and the hook walk-up; README gains the debate row
+  ("Six workflows"); `commands/tiers.md` stops citing two spec files that
+  exist in no checkout; new landmine narratives and a playbook procedure for
+  renaming validator constants; the full audit ledger ships as
+  `AUDIT_LOG.md` + `AUDIT_STATE.md` and `docs/audit-2026-08-31-principal.md`.
+
 ## [0.11.3] - 2026-08-28
 
 0.11.2's own release test found the half of #94 that fix did not reach.

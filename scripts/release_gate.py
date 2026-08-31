@@ -78,15 +78,25 @@ def extract_section_checked(changelog_text, version):
     if not start:
         return "", []
     rest = changelog_text[start.end():]
-    stop = re.search(r"^## \[|^\[", rest, re.MULTILINE)
+    # audit F131a: terminate only on a heading or a DEFINITION line
+    # (`[#N]: url` / `[label]: url`). The old `^\[` terminator truncated the
+    # section at any body line that merely STARTED with a reference —
+    # `[#27] fixed …` as a bullet's first token cut every later bullet out of
+    # the published notes, silently.
+    stop = re.search(r"^## \[|^\[#?\w+\]:\s", rest, re.MULTILINE)
     body = (rest[:stop.start()] if stop else rest).strip()
 
     scannable = CODE_SPAN_RE.sub("", body)
     used = set(re.findall(r"\[#(\d+)\](?![:(])", scannable))
     if not used:
         return body, []
+    # audit F131b: scan for definitions in the code-stripped view too — a def
+    # quoted inside a code fence/span is an EXAMPLE, not a definition, yet it
+    # counted as resolving the reference, so the published body kept its dead
+    # literal `[#N]` with the gate green.
     known = dict(re.findall(r"^\[#(\d+)\]:[ \t]*(\S+)",
-                            changelog_text, re.MULTILINE))
+                            CODE_SPAN_RE.sub("", changelog_text),
+                            re.MULTILINE))
     unresolved = sorted(used - set(known), key=int)
     defs = [f"[#{n}]: {known[n]}" for n in sorted(used & set(known), key=int)]
     notes = body + "\n\n" + "\n".join(defs) if defs else body

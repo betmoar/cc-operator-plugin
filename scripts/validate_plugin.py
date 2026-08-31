@@ -657,7 +657,11 @@ def check_decisions_schema(root, problems):
     # hook silently runs without a deviation gate at all.
     lib = root / "scripts" / "lib" / "partition.sh"
     if lib.is_file():
-        s = lib.read_text(encoding="utf-8")
+        # audit F127: read the comment-stripped CODE — the raw view was
+        # satisfied by the comment explaining the gated set, so shrinking the
+        # case arm to `DEVIATION)` with the full enum surviving in prose
+        # shipped green while two kinds stopped gating.
+        s = shell_code(lib)
         if DECISIONS_GATED_LITERAL not in s:
             problems.append(
                 f"scripts/lib/partition.sh: deviation gate does not count the "
@@ -669,25 +673,42 @@ def check_decisions_schema(root, problems):
                 "the deviation gate's clearing mark is in the enum but the "
                 "shared scan never matches it, so a presented decision reads as "
                 "unpresented forever (F30: the enum AND its consumers must agree)")
+    # audit F126: a source STATEMENT, not a mention — `"partition.sh" in s`
+    # was satisfied by a comment or an echo naming the file, so replacing the
+    # source line with `echo "partition.sh unavailable"` shipped green while
+    # the consumer ran without the partition at all (the autobar src_re
+    # lesson, one lib over). Comment-stripped view, `.`/`source` at statement
+    # head, path ending in partition.sh.
+    _part_src_re = re.compile(r'^\s*(?:\.|source)\s+\S*partition\.sh"?\s*$',
+                              re.MULTILINE)
     for name in ("ops-stop-hook.sh", "statusline.sh"):
         p = root / "scripts" / name
         if not p.is_file():
             continue  # missing-file is already reported by check_scripts
-        s = p.read_text(encoding="utf-8")
-        if "partition.sh" not in s:
+        if not _part_src_re.search(shell_code(p)):
             problems.append(
-                f"scripts/{name}: does not source lib/partition.sh — the "
-                f"shared partition (sentinel ownership, deviation gate) is the "
-                f"one contract this bar/hook pair must not fork")
+                f"scripts/{name}: does not SOURCE lib/partition.sh (a mention "
+                f"is not a source) — the shared partition (sentinel ownership, "
+                f"deviation gate) is the one contract this bar/hook pair must "
+                f"not fork")
     # The verdict CLI WRITES HANDOFF-MARK; the readers above only READ it. A
     # writer that never emits the marker strands every presented decision as
     # unpresented (F30 writer half — distinct from the reader drift above).
+    # audit F127: pin the EMIT, not a mention. The raw-text search was
+    # satisfied by comments AND by the marker's appearance inside a die
+    # message (check_owner_name quotes it), so typo-ing the printf's
+    # HANDOFF-MARK shipped green while the writer stranded every presented
+    # decision as unpresented. Require a printf line that carries the marker,
+    # in the comment-stripped view.
     vp = root / "scripts" / "ops-verdict.sh"
-    if vp.is_file() and "HANDOFF-MARK" not in vp.read_text(encoding="utf-8"):
+    if vp.is_file() and not re.search(r"printf[^\n]*HANDOFF-MARK",
+                                      shell_code(vp)):
         problems.append(
-            "scripts/ops-verdict.sh: does not reference HANDOFF-MARK — the "
-            "deviation gate's clearing mark is in the enum but this writer "
-            "never emits it (F30: the enum AND its consumers must agree)")
+            "scripts/ops-verdict.sh: does not reference HANDOFF-MARK — no "
+            "printf emits the deviation gate's clearing mark; it is in the "
+            "enum but this writer never emits it, so a presented decision "
+            "reads as unpresented forever (F30: the enum AND its consumers "
+            "must agree)")
 
 
 def check_agents(root, problems):
@@ -1086,6 +1107,44 @@ def check_guard_parity(root, problems):
                 f"task-id containing it makes every reader's first-`__` split "
                 f"parse a name our own writers could never have built (PR #77 "
                 f"review; the arm must match ops-task.sh's copy)")
+        # audit F128: presence is not effect. The pins above prove the guard
+        # EXISTS and its arms are spelled; nothing proved an arm still DIES —
+        # `.*) :;;` kept every presence pin green while the guard waved the
+        # dotfile through. Pin the arm's action, per writer CLI.
+        if body and not isinstance(body, _RedefinedFunction):
+            if not re.search(r"\.\*\)\s*die\b", body):
+                problems.append(
+                    f"scripts/{name}: check_bare_name()'s `.*)` arm does not "
+                    f"invoke die — a neutered arm accepts a dotfile sentinel, "
+                    f"which is invisible to the Stop hook's glob, with every "
+                    f"presence pin green (audit F128: pin the effect, not the "
+                    f"arm's existence)")
+        obody = _function_body(text, "check_owner_name")
+        if obody is None:
+            problems.append(
+                f"scripts/{name}: cannot locate check_owner_name()'s body — "
+                f"the F128 arm-effect pins have nothing to check. Reshaping "
+                f"the guard must update this locator, not silently skip it")
+        elif _report_if_redefined(obody, f"scripts/{name}", problems):
+            pass
+        else:
+            # the whitespace arm: an owner that can never equal a real session
+            # id makes its task permanently unblockable.
+            if not re.search(r"\*\[\[:space:\]\]\*\)\s*die\b", obody):
+                problems.append(
+                    f"scripts/{name}: check_owner_name() has no "
+                    f"`*[[:space:]]*)` arm invoking die — a whitespace owner "
+                    f"can never match a real session id, so its task is "
+                    f"permanently non-blocking (audit F128)")
+            # the #89 metacharacter arm: a literal `$S` reads as a FOREIGN
+            # session at every reader, so its HANDOFF-MARK clears nothing.
+            if not re.search(r"\*'\$'\*[^\n]*\)\s*die\b", obody):
+                problems.append(
+                    f"scripts/{name}: check_owner_name() has no `*'$'*` "
+                    f"metacharacter arm invoking die (#89) — an unexpanded "
+                    f"shell variable passed as --owner reads as a valid "
+                    f"foreign session, strictly worse than not running the "
+                    f"command (audit F128)")
     # the readers' parser (lib/partition.sh since 0.10) must reject what the
     # writers reject, or a hand-written sentinel reads as a valid foreign owner
     # and the gate opens
@@ -1264,6 +1323,17 @@ def check_autobar(root, problems):
                 "`-z` to git status — the default output QUOTES a path with a "
                 "space and prints a rename as `old -> new` on one line, so the "
                 "count is wrong in both directions")
+        # audit F132: -uall is as load-bearing as -z and had no pin. Without
+        # it porcelain reports an untracked DIRECTORY as one record, so a
+        # session scaffolding N new files under one new dir counts 1 and the
+        # armer never fires on exactly the multi-file shape being gated.
+        if "-uall" not in body:
+            problems.append(
+                "scripts/lib/autobar.sh: autobar_count_changed does not pass "
+                "`-uall` to git status — porcelain's default collapses an "
+                "untracked directory into ONE record, so N new files under a "
+                "new dir count 1 and the >=2-paths threshold never trips on "
+                "the common shape of the very thing being gated (audit F132)")
         if "< <(" not in body:
             problems.append(
                 "scripts/lib/autobar.sh: autobar_count_changed does not read "
@@ -1432,6 +1502,31 @@ def check_claims(root, problems):
             "touched paths — the PROTECTED literal is declared but not used; "
             "a gate-trespass check that never runs guards nothing (F30: pin "
             "the literal AND its application)")
+    # audit F129: the call site alone is not the matcher — a matches_protected
+    # gutted to `return 1` keeps the literal pinned AND the call site green
+    # while every protected path stops matching. Pin the body's two matching
+    # branches: the trailing-/ prefix branch and the glob application.
+    mbody = _function_body(shell_code(p), "matches_protected")
+    if mbody is None:
+        problems.append(
+            "scripts/ops-claims.sh: cannot locate matches_protected()'s body — "
+            "the F129 matcher-effect pins have nothing to check. Reshaping the "
+            "matcher must update this locator, not silently skip it")
+    elif _report_if_redefined(mbody, "scripts/ops-claims.sh", problems):
+        pass
+    else:
+        if "*/)" not in mbody:
+            problems.append(
+                "scripts/ops-claims.sh: matches_protected() has no `*/)` "
+                "directory branch — a trailing-/ token (tests/, hooks/, "
+                ".operator/bin/, backlog/) stops matching by prefix, so every "
+                "protected DIRECTORY silently leaves the set (audit F129)")
+        if "[[ $p == $pat ]]" not in mbody:
+            problems.append(
+                "scripts/ops-claims.sh: matches_protected() does not apply "
+                "`[[ $p == $pat ]]` — the glob/exact tokens "
+                "(scripts/ops-*.sh, scripts/validate_plugin.py) never match, "
+                "so the matcher is declared, called, and inert (audit F129)")
     # statusline.sh must be in the literal — it is the F66 amendment and the
     # one a prior glob missed. Match the token, not the whole literal, so a
     # reordering stays free but dropping it fires.
@@ -1500,12 +1595,18 @@ def check_install_set_parity(root, problems):
                 f"scripts/{name}: does not source ops-install-set.sh — the "
                 f"install set must come from the one shared declaration, or the "
                 f"two writers drift again (CR4)")
-        if not re.search(r'for _?tool in \$_OPS_TOOLS', code):
+        # audit F130: anchored through `; do` — the unanchored form accepted
+        # `for tool in $_OPS_TOOLS statusline.sh; do`, a second word-list
+        # grafted onto the manifest's, which is the inline-list drift wearing
+        # the manifest as a prefix. Nothing may sit between the variable and
+        # the loop body.
+        if not re.search(r'for\s+_?tool\s+in\s+\$_OPS_TOOLS\s*;\s*do', code):
             problems.append(
-                f"scripts/{name}: copy loop does not iterate $_OPS_TOOLS — "
-                f"sourcing the manifest while looping an inline list is the "
-                f"drift coming back with this check green (F30: "
-                f"declared-but-not-applied)")
+                f"scripts/{name}: copy loop does not iterate $_OPS_TOOLS "
+                f"alone (`for tool in $_OPS_TOOLS; do`) — extra words after "
+                f"the variable, or an inline list beside the source line, is "
+                f"the drift coming back with this check green (F30: "
+                f"declared-but-not-applied; audit F130)")
         if re.search(r'^_OPS_TOOLS="[^"]+"', code, re.MULTILINE):
             problems.append(
                 f"scripts/{name}: declares its own _OPS_TOOLS literal — the "
@@ -1906,6 +2007,20 @@ def check_workflows(root, problems):
                 f"workflows/{f.name}: `meta` contains a concatenation — the harness "
                 f"requires a PURE LITERAL and rejects a computed meta at launch, so "
                 f"the workflow would fail to run with every gate here green")
+        # audit F133: a template literal (`x ${y}`) is the OTHER computed-meta
+        # spelling and the concatenation pin cannot see it. Strip the contents
+        # of double-quoted strings first — shipped metas legitimately quote
+        # markdown code in backticks INSIDE a string — then any surviving
+        # backtick is a template-literal delimiter.
+        if meta_block:
+            _m_nostr = re.sub(r'"(?:[^"\\\n]|\\.)*"', '""',
+                              meta_block.group(0))
+            if "`" in _m_nostr:
+                problems.append(
+                    f"workflows/{f.name}: `meta` contains a template literal "
+                    f"(backtick outside a double-quoted string) — the harness "
+                    f"requires a PURE LITERAL and rejects a computed meta at "
+                    f"launch, same class as the concatenation (audit F133)")
 
         # no `node --check`: too lenient (exit 0 on redeclared consts);
         # real syntax errors surface at launch
@@ -2331,8 +2446,31 @@ def check_compressor(root, problems):
     for k, v in (("MAX_CHARS", "8000"), ("HEAD_BYTES", "6144"), ("TAIL_BYTES", "4096"),
                  ("MIN_SHRINK", "64"), ("SCRUB_MIN", "1024"), ("LINE_CHARS", "400"),
                  ("SALVAGE_LINES", "12")):
-        if not re.search(rf"{k}:\s*{v}\b", src):
-            problems.append(f"ops-compress.mjs: pinned default {k}={v} is missing or changed — the replay test asserts these exact numbers")
+        # audit F134: search the comment-stripped view — the raw `src` was
+        # satisfied by a comment quoting the old value while the code shipped
+        # a different number, so the pin taught a default the file no longer
+        # had.
+        if not re.search(rf"{k}:\s*{v}\b", code):
+            problems.append(f"ops-compress.mjs: pinned default {k}={v} is missing or changed in the CODE — the replay test asserts these exact numbers (a comment quoting the old value does not count; audit F134)")
+    # audit F120 guardrail: scrub's two ANSI regexes must anchor on a literal
+    # `\x1b` escape. The 0.10.0 debloat stripped the raw ESC bytes out of the
+    # literals, and without the anchor the OSC pattern's now-empty head
+    # matched from the first bare `]` to the terminator — a 3KB test log came
+    # back as one character, no marker, no spill: the scrub became a
+    # destroyer. Pin exactly what the fixed regexes contain: `\x1b\]` (OSC)
+    # and `\x1b\[` (CSI), at their `.replace(/` call sites.
+    if r".replace(/\x1b\]" not in code:
+        problems.append(
+            "ops-compress.mjs: scrub's OSC regex does not open with a literal "
+            r"`\x1b\]` — without the ESC anchor it matches from the first "
+            "bare `]` to the terminator and destroys the output it was meant "
+            "to clean (audit F120)")
+    if r".replace(/\x1b\[" not in code:
+        problems.append(
+            "ops-compress.mjs: scrub's CSI regex does not open with a literal "
+            r"`\x1b\[` — without the ESC anchor it eats bracketed text that "
+            "was never an escape sequence, destroying output instead of "
+            "cleaning it (audit F120)")
     # Read the SALVAGE_RE literal, not the file: `not ok` also appears in the
     # comment explaining why it must be there, so a prose-level `in src` check
     # passes while the regex itself has lost the alternative. Proven: deleting

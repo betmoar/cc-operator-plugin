@@ -236,6 +236,31 @@ class ReleaseGateTest(unittest.TestCase):
         problems, _ = rg.gate(ROOT, f"v{version}")
         self.assertEqual(problems, [], problems)
 
+    def test_body_line_starting_with_a_reference_does_not_truncate(self):
+        # audit F131a: the old `^\[` terminator cut the section at ANY body
+        # line that merely started with `[` — a bullet opening with `[#27]`
+        # silently dropped every later line from the published notes. Only a
+        # definition line (`[#N]: url` / `[label]: url`) or a heading ends a
+        # section.
+        notes, unresolved = rg.extract_section_checked(
+            "# C\n\n## [0.1.0] - x\n\n"
+            "[#27] fixed the thing\n"
+            "- the following bullet survives\n\n"
+            "[#27]: https://x/issues/27\n", "0.1.0")
+        self.assertEqual(unresolved, [])
+        self.assertIn("the following bullet survives", notes)
+        self.assertIn("[#27]: https://x/issues/27", notes)
+
+    def test_def_only_inside_a_code_fence_does_not_resolve(self):
+        # audit F131b: the known-defs scan read RAW text, so a definition
+        # quoted inside a fenced code block — an EXAMPLE, per the same
+        # convention the `used` scan already honors — counted as resolving
+        # the reference, and the dead literal [#N] shipped green.
+        _, unresolved = rg.extract_section_checked(
+            "# C\n\n## [0.1.0] - x\n\n- fixed [#99]\n\n"
+            "```\n[#99]: https://x/issues/99\n```\n", "0.1.0")
+        self.assertEqual(unresolved, ["99"])
+
     def test_code_span_ref_is_not_treated_as_a_reference(self):
         # Prose documenting the inverted-ref class writes `[#28]` in backticks.
         # Without stripping code spans, the gate would demand a definition for

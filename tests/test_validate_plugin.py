@@ -47,7 +47,10 @@ GOOD_PARTITION_LIB = (
     "sentinel_owner_of_name() {\n"
     "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]*) printf '\\n'; return 0 ;; esac\n"
     "}\n"
-    "# deviation gate: counts DEVIATION|ESCALATION|GATE-EXCEPTION (HANDOFF-MARK)\n"
+    # The deviation gate's kind scan, in CODE: check_decisions_schema reads the
+    # comment-stripped view since audit F127, so a comment naming the enum no
+    # longer satisfies it.
+    "case \"$dkind\" in DEVIATION|ESCALATION|GATE-EXCEPTION) :;; HANDOFF-MARK) :;; esac\n"
     "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
     "[ ! -L \"$decisions\" ] || exit 0\n")
 # #85: the auto-arm rule. Every literal here is one check_autobar pins, and each pin
@@ -57,7 +60,7 @@ GOOD_AUTOBAR_LIB = (
     "autobar_count_changed() {\n"
     "  git -C \"$root\" rev-parse --git-dir >/dev/null 2>&1 || return 0\n"
     "  while IFS= read -r -d '' rec; do n=$((n+1)); done "
-    "< <(git -C \"$root\" status --porcelain -z -- ':(exclude).operator' 2>/dev/null)\n"
+    "< <(git -C \"$root\" status --porcelain -z -uall -- ':(exclude).operator' 2>/dev/null)\n"
     "}\n"
     "autobar_already_armed() { [ -f \"$opdir/.autobar/$sess\" ]; }\n"
     "autobar_mark_armed() { : > \"$opdir/.autobar/$sess\"; }\n"
@@ -257,7 +260,7 @@ def make_good_tree(root):
     # Reader/CLI bodies must satisfy the byte-bound, guard-parity and
     # lock-parity checks.
     guards = ("check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
-              "check_owner_name() { :; }\n")
+              "check_owner_name() { case \"$1\" in *[[:space:]]*) die x ;; *'$'* | *'`'* | *\"'\"* | *'\"'* | *\\\\*) die x ;; esac; }\n")
     bounded = "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
     # every sentinel touchpoint carries the -L symlink rejection (F65/F66)
     nolink = "[ ! -L \"$1\" ] || exit 0\n"
@@ -278,7 +281,9 @@ def make_good_tree(root):
           "# F17: both verdicts.d fragment scanners use the same 1MiB read bound\n"
           "while IFS= read -r -n 1048576 row; do :; done < \"$frag\"\n"
           "while IFS= read -r -n 1048576 line; do :; done < \"$frag\"\n" +
-          "# --mark-handoff writes a HANDOFF-MARK line under the lock\n" +
+          # --mark-handoff EMITS the marker (audit F127: the pin reads a
+          # printf line in code, not a mention in a comment).
+          "printf '%s | HANDOFF-MARK | [sid:%s]\\n' \"$d\" \"$MOWNER\" >> \"$DEC\"\n" +
           GOOD_LOCK_BLOCK + GOOD_SOURCE_STAMP + GOOD_ROOT_BLOCK)
     write(root / "scripts" / "ops-adopt.sh",
           "#!/usr/bin/env bash\n" + guards + nolink +
@@ -291,7 +296,17 @@ def make_good_tree(root):
           "#!/usr/bin/env bash\n"
           'PROTECTED="scripts/validate_plugin.py tests/ .operator/bin/ hooks/ '
           'scripts/ops-*.sh scripts/statusline.sh backlog/"\n'
-          "matches_protected() { :; }\n"
+          # A compliant matcher body: audit F129 pins the `*/)` prefix branch
+          # and the `[[ $p == $pat ]]` glob application, not just the call site.
+          "matches_protected() {\n"
+          "  for pat in $PROTECTED; do\n"
+          '    case "$pat" in\n'
+          '      */) [ "${p#"$pat"}" != "$p" ] && return 0 ;;\n'
+          "      *)  [[ $p == $pat ]] && return 0 ;;\n"
+          "    esac\n"
+          "  done\n"
+          "  return 1\n"
+          "}\n"
           'for p in $ACTUAL; do matches_protected "$p"; done\n')
     # ops-backlog.sh: in check_scripts (bash -n) but not a gate CLI.
     write(root / "scripts" / "ops-backlog.sh",
@@ -366,6 +381,13 @@ def make_good_tree(root):
           '  ".operator/verdicts.d/"];\n'
           'const GATE_CLIS = ["ops-verdict.sh", "ops-task.sh", "ops-adopt.sh", "ops-claims.sh"];\n'
           'const SALVAGE_RE = /error|fail|not ok/i;\n'
+          # scrub's ANSI regexes carry the literal \x1b anchors (audit F120's
+          # guardrail pin — without them the OSC pattern destroys output).
+          'function scrub(text) {\n'
+          '  let out = text.replace(/\\x1b\\][^]*?(?:\\x07|\\x1b\\\\)/g, "")\n'
+          '    .replace(/\\x1b\\[[0-9;?]*[A-Za-z]/g, "");\n'
+          '  return out;\n'
+          '}\n'
           'function compress(tool, cmd) {\n'
           # The reachability anchor: the guards below must sit at the SAME brace
           # depth as this line, which is how a dead `if (false) { … }` wrapper is
@@ -474,6 +496,14 @@ class ValidatorTest(unittest.TestCase):
         # Without -z a path with a space is QUOTED and a rename is one line.
         self._mutate_autobar("--porcelain -z", "--porcelain")
         self.assertFires("`-z`")
+
+    def test_autobar_missing_uall_flag_fires(self):
+        # audit F132: -uall is as load-bearing as -z and had no pin —
+        # porcelain's default collapses an untracked directory into ONE
+        # record, so N new files under a new dir count 1 and the >=2-paths
+        # threshold never trips on the common multi-file shape being gated.
+        self._mutate_autobar("--porcelain -z -uall", "--porcelain -z")
+        self.assertFires("`-uall`")
 
     def test_autobar_missing_repo_check_fires(self):
         # Process substitution carries no exit status: without this call
@@ -1049,7 +1079,7 @@ class ValidatorTest(unittest.TestCase):
             "#!/usr/bin/env bash\n"
             "_r() { local LC_ALL=C; :; }\n"
             "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
-            "check_owner_name() { :; }\n"
+            "check_owner_name() { case \"$1\" in *[[:space:]]*) die x ;; *'$'* | *'`'* | *\"'\"* | *'\"'* | *\\\\*) die x ;; esac; }\n"
             "[ ! -L \"$f\" ] || exit 0\n"
             "sentinel_owner_of_name() {\n"
           "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]*) printf '\\n'; return 0 ;; esac\n"
@@ -1065,7 +1095,7 @@ class ValidatorTest(unittest.TestCase):
             "#!/usr/bin/env bash\n"
             "_r() { local LC_ALL=C; :; }\n"
             "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
-            "check_owner_name() { :; }\n"
+            "check_owner_name() { case \"$1\" in *[[:space:]]*) die x ;; *'$'* | *'`'* | *\"'\"* | *'\"'* | *\\\\*) die x ;; esac; }\n"
             "[ ! -L \"$F\" ] || exit 0\n"
             # PREV reject-set (F15): the owner now arrives in the sentinel name,
             # so adoption reads no file at all.
@@ -1076,7 +1106,7 @@ class ValidatorTest(unittest.TestCase):
         write(self.dir / "scripts" / "ops-task.sh",
               "#!/usr/bin/env bash\n"
               "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
-              "check_owner_name() { :; }\n"
+              "check_owner_name() { case \"$1\" in *[[:space:]]*) die x ;; *'$'* | *'`'* | *\"'\"* | *'\"'* | *\\\\*) die x ;; esac; }\n"
               "[ ! -L \"$F\" ] || exit 0\n")
         write(self.dir / "scripts" / "statusline.sh", GOOD_STATUSLINE)
 
@@ -1094,7 +1124,7 @@ class ValidatorTest(unittest.TestCase):
         self._write_readers(verdict_body=(
             "#!/usr/bin/env bash\n"
             "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
-            "check_owner_name() { :; }\n"
+            "check_owner_name() { case \"$1\" in *[[:space:]]*) die x ;; *'$'* | *'`'* | *\"'\"* | *'\"'* | *\\\\*) die x ;; esac; }\n"
             "while IFS= read -r line; do :; done < \"$f\"\n"
             "while IFS= read -r -n 512 row; do :; done < \"$frag\"\n"))
         probs = self.bounds_problems()
@@ -1109,7 +1139,7 @@ class ValidatorTest(unittest.TestCase):
         self._write_readers(verdict_body=(
             "#!/usr/bin/env bash\n"
             "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
-            "check_owner_name() { :; }\n"
+            "check_owner_name() { case \"$1\" in *[[:space:]]*) die x ;; *'$'* | *'`'* | *\"'\"* | *'\"'* | *\\\\*) die x ;; esac; }\n"
             "while IFS= read -r -n 268435456 row; do :; done < \"$frag\"\n"))
         probs = self.bounds_problems()
         self.assertTrue(any("is not a bound" in p for p in probs), probs)
@@ -1120,7 +1150,7 @@ class ValidatorTest(unittest.TestCase):
         self._write_readers(verdict_body=(
             "#!/usr/bin/env bash\n"
             "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
-            "check_owner_name() { :; }\n"
+            "check_owner_name() { case \"$1\" in *[[:space:]]*) die x ;; *'$'* | *'`'* | *\"'\"* | *'\"'* | *\\\\*) die x ;; esac; }\n"
             "_doc() { echo \"use read -r -n 512 here\"; }\n"))
         probs = self.bounds_problems()
         self.assertTrue(any("lost its bound" in p for p in probs), probs)
@@ -1131,7 +1161,7 @@ class ValidatorTest(unittest.TestCase):
         self._write_readers(verdict_body=(
             "#!/usr/bin/env bash\n"
             "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
-            "check_owner_name() { :; }\n"
+            "check_owner_name() { case \"$1\" in *[[:space:]]*) die x ;; *'$'* | *'`'* | *\"'\"* | *'\"'* | *\\\\*) die x ;; esac; }\n"
             "while IFS= read -r -d $'\\n' row; do :; done < \"$frag\"\n"))
         probs = self.bounds_problems()
         self.assertTrue(any("unbounded `read -r`" in p for p in probs), probs)
@@ -1144,7 +1174,7 @@ class ValidatorTest(unittest.TestCase):
         self._write_readers(verdict_body=(
             "#!/usr/bin/env bash\n"
             "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
-            "check_owner_name() { :; }\n"
+            "check_owner_name() { case \"$1\" in *[[:space:]]*) die x ;; *'$'* | *'`'* | *\"'\"* | *'\"'* | *\\\\*) die x ;; esac; }\n"
             "while IFS= read -r -n 1048576 row; do :; done < \"$frag\"\n"))
         probs = self.bounds_problems()
         self.assertTrue(any("LC_ALL=C" in p for p in probs), probs)
@@ -1155,7 +1185,7 @@ class ValidatorTest(unittest.TestCase):
         self._write_readers(verdict_body=(
             "#!/usr/bin/env bash\n"
             "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
-            "check_owner_name() { :; }\n"
+            "check_owner_name() { case \"$1\" in *[[:space:]]*) die x ;; *'$'* | *'`'* | *\"'\"* | *'\"'* | *\\\\*) die x ;; esac; }\n"
             "IFS= read -r -d '' PAYLOAD || true\n"
             "while IFS= read -r -n 1048576 row; do :; done < \"$frag\"\n"))
         probs = self.bounds_problems()
@@ -1236,7 +1266,7 @@ class ValidatorTest(unittest.TestCase):
             "# `read -r` is bounded by LINES, not bytes — discussion only.\n"
             "#    a plain read -r would slurp the whole line first\n"
             "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
-            "check_owner_name() { :; }\n"
+            "check_owner_name() { case \"$1\" in *[[:space:]]*) die x ;; *'$'* | *'`'* | *\"'\"* | *'\"'* | *\\\\*) die x ;; esac; }\n"
             "[ ! -L \"$F\" ] || exit 0\n"
             "while IFS= read -r -n 512 line; do :; done < \"$F\"\n"
             # PREV reject-set (F15): carries *.exempt (check_guard_parity pin)
@@ -1380,6 +1410,40 @@ class ValidatorTest(unittest.TestCase):
         write(self.dir / "workflows" / "review.js",
               '// stray comment\n' + self._wf("review"))
         self.assertFires("does not begin with")
+
+    # The exact tail make_good_tree ships (WF_SHARED), so an F133 meta case
+    # trips ONLY the meta pin while parity/default-tiers stay green.
+    _WF_TAIL = (
+        'const BAD_CHARSET = /[^\\w./:@[\\]-]/;\n'
+        'const DEFAULT_TIERS = { JUDGMENT: "opus" };\n'
+        'for (const [n, id] of Object.entries(DEFAULT_TIERS)) {\n'
+        '  if (BAD_CHARSET.test(id)) throw new Error("bad");\n'
+        '}\n'
+    )
+
+    def test_workflow_template_literal_meta_fires(self):
+        # audit F133: a template literal (`x ${y}`) is the OTHER computed-meta
+        # spelling — the harness rejects it at launch exactly like a
+        # concatenation, and the `+`-shaped pin could not see it.
+        write(self.dir / "workflows" / "review.js",
+              'export const meta = {\n'
+              '  name: "review",\n'
+              '  description: `x ${y}`,\n'
+              '};\n' + self._WF_TAIL)
+        self.assertFires("template literal")
+
+    def test_workflow_backtick_inside_meta_string_is_clean(self):
+        # CONTROL for F133: shipped metas legitimately quote markdown code in
+        # backticks INSIDE a double-quoted string (debate/dispatch/plan all
+        # do) — the pin must strip string contents before judging backticks.
+        write(self.dir / "workflows" / "review.js",
+              'export const meta = {\n'
+              '  name: "review",\n'
+              '  description: "resolve ids with `/cc-operator:tiers` first",\n'
+              '};\n' + self._WF_TAIL)
+        probs = []
+        vp.check_workflows(self.dir, probs)
+        self.assertEqual([p for p in probs if "template literal" in p], [], probs)
 
     def test_workflow_reintroduced_routable_fires(self):
         # The inverse of the pre-0.8.3 case: an id-shape catalogue used to be
@@ -1998,6 +2062,31 @@ class CompressorGuardTest(unittest.TestCase):
         self.assertEqual(self._probs(self._real_comp), [],
                          "the shipped ops-compress.mjs must pass check_compressor clean")
 
+    def test_pinned_default_moved_to_a_comment_fires(self):
+        # audit F134: the defaults pin searched RAW src, so a comment quoting
+        # the old value satisfied it while the code shipped a different
+        # number — the replay suite then asserted numbers the file no longer
+        # had. The pin must read the comment-stripped view.
+        src = self._real_comp.replace(
+            "MIN_SHRINK: 64,", "MIN_SHRINK: 32, // was MIN_SHRINK: 64", 1)
+        self.assertNotEqual(src, self._real_comp)
+        probs = self._probs(src)
+        self.assertTrue(any("MIN_SHRINK=64" in p for p in probs), probs)
+
+    def test_scrub_regexes_without_esc_anchor_fire(self):
+        # audit F120 guardrail: the 0.10.0 debloat stripped the raw ESC bytes
+        # out of scrub's two ANSI regexes and the OSC pattern then matched
+        # from the first bare `]` to end-of-terminator — a 3KB log came back
+        # as ONE character: the scrub became a destroyer. Pin the fixed
+        # literals `\x1b\]` and `\x1b\[`.
+        src = (self._real_comp
+               .replace("\\x1b\\]", "\\]", 1)
+               .replace("\\x1b\\[", "\\[", 1))
+        self.assertNotEqual(src, self._real_comp)
+        probs = self._probs(src)
+        self.assertTrue(any("OSC regex" in p for p in probs), probs)
+        self.assertTrue(any("CSI regex" in p for p in probs), probs)
+
     def test_mcp_exclusion_deletion_fires(self):
         src = re.sub(r'if\s*\(tool\.startsWith\(\s*"mcp__"\s*\)\s*\)\s*return null;',
                      '', self._real_comp, count=1)
@@ -2314,6 +2403,19 @@ class InstallSetParityTest(unittest.TestCase):
         self.assertTrue(any("does not iterate $_OPS_TOOLS" in p
                             for p in self._probs()), self._probs())
 
+    def test_extra_word_grafted_onto_ops_tools_fires(self):
+        # audit F130: the unanchored regex accepted `for tool in $_OPS_TOOLS
+        # statusline.sh; do` — a second word-list grafted onto the manifest's,
+        # the inline-list drift wearing the manifest as a prefix. Nothing may
+        # sit between the variable and `; do`.
+        src = self._real_init.replace(
+            "for tool in $_OPS_TOOLS; do",
+            "for tool in $_OPS_TOOLS statusline.sh; do", 1)
+        self.assertNotEqual(src, self._real_init)
+        write(self.dir / "scripts" / "ops-init.sh", src)
+        self.assertTrue(any("does not iterate $_OPS_TOOLS alone" in p
+                            for p in self._probs()), self._probs())
+
 
 class GitignoreParityTest(unittest.TestCase):
     """check_gitignore_parity: the v2 allowlist body is written by ops-init.sh
@@ -2380,16 +2482,21 @@ class GitignoreParityTest(unittest.TestCase):
         # EMIT and DETECT are two claims: the heredoc body contains the marker,
         # so a substring test passes even with the migration grep deleted, and
         # every existing v1 project silently stops being detected.
+        # replace() is UNCOUNTED since the F101/F102 hook fix: the hook now
+        # carries a second, post-write confirmation grep for the same marker,
+        # and a single-occurrence mutation left it satisfying the pin — the
+        # mutation must remove EVERY grep or it no longer models "the file
+        # never greps for it" (2026-08-31, concurrent-commit collision).
         for name, real, detect, replacement in (
                 ("ops-init.sh", self._real_init,
                  'elif ! grep -qF "$_GI_MARK" "$OPDIR/.gitignore" 2>/dev/null; then',
                  'elif false; then'),
                 ("ops-sessionstart-hook.sh", self._real_ssh,
-                 "! grep -qF '# cc-operator gitignore v2 (allowlist)' \"$_gi\" 2>/dev/null",
+                 "grep -qF '# cc-operator gitignore v2 (allowlist)' \"$_gi\" 2>/dev/null",
                  "false")):
             with self.subTest(writer=name):
                 self.assertIn(detect, real, f"{name}: detection anchor moved")
-                write(self.dir / "scripts" / name, real.replace(detect, replacement, 1))
+                write(self.dir / "scripts" / name, real.replace(detect, replacement))
                 probs = self._probs()
                 self.assertTrue(any("never greps for it" in p for p in probs), probs)
                 write(self.dir / "scripts" / name, real)
@@ -2565,6 +2672,175 @@ class GuardParityVacuityTest(unittest.TestCase):
         f = self.dir / "scripts" / "probe.sh"
         write(f, "#!/usr/bin/env bash\nf() {\n    # rejects *.exempt\n    :\n}\n")
         self.assertNotIn("*.exempt", vp.shell_code(f))
+
+
+class AuditPinRemediationTest(unittest.TestCase):
+    """Audit F126-F129 (2026-08-31): four pins confirmed VACUOUS by running
+    their mutations against the shipped validator — each stayed green while
+    the guarded behavior was gone (raw-text searches satisfied by comments or
+    sibling mentions; presence pins blind to a neutered effect). Each case
+    re-runs the exact escape against the REAL shipped scripts and asserts the
+    fixed check fires; the controls are the unmutated real scripts staying
+    clean under the same check.
+    """
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        make_good_tree(self.dir)
+        self.real = ROOT / "scripts"
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _install(self, *names):
+        for n in names:
+            dest = self.dir / "scripts" / n
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            write(dest, (self.real / n).read_text(encoding="utf-8"))
+
+    def _mutate(self, name, old, new):
+        p = self.dir / "scripts" / name
+        text = p.read_text(encoding="utf-8")
+        self.assertIn(old, text, f"{name}: mutation anchor moved — update it")
+        write(p, text.replace(old, new, 1))
+
+    def _run(self, check):
+        probs = []
+        check(self.dir, probs)
+        return probs
+
+    # --- F126: the partition-source pin was satisfied by a MENTION ---------
+
+    def test_f126_consumer_mentioning_not_sourcing_fires(self):
+        # audit F126: `"partition.sh" in s` accepted a comment or an echo
+        # naming the file, so this exact mutation shipped green while the
+        # consumer ran without the partition (sentinel ownership AND the
+        # deviation gate) at all. Both consumers, each mutation-checked.
+        for name in ("ops-stop-hook.sh", "statusline.sh"):
+            with self.subTest(consumer=name):
+                self._install(name, "lib/partition.sh", "ops-verdict.sh")
+                self._mutate(name, '. "$_libdir/partition.sh"',
+                             'echo "partition.sh unavailable" >/dev/null')
+                probs = self._run(vp.check_decisions_schema)
+                self.assertTrue(
+                    any(f"scripts/{name}" in q
+                        and "SOURCE lib/partition.sh" in q for q in probs),
+                    f"{name}: source line replaced by an echo and "
+                    f"check_decisions_schema stayed silent — {probs}")
+
+    def test_f126_f127_control_real_scripts_are_clean(self):
+        self._install("ops-stop-hook.sh", "statusline.sh", "ops-verdict.sh",
+                      "lib/partition.sh")
+        self.assertEqual(self._run(vp.check_decisions_schema), [])
+
+    # --- F127: gated-kind / HANDOFF-MARK pins satisfied by comments --------
+
+    def test_f127_gated_arm_shrunk_with_enum_in_comment_fires(self):
+        # audit F127: shrink the shared scan's case arm to DEVIATION) while
+        # the full enum survives in a whole-line comment — the raw-text pin
+        # accepted the comment while two kinds silently stopped gating.
+        self._install("lib/partition.sh")
+        self._mutate("lib/partition.sh",
+                     "DEVIATION|ESCALATION|GATE-EXCEPTION)",
+                     "# gated set was: DEVIATION|ESCALATION|GATE-EXCEPTION\n"
+                     "      DEVIATION)")
+        probs = self._run(vp.check_decisions_schema)
+        self.assertTrue(any("does not count the gated kinds" in q
+                            for q in probs), probs)
+
+    def test_f127_handoff_mark_printf_typo_fires(self):
+        # audit F127 (writer half): typo the printf's marker while comments
+        # AND the check_owner_name die message keep "HANDOFF-MARK" in the
+        # file — a mention is not an emit.
+        self._install("ops-verdict.sh")
+        self._mutate("ops-verdict.sh",
+                     "HANDOFF-MARK | [sid:", "HANDOFF-MRK | [sid:")
+        leftover = (self.dir / "scripts" / "ops-verdict.sh").read_text(
+            encoding="utf-8")
+        self.assertIn("HANDOFF-MARK", leftover,
+                      "mutation should leave mentions behind, or this case "
+                      "no longer tests mention-blindness")
+        probs = self._run(vp.check_decisions_schema)
+        self.assertTrue(any("ops-verdict.sh" in q and "HANDOFF-MARK" in q
+                            for q in probs), probs)
+
+    # --- F128: guard presence pinned, guard EFFECT not ---------------------
+
+    _GUARD_SCRIPTS = ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh",
+                      "statusline.sh", "lib/partition.sh")
+
+    def test_f128_check_owner_name_gutted_fires(self):
+        # audit F128: `check_owner_name() { :; }` keeps every presence pin
+        # green (the function exists) while the whitespace arm and the #89
+        # metacharacter arm are gone — a literal $S then reads as a valid
+        # FOREIGN session at every reader.
+        self._install(*self._GUARD_SCRIPTS)
+        p = self.dir / "scripts" / "ops-task.sh"
+        text = p.read_text(encoding="utf-8")
+        mutated = re.sub(r"check_owner_name\(\) \{.*?\n\}",
+                         "check_owner_name() { :; }", text,
+                         count=1, flags=re.S)
+        self.assertNotEqual(mutated, text, "gut mutation did not land")
+        write(p, mutated)
+        probs = self._run(vp.check_guard_parity)
+        self.assertTrue(any("ops-task.sh" in q and "*[[:space:]]*" in q
+                            for q in probs), probs)
+        self.assertTrue(any("ops-task.sh" in q and "#89" in q
+                            for q in probs), probs)
+
+    def test_f128_leading_dot_arm_neutered_fires(self):
+        # audit F128: the `.*)` presence pin is satisfied by a `.*) : ;;` arm
+        # that waves the dotfile through — the gate then never sees the task.
+        self._install(*self._GUARD_SCRIPTS)
+        self._mutate("ops-task.sh",
+                     '.*) die "$1 must not start with \'.\' — a dotfile '
+                     'sentinel is invisible to the Stop hook\'s glob" ;;',
+                     ".*) : ;;")
+        probs = self._run(vp.check_guard_parity)
+        self.assertTrue(any("ops-task.sh" in q and "does not invoke die" in q
+                            for q in probs), probs)
+
+    def test_f128_control_real_clis_are_clean(self):
+        self._install(*self._GUARD_SCRIPTS)
+        self.assertEqual(self._run(vp.check_guard_parity), [])
+
+    # --- F129: check_claims never read matches_protected's body ------------
+
+    def test_f129_matcher_gutted_fires(self):
+        # audit F129: `matches_protected() { return 1; }` keeps the literal
+        # pinned AND the call site applied while nothing ever matches — the
+        # gate-trespass check runs and always says clean.
+        self._install("ops-claims.sh")
+        p = self.dir / "scripts" / "ops-claims.sh"
+        text = p.read_text(encoding="utf-8")
+        mutated = re.sub(r"matches_protected\(\) \{.*?\n\}",
+                         "matches_protected() { return 1; }", text,
+                         count=1, flags=re.S)
+        self.assertNotEqual(mutated, text, "gut mutation did not land")
+        write(p, mutated)
+        probs = self._run(vp.check_claims)
+        self.assertTrue(any("*/)" in q for q in probs), probs)
+        self.assertTrue(any("[[ $p == $pat ]]" in q for q in probs), probs)
+
+    def test_f129_dir_branch_dropped_fires(self):
+        # audit F129: drop only the `*/)` prefix branch — every protected
+        # DIRECTORY (tests/, hooks/, .operator/bin/, backlog/) silently
+        # leaves the set while the glob branch keeps the check looking alive.
+        self._install("ops-claims.sh")
+        p = self.dir / "scripts" / "ops-claims.sh"
+        text = p.read_text(encoding="utf-8")
+        mutated = re.sub(r"^\s*\*/\).*\n.*?;;\n", "", text,
+                         count=1, flags=re.M)
+        self.assertNotEqual(mutated, text, "branch-drop mutation did not land")
+        write(p, mutated)
+        probs = self._run(vp.check_claims)
+        self.assertTrue(any("*/)" in q for q in probs), probs)
+        self.assertFalse(any("[[ $p == $pat ]]" in q for q in probs),
+                         f"the glob pin misfired on a dir-branch drop: {probs}")
+
+    def test_f129_control_real_claims_is_clean(self):
+        self._install("ops-claims.sh")
+        self.assertEqual(self._run(vp.check_claims), [])
 
 
 class ReleaseGateCoverageTest(unittest.TestCase):
