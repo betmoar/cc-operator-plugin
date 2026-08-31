@@ -238,6 +238,12 @@ const SYNTHESIS = {
 // the two into one shape downstream. Carried explicitly, exactly as review.js's
 // lens accounting does, because a two-model debate reported as a three-model one
 // is the coverage lie that accounting exists to prevent.
+// In every round record the spread comes FIRST and the pins come LAST: the
+// return is agent OUTPUT, and spreading it last let a payload carrying its own
+// letter/model/dead keys overwrite the seat's pinned identity — a forged
+// `model` re-routed the seat's later rounds onto an agent-chosen id, a forged
+// `letter` mis-filtered rivalsFor, and a forged `dead:true` silently removed a
+// live seat from the panel (audit F103).
 const alive = (rs) => rs.filter((r) => r && !r.dead);
 const deadOf = (rs) => rs.filter((r) => !r || r.dead).map((r) => r?.letter ?? "?");
 
@@ -288,7 +294,7 @@ const openings = await parallel(
         phase: "Opening",
         schema: OPENING,
       },
-    ).then((r) => ({ letter: s.letter, model: s.model, dead: r == null, ...(r ?? {}) })),
+    ).then((r) => ({ ...(r ?? {}), letter: s.letter, model: s.model, dead: r == null })),
   ),
 );
 const openLive = alive(openings);
@@ -327,7 +333,7 @@ const rebuttals = await parallel(
         phase: "Rebuttal",
         schema: REBUTTAL,
       },
-    ).then((r) => ({ letter: s.letter, model: s.model, dead: r == null, ...(r ?? {}) })),
+    ).then((r) => ({ ...(r ?? {}), letter: s.letter, model: s.model, dead: r == null })),
   ),
 );
 const rebutLive = alive(rebuttals);
@@ -362,7 +368,7 @@ const closings = await parallel(
         phase: "Closing",
         schema: CLOSING,
       },
-    ).then((r) => ({ letter: s.letter, model: s.model, dead: r == null, ...(r ?? {}) })),
+    ).then((r) => ({ ...(r ?? {}), letter: s.letter, model: s.model, dead: r == null })),
   ),
 );
 const closeLive = alive(closings);

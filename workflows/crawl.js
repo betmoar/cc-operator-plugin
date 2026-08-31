@@ -104,12 +104,16 @@ if (typeof question !== "string" || !question.trim()) {
 }
 // Element shape is validated, not just the container: a shard of {} or
 // {paths:"x"} used to dispatch a paid crawler agent with an empty YOUR SHARD
-// section — cost with no value (audit F27.6). Malformed/empty shards are
+// section — cost with no value (audit F27.6). Each ELEMENT of paths must be a
+// non-empty string too: a paths array holding {} or null passed the container
+// check and the seat's YOUR SHARD section rendered "[object Object]" — the
+// same defect one level down (audit F105). Malformed/empty shards are
 // dropped; dropping everything is the same error as passing nothing.
 const rawShards = Array.isArray(A?.shards) ? A.shards : [];
-const shards = rawShards.filter((s) => s && Array.isArray(s.paths) && s.paths.length);
+const shards = rawShards.filter((s) => s && Array.isArray(s.paths) && s.paths.length
+  && s.paths.every((p) => typeof p === "string" && p.trim()));
 if (shards.length < rawShards.length) {
-  log(`crawl: dropped ${rawShards.length - shards.length} malformed/empty shard(s) (want {paths:[...]} with >=1 path)`);
+  log(`crawl: dropped ${rawShards.length - shards.length} malformed/empty shard(s) (want {paths:[...]} with >=1 non-empty string path)`);
 }
 if (!shards.length) {
   return { error: "no shards to crawl — the operator must pass args.shards (an array of {paths:[...]})" };
