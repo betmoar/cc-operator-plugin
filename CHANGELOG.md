@@ -49,6 +49,11 @@ the pre-fix code.
 - **`release_gate.py` (audit F131):** the section terminator no longer
   truncates notes at a body line starting with `[`, and definitions inside
   code fences/spans no longer count as resolving a reference.
+- **The F102 banner cases could not pass on macOS.** `newproj()` returned
+  `mktemp -d`'s unresolved `/var/folders/...` path while every hook and CLI
+  resolves through `cd -P` to `/private/var/folders/...`, so four correct
+  absolute-path assertions failed against a correct banner. The helper now
+  returns the resolved path, which is what the code under test always sees.
 - Smaller: neutral elide marker + honest no-spill wording (F121), symlinked
   `.operator/` refused by the compressor (F122), gitignore-migration success
   probed by exit status + marker (F119), statusline byte-bounded tail window /

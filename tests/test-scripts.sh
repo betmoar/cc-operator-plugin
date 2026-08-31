@@ -44,7 +44,9 @@ check() { # check <desc> <0|1 condition-result>
 }
 
 # Fresh temp project; return its path.
-newproj() { mktemp -d "${TMPDIR:-/tmp}/opstest.XXXXXX"; }
+# `cd -P` inside every hook/CLI: on macOS $TMPDIR is /var/folders/... which resolves to
+# /private/var/folders/..., so an unresolved path here makes a correct banner look wrong (F102).
+newproj() { local d; d="$(mktemp -d "${TMPDIR:-/tmp}/opstest.XXXXXX")" && (cd -P "$d" && pwd -P); }
 
 # Ownership lives in the sentinel's NAME (<owner>__<task>, or bare <task> when unowned); one helper for the convention.
 sentinel_any() { # sentinel_any <proj> <task> → 0 when a sentinel exists under any owner
