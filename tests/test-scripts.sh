@@ -2568,7 +2568,7 @@ check "no whole-file read survives in the bar's deviation scan (F10)" \
   "$(grep -q 'done < "$OPDIR/DECISIONS.md"' "$SCRIPTS/statusline.sh" && echo 1 || echo 0)"
 # shellcheck disable=SC2016  # same reason as above — literal grep target, not this suite's variable.
 check "the bar's NUL probe is fed by the SAME byte-then-line-bounded tail as the scan (F10, audit F124)" \
-  "$([ "$(grep -c 'done < <(tail -c 262144 "$OPDIR/DECISIONS.md" 2>/dev/null | tail -n 256)' "$SCRIPTS/statusline.sh")" -eq 2 ] && echo 0 || echo 1)"
+  "$([ "$(grep -c 'done < <(tail -c 262144 "$OPDIR/DECISIONS.md" 2>/dev/null | tail -n 256 2>/dev/null)' "$SCRIPTS/statusline.sh")" -eq 2 ] && echo 0 || echo 1)"
 # SEMANTIC: a NUL inside the tail window still classifies the ledger as corrupt, so no dev[ renders.
 F10DEC="$DEVPROJ/.operator/DECISIONS.md"
 { printf '# Decisions\n'

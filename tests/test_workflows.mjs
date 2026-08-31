@@ -2040,12 +2040,14 @@ console.log("-- Case: review.js adversarial prompt carries the data rule (audit 
     "review/F106: the builder-tree branch carries the data rule as well");
 }
 
-// ── audit F107: a live lens returning non-array findings must not kill the run ─
+// ── audit F107: a lens returning non-array findings must not kill the run ────
 console.log("-- Case: review.js non-array lens findings (audit F107)");
 // `r?.findings ?? []` defends only null: a lens returning {findings:"none"} or
-// {findings:{}} is live (not dead) and its value survived to the flatMap, which
-// threw — one malformed lens killed the whole panel and the adversarial seat
-// never ran.
+// {findings:{}} survived to the flatMap, which threw — one malformed lens
+// killed the whole panel and the adversarial seat never ran. The malformed
+// lens counts as DEAD (Copilot review on PR #97): counting it live let the
+// panel log claim full coverage over a lens that produced no valid findings
+// result — the fail-closed reading the malformed adversarial verdict gets.
 for (const [label, weird] of [['"none"', "none"], ["{}", {}]]) {
   let f107 = null, f107Rt = { calls: [] };
   try {
@@ -2059,8 +2061,8 @@ for (const [label, weird] of [['"none"', "none"], ["{}", {}]]) {
     `review/F107: findings:${label} is treated as zero findings, not a crash`);
   ok(f107Rt.calls.some((c) => c.label === "adversarial"),
     `review/F107: the adversarial seat still runs after findings:${label}`);
-  ok(!(f107?.deadLenses ?? []).includes("quality"),
-    `review/F107: a malformed-but-live lens is not reported DEAD (dead stays r == null only)`);
+  ok((f107?.deadLenses ?? []).includes("quality"),
+    `review/F107: a malformed lens is reported DEAD — lost coverage, never full coverage`);
 }
 
 console.log(`\n== summary: ${pass} passed, ${fail} failed ==`);

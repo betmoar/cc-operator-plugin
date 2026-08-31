@@ -400,11 +400,18 @@ const panel = await parallel(
       // a lens that found nothing. `r?.findings ?? []` alone laundered the two
       // into the same shape, so the death was unrecoverable downstream — even
       // `.filter(Boolean)` saw a truthy object. Carry the distinction.
-      // NON-ARRAY findings ({findings:"none"}, {findings:{}}) are live-but-
-      // malformed: `?? []` defends only null, so the value survived to the
-      // flatMap below and threw — one malformed lens killed the whole panel
-      // (audit F107). Coerce to zero findings; `dead` stays r == null only.
-    ).then((r) => ({ lens: l.key, findings: Array.isArray(r?.findings) ? r.findings : [], dead: r == null })),
+      // NON-ARRAY findings ({findings:"none"}, {findings:{}}) are malformed:
+      // `?? []` defends only null, so the value survived to the flatMap below
+      // and threw — one malformed lens killed the whole panel (audit F107).
+      // A malformed lens counts as DEAD, not as found-nothing (Copilot review
+      // on PR #97): counting it live let the panel log report full coverage
+      // over a lens that produced no valid findings result — the same
+      // fail-closed reading the malformed adversarial verdict below gets.
+    ).then((r) => ({
+      lens: l.key,
+      findings: Array.isArray(r?.findings) ? r.findings : [],
+      dead: r == null || !Array.isArray(r?.findings),
+    })),
   ),
 );
 

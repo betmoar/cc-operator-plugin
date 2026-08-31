@@ -35,8 +35,17 @@ mkdir -p "$OPDIR/pending" "$OPDIR/verdicts.d"
 # (ledgers, verdicts.d/ fragments — merge=union operates on them — tiers.env);
 # everything else the plugin recreates. OPERATOR.md goes to the project ROOT.
 _GI_MARK='# cc-operator gitignore v2 (allowlist)'
+# ATOMIC: heredoc into a temp, same-dir mv (Copilot review on PR #97, the
+# SessionStart writer's lesson applied to this one): a cat dying mid-write
+# under set -e left a truncated marker-less .gitignore, and the RE-RUN's
+# migration then copied that truncated file over the good .v1.bak. With the
+# temp+mv the live file is always the old content or the complete v2.
 _gi_write() {
-  cat > "$OPDIR/.gitignore" <<EOF
+  if [ -L "$OPDIR/.gitignore.v2.tmp" ] || { [ -e "$OPDIR/.gitignore.v2.tmp" ] && [ ! -f "$OPDIR/.gitignore.v2.tmp" ]; }; then
+    echo "ops-init: $OPDIR/.gitignore.v2.tmp exists and is not a regular file — refusing to write the allowlist through it (move it aside, then re-run)" >&2
+    return 1
+  fi
+  cat > "$OPDIR/.gitignore.v2.tmp" <<EOF
 $_GI_MARK
 # Ignore everything under .operator/ by default, then re-admit the evidence.
 # New machine state is ignored automatically — that is the point of the
@@ -52,6 +61,7 @@ $_GI_MARK
 !verdicts.d/*.md
 !handoff-*.md
 EOF
+  mv -f "$OPDIR/.gitignore.v2.tmp" "$OPDIR/.gitignore"
 }
 if [ ! -f "$OPDIR/.gitignore" ]; then
   _gi_write

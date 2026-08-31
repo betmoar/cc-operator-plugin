@@ -167,7 +167,7 @@ if [ -f "$OPDIR/DECISIONS.md" ] && [ ! -L "$OPDIR/DECISIONS.md" ]; then
       while IFS= read -r -d '' -n 512 _dprobe; do
         _dp=$((_dp + 1)); [ "$_dp" -le 4096 ] || exit 1
         [ "${#_dprobe}" -eq 512 ] || exit 1
-      done < <(tail -c 262144 "$OPDIR/DECISIONS.md" 2>/dev/null | tail -n 256)) 2>/dev/null; then
+      done < <(tail -c 262144 "$OPDIR/DECISIONS.md" 2>/dev/null | tail -n 256 2>/dev/null)) 2>/dev/null; then
     # continuation accumulation (#9): a cap-filling chunk is a CONTINUATION,
     # a shorter one completes the row; LC_ALL=C so ${#} counts bytes.
     _lines=()
@@ -178,7 +178,7 @@ if [ -f "$OPDIR/DECISIONS.md" ] && [ ! -L "$OPDIR/DECISIONS.md" ]; then
       else
         _lines+=("${_acc}${line}"); _acc=""
       fi
-    done < <(tail -c 262144 "$OPDIR/DECISIONS.md" 2>/dev/null | tail -n 256)
+    done < <(tail -c 262144 "$OPDIR/DECISIONS.md" 2>/dev/null | tail -n 256 2>/dev/null)
     [ -n "$_acc" ] && _lines+=("$_acc")
     # Set once a FOREIGN mark is passed on the backward walk: from there down,
     # unowned rows are already presented (the lib's asymmetric clearing).

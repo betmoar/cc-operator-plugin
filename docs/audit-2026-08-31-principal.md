@@ -114,6 +114,6 @@ row (`@<sha>`) bounds which rows are affected.
   `claude/principal-audit-autonomous-8e8cw1`, PR #97.
 - Working ledgers: `AUDIT_LOG.md` (append-only events + all 34 findings with
   evidence), `AUDIT_STATE.md` (phase cursor; final state).
-- Suite deltas, baseline → end: pytest 229→247, bash 732→744, workflows
-  354→384, compress 90→97; validator and shellcheck (CI-pinned 0.10.0) green
-  throughout the final tree.
+- Suite deltas, baseline → end (final, including both Copilot review-response
+  rounds): pytest 229→254, bash 732→744, workflows 354→384, compress 90→101;
+  validator and shellcheck (CI-pinned 0.10.0) green on the final tree.

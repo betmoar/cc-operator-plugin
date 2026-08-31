@@ -12,9 +12,9 @@ Healthy after remediation — architecture and discipline sound; the failures we
 Tests: pytest 229 (+16 subtests) · bash 732 (1 root-skip) · workflows 354 · compress 90 — 0 failing everywhere; validator rc 0.
 Build: clean (shellcheck absent locally at start; later installed CI-pinned 0.10.0 — green).
 
-## End state
-Tests: pytest 247 (+18 subtests) · bash 744 · workflows 384 · compress 97 — 0 failing everywhere; validator rc 0; shellcheck 0.10.0 green; release-gate real-repo test green.
-34 findings (F101–F134): 32 fixed (each with a red-run test), 2 deferred with reasons (F118, F123 — DECISION-02).
+## End state (after both Copilot review rounds)
+Tests: pytest 254 (+23 subtests) · bash 744 · workflows 384 · compress 101 — 0 failing everywhere; validator rc 0; shellcheck 0.10.0 green; release-gate real-repo test green.
+34 audit findings (F101–F134): 32 fixed (each with a red-run test), 2 deferred with reasons (F118, F123 — DECISION-02). Plus 12 Copilot review findings across two rounds, all verified and fixed (AUDIT_LOG.md review-response events).
 
 ## Load-bearing map / implicit contracts
 See the P1 sections preserved in AUDIT_LOG.md's context and docs/audit-2026-08-31-principal.md; the durable copy of the map lives where it always did — CLAUDE.md (updated this audit: manifest reference, DECISIONS_* constants, two new coupling rows).

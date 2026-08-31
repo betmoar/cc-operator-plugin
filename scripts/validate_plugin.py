@@ -1074,6 +1074,21 @@ def check_reader_bounds(root, problems):
                     f"sentinel_owner for the canonical bounded form)")
 
 
+# The #89 metacharacter arm, in FULL — matching the canonical shell text
+# `*'$'* | *'`'* | *"'"* | *'"'* | *\\*)`. All five alternatives are required
+# (Copilot review on PR #97): a `$`-only pin accepted an arm that dropped the
+# backtick/quote/backslash rejections, and any one surviving metacharacter
+# rebuilds the unclearable foreign-owner shape. The site-specific polarity
+# (die / printf-degrade / continue) is appended at each use.
+_METACHAR_ARM = (
+    r"\*'\$'\*\s*\|\s*"
+    r"\*'`'\*\s*\|\s*"
+    r"\*\"'\"\*\s*\|\s*"
+    r"\*'\"'\*\s*\|\s*"
+    r"\*\\\\\*\)"
+)
+
+
 def check_guard_parity(root, problems):
     """The gate CLIs (and the shared partition lib) must agree on what a name
     may contain. `check_bare_name` (filename safety) and `check_owner_name`
@@ -1144,13 +1159,18 @@ def check_guard_parity(root, problems):
                     f"permanently non-blocking (audit F128)")
             # the #89 metacharacter arm: a literal `$S` reads as a FOREIGN
             # session at every reader, so its HANDOFF-MARK clears nothing.
-            if not re.search(r"\*'\$'\*[^\n]*\)\s*die\b", obody):
+            # ALL FIVE alternatives, not just `$` (Copilot review on PR #97):
+            # a uniform edit dropping backtick/quote/backslash while keeping
+            # `*'$'*` stayed green, and any one surviving metacharacter
+            # rebuilds the same foreign-owner shape.
+            if not re.search(_METACHAR_ARM + r"\s*die\b", obody):
                 problems.append(
-                    f"scripts/{name}: check_owner_name() has no `*'$'*` "
-                    f"metacharacter arm invoking die (#89) — an unexpanded "
-                    f"shell variable passed as --owner reads as a valid "
-                    f"foreign session, strictly worse than not running the "
-                    f"command (audit F128)")
+                    f"scripts/{name}: check_owner_name() has no complete "
+                    f"`*'$'* | *'`'* | *\"'\"* | *'\"'* | *\\\\*` "
+                    f"metacharacter arm invoking die (#89) — every one of the "
+                    f"five must be refused; an unexpanded shell variable "
+                    f"passed as --owner reads as a valid foreign session, "
+                    f"strictly worse than not running the command (audit F128)")
     # the readers' parser (lib/partition.sh since 0.10) must reject what the
     # writers reject, or a hand-written sentinel reads as a valid foreign owner
     # and the gate opens
@@ -1185,22 +1205,24 @@ def check_guard_parity(root, problems):
                 f"must update this locator, not silently skip it")
         elif isinstance(rbody, _RedefinedFunction):
             pass  # already reported by _report_if_redefined at other sites
-        elif not re.search(r"\*'\$'\*[^\n]*\)\s*printf\s+'\\n'", rbody):
+        elif not re.search(_METACHAR_ARM + r"\s*printf\s+'\\n'", rbody):
             problems.append(
-                f"scripts/{name}: {fn}() has no `*'$'*` metacharacter arm "
-                f"degrading to unowned (#89) — a reader accepting what the "
-                f"writers refuse reads a planted `$S__task` as a valid "
-                f"foreign owner and the gate opens (audit F128, reader half)")
+                f"scripts/{name}: {fn}() has no complete metacharacter arm "
+                f"(all five of `$` backtick `'` `\"` `\\`) degrading to "
+                f"unowned (#89) — a reader accepting what the writers refuse "
+                f"reads a planted `$S__task` as a valid foreign owner and the "
+                f"gate opens (audit F128, reader half)")
     ss = root / "scripts" / "ops-sessionstart-hook.sh"
     if ss.is_file():
         sscode = shell_code(ss)
-        if not re.search(r"\*'\$'\*[^\n]*\)\s*continue\b", sscode):
+        if not re.search(_METACHAR_ARM + r"\s*continue\b", sscode):
             problems.append(
                 "scripts/ops-sessionstart-hook.sh: the legacy-sentinel "
-                "migration has no `*'$'*` metacharacter arm refusing the "
-                "rename (#89) — a body reading `session_id: $S` migrates to "
-                "`$S__task`, which both parsers then read as a valid foreign "
-                "owner (audit F128, migration half)")
+                "migration has no complete metacharacter arm (all five of "
+                "`$` backtick `'` `\"` `\\`) refusing the rename (#89) — a "
+                "body reading `session_id: $S` migrates to `$S__task`, which "
+                "both parsers then read as a valid foreign owner (audit "
+                "F128, migration half)")
     # The -L symlink rejection: the opener plus every sentinel reader (`-f`
     # follows a planted symlink; F65/F66). The Stop hook's pending/ enumeration
     # lives in lib/partition.sh since 0.10, so its obligation moved there.

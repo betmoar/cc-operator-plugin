@@ -228,17 +228,30 @@ done
 _gi="$cwd/.operator/.gitignore"
 _gi_migrated=0
 _gi_backup_failed=0
+_gi_write_failed=0
 if [ -f "$_gi" ] && ! grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi" 2>/dev/null; then
   # BACKUP FIRST, overwrite ONLY on success, set the notice flag only AFTER
   # the replacement — the old order destroyed rules with no backup while
   # reporting success (#32, one layer down). No set -e: a dying hook costs the
   # id injection. Symlink backup path refused: -f follows links, so cp would
   # overwrite the target instead of writing a backup.
+  #
+  # The replacement is ATOMIC — heredoc into a temp, mv on success (Copilot
+  # review on PR #97): a cat that died mid-write (ENOSPC, EIO) left the LIVE
+  # .gitignore truncated with no marker and no flag set, so the failure was
+  # silent AND the next session's retry copied the truncated file over the
+  # good .v1.bak — destroying the recovery copy the notice promises. With the
+  # temp+mv the live file is always either the old v1 or the complete v2, so
+  # a retry's backup re-copy is the same intact v1. The temp path is refused
+  # if anything non-regular sits there (a planted symlink would carry the
+  # write elsewhere — the same F65 class as the backup path above).
   if [ -L "$_gi.v1.bak" ] || { [ -e "$_gi.v1.bak" ] && [ ! -f "$_gi.v1.bak" ]; }; then
     _gi_backup_failed=1
   elif ! cp "$_gi" "$_gi.v1.bak" 2>/dev/null; then
     _gi_backup_failed=1
-  elif cat > "$_gi" 2>/dev/null <<'EOF'
+  elif [ -L "$_gi.v2.tmp" ] || { [ -e "$_gi.v2.tmp" ] && [ ! -f "$_gi.v2.tmp" ]; }; then
+    _gi_write_failed=1
+  elif cat > "$_gi.v2.tmp" 2>/dev/null <<'EOF'
 # cc-operator gitignore v2 (allowlist)
 # Ignore everything under .operator/ by default, then re-admit the evidence.
 # New machine state is ignored automatically — that is the point of the
@@ -256,10 +269,21 @@ if [ -f "$_gi" ] && ! grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi" 2
 EOF
   then
     # notice flag: only after the replacement happened and the backup exists.
-    # cat's EXIT STATUS is the probe, then the marker line (audit F119): the
-    # old `[ -s ]` was true for a partial write on a full disk, so the notice
-    # claimed MIGRATED over a truncated allowlist.
-    grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi" 2>/dev/null && _gi_migrated=1
+    # The marker grep probes the COMPLETE temp (audit F119: `[ -s ]` was true
+    # for a partial write), then the same-dir mv swaps it in atomically.
+    if grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi.v2.tmp" 2>/dev/null \
+       && mv -f "$_gi.v2.tmp" "$_gi" 2>/dev/null; then
+      _gi_migrated=1
+    else
+      rm -f "$_gi.v2.tmp" 2>/dev/null
+      _gi_write_failed=1
+    fi
+  else
+    # A failed temp write is REPORTED, not silent, and under its OWN flag —
+    # the backup-refusal notice would claim the backup could not be written,
+    # which is false here (the backup landed; the v2 write did not).
+    rm -f "$_gi.v2.tmp" 2>/dev/null
+    _gi_write_failed=1
   fi
 fi
 
@@ -289,6 +313,16 @@ if [ "$_gi_backup_failed" = 1 ]; then
   ctx="$ctx
 
 cc-operator: .operator/.gitignore is still the v1 blocklist — migration to the v2 allowlist was REFUSED this session because the backup at .operator/.gitignore.v1.bak could not be written (the directory may be read-only, or something that is not a regular file already sits at that path). Nothing was overwritten. Until this is resolved the project keeps v1 semantics, which track machine state (bin/, pending/, .lock/) by default. Fix the path or the permissions and start a new session."
+fi
+
+# A failed v2 WRITE is its own notice (Copilot review on PR #97): the backup
+# landed and the live file is untouched, so the backup-refusal wording above
+# would be false — and silence here is what let the pre-atomic variant strand
+# a truncated live file for the next session's retry to copy over the backup.
+if [ "$_gi_write_failed" = 1 ]; then
+  ctx="$ctx
+
+cc-operator: .operator/.gitignore is still the v1 blocklist — the v2 allowlist could not be written this session (disk full, I/O error, or something that is not a regular file at .operator/.gitignore.v2.tmp). The v1 file is UNCHANGED and the backup at .operator/.gitignore.v1.bak is intact; the migration retries next session."
 fi
 
 if [ "$PARSER" = "jq" ]; then

@@ -2503,8 +2503,13 @@ class GitignoreParityTest(unittest.TestCase):
                 ("ops-init.sh", self._real_init,
                  'elif ! grep -qF "$_GI_MARK" "$OPDIR/.gitignore" 2>/dev/null; then',
                  'elif false; then'),
+                # the anchor is the grep PREFIX shared by the detection grep
+                # and the post-write confirmation grep (which now probes the
+                # atomic temp, not "$_gi") — the mutation must knock out BOTH
+                # or the survivor satisfies the pin; `false` ignores the
+                # dangling path argument.
                 ("ops-sessionstart-hook.sh", self._real_ssh,
-                 "grep -qF '# cc-operator gitignore v2 (allowlist)' \"$_gi\" 2>/dev/null",
+                 "grep -qF '# cc-operator gitignore v2 (allowlist)'",
                  "false")):
             with self.subTest(writer=name):
                 self.assertIn(detect, real, f"{name}: detection anchor moved")
@@ -2850,6 +2855,24 @@ class AuditPinRemediationTest(unittest.TestCase):
     def test_f128_migration_control_is_clean(self):
         self._install(*self._GUARD_SCRIPTS, "ops-sessionstart-hook.sh")
         self.assertEqual(self._run(vp.check_guard_parity), [])
+
+    def test_partial_metachar_arm_fires_at_every_site(self):
+        # Copilot review on PR #97: the arm pins required only the `$`
+        # alternative, so a uniform edit dropping backtick/quote/backslash
+        # while keeping `*'$'*` stayed green at all six sites. Drop ONLY the
+        # backtick alternative (leaving `$` intact) at a writer, a reader,
+        # and the migration — each must fire.
+        for name in ("ops-task.sh", "lib/partition.sh",
+                     "ops-sessionstart-hook.sh"):
+            with self.subTest(site=name):
+                self._install(*self._GUARD_SCRIPTS, "ops-sessionstart-hook.sh")
+                self._mutate(name, "*'$'* | *'`'* | ", "*'$'* | ")
+                probs = self._run(vp.check_guard_parity)
+                self.assertTrue(
+                    any(name in q and ("complete" in q or "all five" in q)
+                        for q in probs),
+                    f"{name}: backtick alternative dropped with `$` kept and "
+                    f"check_guard_parity stayed silent — {probs}")
 
     # --- source pins are FILENAME-anchored (Copilot review on PR #97):
     # `\S*partition\.sh` was suffix-satisfiable, so sourcing a renamed
