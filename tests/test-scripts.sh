@@ -3316,6 +3316,48 @@ else
 fi
 rm -rf "$MIGW"
 
+echo "-- Case: a backed-up-but-FAILED gitignore write is reported (the third state)"
+# F119 made the hook check `cat`'s exit status, but the flag set had only TWO states — migrated and
+# backup-failed — and `_gi_backup_failed` is scoped to the two elif branches ABOVE the write. So the
+# third outcome (backup SUCCEEDED, write failed) fell through both notices: measured 2026-08-31, the
+# hook exited 0 with no gitignore line in additionalContext at all. The write is now atomic
+# (temp + mv), which removes the truncated-live-file shape entirely — but the notice is what makes
+# the remaining failure legible, and a flag nothing reports is the same silence.
+# TRIGGER: a non-regular entry at the temp path, which the hook refuses by design. A read-only
+# .gitignore is NOT a trigger any more — `mv -f` needs directory permission, not file permission,
+# so that case now migrates successfully (measured).
+GIW="$(newproj)"
+mkdir -p "$GIW/.operator"
+printf '# cc-operator gitignore (v1)\nbin/\n!my-own-rule.md\n' > "$GIW/.operator/.gitignore"
+mkdir -p "$GIW/.operator/.gitignore.v2.tmp"          # a DIRECTORY at the temp path
+GIWOUT="$(sed "s|<tmp>|$GIW|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+check "failed write: the hook SAYS the v2 file could not be written (silence was the defect)" \
+  "$(printf '%s' "$GIWOUT" | grep -q 'could not be written this session' && echo 0 || echo 1)"
+check "failed write: it does NOT claim MIGRATED over a file it never replaced" \
+  "$(printf '%s' "$GIWOUT" | grep -q 'was MIGRATED' && echo 1 || echo 0)"
+check "failed write: it does NOT claim the BACKUP was refused (that backup succeeded)" \
+  "$(printf '%s' "$GIWOUT" | grep -q 'REFUSED this session' && echo 1 || echo 0)"
+check "failed write: the user's v1 rule survives untouched" \
+  "$(grep -q 'my-own-rule' "$GIW/.operator/.gitignore" && echo 0 || echo 1)"
+check "failed write: the backup exists and still holds the v1 rules (the retry must not eat it)" \
+  "$(grep -q 'my-own-rule' "$GIW/.operator/.gitignore.v1.bak" 2>/dev/null && echo 0 || echo 1)"
+check "failed write: the session id is still injected (a hook must never die)" \
+  "$(printf '%s' "$GIWOUT" | grep -q "this session's id is" && echo 0 || echo 1)"
+rm -rf "$GIW"
+
+# CONTROL: the SUCCESSFUL migration must NOT trip the new failure notice.
+GIOK="$(newproj)"
+mkdir -p "$GIOK/.operator"
+printf '# cc-operator gitignore (v1)\nbin/\n!my-own-rule.md\n' > "$GIOK/.operator/.gitignore"
+GIOKOUT="$(sed "s|<tmp>|$GIOK|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+check "CONTROL: a writable migration reports MIGRATED" \
+  "$(printf '%s' "$GIOKOUT" | grep -q 'was MIGRATED' && echo 0 || echo 1)"
+check "CONTROL: a writable migration does NOT report a write failure" \
+  "$(printf '%s' "$GIOKOUT" | grep -q 'could not be written this session' && echo 1 || echo 0)"
+check "CONTROL: the temp file does not survive a successful migration" \
+  "$([ -e "$GIOK/.operator/.gitignore.v2.tmp" ] && echo 1 || echo 0)"
+rm -rf "$GIOK"
+
 echo "-- Case: ops-init refuses the same migration it cannot back up"
 # Same defect, same fix, in the other writer — Copilot flagged only the hook.
 INITF="$(newproj)"

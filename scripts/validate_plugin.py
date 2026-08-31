@@ -1785,6 +1785,34 @@ def check_gitignore_parity(root, problems):
                 f"that name, so the recovery path the notice names is not the "
                 f"backup (measured 2026-08-12)")
 
+    # THE THIRD STATE, hook only (audit 2026-08-31): backup SUCCEEDED and the
+    # overwrite failed. F119 made `cat`'s exit status the probe but left the
+    # flag set at two — migrated / backup-failed — and `_gi_backup_failed` is
+    # scoped to the elif branches ABOVE the write, so this outcome fell through
+    # both notices and the hook reported nothing (measured: rc 0, no gitignore
+    # line in additionalContext, over a partial write whose marker makes every
+    # LATER session skip the migration). ops-init.sh needs no flag: `set -e`
+    # kills it on the failed write, loudly. SET and REPORT are two claims —
+    # pinning only the assignment is satisfied by a flag nothing ever reads.
+    p = root / "scripts" / "ops-sessionstart-hook.sh"
+    if p.is_file():
+        text = p.read_text(encoding="utf-8")
+        if ".v1.bak" in text:
+            if not re.search(r"_gi_write_failed=1", text):
+                problems.append(
+                    "scripts/ops-sessionstart-hook.sh: the gitignore migration "
+                    "has no flag for a SUCCEEDED backup with a FAILED write — "
+                    "that third outcome falls through both the MIGRATED and the "
+                    "REFUSED notice, so the hook reports nothing while the file "
+                    "may be a truncated allowlist whose marker makes every later "
+                    "session skip the migration (measured 2026-08-31)")
+            elif not re.search(r'\[\s*"\$_gi_write_failed"\s*=\s*1\s*\]', text):
+                problems.append(
+                    "scripts/ops-sessionstart-hook.sh: _gi_write_failed is set "
+                    "but never REPORTED — a flag nothing reads is the silence "
+                    "this state was found in. Setting it and telling the "
+                    "session about it are two claims")
+
 
 #: The lock block's load-bearing content, pinned as CANONICAL rather than
 #: compared between the two copies. Audited 2026-08-25: parity alone is F30's

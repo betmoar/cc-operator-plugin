@@ -263,9 +263,15 @@ def make_good_tree(root):
           "    _gi_backup_failed=1\n"
           "  elif ! cp \"$_gi\" \"$_gi.v1.bak\" 2>/dev/null; then\n"
           "    _gi_backup_failed=1\n"
+          "  elif cat > \"$_gi\" 2>/dev/null <<'EOF'\n" + gitignore_v2 + "EOF\n"
+          # The THIRD state: backup written, overwrite failed. Two flags cannot
+          # express three outcomes, and the missing one reported nothing at all.
+          "  then\n"
+          "    _gi_migrated=1\n"
           "  else\n"
-          "cat > \"$_gi\" <<'EOF'\n" + gitignore_v2 + "EOF\n"
+          "    _gi_write_failed=1\n"
           "  fi\nfi\n"
+          "if [ \"$_gi_write_failed\" = 1 ]; then echo FAILED PARTWAY; fi\n"
           "echo ok\n")
     # Reader/CLI bodies must satisfy the byte-bound, guard-parity and
     # lock-parity checks.
@@ -2464,6 +2470,30 @@ class GitignoreParityTest(unittest.TestCase):
         probs = self._probs()
         self.assertTrue(any("missing allow line" in p for p in probs), probs)
         self.assertTrue(any("drift" in p for p in probs), probs)
+
+    def test_removing_the_third_state_flag_fires(self):
+        # The escape this pin was written against: F119 checked `cat`'s exit
+        # status but the flag set stayed at two, so a SUCCEEDED backup with a
+        # FAILED write reported neither MIGRATED nor REFUSED. Measured
+        # 2026-08-31 on a 0444 .gitignore: hook rc 0, no gitignore line at all.
+        src = self._real_ssh.replace("_gi_write_failed=1", "true", 1)
+        src = src.replace("_gi_write_failed=1", "true")
+        self.assertNotIn("_gi_write_failed=1", src)
+        write(self.dir / "scripts" / "ops-sessionstart-hook.sh", src)
+        probs = self._probs()
+        self.assertTrue(any("SUCCEEDED backup with a FAILED write" in p
+                            for p in probs), probs)
+
+    def test_setting_the_flag_without_reporting_it_fires(self):
+        # SET and REPORT are two claims. A flag assigned and never read is the
+        # exact silence the third state was found in, and is the shape a
+        # narrower pin (assignment only) would ship green.
+        src = self._real_ssh.replace('if [ "$_gi_write_failed" = 1 ]; then',
+                                     'if [ "$_gi_write_failed" = 999 ]; then', 1)
+        self.assertNotEqual(src, self._real_ssh)
+        write(self.dir / "scripts" / "ops-sessionstart-hook.sh", src)
+        probs = self._probs()
+        self.assertTrue(any("never REPORTED" in p for p in probs), probs)
 
     def test_dropping_the_bare_star_fires(self):
         # The `*` is what makes this an ALLOWLIST; drop it and the file inverts

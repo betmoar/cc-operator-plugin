@@ -49,6 +49,16 @@ the pre-fix code.
 - **`release_gate.py` (audit F131):** the section terminator no longer
   truncates notes at a body line starting with `[`, and definitions inside
   code fences/spans no longer count as resolving a reference.
+- **The gitignore migration's failed-write notice is now enforced, not just
+  written.** The atomic temp+mv rewrite (above) removed the truncated-live-file
+  shape and added `_gi_write_failed`, but nothing tested that the notice fires
+  or pinned it against removal — and a flag nothing reports is the same silence
+  the third state was found in (measured on the pre-atomic hook: a backed-up
+  file with a failed write exited 0 with no gitignore line in
+  `additionalContext` at all). `check_gitignore_parity` now pins the flag AND
+  its report as two separate claims, and a bash case drives the real trigger (a
+  non-regular entry at the temp path) with a success control. `ops-init.sh`
+  needs no flag: `set -e` kills it on the failed write, loudly.
 - **The F102 banner cases could not pass on macOS.** `newproj()` returned
   `mktemp -d`'s unresolved `/var/folders/...` path while every hook and CLI
   resolves through `cd -P` to `/private/var/folders/...`, so four correct
