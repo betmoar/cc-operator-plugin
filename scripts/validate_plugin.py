@@ -1717,13 +1717,32 @@ def check_gitignore_parity(root, problems):
         # Emitting the marker and DETECTING it are two claims; assert the
         # detection grep separately (either spelling: init greps the variable,
         # the standalone hook greps the literal).
-        elif not re.search(r"grep\s+-qF\s+(?:\"\$_GI_MARK\"|'" + re.escape(MARK) + r"')", text):
+        #
+        # DETECTION vs CONFIRMATION (#102). Since the atomic rewrite the hook
+        # greps for this marker TWICE: once on the LIVE file to decide "is this
+        # still v1?", and once on `$_gi.v2.tmp` to confirm the new body landed
+        # before the mv. A pattern matching either is satisfied by the
+        # confirmation grep alone, so a mutation deleting only DETECTION —
+        # after which a v1 blocklist is never migrated at all — shipped green
+        # (measured during the 0.11.4 remediation; the weakness was recorded in
+        # this check's own test before it was closed).
+        #
+        # The TARGET is the asymmetry a non-vacuous pin can key on: detection
+        # reads the live path, confirmation reads the temp. Requiring at least
+        # one marker grep against a NON-temp target pins the detection read
+        # specifically, and stays spelling-agnostic about which path variable
+        # each writer uses.
+        elif not any(".tmp" not in _target for _target in re.findall(
+                r"grep\s+-qF\s+(?:\"\$_GI_MARK\"|'" + re.escape(MARK) +
+                r"')\s+\"([^\"]+)\"", text)):
             problems.append(
-                f"scripts/{name}: emits the v2 marker but never greps for it — "
-                f"without that read the writer cannot tell a v1 file from a v2 "
-                f"one, so an existing v1 blocklist is never migrated (it is "
-                f"appended to, and the two schemes contradict). Emitting the "
-                f"marker is not the same claim as detecting it")
+                f"scripts/{name}: emits the v2 marker but never greps for it on "
+                f"the LIVE .gitignore — without that read the writer cannot tell "
+                f"a v1 file from a v2 one, so an existing v1 blocklist is never "
+                f"migrated (it is appended to, and the two schemes contradict). "
+                f"A grep against the `.v2.tmp` path is the post-write "
+                f"CONFIRMATION, a different claim: it proves the new body "
+                f"landed, never that the old one needed replacing (#102)")
         # Allow lines are line-anchored: a '!VERDICTS.md' inside prose is not a
         # heredoc body line, and would make this check vacuous.
         lines = {ln.strip() for ln in text.splitlines()}
@@ -1812,6 +1831,23 @@ def check_gitignore_parity(root, problems):
                     "but never REPORTED — a flag nothing reads is the silence "
                     "this state was found in. Setting it and telling the "
                     "session about it are two claims")
+        # …and the other half of #102's asymmetry: the CONFIRMATION grep must
+        # keep probing the TEMP. F119 made it the completeness probe (`[ -s ]`
+        # was true for a partial write), and the atomic rewrite made the temp
+        # the thing there is to probe. Pinned by target for the same reason the
+        # detection pin is: the two greps carry identical text and only their
+        # argument tells them apart, so one pattern cannot stand for both.
+        if ".v2.tmp" in text and not re.search(
+                r"grep\s+-qF\s+'" + re.escape(MARK) + r"'\s+\"[^\"]*\.v2\.tmp\"",
+                text):
+            problems.append(
+                "scripts/ops-sessionstart-hook.sh: the v2 gitignore write is "
+                "not confirmed by grepping the marker in the `.v2.tmp` temp "
+                "before the mv — without it a heredoc that died mid-write "
+                "(ENOSPC, EIO) is moved over the live file, and the partial "
+                "body's marker makes every LATER session skip the migration "
+                "(F119). Detecting a v1 file and confirming the v2 write are "
+                "two claims (#102)")
 
 
 #: The lock block's load-bearing content, pinned as CANONICAL rather than

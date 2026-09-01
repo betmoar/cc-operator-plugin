@@ -9,6 +9,48 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.5] - 2026-09-01
+
+Four self-contained items from the 2026-08-31 audit backlog. Every fix ships
+with the pin that would have caught it, each run RED against the defect it was
+written for and GREEN against the restored tree.
+
+### Fixed
+
+- **A malformed sentinel name got a remedy that could not run (#99, audit
+  F118).** Readers split `pending/<owner>__<task>` on the FIRST `__`, so a
+  planted `A__B__C` parsed as owner `A`, task `B__C` — and `B__C` is a task id
+  every writer CLI refuses, because `__` is the separator. The gate named
+  `ops-verdict.sh 'B__C' --defer`, which dies on the CLI's own guard: the
+  operator was told to run a command that errors. `scan_pending` now buckets
+  such names as MALFORMED (fail closed, matching the unowned default) and the
+  Stop hook names the one remedy that works — `rm -f` on the sentinel's
+  absolute, single-quoted path. The statusline counts the bucket as blocking,
+  so the bar and the gate still describe the same thing.
+- **The compressor's elide cut mid-codepoint (#101, audit F123).**
+  `HEAD_BYTES`/`TAIL_BYTES` are size bounds with no reason to fall between
+  codepoints, and `Buffer.subarray(…).toString("utf8")` over a half-sequence
+  decodes to U+FFFD, so every elided multibyte output carried mojibake at both
+  seams. The cut now backs off to a UTF-8 boundary, which also makes the head a
+  true prefix of the input — the offset `elide` uses to find the middle.
+- **`commands/handoff.md` prescribed a relative CLI path (#100, the residue of
+  audit F102).** The Bash tool's cwd persists across calls, so
+  `.operator/bin/ops-verdict.sh` pasted from a subdirectory is file-not-found,
+  and the field history for that shape (#94/#95) is the model then reporting a
+  PRESENT gate as absent. The command now routes to the absolute path
+  SessionStart or the Stop hook already printed, with `git rev-parse
+  --show-toplevel` as the fallback when neither is in context.
+
+### Changed
+
+- **`check_gitignore_parity` tells the DETECTION grep from the CONFIRMATION
+  grep (#102).** Both writers grep for the v2 marker, and since the atomic
+  rewrite the hook does it twice — once on the live file to decide "is this
+  still v1?", once on `$_gi.v2.tmp` to confirm the write landed. The pin
+  matched either, so a mutation removing only detection — after which a v1
+  blocklist is never migrated at all — shipped green. Each is now pinned by its
+  target, and each is knocked out on its own in its own case.
+
 ## [0.11.4] - 2026-08-31
 
 A principal-architect audit (2026-08-31, autonomous) — 34 findings, all logged

@@ -4,10 +4,11 @@ argument-hint: []
 allowed-tools: Bash(git:*), Bash(.operator/bin/ops-verdict.sh:*), Read, Write
 ---
 
-Produce the six-section operator→human handoff. Source every claim from
-`.operator/VERDICTS.md`, `.operator/DECISIONS.md`, and `git log` — never from
-memory. Write it to `.operator/handoff-<today's date>.md`. The section shape is
-defined in `OPERATOR.md § HANDOFF`; produce exactly those six sections:
+Produce the six-section operator→human handoff. Source every claim from the
+project's `.operator/VERDICTS.md`, `.operator/DECISIONS.md`, and `git log` —
+never from memory. Write it to `.operator/handoff-<today's date>.md`. The
+section shape is defined in `OPERATOR.md § HANDOFF`; produce exactly those six
+sections:
 
 1. **Verdict** — shipped / not-shipped / partial, against the BAR block in
    VERDICTS.md, as one table.
@@ -22,10 +23,20 @@ defined in `OPERATOR.md § HANDOFF`; produce exactly those six sections:
 Do not restate the charter. If a required fact is absent from the ledgers or
 git log, write it under section 3 (Unverified) rather than asserting it.
 
+**Resolve the paths before you run anything.** Do not assume your shell sits at
+the project root — the Bash tool's cwd persists across calls, so a relative
+`.operator/bin/...` typed from a subdirectory is file-not-found, and the field
+history for that shape (#94/#95, audit F102) is the model then reporting a
+PRESENT gate as absent. Use the ABSOLUTE, single-quoted CLI path that
+SessionStart already printed in this session's context ("this session's id
+is …"), or the one the Stop hook named when it last blocked. If neither is in
+context, resolve it yourself — `git rev-parse --show-toplevel` — and build the
+absolute path from that; the ledgers you read are under the same `.operator/`.
+
 Presenting this handoff clears the deviation gate: after writing the six
-sections, run
-`.operator/bin/ops-verdict.sh --mark-handoff --owner <session-id>`. That stamps
-a HANDOFF-MARK in DECISIONS.md so the Stop hook stops blocking on this session's
+sections, run that absolute path with
+`ops-verdict.sh --mark-handoff --owner <session-id>`. That stamps a
+HANDOFF-MARK in DECISIONS.md so the Stop hook stops blocking on this session's
 DEVIATION lines (any you logged with a leading `[sid:<session-id>]` tag in the
 what-cell). An untagged DEVIATION is unowned and blocks every session — tag the
 ones you author with your session id (from SessionStart).

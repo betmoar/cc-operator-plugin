@@ -2520,24 +2520,25 @@ class GitignoreParityTest(unittest.TestCase):
         self.assertTrue(any("v2 gitignore marker" in p for p in self._probs()),
                         self._probs())
 
-    def test_losing_only_the_DETECTION_grep_fires(self):
+    def test_losing_EVERY_marker_grep_fires(self):
         # EMIT and DETECT are two claims: the heredoc body contains the marker,
         # so a substring test passes even with the migration grep deleted, and
         # every existing v1 project silently stops being detected.
-        # replace() is UNCOUNTED since the F101/F102 hook fix: the hook now
-        # carries a second, post-write confirmation grep for the same marker,
-        # and a single-occurrence mutation left it satisfying the pin — the
-        # mutation must remove EVERY grep or it no longer models "the file
-        # never greps for it" (2026-08-31, concurrent-commit collision).
+        #
+        # This case removes EVERY marker grep from a writer — the blunt end of
+        # the range. It used to be named for the DETECTION grep and could not
+        # actually isolate one: the hook's two greps carry identical text, so a
+        # single-occurrence mutation left the confirmation grep satisfying the
+        # pin, and the mutation had to be widened to both (2026-08-31). #102
+        # made the pin target-aware, so each grep is now knocked out on its own
+        # in the two cases below; this one keeps the coarse mutation, which is
+        # still a distinct claim (a writer with no marker read at all).
         for name, real, detect, replacement in (
                 ("ops-init.sh", self._real_init,
                  'elif ! grep -qF "$_GI_MARK" "$OPDIR/.gitignore" 2>/dev/null; then',
                  'elif false; then'),
-                # the anchor is the grep PREFIX shared by the detection grep
-                # and the post-write confirmation grep (which now probes the
-                # atomic temp, not "$_gi") — the mutation must knock out BOTH
-                # or the survivor satisfies the pin; `false` ignores the
-                # dangling path argument.
+                # the anchor is the grep PREFIX shared by both hook greps;
+                # `false` ignores the dangling path argument.
                 ("ops-sessionstart-hook.sh", self._real_ssh,
                  "grep -qF '# cc-operator gitignore v2 (allowlist)'",
                  "false")):
@@ -2545,8 +2546,50 @@ class GitignoreParityTest(unittest.TestCase):
                 self.assertIn(detect, real, f"{name}: detection anchor moved")
                 write(self.dir / "scripts" / name, real.replace(detect, replacement))
                 probs = self._probs()
-                self.assertTrue(any("never greps for it" in p for p in probs), probs)
+                self.assertTrue(any("never greps for it on the LIVE" in p
+                                    for p in probs), probs)
                 write(self.dir / "scripts" / name, real)
+        self.assertEqual(self._probs(), [])
+
+    def test_removing_only_the_DETECTION_grep_fires(self):
+        # #102, and the reason the case above had to knock out BOTH greps: the
+        # hook carries two greps for the same marker, differing only in their
+        # TARGET — detection reads the live `$_gi`, confirmation reads
+        # `$_gi.v2.tmp`. The old pattern matched either, so this mutation —
+        # which is the one that actually breaks migration, since without
+        # detection a v1 blocklist is never replaced at all — reported green.
+        # The confirmation grep is left INTACT on purpose: that is precisely
+        # the shape that satisfied the old pin.
+        detect = ("if [ -f \"$_gi\" ] && ! grep -qF "
+                  "'# cc-operator gitignore v2 (allowlist)' \"$_gi\" 2>/dev/null; then")
+        self.assertIn(detect, self._real_ssh, "detection anchor moved")
+        mutated = self._real_ssh.replace(detect, 'if [ -f "$_gi" ] && false; then', 1)
+        # Control on the mutation itself: the confirmation grep must survive it,
+        # or this is just the both-greps mutation the case above already runs.
+        self.assertIn("grep -qF '# cc-operator gitignore v2 (allowlist)' "
+                      "\"$_gi.v2.tmp\"", mutated)
+        write(self.dir / "scripts" / "ops-sessionstart-hook.sh", mutated)
+        probs = self._probs()
+        self.assertTrue(any("never greps for it on the LIVE" in p for p in probs),
+                        probs)
+        write(self.dir / "scripts" / "ops-sessionstart-hook.sh", self._real_ssh)
+        self.assertEqual(self._probs(), [])
+
+    def test_removing_only_the_CONFIRMATION_grep_fires(self):
+        # The other half of the same asymmetry (#102). Detection stays intact:
+        # a pin that cannot tell the two apart is satisfied by whichever
+        # survives, in either direction.
+        confirm = ("    if grep -qF '# cc-operator gitignore v2 (allowlist)' "
+                   "\"$_gi.v2.tmp\" 2>/dev/null \\\n")
+        self.assertIn(confirm, self._real_ssh, "confirmation anchor moved")
+        mutated = self._real_ssh.replace(confirm, "    if true \\\n", 1)
+        self.assertIn("grep -qF '# cc-operator gitignore v2 (allowlist)' \"$_gi\"",
+                      mutated, "detection must survive this mutation")
+        write(self.dir / "scripts" / "ops-sessionstart-hook.sh", mutated)
+        probs = self._probs()
+        self.assertTrue(any("confirmed by grepping the marker in the `.v2.tmp`" in p
+                            for p in probs), probs)
+        write(self.dir / "scripts" / "ops-sessionstart-hook.sh", self._real_ssh)
         self.assertEqual(self._probs(), [])
 
     def test_migration_without_a_tested_backup_fires(self):

@@ -71,10 +71,32 @@ const num = (env, key, dflt) => {
 
 // Byte-bounded slice — the repo's standing reader invariant is bytes-not-lines:
 // a newline-less multi-MB line is ONE line to a line count and would pass whole.
-const headBytes = (s, n) => Buffer.from(s, "utf8").subarray(0, n).toString("utf8");
+//
+// The cut BACKS OFF to a UTF-8 codepoint boundary (F123, issue #101). A byte
+// offset chosen for a size bound has no reason to land between codepoints, and
+// `toString("utf8")` over a half-sequence emits U+FFFD — model-visible mojibake
+// at both seams of every elided output. Backing off is the direction that
+// cannot invent bytes: it drops at most 3 (no UTF-8 sequence exceeds 4), so the
+// slice stays within its bound, and the head stays a true PREFIX of the input,
+// which is what makes elide's `midStart = head.length` an honest offset. The
+// spill copy is byte-verbatim either way — this is legibility, not evidence.
+//
+// A continuation byte is 10xxxxxx; a lead or ASCII byte is not. Landing on a
+// non-continuation byte means the sequence before it is complete.
+const isUtf8Cont = (b) => (b & 0xc0) === 0x80;
+const headBytes = (s, n) => {
+  const b = Buffer.from(s, "utf8");
+  if (n >= b.length) return b.toString("utf8");
+  let end = n < 0 ? 0 : n;
+  while (end > 0 && isUtf8Cont(b[end])) end--;
+  return b.subarray(0, end).toString("utf8");
+};
 const tailBytes = (s, n) => {
   const b = Buffer.from(s, "utf8");
-  return b.subarray(Math.max(0, b.length - n)).toString("utf8");
+  let start = Math.max(0, b.length - n);
+  if (start === 0) return b.toString("utf8");
+  while (start < b.length && isUtf8Cont(b[start])) start++;
+  return b.subarray(start).toString("utf8");
 };
 
 const capLines = (s, cap) =>

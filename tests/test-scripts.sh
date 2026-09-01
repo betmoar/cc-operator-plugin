@@ -3758,6 +3758,35 @@ check "handoff.md routes the deviation-gate release through --mark-handoff" \
   "$(grep -q 'ops-verdict.sh --mark-handoff' "$HCMD" && echo 0 || echo 1)"
 check "handoff.md's allowed-tools grants the ops-verdict.sh it prescribes" \
   "$(grep -q 'allowed-tools:.*ops-verdict.sh' "$HCMD" && echo 0 || echo 1)"
+# #100 — the residue of F102. The command's PROSE used to prescribe a bare relative
+# `.operator/bin/ops-verdict.sh --mark-handoff …`, which assumes the shell sits at the project root. The
+# Bash tool's cwd persists across calls, so pasted from a subdirectory that is file-not-found — and #94/#95's
+# field history is the model then reporting a PRESENT gate as absent. The banner and the Stop hook both went
+# absolute+single-quoted for exactly this (F102); the command is the third place a session reads a CLI path
+# from, and it was the one left behind.
+#
+# Assert on the BODY, never the whole file: `allowed-tools` cannot be made absolute (the path is
+# machine-specific and unknown at authoring time), so the relative pattern legitimately stays in the
+# frontmatter. A whole-file grep would either fail on that line forever or be neutered to match nothing.
+HBODY="$(awk 'BEGIN{n=0} /^---$/{n++; next} n>=2' "$HCMD")"
+# A backtick immediately followed by `.operator/bin/ops-` is a PRESCRIBED COMMAND — the exact shape that
+# shipped. Naming the relative form as the anti-pattern (which the new prose does) is not a prescription and
+# does not match: that mention is written `.operator/bin/...`, with no CLI name behind the slash.
+check "handoff.md's body prescribes no relative .operator/bin/ CLI invocation (#100)" \
+  "$(printf '%s' "$HBODY" | grep -q '`\.operator/bin/ops-' && echo 1 || echo 0)"
+# …and the positive half: it must actively route the model to the absolute path SessionStart/the Stop hook
+# already printed. Deleting the prescription without supplying the replacement leaves the model with no path
+# at all, which is a worse failure than the relative one.
+check "handoff.md tells the model to use the ABSOLUTE CLI path (#100)" \
+  "$(printf '%s' "$HBODY" | grep -q 'ABSOLUTE' && echo 0 || echo 1)"
+# The third pin, and why it is NOT "the body mentions SessionStart": the pre-#100 text already said
+# "from SessionStart" (about tagging a DEVIATION with your session id), so that check reported green against
+# the exact file it was written to catch — measured, then replaced rather than kept. Key on the FALLBACK
+# instead: a session with neither the banner nor a Stop block in context has no printed path to reuse, and
+# without a way to resolve one itself the absolute-path instruction is unfollowable. `--show-toplevel`
+# appears nowhere in the old text, so this fires.
+check "handoff.md gives a way to RESOLVE the absolute path when none was printed (#100)" \
+  "$(printf '%s' "$HBODY" | grep -q 'rev-parse --show-toplevel' && echo 0 || echo 1)"
 # The charter is the source of the section list; if OPERATOR.md's HANDOFF section lost a name the command would be
 # teaching a shape the charter no longer defines (the HANDOUT_PACKET_SPINE lesson: parity passes when the ORIGINAL
 # is what lost the field, so assert against the charter directly).
@@ -4305,6 +4334,106 @@ for _f116 in "$VERDICT" "$ADOPT"; do
   check "F116 $(basename "$_f116"): fallback read is brace-wrapped" \
     "$(grep -qF '{ IFS= read -r -n 128 FALLBACK_REC < "$FALLBACK_DIR/holder"; } 2>/dev/null || true' "$_f116" && echo 0 || echo 1)"
 done
+
+########################################################################
+echo "-- Case: F118 (#99) a MALFORMED sentinel name gets a remedy that works"
+# `sentinel_owner_of_name` splits on the FIRST `__`, so a planted `A__B__C` parsed as owner A, task `B__C`.
+# `B__C` is a task id every writer CLI REFUSES — `__` is the separator — so the gate reported it under a
+# message naming ops-verdict.sh, and running that command died on the CLI's own guard. Being told to run
+# something that errors is worse than being told nothing: the operator's next move is to doubt the gate.
+# Owned by the STOPPING session on purpose. A foreign-owned malformed name parses as someone else's task
+# and never reaches the mine list, so it leaves the "pending verdict(s)" assertions below passing for free
+# against the old code — measured. The mine path is where the unusable id was actually printed.
+F118P="$(newproj)"; ( cd "$F118P" && bash "$INIT" >/dev/null 2>&1 )
+: > "$F118P/.operator/pending/SESS-A__B__C"
+# FIRST, the fact the fix is built on: the id the old parser reported is one the CLI cannot accept. If this
+# ever stops holding, the whole malformed bucket is unnecessary and this case should be deleted, not patched.
+F118OUT="$( cd "$F118P" && bash "$VERDICT" 'B__C' --defer 'probe' --owner SESS-A 2>&1 )"; F118RC=$?
+check "F118 the CLI refuses the id the first-\`__\` split yields" \
+  "$([ "$F118RC" -ne 0 ] && printf '%s' "$F118OUT" | grep -q "must not contain '__'" && echo 0 || echo 1)"
+# …and it refuses on the NAME guard specifically — `task-id`, not a missing/foreign --owner. (The message
+# does contain the word "owner" while explaining what `__` separates, so a bare grep for it asserts nothing.)
+check "F118 …and refuses it on the task-id guard, not the ownership gate" \
+  "$(printf '%s' "$F118OUT" | grep -q "task-id must not contain" && echo 0 || echo 1)"
+
+# THE GATE. A name no writer could produce fails CLOSED, like an unowned sentinel — this BLOCKS where the
+# old code merely reported it as foreign (owner `SESS-Z` != `SESS-A`), which is the deliberate widening.
+run_hook stop-session-a.json "$F118P"
+check "F118 a malformed sentinel BLOCKS the stop (fails closed)" \
+  "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+check "F118 the block says the name is MALFORMED" \
+  "$(printf '%s' "$HERR" | grep -q 'MALFORMED' && echo 0 || echo 1)"
+# THE POINT OF THE ISSUE: the remedy named must be one that actually clears it.
+check "F118 the message names rm -f on the sentinel's real path" \
+  "$(printf '%s' "$HERR" | grep -qF "rm -f '$F118P/.operator/pending/SESS-A__B__C'" && echo 0 || echo 1)"
+# …and it must NOT name the CLI against the unusable id, which is the defect itself. Scoped to the
+# pending-verdict line: the foreign/handoff lines legitimately mention the CLI.
+F118BLOCK="$(printf '%s' "$HERR" | grep 'pending verdict(s):' || true)"
+check "F118 no 'pending verdict(s)' line names the unaddressable id" \
+  "$(printf '%s' "$F118BLOCK" | grep -q 'B__C' && echo 1 || echo 0)"
+check "F118 …and with ONLY malformed entries that line is not printed at all" \
+  "$([ -z "$F118BLOCK" ] && echo 0 || echo 1)"
+# The remedy must be literally runnable — not "a path that looks right". Run exactly what was printed, then
+# assert BOTH that the file is gone and that the gate reopens. Asserting only the exit code passes for free
+# whenever the message named nothing at all (grep finds no command, eval runs the empty string, and a gate
+# that never blocked is trivially "allowed") — measured against the pre-#99 code.
+eval "$(printf '%s' "$HERR" | grep -o "rm -f '[^']*'" | head -1)"
+check "F118 the named command actually removes the sentinel" \
+  "$([ ! -e "$F118P/.operator/pending/SESS-A__B__C" ] && echo 0 || echo 1)"
+run_hook stop-session-a.json "$F118P"
+check "F118 …and the stop is allowed afterwards" \
+  "$([ "$HRC" -eq 0 ] && echo 0 || echo 1)"
+
+# A SPACED project path, because the remedy is pasted into a shell: the same reason verdict_cmd_for is
+# single-quoted (#94). An unquoted path here trades one uncopyable command for another.
+F118S="$(newproj)/my proj"; mkdir -p "$F118S"; ( cd "$F118S" && bash "$INIT" >/dev/null 2>&1 )
+: > "$F118S/.operator/pending/SESS-A__B__C"
+F118SJ="$(mktemp)"; sed "s|<tmp>|$F118S|" "$FIXTURES/stop-session-a.json" > "$F118SJ"
+F118SERR="$(mktemp)"; "$BASH_ABS" "$HOOK" < "$F118SJ" 2>"$F118SERR" >/dev/null; F118SRC=$?
+F118SE="$(cat "$F118SERR")"; rm -f "$F118SJ" "$F118SERR"
+check "F118 a spaced project path still blocks" "$([ "$F118SRC" -eq 2 ] && echo 0 || echo 1)"
+check "F118 …and its rm -f path is single-quoted whole" \
+  "$(printf '%s' "$F118SE" | grep -qF "rm -f '$F118S/.operator/pending/SESS-A__B__C'" && echo 0 || echo 1)"
+
+# CONTROLS. The bucket must not swallow the two shapes that are already handled correctly, or the fix
+# trades F118 for a regression in the cases the gate exists for.
+F118C="$(newproj)"; ( cd "$F118C" && bash "$INIT" >/dev/null 2>&1 )
+( cd "$F118C" && bash "$TASK" T-OK --owner SESS-A >/dev/null 2>&1 )
+run_hook stop-session-a.json "$F118C"
+check "F118 CONTROL a well-formed owned sentinel still reports its id, not a path" \
+  "$([ "$HRC" -eq 2 ] && printf '%s' "$HERR" | grep -q 'pending verdict(s): T-OK' \
+     && ! printf '%s' "$HERR" | grep -q 'MALFORMED' && echo 0 || echo 1)"
+# A planted `$S__task` degrades to UNOWNED at the reader (#89) but its id `task` is addressable — the glob
+# `pending/*__<task>` finds it — so it must stay in the ordinary blocking bucket, not the malformed one.
+F118D="$(newproj)"; ( cd "$F118D" && bash "$INIT" >/dev/null 2>&1 )
+: > "$F118D/.operator/pending/\$S__planted"
+run_hook stop-session-a.json "$F118D"
+check "F118 CONTROL a #89 metachar owner is still UNOWNED-blocking, not malformed" \
+  "$([ "$HRC" -eq 2 ] && printf '%s' "$HERR" | grep -q 'pending verdict(s): planted' \
+     && ! printf '%s' "$HERR" | grep -q 'MALFORMED' && echo 0 || echo 1)"
+
+# THE BAR MUST AGREE WITH THE GATE. partition.sh is shared precisely so the statusline cannot describe a
+# different gate; a blocking bucket the bar omits reads as "not blocked" while Stop returns 2.
+#
+# Its OWN renderer, not Case 22's `render`: `SL` is reassigned to a line number further down this file, so
+# `render` silently returns "" for every case after that point and any comparison against it passes by
+# accident. Found by this case failing against a bar that was in fact correct.
+f118_render() { # f118_render <session-id> <cwd> → segment text, ANSI stripped
+  printf '{"session_id":"%s","cwd":"%s","workspace":{"project_dir":"%s"}}' "$1" "$2" "$2" \
+    | "$BASH_ABS" "$SCRIPTS/statusline.sh" 2>/dev/null \
+    | LC_ALL=C tr -d '\033' | LC_ALL=C sed 's/\[[0-9]*m//g'
+}
+F118B="$(newproj)"; ( cd "$F118B" && bash "$INIT" >/dev/null 2>&1 )
+# Control first: the renderer is wired up and says "nothing to show" on an empty project. Without this the
+# op[1] assertion below cannot distinguish a correct bar from a renderer that never ran.
+check "F118 CONTROL the bar renders nothing on an empty project" \
+  "$([ -z "$(f118_render SESS-A "$F118B")" ] && echo 0 || echo 1)"
+: > "$F118B/.operator/pending/SESS-A__B__C"
+check "F118 the bar counts a malformed sentinel as BLOCKING — op[1], like any other blocked stop" \
+  "$([ "$(f118_render SESS-A "$F118B")" = "op[1]" ] && echo 0 || echo 1)"
+( cd "$F118B" && bash "$TASK" T-1 --owner SESS-A >/dev/null 2>&1 )
+check "F118 …and it adds to a real pending task rather than replacing it" \
+  "$([ "$(f118_render SESS-A "$F118B")" = "op[2]" ] && echo 0 || echo 1)"
 
 ########################################################################
 # The measurement corpora (#24 security, #70 drift, #58 plan-align) were removed in 0.10 (docs/DEBLOAT-0.10.md

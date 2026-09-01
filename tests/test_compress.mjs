@@ -548,6 +548,82 @@ console.log("-- Case: nested symlinks under .operator/ are refused (spill root +
   fs.rmSync(st2, { recursive: true, force: true });
 }
 
+// ── F123 / #101: the elide cut backs off to a UTF-8 boundary ────────────────
+console.log("-- Case: F123 elide never emits U+FFFD at the head/tail byte cut (#101)");
+{
+  // HEAD_BYTES/TAIL_BYTES are size bounds; nothing makes them fall between
+  // codepoints. `Buffer.subarray(0, n).toString("utf8")` over a half-sequence
+  // decodes to U+FFFD, so before the backoff EVERY elided multibyte output
+  // carried mojibake at both seams. The spill copy stayed byte-verbatim, which
+  // is why this was cosmetic — and why it survived to 0.11.4 unnoticed.
+  const isCont = (buf, n) => n >= 0 && n < buf.length && (buf[n] & 0xc0) === 0x80;
+
+  // Two properties this input must have, and BOTH were got wrong on the first
+  // draft, which is why they are asserted rather than assumed:
+  //   1. It must reach tier 2. The first version used 400 IDENTICAL lines, so
+  //      scrub's repeat-collapse ran first and the payload never elided — the
+  //      U+FFFD assertions all passed against text that was never cut.
+  //   2. The cut must actually land inside a sequence. That depends on
+  //      HEAD_BYTES, TAIL_BYTES and the line width together, so a hand-picked
+  //      offset stops exercising the boundary the first time a default moves.
+  // Distinct line prefixes fix (1); sweeping four byte phases and asserting
+  // that at least one lands mid-sequence fixes (2).
+  for (const [label, ch] of [["3-byte (U+20AC)", "€"], ["4-byte astral (U+1D538)", "\u{1d538}"]]) {
+    let sawMidHead = 0, sawMidTail = 0;
+    for (const pad of [0, 1, 2, 3]) {
+      // Padded at BOTH ends. A leading pad shifts the HEAD cut only: the tail
+      // start is measured from the end of the buffer, so a prefix moves the
+      // cut and the data by the same amount and the alignment never changes.
+      // Measured — the astral tail guard below was the assertion that caught
+      // it, on an input that swept four head phases and one tail phase.
+      const body = "a".repeat(pad) + Array.from(
+        { length: 400 },
+        (_, i) => `${String(i).padStart(4, "0")} ${ch.repeat(30)}`,
+      ).join("\n") + "a".repeat(pad);
+      const buf = Buffer.from(body, "utf8");
+      if (isCont(buf, DEFAULTS.HEAD_BYTES)) sawMidHead++;
+      if (isCont(buf, buf.length - DEFAULTS.TAIL_BYTES)) sawMidTail++;
+      const res = run({ ...bash(body), tool_input: { command: "npm test" } });
+      const out = res?.hookSpecificOutput?.updatedToolOutput?.stdout ?? "";
+      ok(/chars elided/.test(out),
+        `${label} pad ${pad}: payload actually elided (the cut under test happened)`);
+      ok(!out.includes("�"),
+        `${label} pad ${pad}: elided output carries no U+FFFD`);
+      // The deeper invariant the backoff buys, and the reason this is not
+      // merely cosmetic: head and tail must stay a true PREFIX and SUFFIX of
+      // the input. elide computes `midStart = head.length` in UTF-16 units and
+      // slices the original with it, so a head carrying a replacement
+      // character made that offset wrong and the salvage scan then read a
+      // middle shifted off the real one.
+      //
+      // Asserted PER PAD, inside the sweep, because the two seams split
+      // INDEPENDENTLY: at pad 0 the \u20ac head cut is clean while its tail is not,
+      // so a single hand-picked case pinned one seam and reported green over a
+      // broken other (measured against the pre-#101 helpers, twice).
+      //
+      // The marker part is itself "\n[\u2026 \u2026]" and parts are joined with "\n", so
+      // the separator in the rendered text is "\n\n[\u2026 ". Splitting on the shorter
+      // form leaves the join's newline glued to the head, which reads as a
+      // mismatch whenever the cut lands at a line end.
+      const head = out.split("\n\n[\u2026 ")[0];
+      ok(head.length > 0 && body.startsWith(head),
+        `${label} pad ${pad}: the elided head is a true prefix of the input`);
+      // Trailing bracket lines are the elide/spill markers, never payload:
+      // every line of this input begins with a digit.
+      const afterMark = out.slice(out.indexOf("chars elided \u2026]") + "chars elided \u2026]".length);
+      const tail = afterMark.split("\n").filter((l) => l && !l.startsWith("[")).join("\n");
+      ok(tail.length > 0 && body.endsWith(tail),
+        `${label} pad ${pad}: \u2026and the elided tail is a true suffix of it`);
+    }
+    // The vacuity guard proper: without this, every assertion above stays green
+    // on an input that never splits a codepoint, which is the shape the first
+    // draft shipped.
+    ok(sawMidHead > 0, `${label}: at least one pad puts HEAD_BYTES inside a sequence (the defect is reached)`);
+    ok(sawMidTail > 0, `${label}: at least one pad puts the TAIL_BYTES start inside a sequence`);
+  }
+
+}
+
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log(`\n== summary: ${pass} passed, ${fail} failed ==`);
 if (fail > 0) process.exit(1);

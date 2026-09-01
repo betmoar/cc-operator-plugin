@@ -179,6 +179,10 @@ fi
 scan_pending "$opdir" "$session"
 pending="$MINE_IDS"
 foreign="$FOREIGN_DESC"
+# `mf_paths`, not `malformed`: shellcheck 0.10 reads a lowercase twin of a
+# global assigned in a sourced file as a probable misspelling (SC2153), and
+# the CI gate is pinned at that version.
+mf_paths="$MALFORMED_PATHS"
 
 # Defined BEFORE its first use: bash resolves a function at call time, so a
 # call above the definition expands to the empty string and the message ships
@@ -263,7 +267,30 @@ fi
 scan_deviations "$opdir/DECISIONS.md" "$session"
 
 
-if [ -n "$pending" ]; then
+# MALFORMED sentinels (F118 / #99) get their own sentence and their own remedy.
+# These are names no writer CLI could have produced — a second `__` yields a
+# task id every guard refuses — so the verdict CLI cannot address them, and the
+# old code folded them into the mine/foreign lists whose message names exactly
+# that CLI. The operator was told to run a command that dies on its own guard.
+#
+# `rm -f` is the honest remedy, not a fallback: the file is the whole problem,
+# nothing in the ledger refers to it, and it is what an operator ends up doing
+# once they work out that nothing else clears it. Path is shq'd for the same
+# reason verdict_cmd_for's is — absolute means long enough to contain a space.
+# Blocking, matching the unowned default: our CLIs cannot write this shape.
+if [ -n "$mf_paths" ]; then
+  echo "operator: $MALFORMED pending sentinel(s) with a MALFORMED name — a second '__' makes the task id unaddressable, so no ops-verdict.sh invocation can clear them (a task id containing '__' is refused by the CLI's own guard). No writer of ours produces this shape; it was planted or hand-made. Inspect, then remove:" >&2
+  _mfrest="$mf_paths"
+  while [ -n "$_mfrest" ]; do
+    case "$_mfrest" in
+      *"; "*) _mfone="${_mfrest%%"; "*}"; _mfrest="${_mfrest#*"; "}" ;;
+      *)      _mfone="$_mfrest"; _mfrest="" ;;
+    esac
+    [ -n "$_mfone" ] && echo "operator:   rm -f $(shq "$_mfone")" >&2
+  done
+fi
+
+if [ -n "$pending" ] || [ -n "$mf_paths" ]; then
   verdict_cmd="$(verdict_cmd_for)"
   # The auto-armed sentinel needs its own sentence, or the operator reads
   # "pending verdict: autobar" as a task it never opened and has no way to
@@ -280,7 +307,10 @@ if [ -n "$pending" ]; then
     # permanent silent disarm.
     echo "operator: the delta is measured from the working TREE and cannot be attributed to a session — if another session is working in this worktree, these paths may not be yours; close with --defer \"another session's changes\" and it costs you one command." >&2
   fi
-  echo "operator: pending verdict(s): $pending — run $verdict_cmd <id> <criterion> <evidence> <PASS|FAIL>, or --defer \"<reason>\"" >&2
+  # Guarded: with malformed-only entries there is no addressable id to name, and
+  # printing "pending verdict(s): " with an empty list is the useless guidance
+  # this whole branch exists to avoid.
+  [ -n "$pending" ] && echo "operator: pending verdict(s): $pending — run $verdict_cmd <id> <criterion> <evidence> <PASS|FAIL>, or --defer \"<reason>\"" >&2
   exit 2
 fi
 

@@ -235,13 +235,21 @@ if [ -n "$SESSION" ]; then
   fi
 fi
 
-[ "$MINE" -gt 0 ] || [ "$FOREIGN" -gt 0 ] || [ "$DEVMINE" -gt 0 ] || [ -n "$WFSEG" ] || exit 0
+# MALFORMED sentinels BLOCK (F118 / #99), so they belong in the RED count: red
+# means "your stop is blocked", and a bar that leaves out a blocking bucket
+# describes a gate other than the one that runs — the failure this file and the
+# hook share partition.sh to prevent. Folded into MINE rather than given a
+# segment of their own: the bar's job is whether you are blocked, and the hook
+# is where the unusable name and its `rm -f` get spelled out.
+BLOCKING=$((MINE + MALFORMED))
+
+[ "$BLOCKING" -gt 0 ] || [ "$FOREIGN" -gt 0 ] || [ "$DEVMINE" -gt 0 ] || [ -n "$WFSEG" ] || exit 0
 
 # Red only when YOUR stop is actually blocked — the one actionable state.
 # Foreign is dim: worth seeing, never a call to action. op[0] is noise.
-if [ "$MINE" -gt 0 ] || [ "$FOREIGN" -gt 0 ]; then
+if [ "$BLOCKING" -gt 0 ] || [ "$FOREIGN" -gt 0 ]; then
   OUT="op["
-  [ "$MINE" -gt 0 ] && OUT="${OUT}${RED}${MINE}${RESET}" || OUT="${OUT}0"
+  [ "$BLOCKING" -gt 0 ] && OUT="${OUT}${RED}${BLOCKING}${RESET}" || OUT="${OUT}0"
   [ "$FOREIGN" -gt 0 ] && OUT="${OUT}${DIM}+${FOREIGN}*${RESET}"
   printf '%s]' "$OUT"
   SEP=" "
