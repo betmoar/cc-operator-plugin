@@ -103,6 +103,30 @@ because `CLAUDE_SESSION_ID` is not in the Bash tool env. What a green suite
 does not prove was that document's honest register; its surviving heirs are
 the _"sentinel ownership"_ test cases and `docs/LANDMINES.md`.
 
+**The name is parsed by splitting on the FIRST `__`** — owner to the left,
+task id to the right. That is THE rule; everything else about a sentinel name
+is derived from it, and every writer refuses `__` in either half precisely so
+the split is unambiguous for names our CLIs actually produce. Two shapes have
+no valid parse and both fail CLOSED into `scan_pending`'s MALFORMED bucket
+(audit F118/#99, F135): a second separator (`A__B__C` — the task half `B__C`
+is an id every writer guard rejects) and an EMPTY half (`sid__`, `__`). Their
+only remedy is name-level, `rm -f` on the sentinel's absolute path; routing
+them through the verdict CLI names a command that dies on its own guard.
+
+Its consumers are two populations that must agree. The READERS implement the
+split directly — `sentinel_owner_of_name()` in `scripts/lib/partition.sh`
+(hook + bar), in `ops-verdict.sh`, and the migration reject-set in
+`ops-sessionstart-hook.sh`. The CLIs instead resolve a task id to a path by
+globbing `pending/*__<id>`, and a glob's `*` spans a `__`, so those four sites
+— `sentinel_for` in `ops-task.sh`, `sentinel_path` in `ops-verdict.sh` and
+`ops-adopt.sh`, and `ops-task.sh`'s post-rename dup loop — each carry a
+task-half filter (`[ "${_n#*__}" = "$_t" ]`) that re-imposes the readers'
+rule on the glob's answer. Without it the two populations disagree about what
+a given name IS: `A__B__C` was task `C` to the CLIs and task `B__C` to the
+hook, so `ops-task.sh C` reported "already open" for a task never opened and
+`ops-adopt.sh` laundered the malformed name into a well-formed one (audit
+F136). `check_guard_parity` pins each of the four literals.
+
 ### spec-unk
 
 The unknowns discipline: surface unknowns *before* building; route by stage

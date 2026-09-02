@@ -76,6 +76,45 @@ code; the run-1 backlog's P1 item #103 gets its procedure and a tool.
   single writer, never edit the old) are in the footer and in
   `docs/PLAYBOOK.md`. A maintainer tool like `ops-backlog.sh`: not in the
   install set, not charter-referenced.
+- **The six sibling vacuities the audit deferred are now executable pins
+  (F144).** The pin-auditor arm listed six "the literal is present, the
+  behaviour is gone" siblings and logged them as residual: each was still
+  caught by another suite, so no hole was open, but the validator described a
+  contract it was not testing. All six are closed — and closed by RUNNING the
+  shipped code, not by adding six more greps, which is the enumeration
+  F140/F141 argue against. `check_guard_parity` executes
+  `check_bare_name`/`check_owner_name` per CLI (escape: a dead `?*) : ;;` arm
+  before the real arms — `case` takes the first match and `?*` matches
+  everything, so all four rejections stopped while every pinned literal stayed
+  on the page); `check_autobar` runs `autobar_count_changed` against a scratch
+  repo (escape: `-uall` moved into a TRAILING comment, which `shell_code()`
+  does not strip — the same probe covers the `':(exclude).operator'` pathspec,
+  which had NO pin at all, and without it the counter arms on the gate's own
+  sentinel writes); `check_compressor` imports the module and runs scrub
+  through `compress()` (escape: an unanchored regex live plus an anchored copy
+  in `if (false)` — both F120 pins green, F120 restored);
+  `check_decisions_schema` parses the emitted ROW's kind cell (escape:
+  `HANDOFF-MARKX`, which no reader matches, while the correct literal survived
+  in a die message); `check_install_set_parity` requires the manifest loop's
+  BODY to copy (escape: a `do :; done` decoy beside a hardcoded-list loop);
+  and `check_gitignore_parity`'s detection pin keys on the target BEING the
+  live path (escape: retargeting to `"$_gi.v1.bak"`, which is not a `.tmp`, so
+  #102's exclusion let it through — and which inverts the branch, since the
+  backup does not exist until the migration this read triggers has run). Each
+  carries its measured escape as a red python case beside a green control, and
+  each probe asserts the ordinary input still PASSES — rejection probes alone
+  are satisfied by a guard that refuses everything. An unrunnable probe is
+  reported as a failure, never skipped. Writing the install-set pin reproduced
+  the bug one level up: a non-greedy `do…done` regex paired the decoy's head
+  with the real loop's body and reported "all contracts hold" on the mutation
+  it was written to catch (`do`/`done` are bracket-matched now) — the method
+  applies to the pin you are currently writing.
+- **`docs/spec/TAGS.md`'s `spec-concurrent` entry names the parse rule.** The
+  entry described the name convention; two reader populations now depend on
+  it, so it states the FIRST-`__` split as THE rule, both no-valid-parse shapes
+  (double separator, empty half) with their name-level `rm -f` remedy, and the
+  four CLI glob sites whose task-half filter re-imposes the readers' rule on a
+  glob whose `*` spans a `__`.
 
 ## [0.11.5] - 2026-09-01
 

@@ -577,3 +577,55 @@ reasoning, moved.
   enumerated two spellings of "computed" (`+`, backtick) and a call
   expression walked past both (F141) — pin the STRUCTURE (only literal values
   survive string-stripping), not the spellings you have met.
+
+## From the 2026-09-02 backlog closure (F144)
+
+- **Six vacuities of the same shape, closed by executing instead of
+  grepping.** The 0.11.6 audit's pin-auditor arm listed six "literal present,
+  behaviour gone" siblings and deferred them as a validator-MESSAGE gap —
+  each was still caught by another suite, so no hole was open. Closing them
+  one grep at a time is the enumeration F140/F141 argue against, so each was
+  replaced by a probe that runs the shipped code:
+  - `check_guard_parity` runs `check_bare_name`/`check_owner_name` in a child
+    bash. The escape they could not see: a dead `?*) : ;;` arm inserted BEFORE
+    the real arms. `case` takes the FIRST match and `?*` matches every
+    non-empty string, so all four rejections stopped happening while `.*)`,
+    `*__*`, the metacharacter set and their `die`s stayed spelled out on the
+    page.
+  - `check_autobar` runs `autobar_count_changed` against a scratch repo. The
+    escape: `-uall` moved into a TRAILING comment — `shell_code()` strips
+    whole-line comments only, so the literal stayed inside the body while the
+    flag never reached git. The same probe covers the `':(exclude).operator'`
+    pathspec, which had no pin at all: without it the counter sees the gate's
+    own sentinel writes and arms on its own bookkeeping.
+  - `check_compressor` imports the module and runs scrub through `compress()`.
+    The escape: an UNANCHORED regex in the live `.replace()` chain plus a
+    correctly-anchored copy inside `if (false)`. Both F120 literal pins green,
+    F120 itself restored.
+  - `check_decisions_schema` parses the emitted ROW rather than asking whether
+    some printf carries the marker. The escape: `HANDOFF-MARKX`, which no
+    reader matches, while `check_owner_name`'s die message kept the correct
+    literal alive elsewhere in the file.
+  - `check_install_set_parity` requires the manifest loop's BODY to copy. The
+    escape: `for _tool in $_OPS_TOOLS; do :; done` beside a second loop over a
+    hardcoded list. Writing that pin found a second-order version of the same
+    bug in the pin: a non-greedy `(.*?)\n\s*done` paired the DECOY's head with
+    the REAL loop's body, because the decoy's inline `done` sits on its `do`
+    line — the compliant-looking pair satisfied the new check, which reported
+    "all contracts hold" on the mutation it was written to catch. `do`/`done`
+    are matched like brackets now. A pin is a hypothesis until the mutation
+    runs red, and that applies to the pin you just wrote.
+  - `check_gitignore_parity`'s detection pin keys on the target BEING the live
+    path, not on its not being `.tmp`. The escape: retarget detection to
+    `"$_gi.v1.bak"` — not a temp, so it passed — which inverts the branch,
+    because the backup does not exist until the migration this read triggers
+    has already run.
+- **A behaviour probe needs the refuses-everything control.** Rejection probes
+  alone are satisfied by a guard that dies on every input, which would trade
+  one vacuity for another. Every executable pin here asserts the ordinary case
+  passes too, and that control is what caught the under-built fixtures: five
+  good-tree stubs had to grow real behaviour (a counter that sets its output
+  variables, a loop that copies, an exported `compress`, a 4-cell handoff row,
+  guards carrying every arm) before the tree went green. An unrunnable probe
+  is reported as a FAILURE, never skipped — the polarity the F140 lesson
+  requires.

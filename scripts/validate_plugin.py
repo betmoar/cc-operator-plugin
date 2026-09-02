@@ -53,6 +53,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import tempfile
 
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 CHANGELOG_HEADING_RE = re.compile(r"^## \[(\d+\.\d+\.\d+)\]", re.MULTILINE)
@@ -710,14 +711,41 @@ def check_decisions_schema(root, problems):
     # decision as unpresented. Require a printf line that carries the marker,
     # in the comment-stripped view.
     vp = root / "scripts" / "ops-verdict.sh"
-    if vp.is_file() and not re.search(r"printf[^\n]*HANDOFF-MARK",
-                                      shell_code(vp)):
-        problems.append(
-            "scripts/ops-verdict.sh: does not reference HANDOFF-MARK — no "
-            "printf emits the deviation gate's clearing mark; it is in the "
-            "enum but this writer never emits it, so a presented decision "
-            "reads as unpresented forever (F30: the enum AND its consumers "
-            "must agree)")
+    if vp.is_file():
+        _vcode = shell_code(vp)
+        if not re.search(r"printf[^\n]*HANDOFF-MARK", _vcode):
+            problems.append(
+                "scripts/ops-verdict.sh: does not reference HANDOFF-MARK — no "
+                "printf emits the deviation gate's clearing mark; it is in the "
+                "enum but this writer never emits it, so a presented decision "
+                "reads as unpresented forever (F30: the enum AND its consumers "
+                "must agree)")
+        else:
+            # …and the marker must land in the KIND CELL, which is the cell the
+            # readers `case` on (audit F144). "a printf carries the literal" is
+            # weaker than it looks: check_owner_name's die message quotes
+            # HANDOFF-MARK too, so typo-ing the emit to `HANDOFF-MARKX` — after
+            # which every presented decision reads as unpresented forever, the
+            # exact defect F127 was written for — kept this check green
+            # (measured 2026-09-02). Parse the emitted ROW instead: split the
+            # printf's format on `|` and require the third cell to be exactly
+            # the marker the readers match. A typo, a renamed kind, or a marker
+            # that drifts into the wrong cell all fail; reflowing the row's
+            # other cells stays free.
+            _rows = [_m for _m in re.findall(r"printf\s+'([^']*\|[^']*)'", _vcode)
+                     if "HANDOFF-MARK" in _m]
+            _cells = [[_c.strip() for _c in _r.split("|")] for _r in _rows]
+            if not any(len(_c) > 2 and _c[2] == DECISIONS_MARKER_KIND
+                       for _c in _cells):
+                problems.append(
+                    f"scripts/ops-verdict.sh: no printf emits "
+                    f"{DECISIONS_MARKER_KIND!r} as the row's KIND cell (cell 3 "
+                    f"of the `|`-delimited format) — the readers "
+                    f"(lib/partition.sh, statusline.sh) `case` on that cell, so "
+                    f"a marker that is misspelled, renamed, or sitting in "
+                    f"another cell clears nothing and every presented decision "
+                    f"blocks Stop forever. Found kind cells: "
+                    f"{[_c[2] for _c in _cells if len(_c) > 2]} (audit F144)")
 
 
 def check_agents(root, problems):
@@ -1179,6 +1207,85 @@ def check_guard_parity(root, problems):
                     f"five must be refused; an unexpanded shell variable "
                     f"passed as --owner reads as a valid foreign session, "
                     f"strictly worse than not running the command (audit F128)")
+        # EXECUTE both guards (audit F144, the F140 shape applied to the name
+        # guards). Every pin above is a substring test on the body, and the
+        # pin-auditor measured the escape they cannot see: a dead `?*) :` arm
+        # inserted BEFORE the intact `.*) die` arm. `case` takes the FIRST
+        # matching arm and `?*` matches every non-empty string, so all four
+        # rejections stop happening while `.*)`, `*__*`, the metacharacter set
+        # and their `die`s are all still spelled out on the page — "all
+        # contracts hold" (measured 2026-09-02 on ops-task.sh). Behaviour, not
+        # spelling: run the shipped functions in a child bash against one probe
+        # per rule. A dead arm, an early `return`, a wrapping `if false` all
+        # fail here; none of them can fail a substring test.
+        _bb = re.search(r'^check_bare_name\(\)\s*\{.*?^\}', text, re.M | re.S)
+        _ob = re.search(r'^check_owner_name\(\)\s*\{.*?^\}', text, re.M | re.S)
+        if not _bb or not _ob:
+            problems.append(
+                f"scripts/{name}: cannot extract check_bare_name()/"
+                f"check_owner_name() for the executable probe (audit F144) — "
+                f"reshaping either must update this extractor, not silently "
+                f"skip the only pin that tests the guards' EFFECT")
+        else:
+            # Our own die/NL, so the probe tests the guard's arms and not the
+            # rest of the CLI. die's exit code is what "refused" means here.
+            #
+            # ops-verdict.sh factors the `|`/newline arms out into check_cell
+            # and calls it from check_bare_name, so the harness carries that
+            # helper too when the CLI defines one. Carried by SHAPE, not by
+            # name-list: a helper this extractor silently omitted would make
+            # every probe die on `command not found` (rc 127) and the CONTROL
+            # below is what catches that — it fires on any non-zero, so an
+            # incomplete harness is reported rather than read as "refused".
+            _pre = ("die() { exit 9; }\nNL=\"$(printf '\\nx')\"; NL=\"${NL%x}\"\n")
+            _helpers = "".join(
+                _h.group(0) + "\n" for _fn in ("check_cell",)
+                for _h in [re.search(rf'^{_fn}\(\)\s*\{{.*?^\}}', text, re.M | re.S)]
+                if _h)
+            _harness = _pre + _helpers + _bb.group(0) + "\n" + _ob.group(0) + "\n"
+            # (value, must-be-refused, the rule it proves)
+            _bare = (("a/b", "'/' would let a later rm -f escape .operator/"),
+                     (".hidden", "a dotfile sentinel is invisible to the hook's glob"),
+                     ("a|b", "'|' breaks the 4-cell ledger row"),
+                     ("a\nb", "a newline breaks the 4-cell ledger row"),
+                     ("a__b", "'__' is the owner/task separator"))
+            for _v, _why in _bare:
+                _r = subprocess.run(["bash", "-c", _harness + 'check_bare_name t "$1"',
+                                     "_", _v], capture_output=True, text=True)
+                if _r.returncode == 0:
+                    problems.append(
+                        f"scripts/{name}: check_bare_name() ACCEPTS {_v!r} when "
+                        f"executed — {_why}. The pinned arms may all be present "
+                        f"while the guard refuses nothing: a `?*)` arm before "
+                        f"them takes every match first, and no substring test "
+                        f"can see that (audit F144)")
+            for _v, _why in (("a b", "a padded owner is permanently foreign"),
+                             ("$S", "an unexpanded variable reads as a foreign session (#89)"),
+                             ("`x`", "a backtick owner is an unexpanded substitution (#89)"),
+                             ("a'b", "a quote is an unexpanded-variable tell (#89)"),
+                             ('a"b', "a quote is an unexpanded-variable tell (#89)"),
+                             ("a\\b", "a backslash is an unexpanded-variable tell (#89)")):
+                _r = subprocess.run(["bash", "-c", _harness + 'check_owner_name "$1"',
+                                     "_", _v], capture_output=True, text=True)
+                if _r.returncode == 0:
+                    problems.append(
+                        f"scripts/{name}: check_owner_name() ACCEPTS {_v!r} when "
+                        f"executed — {_why}, so the sentinel it names is "
+                        f"permanently unclearable. Presence of the arms is not "
+                        f"their effect (audit F144)")
+            # The controls: a guard that refuses EVERYTHING passes every
+            # rejection probe above while wedging the CLI for real ids. Both
+            # halves, since check_owner_name delegates to check_bare_name.
+            for _fn, _v in (("check_bare_name t", "task-1"),
+                            ("check_owner_name", "b3f1c2d4-5a6b-7c8d")):
+                _r = subprocess.run(["bash", "-c", _harness + _fn + ' "$1"',
+                                     "_", _v], capture_output=True, text=True)
+                if _r.returncode != 0:
+                    problems.append(
+                        f"scripts/{name}: {_fn.split()[0]}() REFUSES the "
+                        f"ordinary name {_v!r} (rc {_r.returncode}) — a guard "
+                        f"that refuses everything passes every rejection test "
+                        f"and makes the CLI unusable (audit F144 control)")
     # the readers' parser (lib/partition.sh since 0.10) must reject what the
     # writers reject, or a hand-written sentinel reads as a valid foreign owner
     # and the gate opens
@@ -1466,6 +1573,63 @@ def check_autobar(root, problems):
                 "`git rev-parse` repo check — process substitution carries no "
                 "exit status, so without it `not a repo` and `clean repo` both "
                 "arrive as zero records and unmeasured reads as clean")
+        # EXECUTE the counter (audit F144, the F140 shape). Every pin above is
+        # a substring test on the body, and shell_code() strips only WHOLE-line
+        # comments — so moving a flag into a trailing comment keeps the literal
+        # in the body while removing it from the command. Measured 2026-09-02:
+        # `status --porcelain -z -- # -uall ':(exclude).operator'` shipped "all
+        # contracts hold" with `-uall` pinned, the pathspec commented out, and
+        # the counter reading the WHOLE tree. Run it against a real repo
+        # instead: N files under one new dir must count N (that is -uall), and
+        # a change under .operator/ must count 0 (that is the pathspec, which
+        # had no pin at all — a counter that sees its own sentinel writes arms
+        # on its own bookkeeping).
+        _fn = re.search(r'^autobar_count_changed\(\)\s*\{.*?^\}', code, re.M | re.S)
+        if not _fn:
+            problems.append(
+                "scripts/lib/autobar.sh: cannot extract autobar_count_changed() "
+                "for the executable probe (audit F144) — reshaping it must "
+                "update this extractor, not silently skip the only pin that "
+                "tests the counter's EFFECT")
+        else:
+            with tempfile.TemporaryDirectory() as _td:
+                _probe = (
+                    'set -e\n'
+                    f'cd "{_td}"\n'
+                    'git init -q . 2>/dev/null\n'
+                    'git config user.email p@t; git config user.name p\n'
+                    'mkdir -p newdir .operator\n'
+                    'printf x > newdir/a; printf x > newdir/b; printf x > newdir/c\n'
+                    'printf x > .operator/ignored\n'
+                    + _fn.group(0) + '\n'
+                    f'autobar_count_changed "{_td}"\n'
+                    'echo "$autobar_paths $autobar_measured"\n')
+                _r = subprocess.run(["bash", "-c", _probe],
+                                    capture_output=True, text=True)
+                _got = (_r.stdout or "").strip().split()
+                if _r.returncode != 0 or len(_got) != 2:
+                    problems.append(
+                        f"scripts/lib/autobar.sh: autobar_count_changed() could "
+                        f"not be executed (rc {_r.returncode}: "
+                        f"{(_r.stderr or _r.stdout or '').strip()[:160]!r}) — the "
+                        f"F144 behaviour probe cannot report, so treat it as a "
+                        f"failure rather than a skip")
+                elif _got[1] != "1":
+                    problems.append(
+                        "scripts/lib/autobar.sh: autobar_count_changed() left "
+                        "autobar_measured=0 on a real git repo — the armer reads "
+                        "unmeasured as 'clean' and never fires (audit F144)")
+                elif _got[0] != "3":
+                    problems.append(
+                        f"scripts/lib/autobar.sh: autobar_count_changed() counted "
+                        f"{_got[0]} for 3 new files under ONE new directory plus "
+                        f"one .operator/ write (expected 3) — either `-uall` is "
+                        f"not reaching git (porcelain collapses the dir to one "
+                        f"record, so the >=2 threshold never trips on the shape "
+                        f"being gated) or the `':(exclude).operator'` pathspec is "
+                        f"not (the counter then arms on its own sentinel writes). "
+                        f"A flag moved into a TRAILING comment keeps every "
+                        f"substring pin green and still fails here (audit F144)")
 
     # (b) the infinite-block guard. Recording a verdict does not un-change the
     # files, so an arm with no session marker re-fires at every Stop forever.
@@ -1696,6 +1860,36 @@ def check_claims(root, problems):
             "parser-weakening laundering path")
 
 
+def _tool_loops(code):
+    """Every `for [_]tool in <words>; do … done` as (head, body) pairs.
+
+    Non-greedy `(.*?)\\n\\s*done` is WRONG here and the reason this helper
+    exists: a decoy `for _tool in $_OPS_TOOLS; do :; done` immediately followed
+    by a real loop over a hardcoded list makes the decoy's head pair with the
+    REAL loop's body, because the decoy's own inline `done` sits on the same
+    line as its `do` and the pattern scans past it to the next line-leading
+    `done`. The compliant-looking pair that falls out satisfies every check
+    (measured 2026-09-02 while writing the F144 pin — it reported "all
+    contracts hold" on the mutation it was written to catch).
+
+    So: walk `do`/`done` word tokens and match them like brackets, which is
+    what bash does. Same house rule as check_compressor's brace-depth pass —
+    when the question is "which body belongs to this head", counting is the
+    only honest answer a regex cannot give.
+    """
+    _WORD = re.compile(r'(?<![\w-])(do|done)(?![\w-])')
+    out = []
+    for _h in re.finditer(r'for\s+_?tool\s+in\s+([^\n;]*?)\s*;?\s*\bdo\b', code):
+        depth, i, end = 1, _h.end(), None
+        for _t in _WORD.finditer(code, i):
+            depth += 1 if _t.group(1) == "do" else -1
+            if depth == 0:
+                end = _t.start()
+                break
+        out.append((_h.group(1), code[i:end] if end is not None else code[i:]))
+    return out
+
+
 def check_install_set_parity(root, problems):
     r"""The .operator/bin install set has ONE declaration (#76 step 3):
     scripts/ops-install-set.sh, sourced by both writers — ops-init.sh (the
@@ -1766,6 +1960,35 @@ def check_install_set_parity(root, problems):
                 f"the variable, or an inline list beside the source line, is "
                 f"the drift coming back with this check green (F30: "
                 f"declared-but-not-applied; audit F130)")
+        # The manifest loop must be the one that COPIES (audit F144). F130
+        # anchored the loop's HEAD, and a head can be satisfied by a decoy: a
+        # `for _tool in $_OPS_TOOLS; do :; done` placed beside a second loop
+        # over a hardcoded list passed every pin while the installer shipped
+        # whatever that literal list named (measured 2026-09-02). Require a
+        # loop whose head matches AND whose body copies — and require it to be
+        # the ONLY iteration over a tool list, so a literal-list loop anywhere
+        # in the writer is reported rather than hidden behind a compliant one.
+        _loops = _tool_loops(code)
+        if _loops:
+            if not any(re.fullmatch(r'\s*\$_OPS_TOOLS\s*', _head)
+                       and re.search(r'\b(cp|install)\b', _body)
+                       for _head, _body in _loops):
+                problems.append(
+                    f"scripts/{name}: no `for tool in $_OPS_TOOLS; do` loop "
+                    f"whose BODY copies (cp/install) — the manifest is iterated "
+                    f"but installs nothing, so an empty-bodied decoy loop can "
+                    f"satisfy every head-anchored pin while a second loop over "
+                    f"a hardcoded list does the real install (audit F144)")
+            for _head, _body in _loops:
+                if not re.fullmatch(r'\s*\$_OPS_TOOLS\s*', _head) \
+                        and re.search(r'\b(cp|install)\b', _body):
+                    problems.append(
+                        f"scripts/{name}: a copy loop iterates {_head.strip()!r} "
+                        f"rather than $_OPS_TOOLS — the install set has ONE "
+                        f"declaration (#76 step 3); a second list beside the "
+                        f"manifest loop is the CR4 drift, and it installs a "
+                        f"different set than the one both writers agreed on "
+                        f"(audit F144)")
         if re.search(r'^_OPS_TOOLS="[^"]+"', code, re.MULTILINE):
             problems.append(
                 f"scripts/{name}: declares its own _OPS_TOOLS literal — the "
@@ -1823,7 +2046,21 @@ def check_gitignore_parity(root, problems):
         # right polarity — a single-quoted or bare target is simply not
         # captured, `any()` over nothing is False, and the pin FIRES. Loud,
         # not vacuous (PR #104 review asked; measured by reading the regex).
-        elif not any(".tmp" not in _target for _target in re.findall(
+        #
+        # `.tmp`-exclusion alone was still satisfiable (audit F144): retarget
+        # detection to `"$_gi.v1.bak"` — not a temp, so it passed — and a v1
+        # file is never migrated, because the backup does not exist until the
+        # migration this read is supposed to trigger has already run. It is
+        # unconditionally absent, so `grep` always fails, `! grep` is always
+        # true, and the branch inverts to "always migrate" on a v2 file
+        # (measured 2026-09-02, "all contracts hold"). Naming DERIVATIVE
+        # suffixes one at a time is the enumeration F140/F141 argue against, so
+        # invert the test: the target must BE the live path — a bare variable
+        # expansion, or a literal ending in `/.gitignore`. Everything derived
+        # from it (`$_gi.v2.tmp`, `$_gi.v1.bak`, any future suffix) is not.
+        elif not any(re.fullmatch(r"\$\{?\w+\}?", _target)
+                     or _target.endswith("/.gitignore")
+                     for _target in re.findall(
                 r"grep\s+-qF\s+(?:\"\$_GI_MARK\"|'" + re.escape(MARK) +
                 r"')\s+\"([^\"]+)\"", text)):
             problems.append(
@@ -2756,6 +2993,81 @@ def check_compressor(root, problems):
             r"`\x1b\[` — without the ESC anchor it eats bracketed text that "
             "was never an escape sequence, destroying output instead of "
             "cleaning it (audit F120)")
+    # EXECUTE scrub (audit F144). Both pins above are substring tests, and the
+    # anchored literal can sit somewhere that never runs: an unanchored regex
+    # in the live `.replace()` chain plus a correctly-anchored copy inside an
+    # `if (false)` block passed both while every `]`-bearing output was
+    # destroyed again — F120 restored, validator green (measured 2026-09-02).
+    # Import the shipped module and run the real thing on the real defect
+    # input. `import`, not a subprocess of the hook: scrub is not exported, so
+    # drive it through compress()'s Bash path with elision disabled, which is
+    # how the hook reaches it too.
+    # Both inputs must clear SCRUB_MIN (scrub runs at all) and the ANSI one
+    # must shrink past MIN_SHRINK (compress keeps the result rather than
+    # returning null for an unprofitable rewrite) — so the colour codes are
+    # repeated, not decorative. `identity` is the F120 assertion and takes the
+    # null path legitimately: a plain input scrub does not change cannot shrink,
+    # so compress returns null and the fallback compares the input to itself.
+    # That is the correct reading of "lossless", and it fails loudly the moment
+    # scrub starts eating `]`.
+    _probe = r'''
+import {compress} from %s;
+// Lines must be DISTINCT: scrub deliberately collapses a run of >=4 identical
+// lines to `[repeated N×]`, so a `.repeat()` input measures that feature and
+// not the ANSI regexes (it read as a lossless-tier failure while the tier was
+// fine — the meter check this probe owes itself).
+const N = 60;
+const plain = Array.from({length: N}, (_, i) =>
+  `step ${i} [ok] middle [FAIL] after`).join("\n");
+const ansi = Array.from({length: N}, (_, i) =>
+  `\x1b[31mstep ${i}\x1b[0m [ok] \x1b[32mmid\x1b[0m [FAIL]`).join("\n");
+const run = (t) => {
+  const out = compress({tool_name: "Bash", tool_response: {stdout: t}},
+                       {env: {CC_OPERATOR_COMPRESS_DEDUP: "0"}, cwd: %s});
+  return out === null ? t : out.hookSpecificOutput.updatedToolOutput.stdout;
+};
+const a = run(plain), b = run(ansi);
+console.log(JSON.stringify({identity: a === plain, stripped: b.indexOf("\x1b") === -1,
+                            kept: b.includes("[ok]") && b.includes("[FAIL]")}));
+''' % (json.dumps(str(comp.resolve())), json.dumps(str(root.resolve())))
+    _r = subprocess.run(["node", "--input-type=module", "-e", _probe],
+                        capture_output=True, text=True)
+    if _r.returncode != 0:
+        problems.append(
+            f"ops-compress.mjs: scrub could not be executed through compress() "
+            f"(node rc {_r.returncode}: "
+            f"{(_r.stderr or '').strip().splitlines()[-1:] or ['']!r}) — the "
+            f"F144 behaviour probe cannot report, so treat it as a failure "
+            f"rather than a skip")
+    else:
+        try:
+            _v = json.loads(_r.stdout.strip().splitlines()[-1])
+        except Exception:
+            _v = None
+        if _v is None:
+            problems.append(
+                "ops-compress.mjs: the scrub behaviour probe returned no "
+                "verdict — treat as a failure, not a skip (audit F144)")
+        else:
+            if not _v["identity"]:
+                problems.append(
+                    "ops-compress.mjs: scrub is NOT lossless on ANSI-free text "
+                    "— a `]`-bearing plain-text output came back changed. This "
+                    "is F120 itself: an unanchored regex destroys output, and "
+                    "an anchored copy parked in a dead branch keeps both "
+                    "literal pins above green while it does (audit F144)")
+            if not _v["stripped"]:
+                problems.append(
+                    "ops-compress.mjs: scrub left a raw ESC byte in the output "
+                    "— the regexes are anchored but not reached (a dead branch, "
+                    "a reordered chain), so the scrub tier does nothing "
+                    "(audit F144)")
+            if not _v["kept"]:
+                problems.append(
+                    "ops-compress.mjs: scrub dropped bracketed text (`[ok]` / "
+                    "`[FAIL]`) while stripping real ANSI — the CSI/OSC patterns "
+                    "are over-matching, which is the F120 destroyer with the "
+                    "anchors merely present somewhere in the file (audit F144)")
     # Read the SALVAGE_RE literal, not the file: `not ok` also appears in the
     # comment explaining why it must be there, so a prose-level `in src` check
     # passes while the regex itself has lost the alternative. Proven: deleting
