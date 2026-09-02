@@ -41,8 +41,40 @@ written for and GREEN against the restored tree.
   SessionStart or the Stop hook already printed, with `git rev-parse
   --show-toplevel` as the fallback when neither is in context.
 
+- **Review of this release (PR #104) found the malformed remedy printing the
+  wrong path.** The MALFORMED paths travelled as a `"; "`-joined string and the
+  Stop hook split on the same literal, so a project whose path itself contained
+  `"; "` was cut there: `rm -f '/work/proj'` and `rm -f 'x/.operator/pending/…'`,
+  two confident lines, neither the sentinel, one aimed at whatever sits at the
+  cut (measured). The carrier is now a bash array; the two-sentinel case on a
+  `"; "` path runs 4 red on the old carrier. A FOREIGN-owned malformed name —
+  the "blocks where the old code reported foreign" widening the prose claimed
+  but nothing pinned — now has its own case (2 red with the bucket removed).
+- **`commands/handoff.md`'s grant did not cover the path it prescribed** (PR
+  #104 review). The body said ABSOLUTE; `Bash(.operator/bin/ops-verdict.sh:*)`
+  is a literal prefix no absolute invocation starts with, so the model hit a
+  permission prompt. `Bash(bash:*)` is added and the body prescribes
+  `bash '<absolute path>' --mark-handoff …`. The fallback for a session with
+  no printed path names the walk-up rule and non-git (`@no-vcs`) projects
+  rather than a bare `git rev-parse`. The #100 pin now matches the relative
+  CLI in ANY markup — a fenced copy of the old command passed the
+  backtick-anchored form.
+- **The compressor's byte helpers are unit-swept** (PR #104 review): a 2-byte
+  width joins the elide sweep, and `headBytes`/`tailBytes` are exported so
+  every `n` in `[-2, len+2]` is checked for prefix/suffix, bound, ≤3-byte
+  back-off and no U+FFFD — through `compress()` those guards were unreachable
+  at default sizes. 29 red on the pre-#101 helpers.
+
 ### Changed
 
+- **The atomic gitignore write is pinned on its own, and the CONFIRMATION pin
+  is unconditional** (PR #104 review). The confirmation pin was gated on
+  `".v2.tmp" in text`, so removing the temp entirely — a non-atomic
+  `cat > "$_gi"`, the pre-0.11.4 F119 shape — removed the check with it. It
+  still fired only because the user-facing notice mentioned the temp; with that
+  one prose line reworded the validator reported "all contracts hold" over a
+  non-atomic write (measured, two-place mutation). A new pin keys on the
+  `mv -f "$_gi.v2.tmp" "$_gi"` swap itself; both shapes have a python case.
 - **`check_gitignore_parity` tells the DETECTION grep from the CONFIRMATION
   grep (#102).** Both writers grep for the v2 marker, and since the atomic
   rewrite the hook does it twice — once on the live file to decide "is this

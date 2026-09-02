@@ -1,7 +1,7 @@
 ---
 description: Run when ending an operated engagement or session — to produce the structured operator→human handoff before you stop or hand off.
 argument-hint: []
-allowed-tools: Bash(git:*), Bash(.operator/bin/ops-verdict.sh:*), Read, Write
+allowed-tools: Bash(git:*), Bash(bash:*), Bash(.operator/bin/ops-verdict.sh:*), Read, Write
 ---
 
 Produce the six-section operator→human handoff. Source every claim from the
@@ -30,12 +30,25 @@ history for that shape (#94/#95, audit F102) is the model then reporting a
 PRESENT gate as absent. Use the ABSOLUTE, single-quoted CLI path that
 SessionStart already printed in this session's context ("this session's id
 is …"), or the one the Stop hook named when it last blocked. If neither is in
-context, resolve it yourself — `git rev-parse --show-toplevel` — and build the
-absolute path from that; the ledgers you read are under the same `.operator/`.
+context, resolve it yourself: walk UP from your cwd to the nearest ancestor
+holding `.operator/` — that is the project root the gate CLIs and the Stop hook
+resolve to (they stop at a `.git` boundary and at `/`). In a git checkout
+`git rev-parse --show-toplevel` usually names it, but it is not the rule: a
+project need not be a git repository (the ledger stamps `@no-vcs` for those),
+and `.operator/` may sit above a nested repo's toplevel. The ledgers you read
+are under the same `.operator/`, so the directory you found them in is the
+answer.
 
 Presenting this handoff clears the deviation gate: after writing the six
 sections, run that absolute path with
-`ops-verdict.sh --mark-handoff --owner <session-id>`. That stamps a
+`ops-verdict.sh --mark-handoff --owner <session-id>`, invoked as
+`bash '<absolute path>' --mark-handoff --owner <session-id>`. The `bash`
+prefix is not decoration: this command's `allowed-tools` grants
+`Bash(bash:*)`, which matches any absolute path, while the relative
+`.operator/bin/…` grant beside it matches ONLY the bare relative form and
+cannot be written absolute (the prefix is machine-specific). Without
+`bash` in front, an absolute invocation falls outside every grant and you hit
+a permission prompt this frontmatter exists to avoid. That stamps a
 HANDOFF-MARK in DECISIONS.md so the Stop hook stops blocking on this session's
 DEVIATION lines (any you logged with a leading `[sid:<session-id>]` tag in the
 what-cell). An untagged DEVIATION is unowned and blocks every session — tag the

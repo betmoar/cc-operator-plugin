@@ -179,10 +179,6 @@ fi
 scan_pending "$opdir" "$session"
 pending="$MINE_IDS"
 foreign="$FOREIGN_DESC"
-# `mf_paths`, not `malformed`: shellcheck 0.10 reads a lowercase twin of a
-# global assigned in a sourced file as a probable misspelling (SC2153), and
-# the CI gate is pinned at that version.
-mf_paths="$MALFORMED_PATHS"
 
 # Defined BEFORE its first use: bash resolves a function at call time, so a
 # call above the definition expands to the empty string and the message ships
@@ -278,19 +274,23 @@ scan_deviations "$opdir/DECISIONS.md" "$session"
 # once they work out that nothing else clears it. Path is shq'd for the same
 # reason verdict_cmd_for's is — absolute means long enough to contain a space.
 # Blocking, matching the unowned default: our CLIs cannot write this shape.
-if [ -n "$mf_paths" ]; then
+#
+# One element per path, straight from the lib's ARRAY. The first cut carried
+# the paths as a "; "-joined string and split it here, so a project path that
+# itself contained "; " was cut at the wrong place and BOTH halves were printed
+# as `rm -f` targets — a destructive command aimed at a file that was not the
+# sentinel (PR #104 review, measured). Quoting after a split cannot repair a
+# split that already lost the boundary; the carrier has to be lossless.
+# Guarded on the count: on bash 3.2 under `set -u`, `"${arr[@]}"` on an empty
+# array is "unbound variable", and macOS ships 3.2.
+if [ "$MALFORMED" -gt 0 ]; then
   echo "operator: $MALFORMED pending sentinel(s) with a MALFORMED name — a second '__' makes the task id unaddressable, so no ops-verdict.sh invocation can clear them (a task id containing '__' is refused by the CLI's own guard). No writer of ours produces this shape; it was planted or hand-made. Inspect, then remove:" >&2
-  _mfrest="$mf_paths"
-  while [ -n "$_mfrest" ]; do
-    case "$_mfrest" in
-      *"; "*) _mfone="${_mfrest%%"; "*}"; _mfrest="${_mfrest#*"; "}" ;;
-      *)      _mfone="$_mfrest"; _mfrest="" ;;
-    esac
-    [ -n "$_mfone" ] && echo "operator:   rm -f $(shq "$_mfone")" >&2
+  for _mfone in "${MALFORMED_LIST[@]}"; do
+    echo "operator:   rm -f $(shq "$_mfone")" >&2
   done
 fi
 
-if [ -n "$pending" ] || [ -n "$mf_paths" ]; then
+if [ -n "$pending" ] || [ "$MALFORMED" -gt 0 ]; then
   verdict_cmd="$(verdict_cmd_for)"
   # The auto-armed sentinel needs its own sentence, or the operator reads
   # "pending verdict: autobar" as a task it never opened and has no way to

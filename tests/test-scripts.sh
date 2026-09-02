@@ -3769,11 +3769,13 @@ check "handoff.md's allowed-tools grants the ops-verdict.sh it prescribes" \
 # machine-specific and unknown at authoring time), so the relative pattern legitimately stays in the
 # frontmatter. A whole-file grep would either fail on that line forever or be neutered to match nothing.
 HBODY="$(awk 'BEGIN{n=0} /^---$/{n++; next} n>=2' "$HCMD")"
-# A backtick immediately followed by `.operator/bin/ops-` is a PRESCRIBED COMMAND — the exact shape that
-# shipped. Naming the relative form as the anti-pattern (which the new prose does) is not a prescription and
+# ANY `.operator/bin/ops-<cli>` in the body is a PRESCRIBED COMMAND, whatever the markup around it. The
+# first cut keyed on a backtick immediately before it, and the same relative command inside a ``` fence
+# passed all three pins (PR #104 review, measured) — the markup is not the claim, the CLI name behind the
+# slash is. Naming the relative form as the anti-pattern (which the prose does) is not a prescription and
 # does not match: that mention is written `.operator/bin/...`, with no CLI name behind the slash.
-check "handoff.md's body prescribes no relative .operator/bin/ CLI invocation (#100)" \
-  "$(printf '%s' "$HBODY" | grep -q '`\.operator/bin/ops-' && echo 1 || echo 0)"
+check "handoff.md's body prescribes no relative .operator/bin/ CLI invocation, in ANY markup (#100)" \
+  "$(printf '%s' "$HBODY" | grep -q '\.operator/bin/ops-' && echo 1 || echo 0)"
 # …and the positive half: it must actively route the model to the absolute path SessionStart/the Stop hook
 # already printed. Deleting the prescription without supplying the replacement leaves the model with no path
 # at all, which is a worse failure than the relative one.
@@ -3787,6 +3789,21 @@ check "handoff.md tells the model to use the ABSOLUTE CLI path (#100)" \
 # appears nowhere in the old text, so this fires.
 check "handoff.md gives a way to RESOLVE the absolute path when none was printed (#100)" \
   "$(printf '%s' "$HBODY" | grep -q 'rev-parse --show-toplevel' && echo 0 || echo 1)"
+# The fallback must not be git-only: the gate CLIs support non-git projects (`@no-vcs` in the stamp) and
+# resolve `.operator/` by walking UP, so a fallback that is ONE git command errors there with nothing else
+# offered, and names the wrong root when `.operator/` sits above a nested repo (PR #104 review).
+check "handoff.md's fallback names the walk-up rule, not only a git command (#100)" \
+  "$(printf '%s' "$HBODY" | grep -qi 'walk UP' && printf '%s' "$HBODY" | grep -q 'no-vcs' && echo 0 || echo 1)"
+# THE GRANT MUST COVER THE PRESCRIPTION (the start.md rule, applied here). The body now prescribes an
+# ABSOLUTE path, and `Bash(.operator/bin/ops-verdict.sh:*)` is a literal prefix match on the command
+# string — an absolute invocation does not start with it, so the model hit a permission prompt the
+# frontmatter exists to avoid (PR #104 review). The grant that CAN cover a machine-specific path is
+# `Bash(bash:*)` — the prefix is the interpreter, the path is an argument — which is exactly why start.md
+# uses it. Both halves: the grant is present, AND the body tells the model to invoke through `bash`.
+check "handoff.md grants Bash(bash:*) so the ABSOLUTE invocation it prescribes is covered (#100)" \
+  "$(grep -q 'allowed-tools:.*Bash(bash:\*)' "$HCMD" && echo 0 || echo 1)"
+check "handoff.md's body prescribes the bash-prefixed absolute form the grant matches (#100)" \
+  "$(printf '%s' "$HBODY" | grep -qF "bash '<absolute path>' --mark-handoff" && echo 0 || echo 1)"
 # The charter is the source of the section list; if OPERATOR.md's HANDOFF section lost a name the command would be
 # teaching a shape the charter no longer defines (the HANDOUT_PACKET_SPINE lesson: parity passes when the ORIGINAL
 # is what lost the field, so assert against the charter directly).
@@ -4394,6 +4411,54 @@ F118SE="$(cat "$F118SERR")"; rm -f "$F118SJ" "$F118SERR"
 check "F118 a spaced project path still blocks" "$([ "$F118SRC" -eq 2 ] && echo 0 || echo 1)"
 check "F118 …and its rm -f path is single-quoted whole" \
   "$(printf '%s' "$F118SE" | grep -qF "rm -f '$F118S/.operator/pending/SESS-A__B__C'" && echo 0 || echo 1)"
+
+# A path containing the OLD carrier's delimiter, with TWO malformed sentinels. The first cut joined the
+# paths with "; " and the hook split on the same literal, so `/…/proj; x/` was cut at the "; " inside the
+# PATH: the message printed `rm -f '/…/proj'` and `rm -f 'x/.operator/pending/A__B__C'` — two confident
+# lines, neither the sentinel, one aimed at whatever sits at the cut (PR #104 review, measured). Quoting
+# after the split cannot repair it; the carrier is now a bash array. Two sentinels because the single-entry
+# case cannot see a broken multi-entry walk at all: the multi-entry path was unexercised, and a mutation
+# collapsing the loop into one combined `rm -f 'a; b'` line passed every case in this file (measured).
+F118M="$(newproj)/proj; x"; mkdir -p "$F118M"; ( cd "$F118M" && bash "$INIT" >/dev/null 2>&1 )
+: > "$F118M/.operator/pending/SESS-A__B__C"
+: > "$F118M/.operator/pending/SESS-A__D__E"
+F118MJ="$(mktemp)"; sed "s|<tmp>|$F118M|" "$FIXTURES/stop-session-a.json" > "$F118MJ"
+F118MERR="$(mktemp)"; "$BASH_ABS" "$HOOK" < "$F118MJ" 2>"$F118MERR" >/dev/null; F118MRC=$?
+F118ME="$(cat "$F118MERR")"; rm -f "$F118MJ" "$F118MERR"
+check "F118 a project path containing '; ' still blocks with two malformed sentinels" \
+  "$([ "$F118MRC" -eq 2 ] && echo 0 || echo 1)"
+check "F118 …and EACH rm -f line names one whole sentinel path, the '; ' inside it intact" \
+  "$(printf '%s' "$F118ME" | grep -qF "rm -f '$F118M/.operator/pending/SESS-A__B__C'" \
+     && printf '%s' "$F118ME" | grep -qF "rm -f '$F118M/.operator/pending/SESS-A__D__E'" && echo 0 || echo 1)"
+# Exactly two rm -f lines: a split at the path's "; " yields four (two per sentinel), a collapsed loop
+# yields one. Counting is what distinguishes a lossless carrier from either failure.
+check "F118 …and there are exactly as many rm -f lines as malformed sentinels" \
+  "$([ "$(printf '%s\n' "$F118ME" | grep -c "^operator:   rm -f '")" -eq 2 ] && echo 0 || echo 1)"
+# Nothing printed as an rm -f target may be anything BUT a sentinel path. The old defect's tell was a line
+# naming the project directory itself (the prefix before the "; ") — a target that exists and is not ours.
+check "F118 …and no rm -f line names the project directory (the pre-'; ' prefix)" \
+  "$(printf '%s' "$F118ME" | grep -qF "rm -f '$(dirname "$F118M")/proj'" && echo 1 || echo 0)"
+# Every printed remedy is runnable and clears exactly its own sentinel, then the gate reopens.
+eval "$(printf '%s\n' "$F118ME" | grep -o "rm -f '[^']*'" | tr '\n' ';')"
+check "F118 …and running every printed remedy clears both and reopens the gate" \
+  "$([ ! -e "$F118M/.operator/pending/SESS-A__B__C" ] && [ ! -e "$F118M/.operator/pending/SESS-A__D__E" ] \
+     && { printf '{"session_id":"SESS-A","cwd":"%s"}' "$F118M" | "$BASH_ABS" "$HOOK" >/dev/null 2>&1; [ $? -eq 0 ]; } \
+     && echo 0 || echo 1)"
+
+# A FOREIGN-owned malformed name. The comments above call this the deliberate widening — "BLOCKS where the
+# old code merely reported it as foreign" — but every sentinel in this block so far was prefixed with the
+# stopping session's own id, so nothing pinned the widening itself (PR #104 review). Owner `SESS-Z` parses
+# clean through the reject-set, so pre-#99 it landed in FOREIGN (report-only, rc 0). Now: MALFORMED, rc 2,
+# and it must NOT appear in the foreign list — a name in both buckets would be counted twice by the bar.
+F118F="$(newproj)"; ( cd "$F118F" && bash "$INIT" >/dev/null 2>&1 )
+: > "$F118F/.operator/pending/SESS-Z__B__C"
+run_hook stop-session-a.json "$F118F"
+check "F118 a FOREIGN-owned malformed name BLOCKS (the deliberate widening over report-only)" \
+  "$([ "$HRC" -eq 2 ] && printf '%s' "$HERR" | grep -q 'MALFORMED' && echo 0 || echo 1)"
+check "F118 …and is NOT also reported as a foreign pending verdict" \
+  "$(printf '%s' "$HERR" | grep -q 'owned by another session' && echo 1 || echo 0)"
+check "F118 …and its rm -f names the real path" \
+  "$(printf '%s' "$HERR" | grep -qF "rm -f '$F118F/.operator/pending/SESS-Z__B__C'" && echo 0 || echo 1)"
 
 # CONTROLS. The bucket must not swallow the two shapes that are already handled correctly, or the fix
 # trades F118 for a regression in the cases the gate exists for.

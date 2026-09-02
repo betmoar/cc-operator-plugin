@@ -263,11 +263,22 @@ def make_good_tree(root):
           "    _gi_backup_failed=1\n"
           "  elif ! cp \"$_gi\" \"$_gi.v1.bak\" 2>/dev/null; then\n"
           "    _gi_backup_failed=1\n"
-          "  elif cat > \"$_gi\" 2>/dev/null <<'EOF'\n" + gitignore_v2 + "EOF\n"
+          # ATOMIC, like the real hook: heredoc into the temp, marker-confirmed,
+          # then a same-dir `mv -f`. The stub used to write straight onto `$_gi`
+          # and the validator excused it, because the CONFIRMATION pin was gated
+          # on `".v2.tmp" in text` — the exact vacuity PR #104's review found.
+          # With the atomic pin unconditional, a good tree must BE atomic.
+          "  elif cat > \"$_gi.v2.tmp\" 2>/dev/null <<'EOF'\n" + gitignore_v2 + "EOF\n"
           # The THIRD state: backup written, overwrite failed. Two flags cannot
           # express three outcomes, and the missing one reported nothing at all.
           "  then\n"
-          "    _gi_migrated=1\n"
+          "    if grep -qF '# cc-operator gitignore v2 (allowlist)' \"$_gi.v2.tmp\" 2>/dev/null \\\n"
+          "       && mv -f \"$_gi.v2.tmp\" \"$_gi\" 2>/dev/null; then\n"
+          "      _gi_migrated=1\n"
+          "    else\n"
+          "      rm -f \"$_gi.v2.tmp\" 2>/dev/null\n"
+          "      _gi_write_failed=1\n"
+          "    fi\n"
           "  else\n"
           "    _gi_write_failed=1\n"
           "  fi\nfi\n"
@@ -2589,6 +2600,59 @@ class GitignoreParityTest(unittest.TestCase):
         probs = self._probs()
         self.assertTrue(any("confirmed by grepping the marker in the `.v2.tmp`" in p
                             for p in probs), probs)
+        write(self.dir / "scripts" / "ops-sessionstart-hook.sh", self._real_ssh)
+        self.assertEqual(self._probs(), [])
+
+    def _non_atomic_write(self, reword_notice):
+        # The two-place mutation from the PR #104 review: drop the temp file
+        # ENTIRELY (heredoc straight onto the live path — the pre-0.11.4 F119
+        # shape), keeping the write-failed flag reachable so the third-state
+        # pins stay satisfied. `reword_notice` additionally removes the ONE
+        # remaining mention of `.gitignore.v2.tmp`, which lives in user-facing
+        # prose, not code.
+        src = self._real_ssh
+        start = src.index('  elif [ -L "$_gi.v2.tmp" ]')
+        end = src.index('    _gi_write_failed=1\n  fi\n', start) + len('    _gi_write_failed=1\n  fi\n')
+        block = src[start:end]
+        heredoc = block[block.index("<<'EOF'"):block.index("EOF\n  then") + 4]
+        mut = ('  elif cat > "$_gi" 2>/dev/null ' + heredoc +
+               '\n  then\n    _gi_migrated=1\n  else\n    _gi_write_failed=1\n  fi\n')
+        src = src[:start] + mut + src[end:]
+        if reword_notice:
+            src = src.replace(
+                "or something that is not a regular file at .operator/.gitignore.v2.tmp)",
+                "or something that is not a regular file at .operator/.gitignore)")
+            self.assertNotIn(".v2.tmp", src, "the mutation must leave NO trace of the temp")
+        return src
+
+    def test_a_non_atomic_write_fires_even_with_the_notice_reworded(self):
+        # Measured on the 0.11.5 tree (PR #104 review): with the temp removed
+        # from the CODE the confirmation pin still fired — but only because the
+        # notice text mentioned `.gitignore.v2.tmp` and the pin was gated on
+        # `".v2.tmp" in text`. Rewording that one prose line made the validator
+        # report "all contracts hold" over a non-atomic write. The atomic pin
+        # keys on the `mv -f` itself, so it fires on both shapes.
+        for reword in (False, True):
+            with self.subTest(notice_reworded=reword):
+                write(self.dir / "scripts" / "ops-sessionstart-hook.sh",
+                      self._non_atomic_write(reword))
+                probs = self._probs()
+                self.assertTrue(any("not ATOMIC" in p for p in probs), probs)
+                # …and the confirmation pin is UNCONDITIONAL now: it fires too.
+                self.assertTrue(any("confirmed by grepping the marker in the `.v2.tmp`" in p
+                                    for p in probs), probs)
+        write(self.dir / "scripts" / "ops-sessionstart-hook.sh", self._real_ssh)
+        self.assertEqual(self._probs(), [])
+
+    def test_the_atomic_pin_is_not_satisfied_by_a_non_temp_mv(self):
+        # Control on the pin's shape: an `mv -f` from somewhere ELSE onto the
+        # live path is not the same-dir temp swap. The pin must read the temp
+        # name, not just "an mv exists".
+        src = self._real_ssh.replace('mv -f "$_gi.v2.tmp" "$_gi"', 'mv -f "$_gi.new" "$_gi"', 1)
+        self.assertNotEqual(src, self._real_ssh, "mv anchor moved")
+        write(self.dir / "scripts" / "ops-sessionstart-hook.sh", src)
+        probs = self._probs()
+        self.assertTrue(any("not ATOMIC" in p for p in probs), probs)
         write(self.dir / "scripts" / "ops-sessionstart-hook.sh", self._real_ssh)
         self.assertEqual(self._probs(), [])
 

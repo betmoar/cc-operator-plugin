@@ -16,7 +16,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 // undefined. fileURLToPath has no floor.
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MOD = pathToFileURL(path.join(ROOT, "scripts", "ops-compress.mjs")).href;
-const { compress, DEFAULTS } = await import(MOD);
+const { compress, DEFAULTS, headBytes, tailBytes } = await import(MOD);
 
 let pass = 0, fail = 0;
 const ok = (cond, msg) => {
@@ -568,7 +568,10 @@ console.log("-- Case: F123 elide never emits U+FFFD at the head/tail byte cut (#
   //      offset stops exercising the boundary the first time a default moves.
   // Distinct line prefixes fix (1); sweeping four byte phases and asserting
   // that at least one lands mid-sequence fixes (2).
-  for (const [label, ch] of [["3-byte (U+20AC)", "€"], ["4-byte astral (U+1D538)", "\u{1d538}"]]) {
+  // All three multibyte widths. The first cut swept 3- and 4-byte only; a
+  // 2-byte sequence has ONE continuation byte, so the back-off loop runs at
+  // most once there — a different path through the same guard (PR #104 review).
+  for (const [label, ch] of [["2-byte (U+00E9)", "\u00e9"], ["3-byte (U+20AC)", "€"], ["4-byte astral (U+1D538)", "\u{1d538}"]]) {
     let sawMidHead = 0, sawMidTail = 0;
     for (const pad of [0, 1, 2, 3]) {
       // Padded at BOTH ends. A leading pad shifts the HEAD cut only: the tail
@@ -622,6 +625,48 @@ console.log("-- Case: F123 elide never emits U+FFFD at the head/tail byte cut (#
     ok(sawMidTail > 0, `${label}: at least one pad puts the TAIL_BYTES start inside a sequence`);
   }
 
+}
+
+// ── F123 unit sweep: the helpers' guards, unreachable through compress() ─────
+console.log("-- Case: F123 headBytes/tailBytes hold their bound and their guards at every offset (#101)");
+{
+  // Through compress() every tier-2 input is longer than HEAD_BYTES+TAIL_BYTES,
+  // so `n >= b.length`, `n === 0`, `n < 0` and the prefix/suffix property at
+  // EVERY byte offset never ran under the suite (PR #104 review). Direct sweep:
+  // for each width and every n from -2 to len+2, the result must (a) be a true
+  // prefix/suffix of the input, (b) fit within n bytes, (c) carry no U+FFFD,
+  // and (d) drop at most 3 bytes below n — the "backs off at most 3" claim.
+  const widths = [["1-byte", "ab"], ["2-byte", "\u00e9\u00e8"], ["3-byte", "€¥"], ["4-byte", "\u{1d538}\u{1f600}"], ["mixed", "a\u00e9€\u{1d538}z"]];
+  for (const [label, unit] of widths) {
+    const s = unit.repeat(5);
+    const b = Buffer.from(s, "utf8");
+    let allOk = true, detail = "";
+    for (let n = -2; n <= b.length + 2; n++) {
+      const h = headBytes(s, n), tl = tailBytes(s, n);
+      const hb = Buffer.byteLength(h, "utf8"), tb = Buffer.byteLength(tl, "utf8");
+      const bound = Math.max(0, Math.min(n, b.length));
+      const checks = [
+        [s.startsWith(h), "head not a prefix"],
+        [s.endsWith(tl), "tail not a suffix"],
+        [hb <= bound, `head ${hb}B exceeds bound ${bound}`],
+        [tb <= bound, `tail ${tb}B exceeds bound ${bound}`],
+        [bound - hb <= 3, `head backed off ${bound - hb}B (>3)`],
+        [bound - tb <= 3, `tail backed off ${bound - tb}B (>3)`],
+        [!h.includes("\ufffd") && !tl.includes("\ufffd"), "U+FFFD emitted"],
+        [n < b.length || (h === s && tl === s), "n >= length must return the whole string"],
+        [n > 0 || (h === "" && tl === ""), "n <= 0 must return the empty string"],
+      ];
+      for (const [c, why] of checks) if (!c) { allOk = false; detail = detail || `n=${n}: ${why}`; }
+    }
+    ok(allOk, `${label}: every n in [-2, len+2] holds prefix/suffix, bound, ≤3 back-off, no U+FFFD${detail ? " — " + detail : ""}`);
+  }
+  // Vacuity guard: the sweep must actually land INSIDE sequences, or the
+  // back-off never ran. Count offsets where the raw byte at n is a
+  // continuation byte for the 2-byte input specifically.
+  const b2 = Buffer.from("\u00e9".repeat(5), "utf8");
+  let mid = 0;
+  for (let n = 1; n < b2.length; n++) if ((b2[n] & 0xc0) === 0x80) mid++;
+  ok(mid === 5, `2-byte: the sweep crosses ${mid} mid-sequence offsets (expected 5 — the defect is reached)`);
 }
 
 fs.rmSync(TMP, { recursive: true, force: true });

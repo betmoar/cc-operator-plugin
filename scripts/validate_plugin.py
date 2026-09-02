@@ -1730,8 +1730,12 @@ def check_gitignore_parity(root, problems):
         # The TARGET is the asymmetry a non-vacuous pin can key on: detection
         # reads the live path, confirmation reads the temp. Requiring at least
         # one marker grep against a NON-temp target pins the detection read
-        # specifically, and stays spelling-agnostic about which path variable
-        # each writer uses.
+        # specifically, and stays agnostic about which path VARIABLE each
+        # writer uses. It is NOT agnostic about quoting: the regex captures a
+        # double-quoted target only, which both writers use today. That is the
+        # right polarity — a single-quoted or bare target is simply not
+        # captured, `any()` over nothing is False, and the pin FIRES. Loud,
+        # not vacuous (PR #104 review asked; measured by reading the regex).
         elif not any(".tmp" not in _target for _target in re.findall(
                 r"grep\s+-qF\s+(?:\"\$_GI_MARK\"|'" + re.escape(MARK) +
                 r"')\s+\"([^\"]+)\"", text)):
@@ -1831,13 +1835,35 @@ def check_gitignore_parity(root, problems):
                     "but never REPORTED — a flag nothing reads is the silence "
                     "this state was found in. Setting it and telling the "
                     "session about it are two claims")
+        # THE WRITE IS ATOMIC, pinned on its own (PR #104 review). The
+        # confirmation pin below used to be gated on `".v2.tmp" in text`, so a
+        # mutation that removed the temp ENTIRELY — `cat > "$_gi"` straight
+        # onto the live file, the pre-0.11.4 F119 shape — removed the thing
+        # being checked and the check with it. It still fired, but only because
+        # the user-facing NOTICE happened to mention `.gitignore.v2.tmp`; with
+        # that one prose line reworded too, the validator reported "all
+        # contracts hold" over a non-atomic write (measured, two-place
+        # mutation). A pin whose trigger is a substring of the code it guards
+        # is one edit from vacuous. This one keys on the mechanism itself: the
+        # same-dir `mv -f` from the temp onto the live path is what makes the
+        # live file always either the intact v1 or the complete v2.
+        if not re.search(r'mv\s+-f\s+"\$_gi\.v2\.tmp"\s+"\$_gi"', text):
+            problems.append(
+                "scripts/ops-sessionstart-hook.sh: the v2 gitignore write is "
+                "not ATOMIC — no `mv -f \"$_gi.v2.tmp\" \"$_gi\"` swaps a complete "
+                "temp onto the live path. Writing the heredoc straight onto "
+                ".gitignore means a `cat` that dies mid-write (ENOSPC, EIO) "
+                "leaves a truncated allowlist whose marker makes every LATER "
+                "session skip the migration, and the next retry copies THAT "
+                "over the good .v1.bak (F119; the 0.11.4 fix)")
         # …and the other half of #102's asymmetry: the CONFIRMATION grep must
         # keep probing the TEMP. F119 made it the completeness probe (`[ -s ]`
         # was true for a partial write), and the atomic rewrite made the temp
         # the thing there is to probe. Pinned by target for the same reason the
         # detection pin is: the two greps carry identical text and only their
         # argument tells them apart, so one pattern cannot stand for both.
-        if ".v2.tmp" in text and not re.search(
+        # UNCONDITIONAL — the `".v2.tmp" in text` gate is gone (see above).
+        if not re.search(
                 r"grep\s+-qF\s+'" + re.escape(MARK) + r"'\s+\"[^\"]*\.v2\.tmp\"",
                 text):
             problems.append(

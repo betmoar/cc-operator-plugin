@@ -98,6 +98,12 @@ const tailBytes = (s, n) => {
   while (start < b.length && isUtf8Cont(b[start])) start++;
   return b.subarray(start).toString("utf8");
 };
+// Exported for the unit sweep in tests/test_compress.mjs ONLY. Through
+// `compress()` the guards (`n >= b.length`, `n < 0`, the 2-byte width) are
+// unreachable at default sizes — every tier-2 input is longer than both
+// bounds — so without a direct handle they were dead code to the suite
+// (PR #104 review). Not part of the hook's contract; nothing else imports them.
+export { headBytes, tailBytes };
 
 const capLines = (s, cap) =>
   s.split("\n").map((l) => (l.length > cap ? l.slice(0, cap) + "…" : l)).join("\n");

@@ -43,7 +43,17 @@ sentinel_owner_of_name() { # <basename> → owner ("" when unowned or unwritable
 # A payload with no session_id makes every sentinel unowned → all block.
 # Sets: MINE, FOREIGN (counts); MINE_IDS (comma list); FOREIGN_DESC,
 # FOREIGN_N ("id owned by <sid>" semicolon list + count); MALFORMED (count) and
-# MALFORMED_PATHS (semicolon list of full paths).
+# MALFORMED_LIST (a bash ARRAY of full paths, one element each).
+#
+# An array, not a delimited string, because these paths are PARSED BACK into
+# shell commands. FOREIGN_DESC's "; " join is safe — it is display-only — but
+# the first cut of this bucket joined paths the same way and the hook split on
+# the same literal, so a project at `/work/proj; x/` produced `rm -f '/work/proj'`
+# and `rm -f 'x/.operator/pending/A__B__C'`: two confident lines, neither the
+# sentinel (measured, PR #104 review). No printable delimiter is safe in a path
+# and bash variables cannot hold NUL, so the only lossless carrier is an array.
+# Readers under `set -u` on bash 3.2 must guard `"${MALFORMED_LIST[@]}"` behind
+# `[ "$MALFORMED" -gt 0 ]`: expanding an EMPTY array is "unbound variable" there.
 #
 # THE MALFORMED BUCKET (F118, issue #99). Readers split the name on the FIRST
 # `__`, so a planted `A__B__C` parses as owner `A`, task `B__C` — and `B__C` is
@@ -72,7 +82,7 @@ scan_pending() { # scan_pending <opdir> <session>
   MINE_IDS=""
   FOREIGN_DESC=""
   MALFORMED=0
-  MALFORMED_PATHS=""
+  MALFORMED_LIST=()
   shopt -s nullglob
   for f in "$_opdir/pending"/*; do
     # -f, not -e: a directory named into pending/ is not a sentinel.
@@ -87,7 +97,7 @@ scan_pending() { # scan_pending <opdir> <session>
     # branch so neither message can name the unusable id.
     case "$id" in
       *__*)
-        MALFORMED_PATHS="${MALFORMED_PATHS:+$MALFORMED_PATHS; }$f"
+        MALFORMED_LIST+=("$f")
         MALFORMED=$((MALFORMED + 1))
         continue ;;
     esac
