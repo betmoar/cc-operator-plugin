@@ -9,6 +9,155 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.6] - 2026-09-02
+
+A second principal-architect audit (2026-09-02, autonomous), targeted at the
+0.11.4/0.11.5 remediation itself. Five findings (F135–F139, ledger in
+`AUDIT_LOG.md`), each fix landed with the test run RED against the pre-fix
+code; the run-1 backlog's P1 item #103 gets its procedure and a tool.
+
+### Fixed
+
+- **An EMPTY task id opened the gate silently (audit F135).** Readers split
+  `pending/<owner>__<task>` on the first `__`, so `sid__` and `__` yield an
+  empty task id. `scan_pending` counted such names as MINE — the statusline
+  rendered `op[N]` red — but appended `""` to `MINE_IDS`, and the Stop hook
+  blocks on that LIST: with only such names pending it returned 0 with no
+  message while the bar said blocked. Pre-existing (measured on the pre-#99
+  code); F118's class. The empty id joins the MALFORMED bucket, fail closed,
+  with the `rm -f` remedy; the hook's sentence names both shapes.
+- **The CLIs and the Stop hook disagreed about what a malformed name IS
+  (audit F136).** Every CLI resolved a task id with the glob `*__<id>`, whose
+  `*` spans a `__`, so a planted `A__B__C` was task `C` to the CLIs and task
+  `B__C` to the hook: `ops-task.sh C` reported "already open" (rc 0) for a
+  task never opened, `ops-verdict.sh C` refused it as foreign, and
+  `ops-adopt.sh --owner <me> C` RENAMED it into a well-formed `<me>__C` —
+  which also made #99's "no CLI can address it" false. All four lookup sites
+  (`sentinel_for`, both `sentinel_path`s, the post-rename dup loop) now
+  filter on the task half of the match; `check_guard_parity` pins each
+  literal (4 red subtests with any one removed).
+- **`ops-init.sh`'s atomic gitignore write had no pin (audit F137).** The PR
+  #97 review made both writers temp+mv; only the hook's swap was pinned, and
+  reverting init's to the heredoc-onto-the-live-file shape reported "all
+  contracts hold" (measured). Pinned, with the red python case.
+- **`docs/REPLAY-CHARTER.md` R2b quoted the pre-#94 relative Stop message as
+  the expected verbatim shape (audit F139)** — a live replay would have
+  reported a defect on a correct hook. Now the absolute single-quoted shape.
+- **`.claude/hooks/shellcheck-edited.sh` could not lint itself (audit
+  F138):** its second line began `# shellcheck-…`, which shellcheck parses as
+  a directive and rejects.
+- **A pin-auditor pass over the ten validator pins added in 0.11.4/0.11.5**
+  (each mutation re-run by hand): nine fire on their named escape; four
+  repairs landed, each with its red python case. **F140 (P2):**
+  `check_claims`' F129 pins were substring tests on `matches_protected`'s
+  body, so the exact escape the pin's comment names — `return 1` as the first
+  body line, literals intact — shipped "all contracts hold"; the pin now
+  EXECUTES the shipped matcher in a child bash against one probe per
+  protected token and two unprotected paths. **F141 (P2):** a workflow `meta`
+  computed by a call expression (`name: String("crawl").trim()`) passed the
+  validator and all three suites while the harness refuses it at launch — the
+  `+` and template-literal pins were two spellings of "computed"; a
+  structural pin now allows only literal values once strings are stripped.
+  **F142 (P3):** a legal source line with a trailing comment failed the build
+  as "does not SOURCE"; both source pins tolerate it. **F143 (P3):** a second
+  `sentinel_owner_of_name()` appended to `lib/partition.sh` went unreported —
+  the reader-arm pin's `pass` claimed another site reports it, none did.
+
+### Added
+
+- **`scripts/ops-reverify.sh` — the #103 procedure, as a tool.** Dates every
+  `VERDICTS.md` row by its stamp's HEAD window (commit date of the sha to the
+  commit date of its first descendant toward HEAD, open-ended when none) and
+  lists the rows overlapping a date window — default the F120 defect's outer
+  bounds, v0.10.0 (2026-08-22) to v0.11.4 (2026-08-31). Undatable rows
+  (`@no-vcs`, an unknown sha, no git) are listed as such, never as clear;
+  exit 1 when anything needs re-verification; it never writes. The
+  re-verification steps (re-run the criterion, append a NEW row through the
+  single writer, never edit the old) are in the footer and in
+  `docs/PLAYBOOK.md`. A maintainer tool like `ops-backlog.sh`: not in the
+  install set, not charter-referenced.
+- **The six sibling vacuities the audit deferred are now executable pins
+  (F144).** The pin-auditor arm listed six "the literal is present, the
+  behaviour is gone" siblings and logged them as residual: each was still
+  caught by another suite, so no hole was open, but the validator described a
+  contract it was not testing. All six are closed — and closed by RUNNING the
+  shipped code, not by adding six more greps, which is the enumeration
+  F140/F141 argue against. `check_guard_parity` executes
+  `check_bare_name`/`check_owner_name` per CLI (escape: a dead `?*) : ;;` arm
+  before the real arms — `case` takes the first match and `?*` matches
+  everything, so all four rejections stopped while every pinned literal stayed
+  on the page); `check_autobar` runs `autobar_count_changed` against a scratch
+  repo (escape: `-uall` moved into a TRAILING comment, which `shell_code()`
+  does not strip — the same probe covers the `':(exclude).operator'` pathspec,
+  which had NO pin at all, and without it the counter arms on the gate's own
+  sentinel writes); `check_compressor` imports the module and runs scrub
+  through `compress()` (escape: an unanchored regex live plus an anchored copy
+  in `if (false)` — both F120 pins green, F120 restored);
+  `check_decisions_schema` parses the emitted ROW's kind cell (escape:
+  `HANDOFF-MARKX`, which no reader matches, while the correct literal survived
+  in a die message); `check_install_set_parity` requires the manifest loop's
+  BODY to copy (escape: a `do :; done` decoy beside a hardcoded-list loop);
+  and `check_gitignore_parity`'s detection pin keys on the target BEING the
+  live path (escape: retargeting to `"$_gi.v1.bak"`, which is not a `.tmp`, so
+  #102's exclusion let it through — and which inverts the branch, since the
+  backup does not exist until the migration this read triggers has run). Each
+  carries its measured escape as a red python case beside a green control, and
+  each probe asserts the ordinary input still PASSES — rejection probes alone
+  are satisfied by a guard that refuses everything. An unrunnable probe is
+  reported as a failure, never skipped. Writing the install-set pin reproduced
+  the bug one level up: a non-greedy `do…done` regex paired the decoy's head
+  with the real loop's body and reported "all contracts hold" on the mutation
+  it was written to catch (`do`/`done` are bracket-matched now) — the method
+  applies to the pin you are currently writing.
+- **Reviewing those pins found four defects IN the probes (same release).** An
+  executable pin has failure modes its subject does not, and three of these are
+  classes a substring pin cannot have. (1) **No timeout, inherited stdin:** a
+  guard containing a bare `read` blocked the probe forever and
+  `validate_plugin.py` never returned (measured, killed at 20s) — a gate that
+  HANGS reports nothing at all, which is worse than one that fails. (2)
+  **`FileNotFoundError` raised instead of reported:** on a machine without node
+  the compressor probe took the whole validator down with a traceback, leaving
+  every other contract unchecked because one optional interpreter was missing.
+  (3) **The probe measured the developer's machine:** the autobar scratch repo
+  inherited the caller's git config, so a global `core.excludesFile` listing
+  `newdir/` FAILED the build against correct shipped code — a false positive
+  trains the same ignoring as a vacuous pin, reached from the other side. (4)
+  **`rc != 0` is not "refused":** renaming an arm's `die` to an undefined
+  `refuse` exits 127 (`command not found`) and READ AS REFUSED while the real
+  CLI would die at every call — the new pin had the same vacuity as the pins it
+  replaced, and its own predecessor (F140's claims probe) had compared exact
+  codes from the start. All five probe sites now go through one `_run_probe`
+  helper: `stdin=DEVNULL`, `timeout=30`, missing-interpreter and timeout both
+  REPORTED, git config pinned to `/dev/null`, and exact exit codes. Each fix
+  was re-measured against the case that found it, and each carries a red test.
+- **And three more in `_tool_loops` itself — the helper written to fix a
+  vacuity had three of its own.** When a pin needs to PARSE, the parser is part
+  of the guarded surface. (a) Counting the bare words `do`/`done` is not
+  lexing, and English contains both: `echo "nothing to do here"` opened a
+  phantom nesting level and swallowed the next loop whole, whose `cp` then
+  satisfied the body check — an install loop copying nothing shipped "all
+  contracts hold" against the real `ops-init.sh`. The mirror image, `echo
+  "install not done yet"`, closed the loop EARLY and truncated the body
+  mid-string — a false FAIL on correct code, and the truncated text still
+  contained "install", so the check matched PROSE rather than a command.
+  Comments and string bodies are masked before the scan now (offsets
+  preserved), and a body cannot extend past the next top-level loop head, so
+  overshooting fails CLOSED. (b) `if _loops:` was the wrong polarity: the head
+  regex only matches an iteration variable named `tool`/`_tool`, so renaming it
+  returned `[]` and both arms silently never ran — the F130 head pin still
+  fired on the measured shapes, so no gate was open, but the check said nothing
+  about why it had stopped applying. No candidate loop is now a finding. Each
+  carries a red case, and each direction has its negative control: reflowing,
+  reordering equivalent arms, a legitimately nested loop and a reflowed `git`
+  call are all proven FREE, because a pin that fires on everything is as
+  useless as one that fires on nothing.
+- **`docs/spec/TAGS.md`'s `spec-concurrent` entry names the parse rule.** The
+  entry described the name convention; two reader populations now depend on
+  it, so it states the FIRST-`__` split as THE rule, both no-valid-parse shapes
+  (double separator, empty half) with their name-level `rm -f` remedy, and the
+  four CLI glob sites whose task-half filter re-imposes the readers' rule on a
+  glob whose `*` spans a `__`.
+
 ## [0.11.5] - 2026-09-01
 
 Four self-contained items from the 2026-08-31 audit backlog. Every fix ships

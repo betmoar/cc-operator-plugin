@@ -93,10 +93,15 @@ scan_pending() { # scan_pending <opdir> <session>
     # into ops-verdict.sh, so report that rather than the on-disk name.
     id="${name#*__}"
     # A remaining `__` means a second separator: no writer produced this name,
-    # and no CLI can address the id it yields. Bucketed BEFORE the ownership
-    # branch so neither message can name the unusable id.
+    # and no CLI can address the id it yields. An EMPTY id (`sid__`, `__`) is
+    # the same defect from the other side (audit F135): both writer guards
+    # refuse it, and the old scan COUNTED it as mine while appending "" to
+    # MINE_IDS — so with only such names pending the hook, whose block
+    # condition is that list, returned 0 while the bar rendered op[N] red.
+    # Bucketed BEFORE the ownership branch so neither message can name the
+    # unusable id.
     case "$id" in
-      *__*)
+      *__* | "")
         MALFORMED_LIST+=("$f")
         MALFORMED=$((MALFORMED + 1))
         continue ;;

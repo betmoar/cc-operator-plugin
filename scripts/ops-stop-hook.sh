@@ -284,7 +284,7 @@ scan_deviations "$opdir/DECISIONS.md" "$session"
 # Guarded on the count: on bash 3.2 under `set -u`, `"${arr[@]}"` on an empty
 # array is "unbound variable", and macOS ships 3.2.
 if [ "$MALFORMED" -gt 0 ]; then
-  echo "operator: $MALFORMED pending sentinel(s) with a MALFORMED name — a second '__' makes the task id unaddressable, so no ops-verdict.sh invocation can clear them (a task id containing '__' is refused by the CLI's own guard). No writer of ours produces this shape; it was planted or hand-made. Inspect, then remove:" >&2
+  echo "operator: $MALFORMED pending sentinel(s) with a MALFORMED name — a second '__' or an EMPTY task id (a name ending in '__') makes the task id unaddressable, so no ops-verdict.sh invocation can clear them (a task id containing '__', or an empty one, is refused by the CLI's own guard). No writer of ours produces this shape; it was planted or hand-made. Inspect, then remove:" >&2
   for _mfone in "${MALFORMED_LIST[@]}"; do
     echo "operator:   rm -f $(shq "$_mfone")" >&2
   done

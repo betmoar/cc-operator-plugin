@@ -516,3 +516,42 @@ state), so it is neither a sentinel reader nor a `check_guard_parity` site.
    EXISTS) → pin the arm literal AND its die/return polarity from the function
    body; unanchored pins → anchor through the next syntactic token (`; do`,
    end-of-line), or the pin accepts arbitrary suffixes.
+
+## Re-verifying ledger rows written under a known-bad plugin window (#103, audit F120)
+
+**Guarantees:** every `VERDICTS.md` row carries its source stamp inside the
+evidence cell (`@<sha>`, `@<sha>+dirty`, `@no-vcs`, `@no-commit`). A row is
+written while HEAD == `<sha>`, so its write time lies in [commit date of
+`<sha>`, commit date of `<sha>`'s first descendant on the way to HEAD] —
+open-ended when there is none. That interval is what places a row inside or
+outside a window; nothing in the row itself does.
+
+**Before you touch it:** know the window. The default is the PLUGIN's tag
+dates for the F120 defect (v0.10.0, 2026-08-22 → v0.11.4, 2026-08-31); those
+are OUTER bounds — a project that upgraded late entered the defect late.
+
+**To find the rows:** from the project root,
+`bash "$PLUGIN_ROOT/scripts/ops-reverify.sh" [--from D --to D]`. It prints one
+line per row with its HEAD window and a status — `AFFECTED`, `clear`, or
+`UNDATABLE` (no git, a sha this repo does not know, `@no-vcs`) — and exits 1
+when anything needs re-verification. It never writes.
+
+**To re-verify a row:** re-run its criterion yourself, on the tree the stamp
+names when it matters; record the outcome as a NEW row through the single
+writer — `.operator/bin/ops-verdict.sh <gate> "re-verify(#103): <criterion>"
+"<evidence>" <PASS|FAIL> --owner <sid>` — and let the GATE-EXCEPTION it writes
+(no sentinel was open) stand as the audit line that this was a retro-check. A
+criterion that cannot be re-run gets a DECISION line, not a PASS.
+
+**Never:** edit or delete the old row. The ledger is append-only with one
+writer; the old row is the record of what was believed at the time, and the
+new row beside it is the correction.
+
+**The trap:** `UNDATABLE` is not `clear`. A `@no-vcs` row, or one stamped with
+a sha from a rebased-away branch, cannot be placed — treat it as affected
+unless you know otherwise. And the tool's row parser follows the 4-cell schema
+`ops-verdict.sh` writes: a change to the row `printf` or a new stamp form must
+update `scripts/ops-reverify.sh` and its bash case (CLAUDE.md coupling table).
+
+**Verify:** `bash tests/test-scripts.sh 2>&1 | grep 'reverify'` — every line
+`ok`.

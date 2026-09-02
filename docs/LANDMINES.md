@@ -526,3 +526,179 @@ reasoning, moved.
   with itself, and a returned `dead:true` removed a live seat (audit F103).
   Output spreads FIRST, pins come LAST, at every round — and the stub-runtime
   test carries exactly those three forged keys.
+
+## From the 2026-09-02 principal audit (F135–F139)
+
+- **A bucket that COUNTS a thing but does not NAME it opens the gate on it.**
+  `scan_pending` counted an empty-id sentinel (`sid__`, `__`) as MINE — the
+  bar rendered `op[N]` red — but appended `""` to `MINE_IDS`, and the Stop
+  hook's block condition is `[ -n "$pending" ]`, the LIST. With only such
+  names pending the hook returned 0 with no message while the bar said
+  blocked (audit F135; measured on the pre-#99 code too — the F118 fix walked
+  past it). Sharing `partition.sh` makes the hook and the bar read the same
+  BUCKETS; it does not make them take the same DECISION unless every bucket
+  feeds the decision the same way. When a reader branches on a derived string
+  (a list, a joined description) rather than the count, every element that
+  can be empty is a silent hole. The bucket is MALFORMED now, with the
+  `rm -f` remedy, because both writer guards refuse an empty id.
+- **Two readers of one name convention with two split rules disagree about
+  what a file IS.** The readers split `pending/<owner>__<task>` on the FIRST
+  `__`; the CLIs resolved a task id with the glob `*__<id>`, whose `*` spans a
+  `__` — so a planted `A__B__C` was task `B__C` to the hook and task `C` to
+  every CLI. `ops-task.sh C` said "already open" (rc 0) for a task that was
+  never opened; `ops-adopt.sh --owner me C` RENAMED the malformed file into a
+  well-formed `me__C` (audit F136). A glob is a parser, and when it stands
+  beside a string-split parser of the same name the two must agree on every
+  input they can both see — the task-half filter at all four glob sites is
+  that agreement, and `check_guard_parity` pins it because one site without
+  it is the drift that ships green.
+- **A pin added to one of two twins is the F116 shape one layer up.** The PR
+  #97 review made BOTH gitignore writers atomic; the atomic-swap pin covered
+  the hook only, and reverting `ops-init.sh`'s write to the non-atomic shape
+  reported "all contracts hold" (audit F137). When a review fixes a class at
+  N sites, the pin count is N, not 1 — and the check for that is a mutation
+  at EACH site, which is the vacuity method again.
+- **Runbook expectations rot on the line you did not re-read.** The 0.11.2
+  fix updated REPLAY-CHARTER's deviation-gate expectation to the absolute
+  path shape and left the R2b pending-verdict expectation on the pre-#94
+  relative shape (audit F139). A live replay would have reported a defect on
+  a correct hook. The charter's quoted strings are hand-maintained by
+  decision; the price is grepping the runbook for every message you change.
+- **A substring pin on a function body is blind to control flow — execute
+  the function.** `check_claims` pinned `*/)` and `[[ $p == $pat ]]` INSIDE
+  `matches_protected`'s body, and its own comment named the escape it was
+  written against: "gutted to `return 1`". Inserting exactly that as the
+  first body line, literals intact, shipped "all contracts hold" (audit
+  F140; the pin-auditor found six more "literal present, behaviour gone"
+  siblings — a dead branch before the arm, a decoy loop, a value kept alive
+  in a same-line comment). When the property is BEHAVIOUR, the only
+  non-vacuous pin runs the code: `bash -c` the shipped function against
+  probes with known answers. Same lesson for the workflow `meta`: two pins
+  enumerated two spellings of "computed" (`+`, backtick) and a call
+  expression walked past both (F141) — pin the STRUCTURE (only literal values
+  survive string-stripping), not the spellings you have met.
+
+## From the 2026-09-02 backlog closure (F144)
+
+- **Six vacuities of the same shape, closed by executing instead of
+  grepping.** The 0.11.6 audit's pin-auditor arm listed six "literal present,
+  behaviour gone" siblings and deferred them as a validator-MESSAGE gap —
+  each was still caught by another suite, so no hole was open. Closing them
+  one grep at a time is the enumeration F140/F141 argue against, so each was
+  replaced by a probe that runs the shipped code:
+  - `check_guard_parity` runs `check_bare_name`/`check_owner_name` in a child
+    bash. The escape they could not see: a dead `?*) : ;;` arm inserted BEFORE
+    the real arms. `case` takes the FIRST match and `?*` matches every
+    non-empty string, so all four rejections stopped happening while `.*)`,
+    `*__*`, the metacharacter set and their `die`s stayed spelled out on the
+    page.
+  - `check_autobar` runs `autobar_count_changed` against a scratch repo. The
+    escape: `-uall` moved into a TRAILING comment — `shell_code()` strips
+    whole-line comments only, so the literal stayed inside the body while the
+    flag never reached git. The same probe covers the `':(exclude).operator'`
+    pathspec, which had no pin at all: without it the counter sees the gate's
+    own sentinel writes and arms on its own bookkeeping.
+  - `check_compressor` imports the module and runs scrub through `compress()`.
+    The escape: an UNANCHORED regex in the live `.replace()` chain plus a
+    correctly-anchored copy inside `if (false)`. Both F120 literal pins green,
+    F120 itself restored.
+  - `check_decisions_schema` parses the emitted ROW rather than asking whether
+    some printf carries the marker. The escape: `HANDOFF-MARKX`, which no
+    reader matches, while `check_owner_name`'s die message kept the correct
+    literal alive elsewhere in the file.
+  - `check_install_set_parity` requires the manifest loop's BODY to copy. The
+    escape: `for _tool in $_OPS_TOOLS; do :; done` beside a second loop over a
+    hardcoded list. Writing that pin found a second-order version of the same
+    bug in the pin: a non-greedy `(.*?)\n\s*done` paired the DECOY's head with
+    the REAL loop's body, because the decoy's inline `done` sits on its `do`
+    line — the compliant-looking pair satisfied the new check, which reported
+    "all contracts hold" on the mutation it was written to catch. `do`/`done`
+    are matched like brackets now. A pin is a hypothesis until the mutation
+    runs red, and that applies to the pin you just wrote.
+  - `check_gitignore_parity`'s detection pin keys on the target BEING the live
+    path, not on its not being `.tmp`. The escape: retarget detection to
+    `"$_gi.v1.bak"` — not a temp, so it passed — which inverts the branch,
+    because the backup does not exist until the migration this read triggers
+    has already run.
+- **A behaviour probe needs the refuses-everything control.** Rejection probes
+  alone are satisfied by a guard that dies on every input, which would trade
+  one vacuity for another. Every executable pin here asserts the ordinary case
+  passes too, and that control is what caught the under-built fixtures: five
+  good-tree stubs had to grow real behaviour (a counter that sets its output
+  variables, a loop that copies, an exported `compress`, a 4-cell handoff row,
+  guards carrying every arm) before the tree went green. An unrunnable probe
+  is reported as a FAILURE, never skipped — the polarity the F140 lesson
+  requires.
+
+## Reviewing the F144 pins (PR review of e8e0179)
+
+The executable pins above were themselves reviewed, and four defects came out
+of the probes — three of them classes a substring pin cannot have, which is the
+price of running code inside a build gate:
+
+- **No timeout + inherited stdin wedges the build.** A guard containing a bare
+  `read` blocked the probe forever: `validate_plugin.py` never returned
+  (measured, killed at 20s). A gate that HANGS reports nothing at all, which is
+  strictly worse than one that fails — CI shows a spinner, not a finding. Every
+  probe now runs with `stdin=DEVNULL` and `timeout=30`, and a timeout is itself
+  a reported finding, never a skip.
+- **A missing interpreter raises instead of reporting.** `subprocess.run`
+  throws `FileNotFoundError` when the binary is absent, so on a machine without
+  node the compressor probe took down the whole validator with a traceback —
+  every OTHER contract went unchecked because one optional interpreter was
+  missing. Reported now, and reported rather than skipped: the pin proves
+  nothing there and saying so is the point.
+- **The probe measured the developer's machine.** The autobar probe's scratch
+  repo inherited the caller's git config, so a global `core.excludesFile`
+  listing `newdir/` made the counter report 0 and FAILED the build against
+  correct shipped code. A false positive on a build gate trains the maintainer
+  to ignore it — the same end state as a vacuous pin, reached from the other
+  side. `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` are pinned to `/dev/null`.
+- **`rc != 0` is not "refused".** The guard probe asked only for a non-zero
+  exit, so renaming an arm's `die` to an undefined `refuse` exited 127 —
+  `command not found` — and READ AS REFUSED, while the real CLI would die at
+  every call. "All contracts hold" (measured). The probe now requires the
+  harness's own die code exactly; a non-die exit means the arm or the harness
+  is BROKEN, which is a different finding with a different fix. The F140 claims
+  probe compared exact codes from the start; the newer pin regressed against
+  its own predecessor.
+
+The lesson under all four: **an executable pin has failure modes its own
+subject does not.** Writing one means asking what happens when the probe cannot
+run, runs somewhere unexpected, or runs and returns a number that means
+something other than what you assumed — and the answer must be a reported
+finding every time. Verified by re-running each measurement against the fix.
+
+## `_tool_loops`: three bugs in one 12-line helper (PR review of e8e0179)
+
+The helper written to fix a vacuity had three of its own, and they are worth
+keeping because each is a different way for a *parser* to be wrong:
+
+1. **Counting words is not lexing.** The scan matches the bare words `do` and
+   `done`, and English contains both. `echo "nothing to do here"` opened a
+   phantom nesting level, so the matcher needed one extra `done` and swallowed
+   the NEXT loop whole — that loop's `cp` then satisfied the body check, and an
+   install loop that copied nothing shipped "all contracts hold". The mirror
+   image: `echo "install not done yet"` closed the loop EARLY, truncating the
+   body mid-string, which is a false FAIL on correct code — and the truncated
+   text still contained the word "install", so the check matched PROSE instead
+   of a command. Wrong in both directions from the same root. Fix: mask
+   comments and string bodies before the scan, offsets preserved (the
+   `_mask_code`/`shell_code` discipline already used twice in this repo), plus
+   a boundary — a loop body cannot extend past the next top-level loop head, so
+   overshooting truncates (fail CLOSED) instead of extending (fail OPEN).
+2. **`if _loops:` was the wrong polarity.** The head regex only matches an
+   iteration variable literally named `tool`/`_tool`, so renaming it to `t`
+   returned `[]` and both arms silently never ran. The F130 head pin still
+   fired on the shapes measured, so no gate was open — but a check that goes
+   quiet when its own shape assumption fails is exactly the silence this file
+   refuses, and it said nothing about why. **No candidate is a finding**, the
+   same rule the extraction sites already follow.
+3. The one it got right, for contrast: a genuinely nested loop is indented
+   deeper and must stay INSIDE the body, or tightening the scan trades a
+   vacuity for a false positive. Both directions need a case, which is why the
+   suite now carries `..._is_not_a_miss` beside every `..._fires`.
+
+The lesson: **when a pin needs to parse, the parser is now part of the guarded
+surface** — it earns its own mutations, in both directions, and "counting
+brackets like bash does" is only true if you tokenize like bash does.
