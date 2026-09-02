@@ -35,13 +35,45 @@ sentinel_owner_of_name() { # <basename> → owner ("" when unowned or unwritable
   printf '%s\n' "$_o"
 }
 
-# Partition pending/ into blocking (mine + unowned) and foreign (report only).
+# Partition pending/ into blocking (mine + unowned), foreign (report only) and
+# MALFORMED (blocking, but not addressable by a CLI — see below).
 # Plain glob, not find: builtin, no PATH dependency, and it cannot see dotfiles
 # — which is why every writer CLI refuses a leading dot in a task id. `-f`
 # follows symlinks: a planted link counts as BLOCKING (fail toward warning).
 # A payload with no session_id makes every sentinel unowned → all block.
 # Sets: MINE, FOREIGN (counts); MINE_IDS (comma list); FOREIGN_DESC,
-# FOREIGN_N ("id owned by <sid>" semicolon list + count).
+# FOREIGN_N ("id owned by <sid>" semicolon list + count); MALFORMED (count) and
+# MALFORMED_LIST (a bash ARRAY of full paths, one element each).
+#
+# An array, not a delimited string, because these paths are PARSED BACK into
+# shell commands. FOREIGN_DESC's "; " join is safe — it is display-only — but
+# the first cut of this bucket joined paths the same way and the hook split on
+# the same literal, so a project at `/work/proj; x/` produced `rm -f '/work/proj'`
+# and `rm -f 'x/.operator/pending/A__B__C'`: two confident lines, neither the
+# sentinel (measured, PR #104 review). No printable delimiter is safe in a path
+# and bash variables cannot hold NUL, so the only lossless carrier is an array.
+# Readers under `set -u` on bash 3.2 must guard `"${MALFORMED_LIST[@]}"` behind
+# `[ "$MALFORMED" -gt 0 ]`: expanding an EMPTY array is "unbound variable" there.
+#
+# THE MALFORMED BUCKET (F118, issue #99). Readers split the name on the FIRST
+# `__`, so a planted `A__B__C` parses as owner `A`, task `B__C` — and `B__C` is
+# a task id every writer CLI REFUSES, because `__` is the separator. The gate
+# therefore named a command that could not run: `ops-verdict.sh 'B__C' --defer`
+# dies on the guard. Being told to run something that errors is worse than
+# being told nothing, because the operator's next move is to doubt the gate.
+#
+# Why a THIRD bucket rather than degrading these to unowned: degrading fixes
+# the ownership question and not the reported one. The id is derived from the
+# name either way, so an unowned `A__B__C` reports the id `A__B__C`, which the
+# CLIs refuse for the same reason. The name is the problem, so the remedy has
+# to be a name-level one — hence the full PATH and `rm -f`, which is what the
+# operator does today once they work out that nothing else clears it.
+#
+# Polarity is fail CLOSED, matching the unowned default: our CLIs cannot write
+# this shape, so it is planted or hand-made, and there is no reading of it
+# under which allowing a silent stop is right. Note this BLOCKS where the old
+# code merely reported (such a name usually parses as a foreign owner) — the
+# widening is deliberate and bounded to names no writer could ever produce.
 scan_pending() { # scan_pending <opdir> <session>
   local _opdir="$1" _sess="$2" f name owner id
   MINE=0
@@ -49,6 +81,8 @@ scan_pending() { # scan_pending <opdir> <session>
   FOREIGN_N=0
   MINE_IDS=""
   FOREIGN_DESC=""
+  MALFORMED=0
+  MALFORMED_LIST=()
   shopt -s nullglob
   for f in "$_opdir/pending"/*; do
     # -f, not -e: a directory named into pending/ is not a sentinel.
@@ -58,6 +92,15 @@ scan_pending() { # scan_pending <opdir> <session>
     # The TASK id is the name minus the owner prefix — what the operator types
     # into ops-verdict.sh, so report that rather than the on-disk name.
     id="${name#*__}"
+    # A remaining `__` means a second separator: no writer produced this name,
+    # and no CLI can address the id it yields. Bucketed BEFORE the ownership
+    # branch so neither message can name the unusable id.
+    case "$id" in
+      *__*)
+        MALFORMED_LIST+=("$f")
+        MALFORMED=$((MALFORMED + 1))
+        continue ;;
+    esac
     if [ -n "$owner" ] && [ -n "$_sess" ] && [ "$owner" != "$_sess" ]; then
       # Name the OWNER, not just the task: with 3+ sessions a bystander cannot
       # tell which session to chase otherwise.

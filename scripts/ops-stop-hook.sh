@@ -263,7 +263,34 @@ fi
 scan_deviations "$opdir/DECISIONS.md" "$session"
 
 
-if [ -n "$pending" ]; then
+# MALFORMED sentinels (F118 / #99) get their own sentence and their own remedy.
+# These are names no writer CLI could have produced — a second `__` yields a
+# task id every guard refuses — so the verdict CLI cannot address them, and the
+# old code folded them into the mine/foreign lists whose message names exactly
+# that CLI. The operator was told to run a command that dies on its own guard.
+#
+# `rm -f` is the honest remedy, not a fallback: the file is the whole problem,
+# nothing in the ledger refers to it, and it is what an operator ends up doing
+# once they work out that nothing else clears it. Path is shq'd for the same
+# reason verdict_cmd_for's is — absolute means long enough to contain a space.
+# Blocking, matching the unowned default: our CLIs cannot write this shape.
+#
+# One element per path, straight from the lib's ARRAY. The first cut carried
+# the paths as a "; "-joined string and split it here, so a project path that
+# itself contained "; " was cut at the wrong place and BOTH halves were printed
+# as `rm -f` targets — a destructive command aimed at a file that was not the
+# sentinel (PR #104 review, measured). Quoting after a split cannot repair a
+# split that already lost the boundary; the carrier has to be lossless.
+# Guarded on the count: on bash 3.2 under `set -u`, `"${arr[@]}"` on an empty
+# array is "unbound variable", and macOS ships 3.2.
+if [ "$MALFORMED" -gt 0 ]; then
+  echo "operator: $MALFORMED pending sentinel(s) with a MALFORMED name — a second '__' makes the task id unaddressable, so no ops-verdict.sh invocation can clear them (a task id containing '__' is refused by the CLI's own guard). No writer of ours produces this shape; it was planted or hand-made. Inspect, then remove:" >&2
+  for _mfone in "${MALFORMED_LIST[@]}"; do
+    echo "operator:   rm -f $(shq "$_mfone")" >&2
+  done
+fi
+
+if [ -n "$pending" ] || [ "$MALFORMED" -gt 0 ]; then
   verdict_cmd="$(verdict_cmd_for)"
   # The auto-armed sentinel needs its own sentence, or the operator reads
   # "pending verdict: autobar" as a task it never opened and has no way to
@@ -280,7 +307,10 @@ if [ -n "$pending" ]; then
     # permanent silent disarm.
     echo "operator: the delta is measured from the working TREE and cannot be attributed to a session — if another session is working in this worktree, these paths may not be yours; close with --defer \"another session's changes\" and it costs you one command." >&2
   fi
-  echo "operator: pending verdict(s): $pending — run $verdict_cmd <id> <criterion> <evidence> <PASS|FAIL>, or --defer \"<reason>\"" >&2
+  # Guarded: with malformed-only entries there is no addressable id to name, and
+  # printing "pending verdict(s): " with an empty list is the useless guidance
+  # this whole branch exists to avoid.
+  [ -n "$pending" ] && echo "operator: pending verdict(s): $pending — run $verdict_cmd <id> <criterion> <evidence> <PASS|FAIL>, or --defer \"<reason>\"" >&2
   exit 2
 fi
 

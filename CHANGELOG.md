@@ -9,6 +9,80 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.5] - 2026-09-01
+
+Four self-contained items from the 2026-08-31 audit backlog. Every fix ships
+with the pin that would have caught it, each run RED against the defect it was
+written for and GREEN against the restored tree.
+
+### Fixed
+
+- **A malformed sentinel name got a remedy that could not run (#99, audit
+  F118).** Readers split `pending/<owner>__<task>` on the FIRST `__`, so a
+  planted `A__B__C` parsed as owner `A`, task `B__C` — and `B__C` is a task id
+  every writer CLI refuses, because `__` is the separator. The gate named
+  `ops-verdict.sh 'B__C' --defer`, which dies on the CLI's own guard: the
+  operator was told to run a command that errors. `scan_pending` now buckets
+  such names as MALFORMED (fail closed, matching the unowned default) and the
+  Stop hook names the one remedy that works — `rm -f` on the sentinel's
+  absolute, single-quoted path. The statusline counts the bucket as blocking,
+  so the bar and the gate still describe the same thing.
+- **The compressor's elide cut mid-codepoint (#101, audit F123).**
+  `HEAD_BYTES`/`TAIL_BYTES` are size bounds with no reason to fall between
+  codepoints, and `Buffer.subarray(…).toString("utf8")` over a half-sequence
+  decodes to U+FFFD, so every elided multibyte output carried mojibake at both
+  seams. The cut now backs off to a UTF-8 boundary, which also makes the head a
+  true prefix of the input — the offset `elide` uses to find the middle.
+- **`commands/handoff.md` prescribed a relative CLI path (#100, the residue of
+  audit F102).** The Bash tool's cwd persists across calls, so
+  `.operator/bin/ops-verdict.sh` pasted from a subdirectory is file-not-found,
+  and the field history for that shape (#94/#95) is the model then reporting a
+  PRESENT gate as absent. The command now routes to the absolute path
+  SessionStart or the Stop hook already printed, with `git rev-parse
+  --show-toplevel` as the fallback when neither is in context.
+
+- **Review of this release (PR #104) found the malformed remedy printing the
+  wrong path.** The MALFORMED paths travelled as a `"; "`-joined string and the
+  Stop hook split on the same literal, so a project whose path itself contained
+  `"; "` was cut there: `rm -f '/work/proj'` and `rm -f 'x/.operator/pending/…'`,
+  two confident lines, neither the sentinel, one aimed at whatever sits at the
+  cut (measured). The carrier is now a bash array; the two-sentinel case on a
+  `"; "` path runs 4 red on the old carrier. A FOREIGN-owned malformed name —
+  the "blocks where the old code reported foreign" widening the prose claimed
+  but nothing pinned — now has its own case (2 red with the bucket removed).
+- **`commands/handoff.md`'s grant did not cover the path it prescribed** (PR
+  #104 review). The body said ABSOLUTE; `Bash(.operator/bin/ops-verdict.sh:*)`
+  is a literal prefix no absolute invocation starts with, so the model hit a
+  permission prompt. `Bash(bash:*)` is added and the body prescribes
+  `bash '<absolute path>' --mark-handoff …`. The fallback for a session with
+  no printed path names the walk-up rule and non-git (`@no-vcs`) projects
+  rather than a bare `git rev-parse`. The #100 pin now matches the relative
+  CLI in ANY markup — a fenced copy of the old command passed the
+  backtick-anchored form.
+- **The compressor's byte helpers are unit-swept** (PR #104 review): a 2-byte
+  width joins the elide sweep, and `headBytes`/`tailBytes` are exported so
+  every `n` in `[-2, len+2]` is checked for prefix/suffix, bound, ≤3-byte
+  back-off and no U+FFFD — through `compress()` those guards were unreachable
+  at default sizes. 29 red on the pre-#101 helpers.
+
+### Changed
+
+- **The atomic gitignore write is pinned on its own, and the CONFIRMATION pin
+  is unconditional** (PR #104 review). The confirmation pin was gated on
+  `".v2.tmp" in text`, so removing the temp entirely — a non-atomic
+  `cat > "$_gi"`, the pre-0.11.4 F119 shape — removed the check with it. It
+  still fired only because the user-facing notice mentioned the temp; with that
+  one prose line reworded the validator reported "all contracts hold" over a
+  non-atomic write (measured, two-place mutation). A new pin keys on the
+  `mv -f "$_gi.v2.tmp" "$_gi"` swap itself; both shapes have a python case.
+- **`check_gitignore_parity` tells the DETECTION grep from the CONFIRMATION
+  grep (#102).** Both writers grep for the v2 marker, and since the atomic
+  rewrite the hook does it twice — once on the live file to decide "is this
+  still v1?", once on `$_gi.v2.tmp` to confirm the write landed. The pin
+  matched either, so a mutation removing only detection — after which a v1
+  blocklist is never migrated at all — shipped green. Each is now pinned by its
+  target, and each is knocked out on its own in its own case.
+
 ## [0.11.4] - 2026-08-31
 
 A principal-architect audit (2026-08-31, autonomous) — 34 findings, all logged
