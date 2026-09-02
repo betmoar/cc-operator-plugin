@@ -480,3 +480,4 @@
 - 2026-09-02 P4: full CI mirror on the final tree: shellcheck 0.10.0 clean (CI set), validator rc 0, unittest 262 OK, bash 820/0 (+37 vs baseline), workflows 384/0, compress 161/0, release gate OK.
 - 2026-09-02 P4 DECISION-05: version bumped to 0.11.6 with the CHANGELOG heading in the same change — the repo's rule (plugin.json is the source of truth; bump in the same commit) and the run-1 lesson (a populated [Unreleased] at the current version fails CI's real-repo gate). Reversible: retitle the heading and revert one line.
 - 2026-09-02 P4: pin-auditor arm on the 10 new validator pin groups — result pending at this checkpoint; recorded below when it lands.
+- 2026-09-02 P4: COMMIT gate cleared under DECISION-01 only: b5f12c3 committed and pushed to claude/principal-audit-autonomous-ghqjno; draft PR #105 opened (https://github.com/betmoar/cc-operator-plugin/pull/105); PR activity subscribed; hourly check-in armed. No tag, no merge, no other outward action.
