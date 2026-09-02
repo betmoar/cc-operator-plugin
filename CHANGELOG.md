@@ -109,6 +109,48 @@ code; the run-1 backlog's P1 item #103 gets its procedure and a tool.
   with the real loop's body and reported "all contracts hold" on the mutation
   it was written to catch (`do`/`done` are bracket-matched now) — the method
   applies to the pin you are currently writing.
+- **Reviewing those pins found four defects IN the probes (same release).** An
+  executable pin has failure modes its subject does not, and three of these are
+  classes a substring pin cannot have. (1) **No timeout, inherited stdin:** a
+  guard containing a bare `read` blocked the probe forever and
+  `validate_plugin.py` never returned (measured, killed at 20s) — a gate that
+  HANGS reports nothing at all, which is worse than one that fails. (2)
+  **`FileNotFoundError` raised instead of reported:** on a machine without node
+  the compressor probe took the whole validator down with a traceback, leaving
+  every other contract unchecked because one optional interpreter was missing.
+  (3) **The probe measured the developer's machine:** the autobar scratch repo
+  inherited the caller's git config, so a global `core.excludesFile` listing
+  `newdir/` FAILED the build against correct shipped code — a false positive
+  trains the same ignoring as a vacuous pin, reached from the other side. (4)
+  **`rc != 0` is not "refused":** renaming an arm's `die` to an undefined
+  `refuse` exits 127 (`command not found`) and READ AS REFUSED while the real
+  CLI would die at every call — the new pin had the same vacuity as the pins it
+  replaced, and its own predecessor (F140's claims probe) had compared exact
+  codes from the start. All five probe sites now go through one `_run_probe`
+  helper: `stdin=DEVNULL`, `timeout=30`, missing-interpreter and timeout both
+  REPORTED, git config pinned to `/dev/null`, and exact exit codes. Each fix
+  was re-measured against the case that found it, and each carries a red test.
+- **And three more in `_tool_loops` itself — the helper written to fix a
+  vacuity had three of its own.** When a pin needs to PARSE, the parser is part
+  of the guarded surface. (a) Counting the bare words `do`/`done` is not
+  lexing, and English contains both: `echo "nothing to do here"` opened a
+  phantom nesting level and swallowed the next loop whole, whose `cp` then
+  satisfied the body check — an install loop copying nothing shipped "all
+  contracts hold" against the real `ops-init.sh`. The mirror image, `echo
+  "install not done yet"`, closed the loop EARLY and truncated the body
+  mid-string — a false FAIL on correct code, and the truncated text still
+  contained "install", so the check matched PROSE rather than a command.
+  Comments and string bodies are masked before the scan now (offsets
+  preserved), and a body cannot extend past the next top-level loop head, so
+  overshooting fails CLOSED. (b) `if _loops:` was the wrong polarity: the head
+  regex only matches an iteration variable named `tool`/`_tool`, so renaming it
+  returned `[]` and both arms silently never ran — the F130 head pin still
+  fired on the measured shapes, so no gate was open, but the check said nothing
+  about why it had stopped applying. No candidate loop is now a finding. Each
+  carries a red case, and each direction has its negative control: reflowing,
+  reordering equivalent arms, a legitimately nested loop and a reflowed `git`
+  call are all proven FREE, because a pin that fires on everything is as
+  useless as one that fires on nothing.
 - **`docs/spec/TAGS.md`'s `spec-concurrent` entry names the parse rule.** The
   entry described the name convention; two reader populations now depend on
   it, so it states the FIRST-`__` split as THE rule, both no-valid-parse shapes

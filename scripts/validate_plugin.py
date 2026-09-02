@@ -49,6 +49,7 @@ Exit 0 = all contracts hold; exit 1 = failures listed on stderr.
 """
 import ast
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -1228,15 +1229,22 @@ def check_guard_parity(root, problems):
                 f"skip the only pin that tests the guards' EFFECT")
         else:
             # Our own die/NL, so the probe tests the guard's arms and not the
-            # rest of the CLI. die's exit code is what "refused" means here.
+            # rest of the CLI. die's exit code is what "refused" means here —
+            # EXACTLY 9, never merely non-zero. `!= 0` was the first cut and it
+            # was vacuous in the same way as the pins it replaced (PR review of
+            # e8e0179): renaming the arms' `die` to an undefined `refuse` makes
+            # bash exit 127, which read as "refused" while the CLI itself would
+            # die on `command not found` at every call — "all contracts hold"
+            # (measured). rc 127 means the harness is INCOMPLETE, not that the
+            # guard works, and the two must never be conflated. Matches the
+            # F140 claims probe, which has compared exact codes from the start.
             #
             # ops-verdict.sh factors the `|`/newline arms out into check_cell
             # and calls it from check_bare_name, so the harness carries that
             # helper too when the CLI defines one. Carried by SHAPE, not by
-            # name-list: a helper this extractor silently omitted would make
-            # every probe die on `command not found` (rc 127) and the CONTROL
-            # below is what catches that — it fires on any non-zero, so an
-            # incomplete harness is reported rather than read as "refused".
+            # name-list: a helper this extractor omitted would make every probe
+            # exit 127, which is now its own reported finding.
+            _DIE = 9
             _pre = ("die() { exit 9; }\nNL=\"$(printf '\\nx')\"; NL=\"${NL%x}\"\n")
             _helpers = "".join(
                 _h.group(0) + "\n" for _fn in ("check_cell",)
@@ -1249,37 +1257,46 @@ def check_guard_parity(root, problems):
                      ("a|b", "'|' breaks the 4-cell ledger row"),
                      ("a\nb", "a newline breaks the 4-cell ledger row"),
                      ("a__b", "'__' is the owner/task separator"))
-            for _v, _why in _bare:
-                _r = subprocess.run(["bash", "-c", _harness + 'check_bare_name t "$1"',
-                                     "_", _v], capture_output=True, text=True)
-                if _r.returncode == 0:
-                    problems.append(
-                        f"scripts/{name}: check_bare_name() ACCEPTS {_v!r} when "
-                        f"executed — {_why}. The pinned arms may all be present "
-                        f"while the guard refuses nothing: a `?*)` arm before "
-                        f"them takes every match first, and no substring test "
-                        f"can see that (audit F144)")
-            for _v, _why in (("a b", "a padded owner is permanently foreign"),
-                             ("$S", "an unexpanded variable reads as a foreign session (#89)"),
-                             ("`x`", "a backtick owner is an unexpanded substitution (#89)"),
-                             ("a'b", "a quote is an unexpanded-variable tell (#89)"),
-                             ('a"b', "a quote is an unexpanded-variable tell (#89)"),
-                             ("a\\b", "a backslash is an unexpanded-variable tell (#89)")):
-                _r = subprocess.run(["bash", "-c", _harness + 'check_owner_name "$1"',
-                                     "_", _v], capture_output=True, text=True)
-                if _r.returncode == 0:
-                    problems.append(
-                        f"scripts/{name}: check_owner_name() ACCEPTS {_v!r} when "
-                        f"executed — {_why}, so the sentinel it names is "
-                        f"permanently unclearable. Presence of the arms is not "
-                        f"their effect (audit F144)")
+            for _call, _probes in (
+                    ('check_bare_name t "$1"', _bare),
+                    ('check_owner_name "$1"',
+                     (("a b", "a padded owner is permanently foreign"),
+                      ("$S", "an unexpanded variable reads as a foreign session (#89)"),
+                      ("`x`", "a backtick owner is an unexpanded substitution (#89)"),
+                      ("a'b", "a quote is an unexpanded-variable tell (#89)"),
+                      ('a"b', "a quote is an unexpanded-variable tell (#89)"),
+                      ("a\\b", "a backslash is an unexpanded-variable tell (#89)")))):
+                _fn = _call.split("(")[0].split()[0]
+                for _v, _why in _probes:
+                    _r = _run_probe(["bash", "-c", _harness + _call, "_", _v],
+                                    problems, f"scripts/{name}: {_fn}()")
+                    if _r is None:
+                        break  # already reported; do not also claim ACCEPTS
+                    if _r.returncode == 0:
+                        problems.append(
+                            f"scripts/{name}: {_fn}() ACCEPTS {_v!r} when "
+                            f"executed — {_why}. The pinned arms may all be "
+                            f"present while the guard refuses nothing: a `?*)` "
+                            f"arm before them takes every match first, and no "
+                            f"substring test can see that (audit F144)")
+                    elif _r.returncode != _DIE:
+                        problems.append(
+                            f"scripts/{name}: {_fn}() exited {_r.returncode} on "
+                            f"{_v!r}, not via die ({_DIE}) — {(_r.stderr or '').strip()[:90]!r}. "
+                            f"A non-die failure is the harness or the arm being "
+                            f"BROKEN, not the guard refusing: rc 127 (an arm "
+                            f"calling a command that does not exist) would count "
+                            f"as a refusal under a bare `!= 0` test while the "
+                            f"real CLI dies at every call (audit F144)")
             # The controls: a guard that refuses EVERYTHING passes every
             # rejection probe above while wedging the CLI for real ids. Both
             # halves, since check_owner_name delegates to check_bare_name.
             for _fn, _v in (("check_bare_name t", "task-1"),
                             ("check_owner_name", "b3f1c2d4-5a6b-7c8d")):
-                _r = subprocess.run(["bash", "-c", _harness + _fn + ' "$1"',
-                                     "_", _v], capture_output=True, text=True)
+                _r = _run_probe(["bash", "-c", _harness + _fn + ' "$1"', "_", _v],
+                                problems, f"scripts/{name}: {_fn.split()[0]}()")
+                if _r is None:
+                    continue
                 if _r.returncode != 0:
                     problems.append(
                         f"scripts/{name}: {_fn.split()[0]}() REFUSES the "
@@ -1593,21 +1610,40 @@ def check_autobar(root, problems):
                 "tests the counter's EFFECT")
         else:
             with tempfile.TemporaryDirectory() as _td:
+                # The scratch repo must be ISOLATED from the developer's git
+                # configuration, or the probe measures their machine instead of
+                # this code. Measured (PR review of e8e0179): a global
+                # `core.excludesFile` listing `newdir/` made the counter report
+                # 0 and the validator FAIL against a correct autobar.sh — a
+                # false positive on a build gate, which trains the maintainer
+                # to ignore it. GIT_CONFIG_GLOBAL/SYSTEM=/dev/null is the
+                # documented off switch; the identity vars avoid needing
+                # `git config` at all (no commit is made, but a future edit
+                # might), and GIT_CEILING keeps a stray walk inside the tempdir.
+                _env = dict(os.environ,
+                            GIT_CONFIG_GLOBAL=os.devnull,
+                            GIT_CONFIG_SYSTEM=os.devnull,
+                            GIT_CONFIG_NOSYSTEM="1",
+                            GIT_CEILING_DIRECTORIES=_td,
+                            GIT_AUTHOR_NAME="p", GIT_AUTHOR_EMAIL="p@t",
+                            GIT_COMMITTER_NAME="p", GIT_COMMITTER_EMAIL="p@t")
                 _probe = (
                     'set -e\n'
                     f'cd "{_td}"\n'
                     'git init -q . 2>/dev/null\n'
-                    'git config user.email p@t; git config user.name p\n'
                     'mkdir -p newdir .operator\n'
                     'printf x > newdir/a; printf x > newdir/b; printf x > newdir/c\n'
                     'printf x > .operator/ignored\n'
                     + _fn.group(0) + '\n'
                     f'autobar_count_changed "{_td}"\n'
                     'echo "$autobar_paths $autobar_measured"\n')
-                _r = subprocess.run(["bash", "-c", _probe],
-                                    capture_output=True, text=True)
-                _got = (_r.stdout or "").strip().split()
-                if _r.returncode != 0 or len(_got) != 2:
+                _r = _run_probe(["bash", "-c", _probe], problems,
+                                "scripts/lib/autobar.sh: autobar_count_changed()",
+                                env=_env)
+                _got = (_r.stdout or "").strip().split() if _r else []
+                if _r is None:
+                    pass  # _run_probe already reported why; do not double-report
+                elif _r.returncode != 0 or len(_got) != 2:
                     problems.append(
                         f"scripts/lib/autobar.sh: autobar_count_changed() could "
                         f"not be executed (rc {_r.returncode}: "
@@ -1840,8 +1876,10 @@ def check_claims(root, problems):
                              ("scripts/validate_plugin.py", 0),
                              ("scripts/statusline.sh", 0), ("backlog/x.md", 0),
                              ("src/app.py", 1), ("scripts/other.sh", 1)):
-            _r = subprocess.run(["bash", "-c", _script, "_", _path],
-                                capture_output=True, text=True)
+            _r = _run_probe(["bash", "-c", _script, "_", _path], problems,
+                            "scripts/ops-claims.sh: matches_protected()")
+            if _r is None:
+                break  # reported by _run_probe; the remaining probes would too
             if _r.returncode != _want:
                 problems.append(
                     f"scripts/ops-claims.sh: matches_protected() "
@@ -1860,6 +1898,43 @@ def check_claims(root, problems):
             "parser-weakening laundering path")
 
 
+def _run_probe(argv, problems, what, env=None):
+    """Run an executable pin's probe. Returns the CompletedProcess, or None
+    after REPORTING why it could not run.
+
+    Three hazards, each measured on this file's own probes (PR review of
+    e8e0179) rather than imagined:
+
+    * **No timeout hangs the build forever.** The probes exec code extracted
+      from repo files, and a guard containing a bare `read` blocks on inherited
+      stdin: `validate_plugin.py` never returned (measured — killed at 20s).
+      A build gate that hangs is worse than one that fails, because CI reports
+      nothing at all. Hence `timeout=` AND `stdin=DEVNULL`, which turns a
+      stdin-reading guard into an instant EOF instead of a wedge.
+    * **A missing interpreter raises instead of reporting.** `subprocess.run`
+      throws FileNotFoundError when the binary is absent; the node probe took
+      down the whole validator with a traceback on a machine without node
+      (measured). Every check in this file reports; none may crash.
+    * A timeout is itself a finding, not a skip — same polarity as the rest.
+    """
+    try:
+        return subprocess.run(argv, capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL, timeout=30, env=env)
+    except FileNotFoundError:
+        problems.append(
+            f"{what}: cannot run the behaviour probe — {argv[0]!r} is not "
+            f"installed, so this pin proves nothing on this machine. Reported "
+            f"rather than skipped: a silent skip is how a gutted guard ships "
+            f"green (audit F144)")
+    except subprocess.TimeoutExpired:
+        problems.append(
+            f"{what}: the behaviour probe TIMED OUT after 30s — the extracted "
+            f"code blocks (a bare `read` inherits stdin, a loop never exits). "
+            f"That is a defect in what was extracted, and a build gate that "
+            f"hangs reports nothing at all (audit F144)")
+    return None
+
+
 def _tool_loops(code):
     """Every `for [_]tool in <words>; do … done` as (head, body) pairs.
 
@@ -1876,17 +1951,57 @@ def _tool_loops(code):
     what bash does. Same house rule as check_compressor's brace-depth pass —
     when the question is "which body belongs to this head", counting is the
     only honest answer a regex cannot give.
+
+    Counting words is not lexing, and the gap bit (PR review of e8e0179): a
+    bare "do" in ENGLISH — `echo "nothing to do here"` — reads as a nested
+    loop opening, so the matcher needs one extra `done` and swallows the NEXT
+    loop whole. An install loop that copies nothing, sitting above any
+    unrelated loop with a `cp` in it, shipped "all contracts hold" (measured
+    against the real ops-init.sh). The second detection arm could not save it
+    either: the swallowed loop's head is not a tool-loop head, so it was never
+    a candidate of its own.
+
+    The fix is a boundary, not a lexer: a loop body cannot extend past the
+    start of a LATER top-level loop head, so the scan stops there. Any `for`
+    or `while` at the start of a line, at the same indentation or shallower,
+    ends the search — a real nested loop is indented deeper, and the shapes
+    this pin cares about are all top-level. Overshooting now truncates the
+    body (fail CLOSED: the `cp` is not found, the pin fires) instead of
+    extending it (fail OPEN: someone else's `cp` satisfies the check).
     """
+    # Comments and string bodies are MASKED before the word scan, offsets
+    # preserved (PR review of e8e0179, second half). The scan matches the bare
+    # WORDS `do`/`done`, and English contains both: `echo "install not done
+    # yet"` closed the loop early and truncated the body mid-string, which
+    # fails toward a false FAIL on correct code — and the truncated text still
+    # contained the word "install", so the body check matched PROSE rather
+    # than a command. Same masking discipline as _mask_code in release_gate.py
+    # and shell_code() one layer up: blank the contents, keep the offsets, so
+    # a match position still indexes the original text.
+    code = re.sub(r'#[^\n]*', lambda m: " " * len(m.group(0)), code)
+    code = re.sub(r'"[^"\n]*"|\'[^\'\n]*\'',
+                  lambda m: m.group(0)[0] + " " * (len(m.group(0)) - 2) + m.group(0)[-1],
+                  code)
     _WORD = re.compile(r'(?<![\w-])(do|done)(?![\w-])')
     out = []
     for _h in re.finditer(r'for\s+_?tool\s+in\s+([^\n;]*?)\s*;?\s*\bdo\b', code):
+        # The head's own indentation: a later loop at this level or shallower
+        # is a SIBLING, and this body ends before it.
+        _line0 = code.rfind("\n", 0, _h.start()) + 1
+        _indent = len(code[_line0:_h.start()]) - len(code[_line0:_h.start()].lstrip())
+        _next = None
+        for _s in re.finditer(r'^([ \t]*)(?:for|while)\b', code[_h.end():], re.M):
+            if len(_s.group(1)) <= _indent:
+                _next = _h.end() + _s.start()
+                break
+        _limit = _next if _next is not None else len(code)
         depth, i, end = 1, _h.end(), None
-        for _t in _WORD.finditer(code, i):
+        for _t in _WORD.finditer(code, i, _limit):
             depth += 1 if _t.group(1) == "do" else -1
             if depth == 0:
                 end = _t.start()
                 break
-        out.append((_h.group(1), code[i:end] if end is not None else code[i:]))
+        out.append((_h.group(1), code[i:end] if end is not None else code[i:_limit]))
     return out
 
 
@@ -1969,7 +2084,22 @@ def check_install_set_parity(root, problems):
         # the ONLY iteration over a tool list, so a literal-list loop anywhere
         # in the writer is reported rather than hidden behind a compliant one.
         _loops = _tool_loops(code)
-        if _loops:
+        if not _loops:
+            # `if _loops:` was the wrong polarity (PR review of e8e0179): the
+            # head regex only matches an iteration variable literally named
+            # `tool`/`_tool`, so renaming it made _tool_loops return [] and
+            # BOTH arms below silently never ran. The F130 pin above still
+            # fires on the shapes measured, so this was not an open gate — but
+            # a check that goes quiet when its own shape assumption fails is
+            # the exact silence this file exists to refuse, and it reported
+            # nothing to say why. No candidate loop is a finding.
+            problems.append(
+                f"scripts/{name}: no `for tool in $_OPS_TOOLS; do … done` loop "
+                f"could be located at all — the install loop is the thing this "
+                f"check is about, so its absence (renamed iteration variable, "
+                f"a reshape this locator cannot read) is reported, never "
+                f"treated as nothing to check (audit F144)")
+        else:
             if not any(re.fullmatch(r'\s*\$_OPS_TOOLS\s*', _head)
                        and re.search(r'\b(cp|install)\b', _body)
                        for _head, _body in _loops):
@@ -3030,9 +3160,11 @@ const a = run(plain), b = run(ansi);
 console.log(JSON.stringify({identity: a === plain, stripped: b.indexOf("\x1b") === -1,
                             kept: b.includes("[ok]") && b.includes("[FAIL]")}));
 ''' % (json.dumps(str(comp.resolve())), json.dumps(str(root.resolve())))
-    _r = subprocess.run(["node", "--input-type=module", "-e", _probe],
-                        capture_output=True, text=True)
-    if _r.returncode != 0:
+    _r = _run_probe(["node", "--input-type=module", "-e", _probe], problems,
+                    "ops-compress.mjs: scrub")
+    if _r is None:
+        pass  # node absent or the probe hung — _run_probe reported which
+    elif _r.returncode != 0:
         problems.append(
             f"ops-compress.mjs: scrub could not be executed through compress() "
             f"(node rc {_r.returncode}: "
