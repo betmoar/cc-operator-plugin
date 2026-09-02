@@ -1223,6 +1223,47 @@ def check_guard_parity(root, problems):
                 "body reading `session_id: $S` migrates to `$S__task`, which "
                 "both parsers then read as a valid foreign owner (audit "
                 "F128, migration half)")
+    # audit F136 (2026-09-02): the CLIs resolve a task id to its sentinel with
+    # the glob `*__<id>`, and `*` spans a `__` — so a planted `A__B__C`
+    # matched id `C` at every CLI while the hook (first-`__` split) called the
+    # same file MALFORMED: ops-task reported a never-opened task "already
+    # open" (rc 0), ops-adopt RENAMED the malformed file into a well-formed
+    # one. Each lookup now filters on the TASK HALF of the match; the filter
+    # is a guard like any other, and one site without it is the drift that
+    # ships green (F30), so every site is pinned by its own literal.
+    _task_half_re = re.compile(
+        r'_n="\$\{_f##\*/\}";\s*\[\s*"\$\{_n#\*__\}"\s*=\s*"\$_t"\s*\]\s*\|\|\s*continue')
+    for name, fn in (("ops-task.sh", "sentinel_for"),
+                     ("ops-verdict.sh", "sentinel_path"),
+                     ("ops-adopt.sh", "sentinel_path")):
+        p = root / "scripts" / name
+        if not p.is_file():
+            continue
+        lbody = _function_body(shell_code(p), fn)
+        if lbody is None:
+            problems.append(
+                f"scripts/{name}: cannot locate {fn}()'s body — the F136 "
+                f"task-half pin has nothing to check. Reshaping the lookup "
+                f"must update this locator, not silently skip it")
+        elif _report_if_redefined(lbody, f"scripts/{name}", problems):
+            pass
+        elif not _task_half_re.search(lbody):
+            problems.append(
+                f"scripts/{name}: {fn}() resolves `*__<id>` without checking "
+                f"the task half of the match (`_n=\"${{_f##*/}}\"; "
+                f"[ \"${{_n#*__}}\" = \"$_t\" ] || continue`) — the glob's `*` "
+                f"spans a `__`, so a planted A__B__C resolves as task C here "
+                f"while the Stop hook calls it MALFORMED (audit F136)")
+    tp = root / "scripts" / "ops-task.sh"
+    if tp.is_file() and not re.search(
+            r'_dn="\$\{_dup##\*/\}";\s*\[\s*"\$\{_dn#\*__\}"\s*=\s*"\$ID"\s*\]\s*\|\|\s*continue',
+            shell_code(tp)):
+        problems.append(
+            "scripts/ops-task.sh: the post-rename duplicate loop resolves "
+            "`*__$ID` without checking the task half of the match "
+            "(`_dn=\"${_dup##*/}\"; [ \"${_dn#*__}\" = \"$ID\" ] || continue`) — "
+            "a planted A__B__$ID reads as a racing duplicate and the opener "
+            "dies AFTER creating the sentinel (audit F136, the fourth site)")
     # The -L symlink rejection: the opener plus every sentinel reader (`-f`
     # follows a planted symlink; F65/F66). The Stop hook's pending/ enumeration
     # lives in lib/partition.sh since 0.10, so its obligation moved there.
@@ -1874,6 +1915,22 @@ def check_gitignore_parity(root, problems):
                 "body's marker makes every LATER session skip the migration "
                 "(F119). Detecting a v1 file and confirming the v2 write are "
                 "two claims (#102)")
+
+    # audit F137 (2026-09-02): ops-init's write is atomic for the same reason
+    # (the PR #97 review made BOTH writers temp+mv) and had no pin of its own —
+    # reverting it to the heredoc-onto-the-live-file shape reported "all
+    # contracts hold" on a scratch copy of 0.11.5. Same-shape pin, init's paths.
+    p = root / "scripts" / "ops-init.sh"
+    if p.is_file() and not re.search(
+            r'mv\s+-f\s+"\$OPDIR/\.gitignore\.v2\.tmp"\s+"\$OPDIR/\.gitignore"',
+            shell_code(p)):
+        problems.append(
+            "scripts/ops-init.sh: the v2 gitignore write is not ATOMIC — no "
+            "`mv -f \"$OPDIR/.gitignore.v2.tmp\" \"$OPDIR/.gitignore\"` swaps a "
+            "complete temp onto the live path. Under set -e a cat dying "
+            "mid-write leaves a truncated, marker-less .gitignore, and the "
+            "re-run's migration backs THAT up over the good .v1.bak (F119's "
+            "class; the hook's copy is pinned above — audit F137)")
 
 
 #: The lock block's load-bearing content, pinned as CANONICAL rather than

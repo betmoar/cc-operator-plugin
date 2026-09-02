@@ -4505,6 +4505,156 @@ check "F118 …and it adds to a real pending task rather than replacing it" \
 # step 5); they live in git history (tree <= 0.9.0) and the maintainer's local .archive/dev/. ops-corpus.sh
 # followed in step 6 (decision: DELETE).
 ########################################################################
+
+########################################################################
+echo "-- Case: F135 an EMPTY task id (owner-only 'sid__' or bare '__') is MALFORMED — never a silent open"
+# Audit 2026-09-02 (F135). Readers split the name on the FIRST `__`, so `SESS-A__` and `__` yield an EMPTY task
+# id. The old scan counted them as MINE (the bar showed op[N] red) but appended "" to MINE_IDS, and the hook's
+# block condition is that LIST — so with only such names pending the hook returned rc 0 with no message while
+# the bar said blocked: the hook/bar disagreement sharing partition.sh exists to prevent, and a silent open.
+# Same class as F118: a name no writer of ours produces (both guards refuse an empty id), so it belongs in the
+# MALFORMED bucket with the rm -f remedy. Measured on 0.11.5 AND on the pre-#99 hook — pre-existing.
+F135P="$(newproj)"; ( cd "$F135P" && bash "$INIT" >/dev/null 2>&1 )
+: > "$F135P/.operator/pending/SESS-A__"
+: > "$F135P/.operator/pending/__"
+run_hook stop-session-a.json "$F135P"
+check "F135 owner-only and bare '__' sentinels BLOCK the stop (rc 2, fails closed)" \
+  "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+check "F135 the block calls the names MALFORMED and says the task id is EMPTY" \
+  "$(printf '%s' "$HERR" | grep -q 'MALFORMED' && printf '%s' "$HERR" | grep -qi 'empty' && echo 0 || echo 1)"
+check "F135 rm -f names the owner-only sentinel's real path" \
+  "$(printf '%s' "$HERR" | grep -qF "rm -f '$F135P/.operator/pending/SESS-A__'" && echo 0 || echo 1)"
+check "F135 rm -f names the bare '__' sentinel's real path" \
+  "$(printf '%s' "$HERR" | grep -qF "rm -f '$F135P/.operator/pending/__'" && echo 0 || echo 1)"
+check "F135 no 'pending verdict(s)' line names an empty id" \
+  "$(printf '%s' "$HERR" | grep -q 'pending verdict(s):' && echo 1 || echo 0)"
+check "F135 the bar agrees with the hook: op[2], both blocking" \
+  "$([ "$(f118_render SESS-A "$F135P")" = "op[2]" ] && echo 0 || echo 1)"
+# A FOREIGN owner-only name is the same defect one branch over: it was reported as "<empty> owned by SESS-Z" —
+# a foreign task with no id, which no --defer can name. MALFORMED, like the others.
+: > "$F135P/.operator/pending/SESS-Z__"
+run_hook stop-session-a.json "$F135P"
+check "F135 a FOREIGN owner-only name is MALFORMED, not 'owned by SESS-Z' with an empty id" \
+  "$(printf '%s' "$HERR" | grep -q 'owned by SESS-Z' && echo 1 || echo 0)"
+check "F135 …and there are exactly three rm -f lines, one per malformed sentinel" \
+  "$([ "$(printf '%s\n' "$HERR" | grep -c "^operator:   rm -f '")" -eq 3 ] && echo 0 || echo 1)"
+# CONTROL: a well-formed task beside them is still NAMED in the pending line — and named EXACTLY: the old
+# accumulator produced "legit, " (a trailing comma for the empty id), which is the symptom in miniature.
+( cd "$F135P" && bash "$TASK" legit --owner SESS-A >/dev/null 2>&1 )
+run_hook stop-session-a.json "$F135P"
+check "F135 CONTROL a well-formed task beside them is still named: 'pending verdict(s): legit —'" \
+  "$(printf '%s' "$HERR" | grep -q 'pending verdict(s): legit — run' && echo 0 || echo 1)"
+check "F135 CONTROL …and the bar counts all four: op[4]" \
+  "$([ "$(f118_render SESS-A "$F135P")" = "op[4]" ] && echo 0 || echo 1)"
+# The printed remedies clear exactly the malformed ones; the real task still gates, then closes normally.
+eval "$(printf '%s\n' "$HERR" | grep -o "rm -f '[^']*'" | tr '\n' ';')"
+run_hook stop-session-a.json "$F135P"
+check "F135 running every printed remedy leaves ONLY the real task blocking" \
+  "$([ "$HRC" -eq 2 ] && printf '%s' "$HERR" | grep -q 'pending verdict(s): legit — run' \
+     && ! printf '%s' "$HERR" | grep -q MALFORMED && echo 0 || echo 1)"
+( cd "$F135P" && bash "$VERDICT" legit crit ev PASS --owner SESS-A >/dev/null 2>&1 )
+run_hook stop-session-a.json "$F135P"
+check "F135 …and the stop is allowed once the real task has its verdict" "$([ "$HRC" -eq 0 ] && echo 0 || echo 1)"
+
+########################################################################
+echo "-- Case: F136 a task id resolves ONLY to a name whose task half is that id — the CLIs read names the way the hook does"
+# Audit 2026-09-02 (F136). The lookup glob `*__<id>` lets `*` span a `__`, so a planted `SESS-A__B__C` matched
+# task id `C`: ops-task.sh reported "already open: C" (rc 0 — success for a task never opened; and had the
+# open gone through, the post-rename dup loop would have died on the same match), ops-verdict.sh refused C as
+# "owned by SESS-A", and ops-adopt.sh RENAMED the malformed file to SESS-A__C — laundering a name the Stop hook
+# calls MALFORMED into a well-formed one. Readers split on the FIRST `__` (task = B__C); the four CLI globs now
+# resolve the same way, so the hook's `rm -f` stays the one remedy and #99's "no CLI can address it" is true.
+F136P="$(newproj)"; ( cd "$F136P" && bash "$INIT" >/dev/null 2>&1 )
+: > "$F136P/.operator/pending/SESS-A__B__C"
+F136OUT="$( cd "$F136P" && bash "$TASK" C --owner SESS-A 2>&1 )"; F136RC=$?
+check "F136 ops-task.sh opens C beside a planted SESS-A__B__C (not 'already open', no dup death)" \
+  "$([ "$F136RC" -eq 0 ] && printf '%s' "$F136OUT" | grep -q '^opened C ' && echo 0 || echo 1)"
+check "F136 …the new sentinel is SESS-A__C and the planted file is untouched" \
+  "$([ -f "$F136P/.operator/pending/SESS-A__C" ] && [ -f "$F136P/.operator/pending/SESS-A__B__C" ] && echo 0 || echo 1)"
+( cd "$F136P" && bash "$VERDICT" C crit ev PASS --owner SESS-A >/dev/null 2>&1 ); F136VRC=$?
+check "F136 ops-verdict.sh C clears SESS-A__C (rc 0) and leaves the planted file alone" \
+  "$([ "$F136VRC" -eq 0 ] && [ ! -e "$F136P/.operator/pending/SESS-A__C" ] \
+     && [ -f "$F136P/.operator/pending/SESS-A__B__C" ] && echo 0 || echo 1)"
+# With ONLY the planted file present, no CLI may resolve C to it.
+( cd "$F136P" && bash "$ADOPT" --owner SESS-A C >/dev/null 2>&1 ); F136ARC=$?
+check "F136 ops-adopt.sh does not adopt (rename) the planted file as task C" \
+  "$([ "$F136ARC" -ne 0 ] && [ -f "$F136P/.operator/pending/SESS-A__B__C" ] \
+     && [ ! -e "$F136P/.operator/pending/SESS-A__C" ] && echo 0 || echo 1)"
+( cd "$F136P" && bash "$VERDICT" C --defer probe --owner SESS-A >/dev/null 2>&1 ) || true
+check "F136 ops-verdict.sh --defer C does not clear the planted file" \
+  "$([ -f "$F136P/.operator/pending/SESS-A__B__C" ] && echo 0 || echo 1)"
+# CONTROL: the ordinary owned shape still resolves through the same (filtered) loop.
+( cd "$F136P" && bash "$TASK" D --owner SESS-A >/dev/null 2>&1 )
+F136OUT="$( cd "$F136P" && bash "$TASK" D --owner SESS-A 2>&1 )"
+check "F136 CONTROL a well-formed SESS-A__D still reads as already open" \
+  "$(printf '%s' "$F136OUT" | grep -q '^already open: D' && echo 0 || echo 1)"
+( cd "$F136P" && bash "$VERDICT" D crit ev PASS --owner SESS-A >/dev/null 2>&1 )
+check "F136 CONTROL …and ops-verdict.sh D clears it" "$([ ! -e "$F136P/.operator/pending/SESS-A__D" ] && echo 0 || echo 1)"
+
+########################################################################
+echo "-- Case: ops-reverify.sh dates rows by their source stamp's HEAD window (#103, audit F120 aftermath)"
+# A row is written while HEAD == its stamp's sha, so its write time lies in [commit date of sha, commit date
+# of sha's first descendant on the way to HEAD] — open-ended ("today") when there is none. The tool lists
+# rows whose window overlaps the plugin's known-bad window; it never writes. Dates are fixed via
+# GIT_COMMITTER_DATE so the assertions are exact.
+RV="$SCRIPTS/ops-reverify.sh"
+RVP="$(newproj)"; ( cd "$RVP" && git init -q && git config user.email t@t && git config user.name t && bash "$INIT" >/dev/null 2>&1 )
+rvcommit() { # rvcommit <YYYY-MM-DD> <file> → 12-char sha, committed at noon UTC on that date
+  ( cd "$RVP" && echo "$1" > "$2" && git add -A >/dev/null 2>&1 \
+    && GIT_AUTHOR_DATE="${1}T12:00:00+00:00" GIT_COMMITTER_DATE="${1}T12:00:00+00:00" git commit -qm "$2" \
+    && git rev-parse --short=12 HEAD )
+}
+RS1="$(rvcommit 2026-08-10 a)"; RS2="$(rvcommit 2026-08-25 b)"; RS3="$(rvcommit 2026-09-05 c)"
+check "reverify SETUP: three dated commits exist" "$([ -n "$RS1" ] && [ -n "$RS2" ] && [ -n "$RS3" ] && echo 0 || echo 1)"
+{ printf '| t1 | crit | ev @%s | PASS |\n' "$RS1"
+  printf '| t2 | crit | ev @%s+dirty | FAIL |\n' "$RS2"
+  printf '| t3 | crit | ev @%s | PASS |\n' "$RS3"
+  printf '| t4 | crit | ev @no-vcs | PASS |\n'
+  printf '| t5 | crit | ev @deadbeef0000 | PASS |\n'
+  printf '| t6 | crit | ev with no stamp | PASS |\n'
+  printf '| t7 | only | three cells |\n'
+  printf 'prose that is not a row\n'
+} >> "$RVP/.operator/VERDICTS.md"
+RVOUT="$( cd "$RVP" && bash "$RV" 2>&1 )"; RVRC=$?
+check "reverify: exits 1 when rows need re-verification" "$([ "$RVRC" -eq 1 ] && echo 0 || echo 1)"
+check "reverify: t1 (HEAD window 08-10..08-25) overlaps the default window → AFFECTED" \
+  "$(printf '%s\n' "$RVOUT" | grep -q "| t1 | PASS | $RS1 | 2026-08-10 .. 2026-08-25 | AFFECTED |" && echo 0 || echo 1)"
+check "reverify: t2 (+dirty, 08-25..09-05) → AFFECTED, and the stamp keeps its +dirty" \
+  "$(printf '%s\n' "$RVOUT" | grep -q "| t2 | FAIL | $RS2+dirty | 2026-08-25 .. 2026-09-05 | AFFECTED |" && echo 0 || echo 1)"
+check "reverify: t3 (09-05..today, still HEAD) → clear (after window)" \
+  "$(printf '%s\n' "$RVOUT" | grep -q "| t3 | PASS | $RS3 | 2026-09-05 .. today | clear (after window) |" && echo 0 || echo 1)"
+check "reverify: @no-vcs → UNDATABLE" "$(printf '%s\n' "$RVOUT" | grep -q '| t4 | PASS | no-vcs | — | UNDATABLE |' && echo 0 || echo 1)"
+check "reverify: a sha this repo does not know → UNDATABLE, saying why" \
+  "$(printf '%s\n' "$RVOUT" | grep -q '| t5 | PASS | deadbeef0000 | — | UNDATABLE (sha not in this repo) |' && echo 0 || echo 1)"
+check "reverify: a stampless row → UNDATABLE" "$(printf '%s\n' "$RVOUT" | grep -q '| t6 | PASS | (none) | — | UNDATABLE |' && echo 0 || echo 1)"
+check "reverify: the summary counts 2 affected, 3 undatable, 1 clear, 1 skipped" \
+  "$(printf '%s\n' "$RVOUT" | grep -qF 'affected: 2 · undatable: 3 · clear: 1 · skipped (not a 4-cell row): 1' && echo 0 || echo 1)"
+check "reverify: the footer routes new rows through the single writer and forbids editing the old" \
+  "$(printf '%s\n' "$RVOUT" | grep -qF 'ops-verdict.sh <gate> "re-verify(#103):' && printf '%s\n' "$RVOUT" | grep -q 'never edit' && echo 0 || echo 1)"
+RVOUT="$( cd "$RVP" && bash "$RV" --from 2026-08-01 --to 2026-08-05 --quiet 2>&1 )"; RVRC=$?
+check "reverify: a window before every commit clears all datable rows (undatable still exit 1)" \
+  "$([ "$RVRC" -eq 1 ] && printf '%s\n' "$RVOUT" | grep -qF 'affected: 0 · undatable: 3 · clear: 3' && echo 0 || echo 1)"
+check "reverify: --quiet prints no procedure footer" "$(printf '%s\n' "$RVOUT" | grep -q 'Re-verification procedure' && echo 1 || echo 0)"
+RVOUT="$( cd "$RVP" && bash "$RV" --from 2026-09-10 --to 2026-09-20 --quiet 2>&1 )"
+check "reverify: an open-ended (still HEAD) window overlaps any later window — t3 AFFECTED" \
+  "$(printf '%s\n' "$RVOUT" | grep -q "| t3 | PASS | $RS3 | 2026-09-05 .. today | AFFECTED |" && echo 0 || echo 1)"
+# No git at all: every sha row is undatable, and the tool says so rather than guessing.
+RVN="$(newproj)"; mkdir -p "$RVN/.operator"; cp "$RVP/.operator/VERDICTS.md" "$RVN/.operator/VERDICTS.md"
+RVOUT="$( cd "$RVN" && bash "$RV" --quiet 2>&1 )"
+# Four, not three: the unknown sha (t5) is "no git" too — without git nothing can say it is unknown.
+check "reverify: outside git every sha-bearing row (t1,t2,t3,t5) is 'UNDATABLE (no git)'" \
+  "$([ "$(printf '%s\n' "$RVOUT" | grep -c 'UNDATABLE (no git)')" -eq 4 ] && printf '%s\n' "$RVOUT" | grep -qF 'affected: 0 · undatable: 6' && echo 0 || echo 1)"
+check "reverify: a malformed --from is a usage error (rc 2)" \
+  "$( cd "$RVP" && bash "$RV" --from 2026-9-1 >/dev/null 2>&1; [ $? -eq 2 ] && echo 0 || echo 1 )"
+check "reverify: --from after --to is refused (rc 2)" \
+  "$( cd "$RVP" && bash "$RV" --from 2026-09-02 --to 2026-09-01 >/dev/null 2>&1; [ $? -eq 2 ] && echo 0 || echo 1 )"
+ln -s /etc/hostname "$RVN/.operator/VERDICTS.lnk"
+check "reverify: a symlinked ledger is refused (rc 2)" \
+  "$( cd "$RVN" && bash "$RV" --ledger .operator/VERDICTS.lnk >/dev/null 2>&1; [ $? -eq 2 ] && echo 0 || echo 1 )"
+RVC="$(newproj)"
+check "reverify: a clean ledger (header only) exits 0" \
+  "$( if ( cd "$RVC" && bash "$INIT" >/dev/null 2>&1 && bash "$RV" >/dev/null 2>&1 ); then echo 0; else echo 1; fi )"
+
 if [ "$FAIL" -ne 0 ]; then
   echo "== failed cases =="
   printf '%s\n' "$FAILED_NAMES" | sed '/^$/d'

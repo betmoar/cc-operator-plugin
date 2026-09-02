@@ -243,9 +243,14 @@ to end the session** (finish the turn). Expected: the Stop is blocked and the
 model receives, verbatim shape:
 
 ```
-operator: pending verdict(s): replay-run — run .operator/bin/ops-verdict.sh
+operator: pending verdict(s): replay-run — run '<abs>/.operator/bin/ops-verdict.sh'
 <id> <criterion> <evidence> <PASS|FAIL>, or --defer "<reason>"
 ```
+
+The path is ABSOLUTE and single-quoted (#94; `<abs>` is the project root) —
+the relative `.operator/bin/…` this line quoted until the 2026-09-02 audit
+(F139) was the pre-#94 shape, and asserting it against the shipped hook would
+have reported a defect on a correct message.
 
 This is the one check the entire bash suite asserts only at exit-code level —
 the live block is what the plugin exists to do. If cc-status renders the

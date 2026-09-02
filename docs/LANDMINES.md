@@ -526,3 +526,41 @@ reasoning, moved.
   with itself, and a returned `dead:true` removed a live seat (audit F103).
   Output spreads FIRST, pins come LAST, at every round — and the stub-runtime
   test carries exactly those three forged keys.
+
+## From the 2026-09-02 principal audit (F135–F139)
+
+- **A bucket that COUNTS a thing but does not NAME it opens the gate on it.**
+  `scan_pending` counted an empty-id sentinel (`sid__`, `__`) as MINE — the
+  bar rendered `op[N]` red — but appended `""` to `MINE_IDS`, and the Stop
+  hook's block condition is `[ -n "$pending" ]`, the LIST. With only such
+  names pending the hook returned 0 with no message while the bar said
+  blocked (audit F135; measured on the pre-#99 code too — the F118 fix walked
+  past it). Sharing `partition.sh` makes the hook and the bar read the same
+  BUCKETS; it does not make them take the same DECISION unless every bucket
+  feeds the decision the same way. When a reader branches on a derived string
+  (a list, a joined description) rather than the count, every element that
+  can be empty is a silent hole. The bucket is MALFORMED now, with the
+  `rm -f` remedy, because both writer guards refuse an empty id.
+- **Two readers of one name convention with two split rules disagree about
+  what a file IS.** The readers split `pending/<owner>__<task>` on the FIRST
+  `__`; the CLIs resolved a task id with the glob `*__<id>`, whose `*` spans a
+  `__` — so a planted `A__B__C` was task `B__C` to the hook and task `C` to
+  every CLI. `ops-task.sh C` said "already open" (rc 0) for a task that was
+  never opened; `ops-adopt.sh --owner me C` RENAMED the malformed file into a
+  well-formed `me__C` (audit F136). A glob is a parser, and when it stands
+  beside a string-split parser of the same name the two must agree on every
+  input they can both see — the task-half filter at all four glob sites is
+  that agreement, and `check_guard_parity` pins it because one site without
+  it is the drift that ships green.
+- **A pin added to one of two twins is the F116 shape one layer up.** The PR
+  #97 review made BOTH gitignore writers atomic; the atomic-swap pin covered
+  the hook only, and reverting `ops-init.sh`'s write to the non-atomic shape
+  reported "all contracts hold" (audit F137). When a review fixes a class at
+  N sites, the pin count is N, not 1 — and the check for that is a mutation
+  at EACH site, which is the vacuity method again.
+- **Runbook expectations rot on the line you did not re-read.** The 0.11.2
+  fix updated REPLAY-CHARTER's deviation-gate expectation to the absolute
+  path shape and left the R2b pending-verdict expectation on the pre-#94
+  relative shape (audit F139). A live replay would have reported a defect on
+  a correct hook. The charter's quoted strings are hand-maintained by
+  decision; the price is grepping the runbook for every message you change.

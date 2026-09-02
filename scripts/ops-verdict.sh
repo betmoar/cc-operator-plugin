@@ -381,9 +381,15 @@ lock_release() {
 # Ownership is in the NAME: pending/<owner>__<task>; unowned fails CLOSED.
 # No file is opened — a string split, `__` refused at construction.
 sentinel_path() { # sentinel_path <task-id> → path of its sentinel, or empty
-  local _t="$1" _f
+  local _t="$1" _f _n
   shopt -s nullglob
   for _f in "$OPDIR/pending/$_t" "$OPDIR/pending"/*__"$_t"; do
+    # The glob's `*` spans a `__`: a planted A__B__C matches *__C. Resolve only
+    # a name whose TASK HALF (first-`__` split — the Stop hook's reading) is
+    # $_t, or this CLI and the hook disagree about what the file IS: "already
+    # open" for a task never opened, a rename laundering a MALFORMED name into
+    # a well-formed one (audit F136). Same literal at all four sites; pinned.
+    _n="${_f##*/}"; [ "${_n#*__}" = "$_t" ] || continue
     # -e OR -L: -e is false for a dangling symlink; a planted entry must be
     # found and refused, not stepped around.
     { [ -e "$_f" ] || [ -L "$_f" ]; } && { printf '%s\n' "$_f"; break; }

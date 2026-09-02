@@ -9,6 +9,58 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.6] - 2026-09-02
+
+A second principal-architect audit (2026-09-02, autonomous), targeted at the
+0.11.4/0.11.5 remediation itself. Five findings (F135–F139, ledger in
+`AUDIT_LOG.md`), each fix landed with the test run RED against the pre-fix
+code; the run-1 backlog's P1 item #103 gets its procedure and a tool.
+
+### Fixed
+
+- **An EMPTY task id opened the gate silently (audit F135).** Readers split
+  `pending/<owner>__<task>` on the first `__`, so `sid__` and `__` yield an
+  empty task id. `scan_pending` counted such names as MINE — the statusline
+  rendered `op[N]` red — but appended `""` to `MINE_IDS`, and the Stop hook
+  blocks on that LIST: with only such names pending it returned 0 with no
+  message while the bar said blocked. Pre-existing (measured on the pre-#99
+  code); F118's class. The empty id joins the MALFORMED bucket, fail closed,
+  with the `rm -f` remedy; the hook's sentence names both shapes.
+- **The CLIs and the Stop hook disagreed about what a malformed name IS
+  (audit F136).** Every CLI resolved a task id with the glob `*__<id>`, whose
+  `*` spans a `__`, so a planted `A__B__C` was task `C` to the CLIs and task
+  `B__C` to the hook: `ops-task.sh C` reported "already open" (rc 0) for a
+  task never opened, `ops-verdict.sh C` refused it as foreign, and
+  `ops-adopt.sh --owner <me> C` RENAMED it into a well-formed `<me>__C` —
+  which also made #99's "no CLI can address it" false. All four lookup sites
+  (`sentinel_for`, both `sentinel_path`s, the post-rename dup loop) now
+  filter on the task half of the match; `check_guard_parity` pins each
+  literal (4 red subtests with any one removed).
+- **`ops-init.sh`'s atomic gitignore write had no pin (audit F137).** The PR
+  #97 review made both writers temp+mv; only the hook's swap was pinned, and
+  reverting init's to the heredoc-onto-the-live-file shape reported "all
+  contracts hold" (measured). Pinned, with the red python case.
+- **`docs/REPLAY-CHARTER.md` R2b quoted the pre-#94 relative Stop message as
+  the expected verbatim shape (audit F139)** — a live replay would have
+  reported a defect on a correct hook. Now the absolute single-quoted shape.
+- **`.claude/hooks/shellcheck-edited.sh` could not lint itself (audit
+  F138):** its second line began `# shellcheck-…`, which shellcheck parses as
+  a directive and rejects.
+
+### Added
+
+- **`scripts/ops-reverify.sh` — the #103 procedure, as a tool.** Dates every
+  `VERDICTS.md` row by its stamp's HEAD window (commit date of the sha to the
+  commit date of its first descendant toward HEAD, open-ended when none) and
+  lists the rows overlapping a date window — default the F120 defect's outer
+  bounds, v0.10.0 (2026-08-22) to v0.11.4 (2026-08-31). Undatable rows
+  (`@no-vcs`, an unknown sha, no git) are listed as such, never as clear;
+  exit 1 when anything needs re-verification; it never writes. The
+  re-verification steps (re-run the criterion, append a NEW row through the
+  single writer, never edit the old) are in the footer and in
+  `docs/PLAYBOOK.md`. A maintainer tool like `ops-backlog.sh`: not in the
+  install set, not charter-referenced.
+
 ## [0.11.5] - 2026-09-01
 
 Four self-contained items from the 2026-08-31 audit backlog. Every fix ships

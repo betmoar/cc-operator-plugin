@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck-edited.sh — lint a .sh file the moment it is edited, with the
+# hooks/shellcheck-edited.sh — lint a .sh file the moment it is edited, with the
 # PINNED shellcheck, not the one on this workstation.
 #
 # WHY THIS EXISTS. scripts/lib/autobar.sh shipped through THREE CI paths

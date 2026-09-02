@@ -111,9 +111,15 @@ mkdir -p "$OPDIR/pending"
 # ONE sentinel per task-id: look for the task under any owner first, or a
 # second opener creates a second file instead of hitting O_EXCL.
 sentinel_for() { # sentinel_for <task-id> → path, or empty
-  local _t="$1" _f
+  local _t="$1" _f _n
   shopt -s nullglob
   for _f in "$OPDIR/pending/$_t" "$OPDIR/pending"/*__"$_t"; do
+    # The glob's `*` spans a `__`: a planted A__B__C matches *__C. Resolve only
+    # a name whose TASK HALF (first-`__` split — the Stop hook's reading) is
+    # $_t, or this CLI and the hook disagree about what the file IS: "already
+    # open" for a task never opened, a rename laundering a MALFORMED name into
+    # a well-formed one (audit F136). Same literal at all four sites; pinned.
+    _n="${_f##*/}"; [ "${_n#*__}" = "$_t" ] || continue
     # -e OR -L: -e is false for a dangling symlink; a planted entry must be
     # found and refused, not stepped around.
     { [ -e "$_f" ] || [ -L "$_f" ]; } && { printf '%s\n' "$_f"; break; }
@@ -150,6 +156,9 @@ if { { printf 'cwd: %s\n' "$PWD"
   if [ -n "$OWNER" ]; then
     shopt -s nullglob
     for _dup in "$OPDIR/pending"/*__"$ID"; do
+      # Task-half filter, as in sentinel_for (audit F136): a planted A__B__$ID
+      # is not a duplicate of $ID.
+      _dn="${_dup##*/}"; [ "${_dn#*__}" = "$ID" ] || continue
       [ "$_dup" = "$SENTINEL" ] && continue
       die "duplicate sentinel detected: $_dup exists beside $SENTINEL — two sessions raced the same task-id; resolve in .operator/pending/ by hand (keep the intended owner's sentinel)"
     done

@@ -150,6 +150,21 @@ def write(p, text):
     p.write_text(text, encoding="utf-8")
 
 
+# audit F136: the task-half filter every `*__<id>` lookup carries; used by the
+# good tree AND the private reader stubs below (check_guard_parity pins it).
+def f136_lookup(fn):
+    return (fn + "() {\n  local _t=\"$1\" _f _n\n"
+            "  for _f in \"$OPDIR/pending/$_t\" \"$OPDIR/pending\"/*__\"$_t\"; do\n"
+            "    _n=\"${_f##*/}\"; [ \"${_n#*__}\" = \"$_t\" ] || continue\n"
+            "    [ -e \"$_f\" ] && { printf '%s\\n' \"$_f\"; break; }\n"
+            "  done\n}\n")
+
+
+F136_DUPLOOP = ("for _dup in \"$OPDIR/pending\"/*__\"$ID\"; do\n"
+                "  _dn=\"${_dup##*/}\"; [ \"${_dn#*__}\" = \"$ID\" ] || continue\n"
+                "done\n")
+
+
 def make_good_tree(root):
     write(root / ".claude-plugin" / "plugin.json", json.dumps({
         "name": "cc-operator", "version": "0.1.0",
@@ -234,7 +249,9 @@ def make_good_tree(root):
           "  elif ! cp \"$OPDIR/.gitignore\" \"$OPDIR/.gitignore.v1.bak\" 2>/dev/null; then\n"
           "    echo refusing >&2\n"
           "  else\n"
-          "cat > \"$OPDIR/.gitignore\" <<'EOF'\n" + gitignore_v2 + "EOF\n"
+          # ATOMIC: temp + same-dir mv (audit F137 pins init's swap like the hook's)
+          "cat > \"$OPDIR/.gitignore.v2.tmp\" <<'EOF'\n" + gitignore_v2 + "EOF\n"
+          "mv -f \"$OPDIR/.gitignore.v2.tmp\" \"$OPDIR/.gitignore\"\n"
           "  fi\nfi\n"
           "echo ok\n")
     # SessionStart clears the compressor's session-scoped artifacts and migrates
@@ -291,13 +308,18 @@ def make_good_tree(root):
     bounded = "while IFS= read -r -n 512 line; do :; done < \"$1\"\n"
     # every sentinel touchpoint carries the -L symlink rejection (F65/F66)
     nolink = "[ ! -L \"$1\" ] || exit 0\n"
+    # audit F136: every `*__<id>` lookup filters on the TASK HALF of the match
+    # (check_guard_parity pins the literal per site).
+    lookup, duploop = f136_lookup, F136_DUPLOOP
     # autobar.sh sourced AFTER partition.sh: it calls sentinel_owner_of_name.
     write(root / "scripts" / "ops-stop-hook.sh",
           "#!/usr/bin/env bash\n. lib/partition.sh\n. lib/autobar.sh\n" + JSON_GET)
     write(root / "scripts" / "ops-task.sh",
-          "#!/usr/bin/env bash\n" + guards + nolink + GOOD_ROOT_BLOCK)
+          "#!/usr/bin/env bash\n" + guards + nolink + lookup("sentinel_for") + duploop
+          + GOOD_ROOT_BLOCK)
     write(root / "scripts" / "ops-verdict.sh",
           "#!/usr/bin/env bash\n" + "_r() { local LC_ALL=C; :; }\n" + guards + nolink +
+          lookup("sentinel_path") +
           "sentinel_owner_of_name() {\n"
           "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]*) printf '\\n'; return 0 ;;\n"
     "    *'$'* | *'`'* | *\"'\"* | *'\"'* | *\\\\*) printf '\\n'; return 0 ;; esac\n"
@@ -314,7 +336,7 @@ def make_good_tree(root):
           "printf '%s | HANDOFF-MARK | [sid:%s]\\n' \"$d\" \"$MOWNER\" >> \"$DEC\"\n" +
           GOOD_LOCK_BLOCK + GOOD_SOURCE_STAMP + GOOD_ROOT_BLOCK)
     write(root / "scripts" / "ops-adopt.sh",
-          "#!/usr/bin/env bash\n" + guards + nolink +
+          "#!/usr/bin/env bash\n" + guards + nolink + lookup("sentinel_path") +
           "# PREV reject-set (F15): carries *.exempt like the sentinel_owner parsers\n"
           'case "${PREV:-}" in */* | .* | *"|"* | *[[:space:]]* | *[[:cntrl:]]* | *.exempt) PREV="<invalid>" ;; esac\n'
           + GOOD_LOCK_BLOCK + GOOD_ROOT_BLOCK)
@@ -1108,7 +1130,7 @@ class ValidatorTest(unittest.TestCase):
             "_r() { local LC_ALL=C; :; }\n"
             "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
             "check_owner_name() { case \"$1\" in *[[:space:]]*) die x ;; *'$'* | *'`'* | *\"'\"* | *'\"'* | *\\\\*) die x ;; esac; }\n"
-            "[ ! -L \"$f\" ] || exit 0\n"
+            "[ ! -L \"$f\" ] || exit 0\n" + f136_lookup("sentinel_path") +
             "sentinel_owner_of_name() {\n"
           "  case \"$_o\" in \"\" | */* | .* | *\"|\"* | *[[:space:]]*) printf '\\n'; return 0 ;;\n"
     "    *'$'* | *'`'* | *\"'\"* | *'\"'* | *\\\\*) printf '\\n'; return 0 ;; esac\n"
@@ -1125,7 +1147,7 @@ class ValidatorTest(unittest.TestCase):
             "_r() { local LC_ALL=C; :; }\n"
             "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
             "check_owner_name() { case \"$1\" in *[[:space:]]*) die x ;; *'$'* | *'`'* | *\"'\"* | *'\"'* | *\\\\*) die x ;; esac; }\n"
-            "[ ! -L \"$F\" ] || exit 0\n"
+            "[ ! -L \"$F\" ] || exit 0\n" + f136_lookup("sentinel_path") +
             # PREV reject-set (F15): the owner now arrives in the sentinel name,
             # so adoption reads no file at all.
             'case "${PREV:-}" in */* | .* | *"|"* | *[[:space:]]* | *[[:cntrl:]]* | *.exempt) PREV="<invalid>" ;; esac\n')
@@ -1136,7 +1158,7 @@ class ValidatorTest(unittest.TestCase):
               "#!/usr/bin/env bash\n"
               "check_bare_name() { case \"$2\" in .*) die x ;; *__*) die x ;; esac; }\n"
               "check_owner_name() { case \"$1\" in *[[:space:]]*) die x ;; *'$'* | *'`'* | *\"'\"* | *'\"'* | *\\\\*) die x ;; esac; }\n"
-              "[ ! -L \"$F\" ] || exit 0\n")
+              "[ ! -L \"$F\" ] || exit 0\n" + f136_lookup("sentinel_for") + F136_DUPLOOP)
         write(self.dir / "scripts" / "statusline.sh", GOOD_STATUSLINE)
 
     def bounds_problems(self):
@@ -1298,6 +1320,7 @@ class ValidatorTest(unittest.TestCase):
             "check_owner_name() { case \"$1\" in *[[:space:]]*) die x ;; *'$'* | *'`'* | *\"'\"* | *'\"'* | *\\\\*) die x ;; esac; }\n"
             "[ ! -L \"$F\" ] || exit 0\n"
             "while IFS= read -r -n 512 line; do :; done < \"$F\"\n"
+            + f136_lookup("sentinel_path") +
             # PREV reject-set (F15): carries *.exempt (check_guard_parity pin)
             'case "${PREV:-}" in */* | .* | *"|"* | *[[:space:]]* | *[[:cntrl:]]* | *.exempt) PREV="<invalid>" ;; esac\n'))
         self.assertEqual(self.bounds_problems(), [])
@@ -2644,6 +2667,23 @@ class GitignoreParityTest(unittest.TestCase):
         write(self.dir / "scripts" / "ops-sessionstart-hook.sh", self._real_ssh)
         self.assertEqual(self._probs(), [])
 
+    def test_a_non_atomic_INIT_write_fires(self):
+        # audit F137 (2026-09-02): the atomic pin above covered the HOOK only.
+        # Reverting ops-init's _gi_write to the pre-review shape (heredoc
+        # straight onto the live file, no temp, no mv) reported "all contracts
+        # hold" — measured on a scratch copy of 0.11.5. Both writers were made
+        # atomic in the same review; only one got the pin.
+        src = self._real_init.replace(
+            'cat > "$OPDIR/.gitignore.v2.tmp" <<EOF', 'cat > "$OPDIR/.gitignore" <<EOF', 1)
+        src = src.replace('  mv -f "$OPDIR/.gitignore.v2.tmp" "$OPDIR/.gitignore"\n', '', 1)
+        self.assertNotEqual(src, self._real_init, "init anchors moved")
+        self.assertNotIn('mv -f "$OPDIR/.gitignore.v2.tmp"', src)
+        write(self.dir / "scripts" / "ops-init.sh", src)
+        probs = self._probs()
+        self.assertTrue(any("ops-init.sh" in p and "not ATOMIC" in p for p in probs), probs)
+        write(self.dir / "scripts" / "ops-init.sh", self._real_init)
+        self.assertEqual(self._probs(), [])
+
     def test_the_atomic_pin_is_not_satisfied_by_a_non_temp_mv(self):
         # Control on the pin's shape: an `mv -f` from somewhere ELSE onto the
         # live path is not the same-dir temp swap. The pin must read the temp
@@ -2754,6 +2794,39 @@ class GuardParityVacuityTest(unittest.TestCase):
     def test_the_real_tree_is_clean(self):
         self._install_real()
         self.assertEqual(self._probs(), [])
+
+    # audit F136 (2026-09-02): the four `*__<id>` lookups. (script, function or
+    # None for the ops-task dup loop, the exact filter line the pin reads.)
+    TASK_HALF_SITES = (
+        ("ops-task.sh", "sentinel_for",
+         '    _n="${_f##*/}"; [ "${_n#*__}" = "$_t" ] || continue\n'),
+        ("ops-verdict.sh", "sentinel_path",
+         '    _n="${_f##*/}"; [ "${_n#*__}" = "$_t" ] || continue\n'),
+        ("ops-adopt.sh", "sentinel_path",
+         '    _n="${_f##*/}"; [ "${_n#*__}" = "$_t" ] || continue\n'),
+        ("ops-task.sh", None,
+         '      _dn="${_dup##*/}"; [ "${_dn#*__}" = "$ID" ] || continue\n'),
+    )
+
+    def test_dropping_the_task_half_filter_from_any_lookup_fires(self):
+        # The glob `*__<id>` lets `*` span a `__`, so a planted `A__B__C`
+        # resolved as task `C` at every CLI while the hook called it MALFORMED
+        # (audit F136): "already open" for a task never opened, and ops-adopt
+        # RENAMING the malformed file into a well-formed one. The filter is a
+        # guard like any other — one site without it is the drift that ships
+        # green, so each of the four is knocked out on its own.
+        for script, fn, needle in self.TASK_HALF_SITES:
+            with self.subTest(script=script, site=fn or "dup-loop"):
+                self._install_real()
+                path = self.dir / "scripts" / script
+                src = path.read_text(encoding="utf-8")
+                self.assertIn(needle, src, f"{script}: filter anchor moved")
+                write(path, src.replace(needle, "", 1))
+                probs = self._probs()
+                self.assertTrue(any(script in q and "task half" in q for q in probs), probs)
+                # control: the shipped tree is clean again
+                self._install_real()
+                self.assertEqual(self._probs(), [])
 
     def _mutate(self, script, guard, without):
         """Delete a guard from the real script; return (leftover_text, problems)."""
