@@ -77,62 +77,72 @@ next_of() { git -C "$PROJ" rev-list --reverse --ancestry-path "$1..HEAD" 2>/dev/
 is_ancestor() { git -C "$PROJ" merge-base --is-ancestor "$1" HEAD 2>/dev/null; }
 
 AFFECTED=0; CLEAR=0; UNDATABLE=0; SKIPPED=0; n=0
-printf '%s\n' "# ops-reverify — rows whose HEAD window overlaps [$FROM, $TO] — ledger: $LEDGER"
-printf '%s\n' "| # | gate | verdict | stamp | HEAD window | status | criterion |"
-printf '%s\n' "|---|---|---|---|---|---|---|"
-while IFS= read -r -n 1048576 row || [ -n "$row" ]; do
-  n=$((n+1)); [ "$n" -le 200000 ] || { echo "ops-reverify: ledger exceeds 200000 lines — stopping" >&2; break; }
-  case "$row" in "| "*) ;; *) continue ;; esac
-  case "$row" in "| Gate | Criterion |"* | "|---"*) continue ;; esac
-  # EXACTLY four cells — `| gate | criterion | evidence @stamp | verdict |` —
-  # the same schema ops-verdict.sh --reconcile enforces; anything else is
-  # counted as skipped, never silently dropped (a row you cannot see is a row
-  # you will not re-verify).
-  body="${row#| }"; body="${body% |}"
-  gate="${body%% | *}";  r1="${body#* | }"
-  crit="${r1%% | *}";    r2="${r1#* | }"
-  ev="${r2%% | *}";      verdict="${r2#* | }"
-  if [ "$r1" = "$body" ] || [ "$r2" = "$r1" ] || [ "$verdict" = "$r2" ]; then
-    SKIPPED=$((SKIPPED+1)); continue
-  fi
-  case "$verdict" in *" | "*) SKIPPED=$((SKIPPED+1)); continue ;; esac
-  stamp="${ev##* @}"
-  [ "$stamp" != "$ev" ] || stamp="(none)"
-  sha="${stamp%%+*}"
-  status="" ; window=""
-  case "$sha" in
-    "(none)" | no-vcs | no-commit)
-      status="UNDATABLE"; window="—" ;;
-    *)
-      if [ "$HAVE_GIT" = 0 ]; then
-        status="UNDATABLE (no git)"; window="—"
-      else
-        lo="$(date_of "$sha")"
-        if [ -z "$lo" ]; then
-          status="UNDATABLE (sha not in this repo)"; window="—"
+# The row loop lives in a function so `local LC_ALL=C` scopes the C locale to
+# the reads (the idiom scripts/lib/partition.sh uses): `read -n N` counts
+# CHARACTERS outside it, so on multibyte rows the byte cap was up to 4x
+# looser than it read (Copilot review on PR #105). The criterion truncation
+# inside counts bytes for the same reason and may cut a multibyte character —
+# display only; the row itself is never rewritten.
+scan_ledger() {
+  local LC_ALL=C
+  printf '%s\n' "# ops-reverify — rows whose HEAD window overlaps [$FROM, $TO] — ledger: $LEDGER"
+  printf '%s\n' "| # | gate | verdict | stamp | HEAD window | status | criterion |"
+  printf '%s\n' "|---|---|---|---|---|---|---|"
+  while IFS= read -r -n 1048576 row || [ -n "$row" ]; do
+    n=$((n+1)); [ "$n" -le 200000 ] || { echo "ops-reverify: ledger exceeds 200000 lines — stopping" >&2; break; }
+    case "$row" in "| "*) ;; *) continue ;; esac
+    case "$row" in "| Gate | Criterion |"* | "|---"*) continue ;; esac
+    # EXACTLY four cells — `| gate | criterion | evidence @stamp | verdict |` —
+    # the same schema ops-verdict.sh --reconcile enforces; anything else is
+    # counted as skipped, never silently dropped (a row you cannot see is a row
+    # you will not re-verify).
+    body="${row#| }"; body="${body% |}"
+    gate="${body%% | *}";  r1="${body#* | }"
+    crit="${r1%% | *}";    r2="${r1#* | }"
+    ev="${r2%% | *}";      verdict="${r2#* | }"
+    if [ "$r1" = "$body" ] || [ "$r2" = "$r1" ] || [ "$verdict" = "$r2" ]; then
+      SKIPPED=$((SKIPPED+1)); continue
+    fi
+    case "$verdict" in *" | "*) SKIPPED=$((SKIPPED+1)); continue ;; esac
+    stamp="${ev##* @}"
+    [ "$stamp" != "$ev" ] || stamp="(none)"
+    sha="${stamp%%+*}"
+    status="" ; window=""
+    case "$sha" in
+      "(none)" | no-vcs | no-commit)
+        status="UNDATABLE"; window="—" ;;
+      *)
+        if [ "$HAVE_GIT" = 0 ]; then
+          status="UNDATABLE (no git)"; window="—"
         else
-          nxt="$(next_of "$sha")"
-          if [ -n "$nxt" ]; then hi="$(date_of "$nxt")"
-          elif is_ancestor "$sha"; then hi="today"
-          else hi="unknown (not an ancestor of HEAD)"; fi
-          window="$lo .. $hi"
-          # overlap: lo <= TO and (hi unknown/today or hi >= FROM)
-          if [ "$lo" \> "$TO" ]; then status="clear (after window)"
-          elif is_date "$hi" && [ "$hi" \< "$FROM" ]; then status="clear (before window)"
-          else status="AFFECTED"; fi
-        fi
-      fi ;;
-  esac
-  case "$status" in
-    AFFECTED) AFFECTED=$((AFFECTED+1)) ;;
-    UNDATABLE*) UNDATABLE=$((UNDATABLE+1)) ;;
-    *) CLEAR=$((CLEAR+1)) ;;
-  esac
-  # criterion LAST and truncated: it is what the maintainer re-runs, but a
-  # long one must not push the status off the screen.
-  [ "${#crit}" -le 60 ] || crit="${crit:0:60}…"
-  printf '| %s | %s | %s | %s | %s | %s | %s |\n' "$n" "$gate" "$verdict" "$stamp" "$window" "$status" "$crit"
-done < "$LEDGER"
+          lo="$(date_of "$sha")"
+          if [ -z "$lo" ]; then
+            status="UNDATABLE (sha not in this repo)"; window="—"
+          else
+            nxt="$(next_of "$sha")"
+            if [ -n "$nxt" ]; then hi="$(date_of "$nxt")"
+            elif is_ancestor "$sha"; then hi="today"
+            else hi="unknown (not an ancestor of HEAD)"; fi
+            window="$lo .. $hi"
+            # overlap: lo <= TO and (hi unknown/today or hi >= FROM)
+            if [ "$lo" \> "$TO" ]; then status="clear (after window)"
+            elif is_date "$hi" && [ "$hi" \< "$FROM" ]; then status="clear (before window)"
+            else status="AFFECTED"; fi
+          fi
+        fi ;;
+    esac
+    case "$status" in
+      AFFECTED) AFFECTED=$((AFFECTED+1)) ;;
+      UNDATABLE*) UNDATABLE=$((UNDATABLE+1)) ;;
+      *) CLEAR=$((CLEAR+1)) ;;
+    esac
+    # criterion LAST and truncated: it is what the maintainer re-runs, but a
+    # long one must not push the status off the screen.
+    [ "${#crit}" -le 60 ] || crit="${crit:0:60}…"
+    printf '| %s | %s | %s | %s | %s | %s | %s |\n' "$n" "$gate" "$verdict" "$stamp" "$window" "$status" "$crit"
+  done < "$LEDGER"
+}
+scan_ledger
 
 printf '\n%s\n' "affected: $AFFECTED · undatable: $UNDATABLE · clear: $CLEAR · skipped (not a 4-cell row): $SKIPPED"
 if [ "$QUIET" = 0 ] && [ $((AFFECTED + UNDATABLE)) -gt 0 ]; then

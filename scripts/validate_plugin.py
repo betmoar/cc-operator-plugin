@@ -685,7 +685,10 @@ def check_decisions_schema(root, problems):
     # `/`-terminated prefix and a balanced optional quote are the only shapes
     # a real source statement takes.
     _part_src_re = re.compile(
-        r'^\s*(?:\.|source)\s+("?)(?:\S*/)?partition\.sh\1\s*(?:#.*)?$',
+        # A trailing comment is tolerated (audit F142) but needs WHITESPACE in
+        # front of it (Copilot review on PR #105): `\s*(?:#.*)?` let
+        # `partition.sh#x` pass, and bash sources a file named `partition.sh#x`.
+        r'^\s*(?:\.|source)\s+("?)(?:\S*/)?partition\.sh\1(?:\s+#.*)?\s*$',
         re.MULTILINE)
     for name in ("ops-stop-hook.sh", "statusline.sh"):
         p = root / "scripts" / name
@@ -967,6 +970,11 @@ def check_reader_bounds(root, problems):
         # is one "line" to an unbounded read.
         "ops-tiers.sh": 1,       # the load_file config loop
         "ops-render.sh": 1,      # the load_file config loop
+        # The #103 sweep reads VERDICTS.md (hand-editable, untrusted): one
+        # bounded row loop, in a function declaring `local LC_ALL=C` (Copilot
+        # review on PR #105 — the first cut read at top level in the caller's
+        # locale, so the byte cap was a character cap).
+        "ops-reverify.sh": 1,
     }
     # The byte cap's legal range. A bound is only a bound if the number is one
     # a reader can actually be held to: the whole point is that no single read
@@ -1526,7 +1534,7 @@ def check_autobar(root, problems):
         # class as the partition src_re one function over): the filename sits
         # at a path boundary, prefix optional and `/`-terminated.
         src_re = re.compile(
-            r'^\s*(?:\.|source)\s+("?)(?:\S*/)?autobar\.sh\1\s*(?:#.*)?$',
+            r'^\s*(?:\.|source)\s+("?)(?:\S*/)?autobar\.sh\1(?:\s+#.*)?\s*$',
             re.MULTILINE)
         if not src_re.search(hcode):
             problems.append(

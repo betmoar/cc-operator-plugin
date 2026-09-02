@@ -1542,6 +1542,21 @@ class ValidatorTest(unittest.TestCase):
             encoding="utf-8")
         self.assertFires("does not SOURCE lib/partition.sh")
 
+    def test_a_hash_glued_to_the_sourced_filename_is_not_a_comment(self):
+        # Copilot review on PR #105: `\s*(?:#.*)?$` let `. lib/partition.sh#x`
+        # pass — bash sources a file named `partition.sh#x`, which does not
+        # exist, so the hook ran with no partition while the pin read a
+        # trailing comment. A comment needs whitespace in front of it; both
+        # source pins require it.
+        hook = self.dir / "scripts" / "ops-stop-hook.sh"
+        real = hook.read_text(encoding="utf-8")
+        hook.write_text(real.replace(". lib/partition.sh\n", ". lib/partition.sh#not-a-comment\n", 1),
+                        encoding="utf-8")
+        self.assertFires("does not SOURCE lib/partition.sh")
+        hook.write_text(real.replace(". lib/autobar.sh\n", '. "lib/autobar.sh"#not-a-comment\n', 1),
+                        encoding="utf-8")
+        self.assertFires("does not SOURCE lib/autobar.sh")
+
     def test_workflow_backtick_inside_meta_string_is_clean(self):
         # CONTROL for F133: shipped metas legitimately quote markdown code in
         # backticks INSIDE a double-quoted string (debate/dispatch/plan all
