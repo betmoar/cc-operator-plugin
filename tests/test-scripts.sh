@@ -4442,7 +4442,7 @@ check "F118 …and no rm -f line names the project directory (the pre-'; ' prefi
 eval "$(printf '%s\n' "$F118ME" | grep -o "rm -f '[^']*'" | tr '\n' ';')"
 check "F118 …and running every printed remedy clears both and reopens the gate" \
   "$([ ! -e "$F118M/.operator/pending/SESS-A__B__C" ] && [ ! -e "$F118M/.operator/pending/SESS-A__D__E" ] \
-     && { printf '{"session_id":"SESS-A","cwd":"%s"}' "$F118M" | "$BASH_ABS" "$HOOK" >/dev/null 2>&1; [ $? -eq 0 ]; } \
+     && printf '{"session_id":"SESS-A","cwd":"%s"}' "$F118M" | "$BASH_ABS" "$HOOK" >/dev/null 2>&1 \
      && echo 0 || echo 1)"
 
 # A FOREIGN-owned malformed name. The comments above call this the deliberate widening — "BLOCKS where the
