@@ -685,7 +685,7 @@ def check_decisions_schema(root, problems):
     # `/`-terminated prefix and a balanced optional quote are the only shapes
     # a real source statement takes.
     _part_src_re = re.compile(
-        r'^\s*(?:\.|source)\s+("?)(?:\S*/)?partition\.sh\1\s*$',
+        r'^\s*(?:\.|source)\s+("?)(?:\S*/)?partition\.sh\1\s*(?:#.*)?$',
         re.MULTILINE)
     for name in ("ops-stop-hook.sh", "statusline.sh"):
         p = root / "scripts" / name
@@ -1203,8 +1203,12 @@ def check_guard_parity(root, problems):
                 f"scripts/{name}: cannot locate {fn}()'s body — the #89 "
                 f"reader-arm pin has nothing to check. Reshaping the parser "
                 f"must update this locator, not silently skip it")
-        elif isinstance(rbody, _RedefinedFunction):
-            pass  # already reported by _report_if_redefined at other sites
+        elif _report_if_redefined(rbody, f"scripts/{name}", problems):
+            # audit F143: this branch used to `pass` with a comment claiming
+            # another site reports the redefinition — none did for the lib, so
+            # a second sentinel_owner_of_name() with no reject set shipped
+            # "all contracts hold" (bash resolves the LAST definition).
+            pass
         elif not re.search(_METACHAR_ARM + r"\s*printf\s+'\\n'", rbody):
             problems.append(
                 f"scripts/{name}: {fn}() has no complete metacharacter arm "
@@ -1522,7 +1526,7 @@ def check_autobar(root, problems):
         # class as the partition src_re one function over): the filename sits
         # at a path boundary, prefix optional and `/`-terminated.
         src_re = re.compile(
-            r'^\s*(?:\.|source)\s+("?)(?:\S*/)?autobar\.sh\1\s*$',
+            r'^\s*(?:\.|source)\s+("?)(?:\S*/)?autobar\.sh\1\s*(?:#.*)?$',
             re.MULTILINE)
         if not src_re.search(hcode):
             problems.append(
@@ -1640,6 +1644,40 @@ def check_claims(root, problems):
                 "`[[ $p == $pat ]]` — the glob/exact tokens "
                 "(scripts/ops-*.sh, scripts/validate_plugin.py) never match, "
                 "so the matcher is declared, called, and inert (audit F129)")
+    # audit F140 (2026-09-02): EXECUTE the matcher. The two literal pins above
+    # are substring tests on the body, and an early `return 1` — the exact
+    # escape F129's own comment names — left both literals in place while the
+    # matcher matched nothing: "all contracts hold" (pin-auditor, re-run by
+    # hand). Behaviour, not spelling: run the shipped PROTECTED line and the
+    # shipped function in a child bash against one probe per token and two
+    # unprotected paths. A dead branch, an early return, a wrapping `if false`
+    # all fail here and none of them can fail a substring test.
+    _ccode = shell_code(p)
+    _pros = re.findall(r'^PROTECTED="[^"\n]*"$', _ccode, re.M)
+    _fn = re.search(r'^matches_protected\(\)\s*\{.*?^\}', _ccode, re.M | re.S)
+    if not _pros or not _fn:
+        problems.append(
+            "scripts/ops-claims.sh: cannot extract PROTECTED= and "
+            "matches_protected() for the executable probe (audit F140) — "
+            "reshaping either must update this extractor, not silently skip it")
+    else:
+        _script = _pros[-1] + "\n" + _fn.group(0) + '\nmatches_protected "$1"\n'
+        for _path, _want in (("tests/t.sh", 0), ("hooks/hooks.json", 0),
+                             (".operator/bin/ops-verdict.sh", 0),
+                             ("scripts/ops-task.sh", 0),
+                             ("scripts/validate_plugin.py", 0),
+                             ("scripts/statusline.sh", 0), ("backlog/x.md", 0),
+                             ("src/app.py", 1), ("scripts/other.sh", 1)):
+            _r = subprocess.run(["bash", "-c", _script, "_", _path],
+                                capture_output=True, text=True)
+            if _r.returncode != _want:
+                problems.append(
+                    f"scripts/ops-claims.sh: matches_protected() "
+                    f"{'does not MATCH' if _want == 0 else 'MATCHES'} "
+                    f"'{_path}' when executed (rc {_r.returncode}, expected "
+                    f"{_want}) — the pinned literals may be present while the "
+                    f"behaviour is gone (an early return, a dead branch), and "
+                    f"then the gate-trespass check guards nothing (audit F140)")
     # statusline.sh must be in the literal — it is the F66 amendment and the
     # one a prior glob missed. Match the token, not the whole literal, so a
     # reordering stays free but dropping it fires.
@@ -2240,6 +2278,26 @@ def check_workflows(root, problems):
                     f"(backtick outside a double-quoted string) — the harness "
                     f"requires a PURE LITERAL and rejects a computed meta at "
                     f"launch, same class as the concatenation (audit F133)")
+
+        # audit F141 (2026-09-02): STRUCTURAL, not another spelling. The `+`
+        # and backtick pins enumerate two ways to compute a meta out of an
+        # unbounded set — `name: String("crawl").trim()` passed both AND every
+        # suite (the stub runtime never parses meta) while the harness refuses
+        # it at launch. Strip comments and string literals; what remains may
+        # hold only keys, brackets, numbers, true/false/null — and no call.
+        if meta_block:
+            _m = re.sub(r"//[^\n]*", "", meta_block.group(0))
+            _m = re.sub(r'"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'', '""', _m)
+            _bad = [t for t in re.findall(r"\b[A-Za-z_$][\w$]*\b(?!\s*:)", _m)
+                    if t not in ("export", "const", "meta", "true", "false", "null")]
+            if "(" in _m or _bad:
+                _why = "a call `(`" if "(" in _m else f"identifier `{_bad[0]}`"
+                problems.append(
+                    f"workflows/{f.name}: `meta` is not a PURE literal — {_why} "
+                    f"outside a string; the harness rejects any computed meta at "
+                    f"launch and no suite here launches one (audit F141; the "
+                    f"concatenation and template-literal pins are two spellings "
+                    f"of this)")
 
         # no `node --check`: too lenient (exit 0 on redeclared consts);
         # real syntax errors surface at launch

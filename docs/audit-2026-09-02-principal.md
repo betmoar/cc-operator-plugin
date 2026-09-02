@@ -32,6 +32,14 @@ shared partition lib exists to prevent.
 | F137 | P3 | ops-init's atomic gitignore write was unpinned — the non-atomic revert shipped validator-green |
 | F138 | P3 | the maintainer's shellcheck hook could not lint itself (line 2 parsed as a directive) |
 | F139 | P3 | REPLAY-CHARTER R2b quoted the pre-#94 relative Stop message as the expected shape |
+| F140 | P2 | check_claims' F129 pins were substring tests — `matches_protected` gutted by an early `return 1` shipped validator-green (the pin's own named escape); now EXECUTED |
+| F141 | P2 | a computed workflow `meta` via a call expression passed the validator and every suite; the harness refuses it at launch — structural literal pin |
+| F142 | P3 | a legal source line with a trailing comment failed the build as "does not SOURCE" — both source pins tolerate it |
+| F143 | P3 | a redefined `sentinel_owner_of_name` in lib/partition.sh was reported by nobody; the `pass` beside it claimed otherwise |
+
+F140–F143 came from the pin-auditor arm over the ten validator pin groups
+added in 0.11.4/0.11.5 (nine fire on their named escape); every mutation it
+reported was re-run by hand on a fresh copy before entering the ledger.
 
 Sweep coverage, so the successor knows where NOT to spend: partition.sh,
 ops-stop-hook.sh, ops-sessionstart-hook.sh (walk-up + gitignore migration),
@@ -51,6 +59,10 @@ path); not a finding.
 | BOTH gitignore writers swap a complete temp onto the live path | validator pin per writer | validate_plugin.check_gitignore_parity (F137 pin); GitignoreParityTest.test_a_non_atomic_INIT_write_fires |
 | ops-reverify's row parser follows the 4-cell schema and every stamp form | bash case with fixed-date commits | tests/test-scripts.sh "ops-reverify.sh dates rows" case (18 checks) |
 | the local shellcheck hook lints itself | fix only (0.10.0 run shown in the ledger) | .claude/hooks/shellcheck-edited.sh |
+| `matches_protected` MATCHES every protected token and no unprotected path — as behaviour, executed | validator runs the shipped function in a child bash | validate_plugin.check_claims (F140); ClaimsGuardTest early-return + match-everything cases |
+| a workflow `meta` holds only literal values | structural pin after string-stripping | validate_plugin.check_workflows (F141); ValidatorTest call-expression / identifier / nested-literal cases |
+| a legal source statement is never reported absent | both source regexes tolerate a trailing comment; the echo/fake escapes still fire | ValidatorTest.test_partition_source_line_with_a_trailing_comment_is_not_a_miss |
+| a redefined reader parser in the lib is reported | `_report_if_redefined` at the reader site | GuardParityVacuityTest.test_a_redefined_reader_parser_in_the_lib_is_reported |
 
 ## Tool-level leverage
 
@@ -71,6 +83,7 @@ path); not a finding.
 | the F120 window defaults are the PLUGIN's tag dates, outer bounds only | P3 | a project's real window is when ITS plugin install moved; unknowable here | `--from/--to`; the doc says so |
 | `Bash(bash:*)` grants any shell command inside /cc-operator:handoff | accepted | no narrower grant matches an absolute path | documented in the command and CLAUDE.md |
 | ops-reverify's HEAD interval assumes the row was written while `<sha>` was HEAD on the CURRENT branch's ancestry | P3 | a sha reachable only from another branch reads "unknown (not an ancestor)" → AFFECTED (fails toward re-verify) | by design |
+| six "literal present, behaviour gone" sibling vacuities the pin-auditor measured — S2 HANDOFF-MARK typo with the success echo rewritten as printf; S3 a dead `?*) :` arm before the intact `.*) die`; 5c' `-uall` kept only in a same-line comment; S5b a decoy `for _tool in $_OPS_TOOLS; do :; done` beside a literal-list loop; S6 the detection grep retargeted to `.v1.bak`; S7 the CSI regex's anchored copy in `if (false)` | P3 each | every one is caught by another suite (bash 2–7 red, compress 3 red) — a validator-MESSAGE gap, not an open hole; repairing all six with grep pins would be the enumeration F140/F141 argue against | the suites; the LANDMINES lesson (execute, don't grep) for whoever repairs them — the executable shape is the fix for each |
 
 ## Prioritized backlog (pickup-able cold)
 
@@ -92,8 +105,13 @@ path); not a finding.
    `spec-concurrent` entry** — context: the entry describes the name
    convention; two reader rules now depend on it. Done-when: the entry names
    the first-`__` split as THE rule and the four glob sites as its consumers.
-5. **Pin-auditor result** — see the ledger's last Run-2 entry; any VACUOUS
-   verdict there is a P2 pin repair with the mutation as its red test.
+5. **Convert the six sibling vacuities to executable pins** — context: the
+   residual-risk row above lists them with their measured mutations; each is
+   "the literal is present, the behaviour is gone". First step: the F140
+   shape (`bash -c` the shipped function against probes) for check_owner_name
+   / check_bare_name / autobar_count_changed; a `node -e` import for the
+   compressor's scrub. Done-when: each listed mutation goes RED in the
+   validator with the right check named, and the shipped tree stays green.
 
 ## Provenance
 
@@ -101,6 +119,6 @@ path); not a finding.
   branch `claude/principal-audit-autonomous-ghqjno`.
 - Working ledgers: `AUDIT_LOG.md` (append-only; Run 2 events + F135–F139
   with evidence), `AUDIT_STATE.md` (cursor; final state).
-- Suite deltas, baseline → end: unittest 260 → 262 OK; bash 783 → 820 (0
+- Suite deltas, baseline → end: unittest 260 → 269 OK; bash 783 → 820 (0
   failing throughout); workflows 384 → 384; compress 161 → 161; validator,
   release gate and shellcheck 0.10.0 (CI-pinned) green on the final tree.

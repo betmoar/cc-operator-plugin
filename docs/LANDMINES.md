@@ -564,3 +564,16 @@ reasoning, moved.
   relative shape (audit F139). A live replay would have reported a defect on
   a correct hook. The charter's quoted strings are hand-maintained by
   decision; the price is grepping the runbook for every message you change.
+- **A substring pin on a function body is blind to control flow — execute
+  the function.** `check_claims` pinned `*/)` and `[[ $p == $pat ]]` INSIDE
+  `matches_protected`'s body, and its own comment named the escape it was
+  written against: "gutted to `return 1`". Inserting exactly that as the
+  first body line, literals intact, shipped "all contracts hold" (audit
+  F140; the pin-auditor found six more "literal present, behaviour gone"
+  siblings — a dead branch before the arm, a decoy loop, a value kept alive
+  in a same-line comment). When the property is BEHAVIOUR, the only
+  non-vacuous pin runs the code: `bash -c` the shipped function against
+  probes with known answers. Same lesson for the workflow `meta`: two pins
+  enumerated two spellings of "computed" (`+`, backtick) and a call
+  expression walked past both (F141) — pin the STRUCTURE (only literal values
+  survive string-stripping), not the spellings you have met.

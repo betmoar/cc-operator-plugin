@@ -481,3 +481,52 @@
 - 2026-09-02 P4 DECISION-05: version bumped to 0.11.6 with the CHANGELOG heading in the same change — the repo's rule (plugin.json is the source of truth; bump in the same commit) and the run-1 lesson (a populated [Unreleased] at the current version fails CI's real-repo gate). Reversible: retitle the heading and revert one line.
 - 2026-09-02 P4: pin-auditor arm on the 10 new validator pin groups — result pending at this checkpoint; recorded below when it lands.
 - 2026-09-02 P4: COMMIT gate cleared under DECISION-01 only: b5f12c3 committed and pushed to claude/principal-audit-autonomous-ghqjno; draft PR #105 opened (https://github.com/betmoar/cc-operator-plugin/pull/105); PR activity subscribed; hourly check-in armed. No tag, no merge, no other outward action.
+- 2026-09-02 P2-amend: pin-auditor arm returned (47 tool uses; all mutations on scratch copies, control green). Verdicts on the 10 requested groups: 9 FIRE on their named escape (partition src ×4, HANDOFF-MARK printf, F128 writer arms ×3, F128 reader/migration ×2, autobar -uall + src ×2, install-set loop ×2, gitignore ×4 incl. the two-place non-atomic, F133 ×2 with a clean control on shipped metas, compressor ×4). ONE VACUOUS as asked: check_claims F129 — `matches_protected` with `return 1` inserted as the first body line ships "all contracts hold" (both pins are substring tests on the body). ONE OPEN HOLE (sibling): a computed meta written as a call expression (`name: String("crawl").trim()`) passes the validator AND all three suites; the harness refuses such a workflow at launch. ONE FALSE POSITIVE: `. "$_libdir/partition.sh"  # comment` (bash -n rc 0) fails the build as "does not SOURCE". Six further "sibling" vacuities where another suite still catches the defect (S2 echo→printf HANDOFF-MARK, S3 dead `?*) :` arm, S4 redefined sentinel_owner_of_name in the lib unreported, 5c' `-uall` kept only in a same-line comment, S5b decoy install loop, S6 detection grep retargeted to .v1.bak, S7 dead-branch CSI regex) — each a validator-message gap, not an open hole; logged as residual below.
+- 2026-09-02 P2-amend RE-VERIFIED by own hand on a fresh `git archive` copy: 6a (`return 1` first line of matches_protected) → validator rc 0 CONFIRMED; S9 (`name: String("crawl").trim()`) → validator rc 0 AND workflows 384/0 CONFIRMED; 1c (source line + trailing comment, bash -n ok) → validator rc 1 "does not SOURCE" CONFIRMED; S4 (second sentinel_owner_of_name appended to lib/partition.sh) → validator rc 0 CONFIRMED, and the `pass` at validate_plugin.py:1207 claims another site reports it — none does for the lib.
+
+### [F140] check_claims' F129 pins are substring tests — a `matches_protected` gutted by an early `return 1` ships validator-green, the exact escape the pin's comment promises to catch
+- **Location:** scripts/validate_plugin.py (check_claims, the `"*/)" not in mbody` and `"[[ $p == $pat ]]" not in mbody` pins); scripts/ops-claims.sh:40-55 (`matches_protected`)
+- **Severity:** P2
+- **Confidence:** high
+- **Claim tag:** CONFIRMED — own mutation on a scratch copy: `return 1` inserted as the first body line, body intact → `validate_plugin: all contracts hold`, rc 0
+- **Failure trigger:** any edit that leaves the two literals in the body but changes control flow before them — an early return, a dead branch, a wrapping `if false`.
+- **Blast radius:** the gate-trespass check (`ops-claims.sh`'s PROTECTED set) silently matches nothing while the validator reports the matcher as applied. The bash suite's gate-trespass cases (7) still go red, so this is a validator-message gap, not an open hole — but it is the pin whose own comment names this escape ("gutted to `return 1`").
+- **Evidence:** the mutation run above; validate_plugin.py's two `in mbody` tests.
+- **Fix:** an EXECUTABLE pin: extract the `PROTECTED=` line and the `matches_protected` function from the code view, run them in `bash -c` against one probe per protected token (expect rc 0) and one unprotected path (expect rc 1). Behaviour, not spelling — the same shape closes every "literal present, behaviour gone" sibling for this function.
+- **Guardrail:** ClaimsGuardTest cases: early `return 1` fires; early `return 0` (matches everything) fires on the unprotected probe; shipped matcher green.
+
+### [F141] A computed workflow `meta` written as a call expression passes the validator and all three suites — the harness refuses it at launch
+- **Location:** scripts/validate_plugin.py (check_workflows: the concatenation pin at `"\s*\+|\+\s*"` and the F133 template-literal pin) — two enumerated spellings of "computed" out of an unbounded set
+- **Severity:** P2
+- **Confidence:** high
+- **Claim tag:** CONFIRMED — own mutation: workflows/crawl.js `name: String("crawl").trim()` → validator rc 0, `node tests/test_workflows.mjs` 384/0 (the stub runtime never parses meta)
+- **Failure trigger:** any non-literal meta value that is neither `+` nor a backtick: a call, an identifier, a ternary, a spread.
+- **Blast radius:** the workflow silently never runs (rejected at launch), with every gate here green — the F133 docstring's own threat, one spelling over. Silent.
+- **Evidence:** the mutation run above.
+- **Fix:** a STRUCTURAL pin: strip comments and string literals from the meta block, then require that every remaining identifier is a key (followed by `:`) or one of `true|false|null`, and that no `(` survives — "only literal values", not "not these two computed spellings". Keep the two specific pins for their messages.
+- **Guardrail:** python cases: call-expression meta fires; identifier value fires; the six shipped metas (which quote backticks inside strings) stay green.
+
+### [F142] `_part_src_re` and the autobar `src_re` reject a legal source statement that carries a trailing comment
+- **Location:** scripts/validate_plugin.py (`_part_src_re`, `src_re` in check_autobar — both end in `\s*$`; `shell_code` strips whole-line comments only)
+- **Severity:** P3
+- **Confidence:** high
+- **Claim tag:** CONFIRMED — own mutation: `. "$_libdir/partition.sh"  # the shared partition` (bash -n rc 0) → validator rc 1 "does not SOURCE lib/partition.sh"
+- **Failure trigger:** a maintainer annotates the source line in place.
+- **Blast radius:** a red build with a message claiming the source is ABSENT — loud but false, and a false message on the load-bearing source pin trains the maintainer to distrust it (F108's class).
+- **Evidence:** the mutation run above.
+- **Fix:** tolerate `\s*(?:#.*)?$` at both regexes; the `echo "partition.sh"` and `fakepartition.sh` escapes still fire.
+- **Guardrail:** python control case: a trailing comment on the real source line does not fire.
+
+### [F143] A redefined `sentinel_owner_of_name` in lib/partition.sh is reported by nobody — the reader-arm pin's `pass` claims another site does
+- **Location:** scripts/validate_plugin.py:1206-1207 (`elif isinstance(rbody, _RedefinedFunction): pass  # already reported by _report_if_redefined at other sites`)
+- **Severity:** P3
+- **Confidence:** high
+- **Claim tag:** CONFIRMED — own mutation: a second `sentinel_owner_of_name() { printf '%s\n' "${1%%__*}"; }` appended to lib/partition.sh (bash resolves the LAST definition — no reject set at all) → validator rc 0
+- **Failure trigger:** the #81 class one level up, on the one reader both the hook and the bar share.
+- **Blast radius:** every planted owner name reads as valid; the gate opens on `$S__task`. The bash suite catches it (26 red), so a message gap — but the comment beside the `pass` is false, which is the worse direction (the #83 lesson).
+- **Evidence:** the mutation run above; no other call site passes lib/partition.sh's body to `_report_if_redefined`.
+- **Fix:** call `_report_if_redefined(rbody, f"scripts/{name}", problems)` there.
+- **Guardrail:** GuardParityVacuityTest case: the appended redefinition fires with the redefinition message naming lib/partition.sh.
+- 2026-09-02 P3-amend RED: ClaimsGuardTest early-return + match-everything, ValidatorTest call-expression + identifier meta, ValidatorTest partition trailing-comment control, GuardParityVacuityTest redefined-lib-parser → 6 FAIL on the unfixed validator (exactly the new cases).
+- 2026-09-02 P3-amend GREEN: F140 (check_claims executes the shipped matcher in a child bash: 7 protected probes rc 0, 2 unprotected rc 1), F141 (structural literal pin on the meta block), F142 (both source regexes tolerate `# …`), F143 (`_report_if_redefined` at the reader site). Fixture matcher upgraded to take its path as `$1` (the old stub read the caller's loop variable — the good-tree control failed the executable probe until it did). validator rc 0.
+- 2026-09-02 P4-amend: docs updated for F140–F143 (CHANGELOG [0.11.6], LANDMINES lesson "execute, don't grep", CLAUDE.md check_claims row, audit doc rows/guardrails/residuals/backlog item 5). Full CI mirror on the final tree: shellcheck 0.10.0 clean; validator rc 0; unittest 269 OK; bash 820/0; workflows 384/0; compress 161/0; release gate v0.11.6 OK. AUDIT_STATE.md cursor → DONE (STOP CONDITION 5). Pushed to claude/principal-audit-autonomous-ghqjno under DECISION-01; PR #105 body refreshed.

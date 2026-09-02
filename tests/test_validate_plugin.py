@@ -348,13 +348,18 @@ def make_good_tree(root):
           'scripts/ops-*.sh scripts/statusline.sh backlog/"\n'
           # A compliant matcher body: audit F129 pins the `*/)` prefix branch
           # and the `[[ $p == $pat ]]` glob application, not just the call site.
+          # …and audit F140 EXECUTES it: the stub takes its path as $1 like the
+          # real matcher (the old stub read the caller's loop variable).
           "matches_protected() {\n"
+          '  local p="$1" pat\n'
+          "  set -f\n"
           "  for pat in $PROTECTED; do\n"
           '    case "$pat" in\n'
           '      */) [ "${p#"$pat"}" != "$p" ] && return 0 ;;\n'
           "      *)  [[ $p == $pat ]] && return 0 ;;\n"
           "    esac\n"
           "  done\n"
+          "  set +f\n"
           "  return 1\n"
           "}\n"
           'for p in $ACTUAL; do matches_protected "$p"; done\n')
@@ -1484,6 +1489,59 @@ class ValidatorTest(unittest.TestCase):
               '};\n' + self._WF_TAIL)
         self.assertFires("template literal")
 
+    def test_workflow_call_expression_meta_fires(self):
+        # audit F141 (2026-09-02): the `+` and backtick pins enumerate two
+        # spellings of "computed"; `String("x").trim()` passed both AND every
+        # suite while the harness refuses it at launch. Structural pin: only
+        # literal values may remain once strings are stripped.
+        write(self.dir / "workflows" / "review.js",
+              'export const meta = {\n'
+              '  name: String("review").trim(),\n'
+              '  description: "d",\n'
+              '};\n' + self._WF_TAIL)
+        self.assertFires("not a PURE literal")
+
+    def test_workflow_identifier_meta_value_fires(self):
+        write(self.dir / "workflows" / "review.js",
+              'const D = "d";\n'
+              'export const meta = {\n'
+              '  name: "review",\n'
+              '  description: D,\n'
+              '};\n' + self._WF_TAIL)
+        probs = self.problems()
+        self.assertTrue(any("not a PURE literal" in p for p in probs), probs)
+
+    def test_workflow_literal_meta_with_nested_phases_is_clean(self):
+        # CONTROL for F141: the shipped shape — nested arrays/objects, numbers,
+        # booleans, a backtick and a colon INSIDE strings — is a pure literal.
+        write(self.dir / "workflows" / "review.js",
+              'export const meta = {\n'
+              '  name: "review",\n'
+              '  description: "resolve with `/cc-operator:tiers` first: then run",\n'
+              '  // a comment with a call() and an identifier\n'
+              '  phases: [{ title: "Panel", detail: "x" }, { title: "B", detail: "y", n: 2, on: true, z: null }],\n'
+              '};\n' + self._WF_TAIL)
+        probs = self.problems()
+        self.assertEqual([p for p in probs if "PURE literal" in p], [], probs)
+
+    def test_partition_source_line_with_a_trailing_comment_is_not_a_miss(self):
+        # audit F142 (2026-09-02): `. "$_libdir/partition.sh"  # comment` is
+        # legal shell (bash -n rc 0) and failed the build as "does not SOURCE"
+        # — a false message on the load-bearing source pin. Both the partition
+        # and the autobar source pins tolerate a trailing comment now; the
+        # `echo "partition.sh"` and `fakepartition.sh` escapes still fire.
+        hook = self.dir / "scripts" / "ops-stop-hook.sh"
+        hook.write_text(hook.read_text(encoding="utf-8").replace(
+            ". lib/partition.sh\n", ". lib/partition.sh  # the shared partition\n", 1)
+            .replace(". lib/autobar.sh\n", ". lib/autobar.sh  # after partition\n", 1),
+            encoding="utf-8")
+        probs = self.problems()
+        self.assertEqual([p for p in probs if "does not SOURCE" in p], [], probs)
+        hook.write_text(hook.read_text(encoding="utf-8").replace(
+            ". lib/partition.sh  # the shared partition\n", 'echo "partition.sh"\n', 1),
+            encoding="utf-8")
+        self.assertFires("does not SOURCE lib/partition.sh")
+
     def test_workflow_backtick_inside_meta_string_is_clean(self):
         # CONTROL for F133: shipped metas legitimately quote markdown code in
         # backticks INSIDE a double-quoted string (debate/dispatch/plan all
@@ -2359,6 +2417,30 @@ class ClaimsGuardTest(unittest.TestCase):
         self.assertTrue(any("PROTECTED literal not found" in p
                             for p in self._probs(src)), self._probs(src))
 
+    def _gut(self, first_line):
+        # Insert a control-flow line as the FIRST body line of matches_protected,
+        # leaving every pinned literal in place below it.
+        src, n = re.subn(r"^(matches_protected\(\)\s*\{[^\n]*\n)",
+                         lambda m: m.group(1) + first_line + "\n", self._real,
+                         count=1, flags=re.M)
+        self.assertEqual(n, 1, "matches_protected head moved")
+        return src
+
+    def test_early_return_gutting_fires_when_EXECUTED(self):
+        # audit F140 (2026-09-02): the exact escape F129's comment names —
+        # `matches_protected` gutted to `return 1` with its body intact —
+        # shipped "all contracts hold": both F129 pins are substring tests on
+        # the body and an early return is invisible to them (pin-auditor,
+        # re-run by hand). The pin now RUNS the shipped matcher.
+        probs = self._probs(self._gut("  return 1"))
+        self.assertTrue(any("does not MATCH" in p and "executed" in p for p in probs), probs)
+
+    def test_match_everything_fires_on_the_unprotected_probe(self):
+        # The other polarity: a matcher that returns 0 for everything makes
+        # every claimed path a trespass — the unprotected probe must fire.
+        probs = self._probs(self._gut("  return 0"))
+        self.assertTrue(any("MATCHES 'src/app.py'" in p for p in probs), probs)
+
     def test_callsite_neutered_fires(self):
         # The literal is declared but matches_protected isn't applied to $p
         # (F30 call-site half); replace the call site with `false`.
@@ -2807,6 +2889,21 @@ class GuardParityVacuityTest(unittest.TestCase):
         ("ops-task.sh", None,
          '      _dn="${_dup##*/}"; [ "${_dn#*__}" = "$ID" ] || continue\n'),
     )
+
+    def test_a_redefined_reader_parser_in_the_lib_is_reported(self):
+        # audit F143 (2026-09-02): a second sentinel_owner_of_name() appended
+        # to lib/partition.sh (bash resolves the LAST — no reject set at all)
+        # reported nothing; the reader-arm pin's `pass` claimed another site
+        # reports it, and none did for the lib. The bash suite caught it (26
+        # red), the validator said "all contracts hold".
+        self._install_real()
+        lib = self.dir / "scripts" / "lib" / "partition.sh"
+        lib.write_text(lib.read_text(encoding="utf-8") +
+                       "\nsentinel_owner_of_name() { printf '%s\\n' \"${1%%__*}\"; }\n",
+                       encoding="utf-8")
+        probs = self._probs()
+        self.assertTrue(any("lib/partition.sh" in q and "sentinel_owner_of_name() is defined 2 times" in q
+                            for q in probs), probs)
 
     def test_dropping_the_task_half_filter_from_any_lookup_fires(self):
         # The glob `*__<id>` lets `*` span a `__`, so a planted `A__B__C`

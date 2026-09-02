@@ -46,6 +46,22 @@ code; the run-1 backlog's P1 item #103 gets its procedure and a tool.
 - **`.claude/hooks/shellcheck-edited.sh` could not lint itself (audit
   F138):** its second line began `# shellcheck-…`, which shellcheck parses as
   a directive and rejects.
+- **A pin-auditor pass over the ten validator pins added in 0.11.4/0.11.5**
+  (each mutation re-run by hand): nine fire on their named escape; four
+  repairs landed, each with its red python case. **F140 (P2):**
+  `check_claims`' F129 pins were substring tests on `matches_protected`'s
+  body, so the exact escape the pin's comment names — `return 1` as the first
+  body line, literals intact — shipped "all contracts hold"; the pin now
+  EXECUTES the shipped matcher in a child bash against one probe per
+  protected token and two unprotected paths. **F141 (P2):** a workflow `meta`
+  computed by a call expression (`name: String("crawl").trim()`) passed the
+  validator and all three suites while the harness refuses it at launch — the
+  `+` and template-literal pins were two spellings of "computed"; a
+  structural pin now allows only literal values once strings are stripped.
+  **F142 (P3):** a legal source line with a trailing comment failed the build
+  as "does not SOURCE"; both source pins tolerate it. **F143 (P3):** a second
+  `sentinel_owner_of_name()` appended to `lib/partition.sh` went unreported —
+  the reader-arm pin's `pass` claimed another site reports it, none did.
 
 ### Added
 
