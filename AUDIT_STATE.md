@@ -54,5 +54,5 @@ Tests: unittest 269 OK (+9) · bash 820/0 (+37) · workflows 384/0 · compress 1
 Findings: F135–F143, 9/9 fixed, 0 deferred. Pin-auditor arm: 9/10 requested groups FIRE; 1 vacuous (F140), 1 open hole (F141), 1 false positive (F142), 1 unreported redefinition (F143) — each re-run by hand before entering the ledger; six sibling message-gaps logged as residual (audit doc). Artifacts: scripts/ops-reverify.sh (+18-check bash case), docs/audit-2026-09-02-principal.md, docs/PLAYBOOK.md §#103, docs/LANDMINES.md §2026-09-02, CLAUDE.md (4 table rows), CHANGELOG [0.11.6] + plugin.json 0.11.6, docs/REPLAY-CHARTER.md R2b.
 
 ## What's left (for the successor — prioritized in docs/audit-2026-09-02-principal.md)
-1. Run the REPLAY-CHARTER live (#98). 2. Publish 0.11.6 after merge. 3. Run ops-reverify.sh in each operated project, then close #103. 4. TAGS.md spec-concurrent entry. 5. Convert the six sibling vacuities to executable pins.
+1. Run the REPLAY-CHARTER live (#98). 2. Publish 0.11.6 after merge. 3. Run ops-reverify.sh in each operated project, then close #103. 4–5. DONE by the maintainer in e8e0179 (F144: six executable pins + TAGS.md parse rule; unittest 280, bash 830).
 PR #105 remains watched until merged/closed (subscription + hourly check-in armed).

@@ -101,11 +101,14 @@ path); not a finding.
    project root, `bash <plugin>/scripts/ops-reverify.sh`. Done-when: every
    AFFECTED/UNDATABLE row has a `re-verify(#103):` row beside it or a
    DECISION line; then close #103.
-4. **Fold the empty-id and task-half shapes into `docs/spec/TAGS.md`'s
-   `spec-concurrent` entry** — context: the entry describes the name
+4. ~~**Fold the empty-id and task-half shapes into `docs/spec/TAGS.md`'s
+   `spec-concurrent` entry**~~ DONE by the maintainer in e8e0179 (F144). — context: the entry describes the name
    convention; two reader rules now depend on it. Done-when: the entry names
    the first-`__` split as THE rule and the four glob sites as its consumers.
-5. **Convert the six sibling vacuities to executable pins** — context: the
+5. ~~**Convert the six sibling vacuities to executable pins**~~ DONE by the
+   maintainer in e8e0179: all six execute the shipped code (unittest 270 → 280,
+   bash 820 → 830, each escape run red first). The residual-risk row above is
+   closed by that commit. — context: the
    residual-risk row above lists them with their measured mutations; each is
    "the literal is present, the behaviour is gone". First step: the F140
    shape (`bash -c` the shipped function against probes) for check_owner_name
