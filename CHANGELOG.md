@@ -9,6 +9,65 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.8] - 2026-09-04
+
+The validator made honest about what it actually read (#110, #114, #115) —
+two measured fail-open defects fixed, both in the class where a pin reports
+green about a set it never read.
+
+### Added
+
+- **`CheckRegistryTest` (#110)** — every defined `check_*` must be registered
+  in `CHECKS`. A check defined and never registered was invisible to both the
+  build and the good-tree test (which deliberately iterates the registry);
+  today the two agree at 31/31, so this is a latent hole closed, not a live
+  defect. Both mutations red, reordering proven free.
+- **`docs/PLAYBOOK.md` "writing a locator" (#114)** — the empty answer is not
+  a negative answer, generalised from `_tool_loops` and the probe rule: a
+  locator that finds nothing reports; a parity pin over two located things
+  reports each missing side by name; a fixture string is not a carrier; the
+  mutation owes its anchor.
+
+### Fixed
+
+- **`check_coupling_case_refs` resolved citations against ANY line under
+  `tests/` (#115)** — so this repo's own fixture, which reused two real case
+  titles as sample data, satisfied the production citations and a rename
+  mutation ESCAPED (found live while building the check). Citations now
+  resolve only against CARRIER lines: suite `check`/`-- Case`/`# ---` lines,
+  node assertion titles including their continuation lines, python
+  `def test_`/`assertFires(` lines. Measured: renamed real case + planted
+  fixture string stayed green before, fires now.
+- **`check_workflows`' meta locator could not read the inline-closed meta
+  shape (#114)** — the regex required the closing `};` on its own line, the
+  good-tree fixture closes inline, so every fixture-based meta-pin test was
+  testing nothing and a computed meta in a one-line block passed every pin
+  (A/B measured: `located=False` before, fires after). A locator that stops
+  locating now reports instead of skipping.
+- **`check_guard_parity`'s F17 arm reported only a missing `retro_gate`
+  scanner (#114)** — deleting `--reconcile`'s said nothing, and half a
+  comparison is satisfied by deleting the other half. Each side reports by
+  name; mutation red through the real fixture.
+- **The floors integer check mis-parsed under bash 3.2 (#118)** —
+  `$(case …)` with a glob-bar pattern breaks inside command substitution on
+  macOS `/bin/bash` (CI's bash 5 is fine; shipped green at 0.11.7 and failed
+  only on a Mac executor). Plain `case` + variable; verified pre-existing by
+  minimal repro at the base commit.
+- `.repete/` in `.gitignore` beside `.reload/` (#117 item 1) — `autobar`
+  counts changed paths and an untracked sibling state dir feeds the arm
+  decision. Widening the autobar pathspec stays a separate decision.
+
+### Changed
+
+- **"mutation-checked" now names the gate that went red (#111, convention
+  half)** — "red somewhere" is not coverage: a shell mutation can go red in
+  the bash suite while the validator pin written for it stays vacuous. The
+  python cases already assert the specific check fires; CLAUDE.md's prose
+  owes the same granularity.
+- `FLOOR_python` 315 → 327: the twelve cases this change adds. Executor-
+  invariant (no skipIf/skipTest in the python suites), so the floor can sit
+  at the observed count.
+
 ## [0.11.7] - 2026-09-03
 
 Three unenforced claims made enforceable, after reading
@@ -1406,6 +1465,11 @@ graph work now computes the answer that issue needs.
   root placement leaves nonexistent — same class, same fix.
 
 [#66]: https://github.com/betmoar/cc-operator-plugin/issues/66
+[#110]: https://github.com/betmoar/cc-operator-plugin/issues/110
+[#111]: https://github.com/betmoar/cc-operator-plugin/issues/111
+[#114]: https://github.com/betmoar/cc-operator-plugin/issues/114
+[#115]: https://github.com/betmoar/cc-operator-plugin/issues/115
+[#117]: https://github.com/betmoar/cc-operator-plugin/issues/117
 [#73]: https://github.com/betmoar/cc-operator-plugin/issues/73
 [#76]: https://github.com/betmoar/cc-operator-plugin/issues/76
 
