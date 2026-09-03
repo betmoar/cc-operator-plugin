@@ -44,9 +44,9 @@ echo "== the suites on ubuntu: bash 5, GNU coreutils, no .operator/ =="
   apt-get install -y -qq python3 nodejs git jq >/dev/null 2>&1
   echo "-- bash $BASH_VERSION, $(uname -s)"
   git config --global --add safe.directory /w
-  python3 scripts/validate_plugin.py
-  python3 -m unittest discover -s tests 2>&1 | tail -3
-  bash tests/test-scripts.sh 2>&1 | tail -5
-  node tests/test_workflows.mjs 2>&1 | tail -1
-  node tests/test_compress.mjs 2>&1 | tail -1
+  # Same wrapper the two CI files use, so a floor or marker failure reproduces
+  # here rather than only on a push.
+  for rung in validator python shell workflows compress; do
+    bash scripts/gate-suite.sh "$rung" 2>&1 | tail -4
+  done
 '

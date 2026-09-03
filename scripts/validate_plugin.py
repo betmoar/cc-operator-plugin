@@ -3249,13 +3249,15 @@ def check_release_gates_cover_validate(root, problems):
     # The runners this project uses. Matched per-line so a COMMENTED-OUT step
     # cannot satisfy the check: `# run: node tests/test_workflows.mjs` contains
     # the suite name, and a raw `in rtext` accepted it (audited 2026-08-25).
-    SUITES = (
-        "tests/test-scripts.sh",
-        "tests/test_workflows.mjs",
-        "tests/test_compress.mjs",
-        "validate_plugin.py",
-        "unittest discover",
-    )
+    #
+    # 0.11.7 moved every rung behind `gate-suite.sh <rung>`, and that move
+    # silently EMPTIED this check for one commit: it matched raw suite paths,
+    # validate.yml no longer contained any, so `vsuites` was empty and the
+    # superset test passed vacuously against a release job running nothing.
+    # Caught here rather than in the field, and it is the reason the strings
+    # below are the INVOCATION and not the suite file — a wrapper is exactly
+    # the kind of indirection that empties a check aimed at what it wraps.
+    SUITES = tuple(f"gate-suite.sh {rung}" for rung in SUITE_RUNGS)
 
     _IF_FALSE = re.compile(r"^-?\s*if:\s*(false|\$\{\{\s*false\s*\}\})\s*$")
 
@@ -3336,6 +3338,275 @@ def check_release_gates_cover_validate(root, problems):
                     f"A commented-out or `if: false` step does not count")
 
 
+
+# The rungs gate-suite.sh knows, in the order a build runs them. ONE
+# declaration: check_suite_floors reads it, and so does the SUITES tuple in
+# check_release_gates_cover_validate.
+SUITE_RUNGS = ("validator", "python", "shell", "workflows", "compress")
+# Every rung but the validator reports a case count; the validator's contract
+# is its completion marker alone, so it carries no floor.
+COUNTED_RUNGS = SUITE_RUNGS[1:]
+
+# The raw invocations gate-suite.sh replaced. One of these back in a CI file is
+# not a style lapse — it is a rung whose floor and marker nothing checks, which
+# is the state this whole change exists to end.
+RAW_SUITE_INVOCATIONS = (
+    "python3 scripts/validate_plugin.py",
+    "python3 -m unittest",
+    "bash tests/test-scripts.sh",
+    "node tests/test_workflows.mjs",
+    "node tests/test_compress.mjs",
+)
+
+_CI_FILES = (
+    ".github/workflows/validate.yml",
+    ".github/workflows/release.yml",
+    ".forgejo/workflows/validate.yml",
+    ".forgejo/workflows/release.yml",
+)
+
+
+def check_suite_floors(root, problems):
+    """The ratchet: every suite has a floor, and every CI path runs through it.
+
+    Until 0.11.7 the only floor in this repo was PROSE, in a comment above the
+    shell-suite step in .forgejo/workflows/validate.yml, claiming 683 on macOS
+    and 675 in a rootful container. Measured 2026-09-03 in a rootful container:
+    820. Stale by ~145 cases, and nothing noticed, because nothing read it.
+    Deleting a hundred cases shipped green through every CI path.
+
+    Four claims, because they fail independently:
+
+    1. tests/floors.env exists, parses, and carries a positive integer floor
+       for every COUNTED rung.
+    2. scripts/gate-suite.sh SOURCES that file and holds no floor literal of
+       its own — the CR4 shape: a value in two places is a value in neither
+       the moment they drift.
+    3. Every CI file reaches every rung through `gate-suite.sh <rung>` and
+       contains no raw invocation that would bypass the wrapper.
+    4. The wrapper is EXECUTED against crafted logs (F140/F144): a substring
+       test on a shell body is blind to control flow, and an early `exit 0` in
+       gate-suite.sh would satisfy claims 1-3 while checking nothing. Three
+       probes with known answers, including the accepts-the-ordinary-case
+       control — rejection probes alone are satisfied by a guard that dies on
+       everything.
+    """
+    floors_rel = "tests/floors.env"
+    floors = root / floors_rel
+    gs_rel = "scripts/gate-suite.sh"
+    gs = root / gs_rel
+
+    # A tree with NONE of the three parts is a plugin fixture, not a
+    # half-configured repo — the same legitimate skip check_release_gates_cover_
+    # validate makes for a tree with no workflows at all. Any ONE of them
+    # present makes all of them required: that is where a real regression
+    # lives, and skipping it is how "the checker is still plugged in" stops
+    # being asked.
+    has_ci = any((root / rel).is_file() for rel in _CI_FILES)
+    if not (floors.is_file() or gs.is_file() or has_ci):
+        return
+    if not floors.is_file():
+        problems.append(
+            f"{floors_rel}: missing — it is the ONE declaration of every "
+            f"suite's case floor, and without it gate-suite.sh has no ratchet "
+            f"to hold a rung to")
+        return
+    if not gs.is_file():
+        problems.append(
+            f"{gs_rel}: missing — the CI files reach every rung through it, so "
+            f"its absence is a build that runs no suite at all")
+        return
+
+    # --- claim 1: a positive integer floor per counted rung ---
+    values = {}
+    for ln in floors.read_text(encoding="utf-8").splitlines():
+        ln = ln.strip()
+        if not ln or ln.startswith("#") or "=" not in ln:
+            continue
+        k, _, v = ln.partition("=")
+        values[k.strip()] = v.strip()
+    for rung in COUNTED_RUNGS:
+        key = f"FLOOR_{rung}"
+        raw = values.get(key)
+        if raw is None:
+            problems.append(
+                f"{floors_rel}: no `{key}` — gate-suite.sh refuses a rung with "
+                f"no floor, so this is a rung that cannot run at all")
+        elif not (raw.isdigit() and int(raw) > 0):
+            problems.append(
+                f"{floors_rel}: `{key}={raw}` is not a positive integer. A "
+                f"floor of 0 is not a floor; it is the absence of one wearing "
+                f"a number")
+
+    # --- claim 2: one declaration, sourced, never re-stated ---
+    code = shell_code(gs)
+    if floors_rel not in code:
+        problems.append(
+            f"{gs_rel}: does not name `{floors_rel}` in code — the floors must "
+            f"be SOURCED from the one declaration, not carried here")
+    if not re.search(r'^\s*\.\s+"\$FLOORS"', code, re.M):
+        problems.append(
+            f"{gs_rel}: no `. \"$FLOORS\"` source line — naming the file "
+            f"without sourcing it is a floor nothing reads (the shape the "
+            f"prose comment this replaces had for months)")
+    local_floor = re.search(r"^\s*FLOOR_(\w+)\s*=\s*[0-9]+", code, re.M)
+    if local_floor:
+        problems.append(
+            f"{gs_rel}: assigns `FLOOR_{local_floor.group(1)}` to a literal in "
+            f"code. The floor for a rung must come from {floors_rel} alone — "
+            f"two declarations drift, and the one CI reads wins silently")
+
+    # --- claim 3: no CI path bypasses the wrapper ---
+    for rel in _CI_FILES:
+        f = root / rel
+        if not f.is_file():
+            continue  # a forge this checkout does not configure
+        text = f.read_text(encoding="utf-8")
+        live = "\n".join(ln for ln in text.splitlines()
+                          if not ln.strip().startswith("#"))
+        for rung in SUITE_RUNGS:
+            if f"gate-suite.sh {rung}" not in live:
+                problems.append(
+                    f"{rel}: no live `gate-suite.sh {rung}` step — that rung "
+                    f"runs with no floor and no completion marker, or does not "
+                    f"run at all. A commented-out step does not count")
+        for raw in RAW_SUITE_INVOCATIONS:
+            if raw in live:
+                problems.append(
+                    f"{rel}: invokes `{raw}` directly, bypassing "
+                    f"{gs_rel}. Exit 0 is also what a step that ran nothing "
+                    f"returns, and the floor is not consulted at all")
+
+    # --- claim 4: EXECUTE the wrapper (F140/F144) ---
+    shell_floor = values.get("FLOOR_shell")
+    if not (shell_floor and shell_floor.isdigit()):
+        return  # claim 1 already reported it; nothing to probe against
+    at_floor = int(shell_floor)
+    probes = (
+        ("below the floor",
+         f"== summary: {at_floor - 1} passed, 0 failed ==\n", 1),
+        ("no completion marker",
+         "  ok   a case\n  ok   another\n", 1),
+        ("a failed case reported while exiting 0",
+         f"== summary: {at_floor} passed, 2 failed ==\n", 1),
+        # THE CONTROL. Without it every assertion above is satisfied by a
+        # gate-suite.sh whose first line is `exit 1` — a guard that refuses
+        # everything passes every rejection probe ever written.
+        ("exactly at the floor, clean (the accepts-the-ordinary-case control)",
+         f"== summary: {at_floor} passed, 0 failed ==\n", 0),
+    )
+    with tempfile.TemporaryDirectory() as td:
+        for what, body, want in probes:
+            log = pathlib.Path(td) / "probe.log"
+            log.write_text(body, encoding="utf-8")
+            r = _run_probe(["bash", str(gs), "--check", "shell", str(log)],
+                           problems, f"{gs_rel} ({what})")
+            if r is None:
+                continue
+            # EXACT code, never `rc != 0` (audit F144): an arm calling an
+            # undefined command exits 127 and reads as a refusal.
+            if r.returncode != want:
+                problems.append(
+                    f"{gs_rel}: fed a log describing {what}, the wrapper "
+                    f"exited {r.returncode} and the contract is {want}. The "
+                    f"body may name every guard and still not run them — this "
+                    f"pin EXECUTES it for that reason")
+
+
+def check_coupling_case_refs(root, problems):
+    """Every `_"…"_` reference in CLAUDE.md still resolves to something.
+
+    CLAUDE.md's coupling table points at test cases and landmine sections BY
+    TITLE — its own note says a table that quietly points at the wrong case is
+    worse than one that points nowhere. Nothing read CLAUDE.md, so deleting a
+    referenced case shipped green and left the table pointing at nothing.
+
+    The reference set is classified by CONTEXT, not by string: a reference
+    whose preceding prose names docs/LANDMINES.md resolves against that file,
+    every other one against tests/. Anchoring on the surrounding text rather
+    than guessing per string is the "assert the SELECTION" rule — a checker
+    that is perfectly correct about the wrong bytes reads exactly like a
+    working one.
+
+    Matching is LINE-WISE and ellipsis-aware: `…` in a reference is an elision
+    the prose made, so its fragments must appear in order on ONE line. Line-wise
+    is the stricter half — a whole-file substring search would let two halves
+    of a title match in two unrelated files.
+
+    A shrinking reference set is itself a finding. `if refs:` going silent when
+    a head regex stops matching is a bug this repo has already shipped once
+    (_tool_loops), so "no candidates" fails rather than passing quietly.
+    """
+    md = root / "CLAUDE.md"
+    if not md.is_file():
+        return  # the validator's fixture trees carry no maintainer handoff
+    text = md.read_text(encoding="utf-8")
+
+    def lines_of(paths):
+        out = []
+        for p in paths:
+            if p.is_file():
+                out += p.read_text(encoding="utf-8", errors="replace").splitlines()
+        return out
+
+    tests_dir = root / "tests"
+    targets = {
+        "tests/": lines_of(sorted(p for p in tests_dir.rglob("*")
+                                  if p.suffix in {".sh", ".mjs", ".py"}))
+        if tests_dir.is_dir() else [],
+        "docs/LANDMINES.md": lines_of([root / "docs" / "LANDMINES.md"]),
+    }
+
+    def resolves(ref, lines):
+        # `…` (and `...`) is an elision: the fragments must appear IN ORDER on
+        # one line, which is how every case title and landmine heading is
+        # written.
+        frags = [f.strip() for f in re.split(r"…|\.\.\.", ref) if f.strip()]
+        for ln in lines:
+            pos, ok = 0, True
+            for f in frags:
+                i = ln.find(f, pos)
+                if i < 0:
+                    ok = False
+                    break
+                pos = i + len(f)
+            if ok:
+                return True
+        return False
+
+    seen, total = set(), 0
+    for m in re.finditer(r'_"([^"]+)"_', text):
+        # Markdown escapes are the AUTHOR's, not the case title's: CLAUDE.md
+        # writes `dev\[N\] mirror` for a case named `dev[N] mirror`.
+        ref = re.sub(r"\\([\[\]().*+?^$|{}\\])", r"\1", m.group(1))
+        ctx = text[max(0, m.start() - 120):m.start()]
+        where = "docs/LANDMINES.md" if "LANDMINES.md" in ctx else "tests/"
+        key = (where, ref)
+        if key in seen:
+            continue
+        seen.add(key)
+        total += 1
+        if not resolves(ref, targets[where]):
+            problems.append(
+                f'CLAUDE.md: the reference _"{ref}"_ resolves nowhere in '
+                f'{where}. The coupling table points at it by title, so either '
+                f'the case/section was renamed or deleted and the table now '
+                f'points at nothing, or the reference has a typo. Fix whichever '
+                f'is true — a table that quietly points at the wrong case is '
+                f'worse than one that points nowhere (CLAUDE.md, its own note)')
+
+    # NOT a style rule. If the `_"…"_` convention changes, this scan finds
+    # nothing and reports a perfect result about a set it never read — the
+    # exact way _tool_loops went silent. Measured 2026-09-03: 53 references.
+    _MIN_REFS = 40
+    if total < _MIN_REFS:
+        problems.append(
+            f"CLAUDE.md: only {total} `_\"…\"_` reference(s) found, expected at "
+            f"least {_MIN_REFS}. Either the coupling table lost most of its "
+            f"citations, or the convention changed and this check is now "
+            f"scanning for something nobody writes — in which case it reports "
+            f"green about a set it never read. Reported rather than skipped")
+
 # The registry, in run order. Both main() and the test suite iterate THIS —
 # a hand-copied second list is how three guardrails (reader bounds, guard
 # parity, lock parity) ended up running in the build but not in the test that
@@ -3370,6 +3641,8 @@ CHECKS = (
     check_workflow_agent_types,
     check_commands,
     check_release_gates_cover_validate,
+    check_suite_floors,
+    check_coupling_case_refs,
 )
 
 

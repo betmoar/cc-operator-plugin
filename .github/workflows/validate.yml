@@ -31,13 +31,19 @@ jobs:
         run: |
           docker run --rm -v "$PWD":/w -w /w koalaman/shellcheck-alpine:v0.10.0 \
             sh -c 'shellcheck --version | grep version:; shellcheck scripts/*.sh scripts/lib/*.sh tests/test-scripts.sh'
+      # Every rung goes through gate-suite.sh, never the raw command. Exit 0 is
+      # the weakest claim a suite makes: it is also what a step that ran nothing
+      # returns. The wrapper additionally requires the rung's completion MARKER
+      # and holds its case count to tests/floors.env — see that file for the
+      # comment-that-was-not-a-floor this replaces. check_suite_floors pins that
+      # no raw invocation comes back here to bypass it.
       - name: Validate plugin contracts
-        run: python3 scripts/validate_plugin.py
+        run: bash scripts/gate-suite.sh validator
       - name: Run Python tests
-        run: python3 -m unittest discover -s tests -v
+        run: bash scripts/gate-suite.sh python
       - name: Run shell script tests
-        run: bash tests/test-scripts.sh
+        run: bash scripts/gate-suite.sh shell
       - name: Run workflow logic tests
-        run: node tests/test_workflows.mjs
+        run: bash scripts/gate-suite.sh workflows
       - name: Run compressor replay tests
-        run: node tests/test_compress.mjs
+        run: bash scripts/gate-suite.sh compress

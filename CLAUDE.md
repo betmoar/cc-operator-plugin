@@ -118,7 +118,44 @@ and the maintainer's local `.archive/dev/` (untracked).
 > | `plugin.json` `version` | add the matching `## [x.y.z]` as the newest heading in `CHANGELOG.md`, same commit (the release gate fails otherwise) |
 > | the Stop-hook command in `hooks.json` | keep `ops-stop-hook.sh` + `${CLAUDE_PLUGIN_ROOT}` (validator check 7) |
 > | a step or glob in `.github/workflows/validate.yml` | mirror it in `.forgejo/workflows/validate.yml` — same suites, but the two files CANNOT be identical and no validator pins them. Keep BOTH glob terms (`scripts/*.sh` AND `scripts/lib/*.sh`) in every CI path including `scripts/ci-local.sh` — the missing second term let `lib/autobar.sh` ship unlinted through three of them (#86 review). Same for `release.yml`: the forge copy publishes with a plain POST and CHECKS the status. Why (the `uses:` divergence act cannot parse, the runner having no docker, the YAML traps in an embedded `python3 -c`): `docs/LANDMINES.md` _"The two CI files cannot be identical"_ |
+> | a suite's case count (adding or deleting cases) | raise the matching `FLOOR_*` in `tests/floors.env` in the SAME commit. It is a FLOOR (`>=`), so adding cases never goes red — only deletion does, which is the point. Nothing raises it automatically: with no auto-merge here there is no moment that could honestly do it, and a self-raising floor climbs to the luckiest executor and then fails every ordinary run |
+> | a rung, its completion MARKER, or the CI step that runs it | update `scripts/gate-suite.sh` (the rung's command AND its marker), `validate_plugin.SUITE_RUNGS`, and all four CI files — `check_suite_floors` requires a live `gate-suite.sh <rung>` in every one and REFUSES a raw invocation coming back. The marker is the half that catches a rung which exited 0 without running; the floor is the half that catches deletion. `check_release_gates_cover_validate` compares the INVOCATION, not the suite path: the 0.11.7 move behind the wrapper emptied it for one commit (raw paths gone from validate.yml → `vsuites` empty → the superset test passed against a release job running nothing), which is the shape a wrapper always threatens |
+> | a `_"…"_` citation in CLAUDE.md, or a case/section title one names | they must agree — `check_coupling_case_refs` resolves every citation LINE-WISE against `tests/` (or `docs/LANDMINES.md` when the surrounding prose names that file: classification is by CONTEXT, not by string). `…` is an elision: its fragments must appear in order on one line. Markdown escapes are the author's, not the title's (`dev\[N\] mirror` cites `dev[N] mirror`). Fewer than 40 citations found is itself a FINDING — a head regex that stops matching reports green about a set it never read (`_tool_loops`' shape). **A test fixture must never contain a real case title**: `CouplingCaseRefsTest`'s first draft reused two, they satisfied the production citations from inside `tests/`, and the rename mutation ESCAPED — the escape was in the fixture, not the check |
 > | an agent's model/tools/NEEDS_CONTEXT | keep it project-agnostic — no `unknowns-harness`/`F1..F13` — and keep `model:` a tier alias (`opus`/`sonnet`/`haiku`), never a pinned ID (validator check 6) |
+
+## The issue register — cross-repo and cross-session
+
+**GitHub issues are the only durable memory this project has.** A session ends and
+its context is gone; a chat transcript is not addressable and cannot be searched by
+the next session or by another repo. A finding that lives only in a PR description
+or a reply is a finding that did not survive. So the register is a rule, not a habit:
+
+- **Anything identified and not implemented in the same change gets an issue before
+  the session ends** — a gap, a bug, an optimisation, a better approach, an idea, a
+  limitation knowingly accepted. Especially a limitation knowingly accepted: those
+  are the ones that read as decisions later and were only ever deferrals.
+- **File it in the repo that owns the FIX, not the repo where it was noticed.**
+  Findings about the forge tooling go to `betmoar/cc-skills-plugin` (the `forge-run`
+  skill), about the CI host to `betmoar/local-ci`, about the plugin here.
+- **A cross-repo finding gets an issue in EACH affected repo, and each names the
+  other** as `owner/repo#N`. A one-way link rots silently — the repo that was never
+  told is the one that changes.
+- **Every issue carries what was MEASURED** (the command and its output, or
+  `file:line`), why it matters, and what would close it. A finding without a
+  measurement is a hypothesis, and the register is not a place to store hypotheses
+  as if they were facts. The same rule the evidence gate applies to a verdict row.
+- **A session working in a repo STARTS by reading that repo's open register**, and
+  says which issues it is and is not addressing. This is what makes the projects
+  talk to each other rather than each rediscovering the same thing.
+
+The three repos in this system, and what each owns:
+
+| repo | owns |
+|---|---|
+| `betmoar/cc-operator-plugin` | the charter, the evidence gate, the validator and its pins |
+| `betmoar/cc-skills-plugin` | the `forge-run` skill — pushing to `lokaal`, reading what CI actually did |
+| `betmoar/local-ci` | the Forgejo/act/Woodpecker stacks the runs happen on |
+
 
 ## Procedure
 

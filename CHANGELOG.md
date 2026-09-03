@@ -9,6 +9,53 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.7] - 2026-09-03
+
+Three unenforced claims made enforceable, after reading
+[coleam00/ai-software-factory](https://github.com/coleam00/ai-software-factory)
+(`51778f6`) — a sibling project whose `docs/incidents.md` reaches the same
+conclusions this repo reached separately, and names three we had not.
+
+### Added
+
+- **`tests/floors.env` — the ratchet.** The ONE declaration of every suite's
+  case floor. Until now the only floor here was PROSE, in a comment above the
+  shell-suite step in `.forgejo/workflows/validate.yml`, claiming 683 cases on
+  macOS and 675 in a rootful container. Measured 2026-09-03 in a rootful
+  container: **820**. Stale by ~145 cases, and nothing noticed, because nothing
+  read it. Deleting a hundred cases shipped green through every CI path.
+- **`scripts/gate-suite.sh` — the rung runner.** Every suite now runs through
+  it, in all four workflow files and `scripts/ci-local.sh`. Two claims a suite
+  cannot fake: its completion MARKER must appear in the output (exit 0 is also
+  what a step that ran nothing returns), and its case count must clear the
+  floor. A summary reporting failures while exiting 0 is refused too.
+- **`validate_plugin.check_suite_floors`** — a floor per counted rung, ONE
+  declaration (no floor literal may be re-stated in the wrapper), a live
+  `gate-suite.sh <rung>` step in every CI file, no raw invocation bypassing it,
+  and four EXECUTED probes against the shipped wrapper including the
+  accepts-the-ordinary-case control.
+- **`validate_plugin.check_coupling_case_refs`** — every `_"…"_` citation in
+  CLAUDE.md must resolve, line-wise and ellipsis-aware, in `tests/` or in
+  `docs/LANDMINES.md` (classified by the surrounding prose, not by the string).
+  53 citations, nothing read them, and CLAUDE.md's own note says a table that
+  points at the wrong case is worse than one pointing nowhere. Fewer than 40
+  citations found is itself a finding.
+- **The issue register as a cross-repo, cross-session rule** (CLAUDE.md): every
+  identified-but-unimplemented gap is filed as an issue before the session ends,
+  in the repo that owns the fix, cross-linked both ways.
+
+### Fixed
+
+- `check_release_gates_cover_validate` compared raw suite PATHS, so moving every
+  rung behind `gate-suite.sh` emptied it: `vsuites` came back empty and the
+  superset test passed vacuously against a release job running nothing. It now
+  compares the invocation. Caught by its own mutation, one commit after being
+  introduced — a wrapper is exactly the indirection that empties a check aimed
+  at what it wraps.
+- Both release workflows now carry the floors and markers too, keeping the
+  publishing job a superset of the PR job (#38).
+
+
 ## [0.11.6] - 2026-09-02
 
 A second principal-architect audit (2026-09-02, autonomous), targeted at the

@@ -81,22 +81,23 @@ jobs:
           /tmp/shellcheck-v0.10.0/shellcheck --version | grep version:
           /tmp/shellcheck-v0.10.0/shellcheck scripts/*.sh scripts/lib/*.sh tests/test-scripts.sh
 
+      # Same wrapper validate.yml uses, so the PUBLISHING build carries the
+      # floors and the run-markers too (#38 keeps this job a superset). A
+      # release that gates less than a PR is the shape that check exists for.
       - name: Validate plugin contracts
-        run: python3 scripts/validate_plugin.py
+        run: bash scripts/gate-suite.sh validator
 
       - name: Run Python tests
-        run: python3 -m unittest discover -s tests
+        run: bash scripts/gate-suite.sh python
 
       - name: Run shell script tests
-        run: bash tests/test-scripts.sh
+        run: bash scripts/gate-suite.sh shell
 
-      # Kept because of #38: without these two a tag build gated less than a PR
-      # build. Superset of validate.yml, always.
       - name: Run workflow logic tests
-        run: node tests/test_workflows.mjs
+        run: bash scripts/gate-suite.sh workflows
 
       - name: Run compressor replay tests
-        run: node tests/test_compress.mjs
+        run: bash scripts/gate-suite.sh compress
 
       # `gh` does not work against Forgejo (Gitea-compatible API), so this is a
       # plain POST. Everything it depends on was PROBED on this runner rather
