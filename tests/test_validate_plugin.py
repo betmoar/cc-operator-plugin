@@ -4103,3 +4103,215 @@ class CouplingCaseRefsTest(unittest.TestCase):
         probs = []
         vp.check_coupling_case_refs(ROOT, probs)
         self.assertEqual(probs, [])
+
+    # --- #115: a fixture string is not a carrier (#115) ---
+    def test_a_fixture_string_in_a_python_body_is_not_a_carrier(self):
+        """#115's live escape: CouplingCaseRefsTest's first draft reused two
+        REAL case titles as fixture sample data, and the check's selection —
+        every line of every .sh/.mjs/.py under tests/ — let those fixture
+        strings satisfy the production citations. The fix narrows the
+        selection to CARRIER lines: suite check/-- Case lines, node assertion
+        titles, python def test_ names and assertFires expectations. A string
+        inside a fixture body is data about a case, not a case."""
+        # the real case, renamed away (a rename that breaks the substring —
+        # appending to a title is invisible to resolves() by design). setUp's
+        # own .sh fixture stays: FILL cites its zzfixture titles, and clobbering
+        # the file would fire forty unrelated citations.
+        _sh = self.dir / "tests" / "test-scripts.sh"
+        write(_sh, _sh.read_text(encoding="utf-8")
+              + 'check "zzrenamed beyond recognition" 0\n' + self._filler_sh())
+        write(self.dir / "tests" / "test_validate_plugin.py",
+              'class F:\n    def test_probe(self):\n'
+              '        write(p, "zzfixture the vanished case")\n')
+        probs = self._probs(self.FILL +
+                            ' see the _"zzfixture the vanished case"_ case.\n')
+        self.assertTrue(
+            any("zzfixture the vanished case" in p and "resolves nowhere" in p
+                for p in probs), probs)
+
+    def test_a_def_test_line_IS_a_carrier(self):
+        """CONTROL for the narrowing: the python suite legitimately carries
+        case identity on `def test_` names — narrowing must not exclude the
+        real python carriers, or citations like _"must not come back"_ stop
+        resolving and the check becomes a false-positive factory."""
+        _sh = self.dir / "tests" / "test-scripts.sh"
+        write(_sh, _sh.read_text(encoding="utf-8")
+              + 'check "zzrenamed beyond recognition" 0\n' + self._filler_sh())
+        write(self.dir / "tests" / "test_validate_plugin.py",
+              'class F:\n    def test_zzfixture_carrier_name(self):\n        pass\n')
+        self.assertEqual(
+            self._probs(self.FILL + ' see the _"zzfixture_carrier_name"_ case.\n'),
+            [])
+
+    def test_a_node_assertion_title_is_a_carrier_even_on_a_continuation_line(self):
+        """Node suites write ok(cond,\\n  "title") — the title literal sits on
+        the line AFTER the call head. CLAUDE.md cites _"spends ZERO agents"_
+        against exactly that shape (tests/test_workflows.mjs:1608), so the
+        continuation line is a carrier or that citation stops resolving."""
+        write(self.dir / "tests" / "test_workflows.mjs",
+              'ok(cond,\n  "zzfixture continuation title");\n' + self._filler_mjs())
+        self.assertEqual(
+            self._probs(self.FILL + ' see the _"zzfixture continuation title"_ case.\n'),
+            [])
+
+    def _filler_sh(self):
+        return "".join(f'check "zzfiller {i}" 0\n' for i in range(45))
+
+    def _filler_mjs(self):
+        return "".join(f'ok(true, "zzfiller {i}");\n' for i in range(45))
+
+
+class MetaLocatorTest(unittest.TestCase):
+    """#114 (no-candidate is a finding) as applied to check_workflows' meta
+    locator. The regex once required the closing `};` on its own line, so an
+    INLINE-closed meta block returned None and all three computed-meta pins
+    silently skipped — measured: the good-tree fixture (inline meta) plus a
+    concatenation inside it produced ZERO findings under the old locator,
+    while the repo's real multiline workflows stayed covered. A locator that
+    stops locating must report, and the locator must accept both close shapes.
+    """
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        make_good_tree(self.dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _wf(self):
+        return sorted((self.dir / "workflows").glob("*.js"))[0]
+
+    def test_computed_meta_in_an_inline_closed_block_fires(self):
+        # The mutation the old locator could not see: the good-tree fixture's
+        # meta is inline-closed, so `meta_block` was None and the
+        # concatenation pin had nothing to read.
+        f = self._wf()
+        o = f.read_text(encoding="utf-8")
+        f.write_text(o.replace('name: "brainstorm"', 'name: "brain" + "storm"'),
+                     encoding="utf-8")
+        probs = []
+        vp.check_workflows(self.dir, probs)
+        self.assertTrue(any("concatenation" in p for p in probs), probs)
+
+    def test_a_reshaped_meta_declaration_is_reported_not_skipped(self):
+        # #114's core rule: if the locator stops matching at all, that is a
+        # finding — never a silent pass over an unread set.
+        f = self._wf()
+        o = f.read_text(encoding="utf-8")
+        f.write_text(o.replace("export const meta", "export const metadata"),
+                     encoding="utf-8")
+        probs = []
+        vp.check_workflows(self.dir, probs)
+        self.assertTrue(any("cannot locate" in p for p in probs), probs)
+
+    def test_multiline_meta_still_locates(self):
+        # NEGATIVE CONTROL: the repo's real workflows close the meta on its
+        # own line. Widening the regex must not lose the shape it was written
+        # for (a regex that only matches the new shape is the same defect
+        # pointed the other way).
+        f = self._wf()
+        o = f.read_text(encoding="utf-8")
+        f.write_text(o.replace(
+            'export const meta = { name: "brainstorm", description: "d" };',
+            'export const meta = {\n  name: "brainstorm",\n  description: "d",\n};'),
+            encoding="utf-8")
+        probs = []
+        vp.check_workflows(self.dir, probs)
+        self.assertEqual([p for p in probs if "cannot locate" in p], [])
+
+
+class FragmentScanLocatorTest(unittest.TestCase):
+    """#114 at check_guard_parity's F17 site: a locator with two sides must
+    report EACH missing side. The old `elif "line" not in by_var` arm covered
+    only retro_gate — deleting the --reconcile `row` scanner left the parity
+    pin comparing half a comparison, silently satisfied (measured: the
+    mutation below produced zero findings before the fix).
+    """
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        make_good_tree(self.dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_a_missing_reconcile_scanner_is_reported(self):
+        p = self.dir / "scripts" / "ops-verdict.sh"
+        o = p.read_text(encoding="utf-8")
+        rowline = next(ln for ln in o.splitlines()
+                       if re.search(r"read -r -n \d+ row\b", ln))
+        p.write_text(o.replace(rowline, "read -r -N 999 zzmutated"),
+                     encoding="utf-8")
+        probs = []
+        vp.check_guard_parity(self.dir, probs)
+        self.assertTrue(
+            any("cannot locate --reconcile's fragment scan" in p2 for p2 in probs),
+            probs)
+
+    def test_a_missing_retro_gate_scanner_is_still_reported(self):
+        # the pre-existing half keeps its report — the fix must not trade it away
+        p = self.dir / "scripts" / "ops-verdict.sh"
+        o = p.read_text(encoding="utf-8")
+        lineln = next(ln for ln in o.splitlines()
+                      if re.search(r"read -r -n \d+ line\b", ln))
+        p.write_text(o.replace(lineln, "read -r -N 999 zzmutated"),
+                     encoding="utf-8")
+        probs = []
+        vp.check_guard_parity(self.dir, probs)
+        self.assertTrue(
+            any("cannot locate retro_gate's fragment scan" in p2 for p2 in probs),
+            probs)
+
+    def test_both_scanners_present_is_clean(self):
+        # NEGATIVE CONTROL: the unmutated good tree reports nothing here.
+        probs = []
+        vp.check_guard_parity(self.dir, probs)
+        self.assertEqual(
+            [p2 for p2 in probs if "fragment scan" in p2], [])
+
+
+class CheckRegistryTest(unittest.TestCase):
+    """#110: every defined check_* is registered in CHECKS.
+
+    ValidatorTest deliberately iterates vp.CHECKS rather than re-listing
+    checks (a hand-copied second list is how three guardrails once ran in the
+    build but not in the good-tree test). The flip side of that decision is
+    this hole: a check DEFINED and never REGISTERED is invisible to both the
+    build and the test most likely to be trusted. The author writes
+    check_foo, watches direct-call mutation cases go red, forgets the one-line
+    registry entry — every gate green, the check never runs on a real tree.
+    A guard that silently does not apply is worse than no guard, because you
+    stop watching the thing it was guarding.
+
+    Both mutations were run red on 2026-09-03 before this case was believed:
+    defining `check_zzmutation` without registering it fired this test;
+    deleting `check_coupling_case_refs` from CHECKS fired it; reordering
+    CHECKS stayed green (the negative control).
+    """
+
+    def test_every_defined_check_is_registered(self):
+        defined = {n for n in dir(vp)
+                   if n.startswith("check_") and callable(getattr(vp, n))}
+        registered = {f.__name__ for f in vp.CHECKS}
+        self.assertEqual(
+            defined, registered,
+            "check_* functions defined but not in CHECKS never run on a real "
+            "tree (and CHECKS entries with no definition are dead weight): "
+            f"defined-not-registered={sorted(defined - registered)}, "
+            f"registered-not-defined={sorted(registered - defined)}")
+
+    def test_registry_entries_are_callable(self):
+        # CHECKS holds the function objects, so a name with no definition is
+        # an ImportError at module load today — pinned anyway: if CHECKS ever
+        # becomes name-based, this is the half that catches a typo'd rename.
+        for entry in vp.CHECKS:
+            self.assertTrue(callable(entry),
+                            f"CHECKS entry {entry!r} is not callable")
+
+    def test_reordering_the_registry_is_free(self):
+        # NEGATIVE CONTROL. The contract is set equality, not order — a
+        # reordering must stay green, or this test is a false positive that
+        # trains the same ignoring as a vacuous pin.
+        names = [f.__name__ for f in vp.CHECKS]
+        self.assertEqual(set(names),
+                         {f.__name__ for f in reversed(vp.CHECKS)})

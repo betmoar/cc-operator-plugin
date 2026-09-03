@@ -555,3 +555,42 @@ update `scripts/ops-reverify.sh` and its bash case (CLAUDE.md coupling table).
 
 **Verify:** `bash tests/test-scripts.sh 2>&1 | grep 'reverify'` — every line
 `ok`.
+
+## Decision procedure: writing a locator (a regex/scan that selects what a pin reads) — issue #114
+
+The rule already held for probes (*an unrunnable probe is a FAILURE, never a
+skip*) and for one parser (`_tool_loops`' `if _loops:` went silent when its
+head regex stopped matching). #114 generalises it: **the empty answer is not
+a negative answer.** A locator that finds nothing must report, never return
+quietly — "no candidates found" reads as "nothing wrong" to every caller, and
+a pin whose locator silently returns `[]`/`None` is a pin that does not exist.
+
+1. **Before writing the locator, ask the cost asymmetry question** (the
+   sibling project's lock-release bug, one bug two symptoms): a false FINDING
+   costs one maintainer investigation; a silent skip costs the guarantee the
+   check exists for, indefinitely and invisibly. Build the locator to fail
+   toward the finding.
+2. **Match on an identifier both sides agree on.** A locator keyed on a name
+   the code invented and hopes the target echoes back (an invented variable
+   name, a hoped-for line shape) breaks silently when the target reshapes.
+   Anchor on the syntax that cannot change meaning (`; do`, a def line, a
+   closing brace) and accept the realistic SPELLINGS of the thing — the
+   meta-block locator required the closing `};` on its own line and so could
+   not read the inline-closed shape the repo's own fixtures use.
+3. **Both sides of a comparison are separate reportables.** A parity pin over
+   two located things (F17's two fragment scanners) must report EACH missing
+   side by name — an `elif` chain that reports only one side is satisfied by
+   deleting the other half (measured: deleting the `--reconcile` scanner
+   produced zero findings).
+4. **A fixture string is not a carrier.** When a check resolves citations or
+   titles against test files, only the lines that CARRY case identity count
+   (`check "…"`, `-- Case`, `def test_`, assertion title literals) — fixture
+   DATA strings can stand in for the thing under test and mask a rename
+   (#115's live escape, found in this repo's own test fixture).
+5. **The mutation owes its anchor.** When you mutation-check a no-candidate
+   pin, the mutation must break the locator's anchor specifically — an
+   ambiguous anchor injects the defect somewhere other than where it was
+   aimed, and everything about the report is misleading. Prefer the two-step
+   proof: (a) the locator stops matching → the check fires with a
+   "cannot locate" finding; (b) the located content violates the pin → the
+   check fires with the pin's own message. Both, plus the green control.

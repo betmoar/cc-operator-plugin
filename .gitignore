@@ -14,10 +14,16 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
-# Local/dev state — never shipped
+# Local/dev state — never shipped. `.repete/` belongs here for the same
+# reason as `.reload/` (#117.1): a sibling plugin's state dir is not project
+# content, and `autobar` counts changed paths — an untracked `.repete/` feeds
+# the arm decision. Whether the autobar pathspec should exclude sibling state
+# dirs generally is deliberately NOT decided here (#117: widening
+# `':(exclude).operator'` is a decision, not a tidy-up).
 .archive/
 .reload/
 .remember/
+.repete/
 
 # Review-panel run reports (lens breakdown, finding counts, scoring). Same rule:
 # HOW a doc got reviewed is scaffolding; WHY the code is shaped that way belongs
