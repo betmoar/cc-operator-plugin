@@ -173,10 +173,40 @@ Q="$(newproj)"
 run_hook stop-basic.json "$Q"
 check ".operator absent → exit 0 (no-op guard)" "$([ "$HRC" -eq 0 ] && echo 0 || echo 1)"
 rm -rf "$Q"
-# 4d: stop_hook_active true with pending present → exit 0 (loop guard wins)
+# 4d: stop_hook_active true, no session id, no marker → FOREIGN continuation:
+# the gate runs normally (#116 — this is the fix; it was exit 0 before).
 : > "$P/.operator/pending/T-9"
 run_hook stop-loopguard.json "$P"
-check "stop_hook_active true → exit 0 despite pending" "$([ "$HRC" -eq 0 ] && echo 0 || echo 1)"
+check "stop_hook_active true, no marker → gate RUNS (exit 2) despite pending T-9" \
+  "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+check "foreign-continuation stderr announces the gate runs normally (#116)" \
+  "$(printf '%s' "$HERR" | grep -q 'gate runs normally' && echo 0 || echo 1)"
+# 4e: own marker present → MY continuation → loop guard wins (exit 0)
+mkdir -p "$P/.operator/.stopguard"
+: > "$P/.operator/.stopguard/SESS-A"
+run_hook stop-loopguard-sid.json "$P"
+check "stop_hook_active true + own .stopguard marker → exit 0 (own continuation)" \
+  "$([ "$HRC" -eq 0 ] && echo 0 || echo 1)"
+# 4f: same flag, DIFFERENT session's marker → foreign continuation → exit 2
+rm -f "$P/.operator/.stopguard/SESS-A"
+: > "$P/.operator/.stopguard/OTHER-SESS"
+run_hook stop-loopguard-sid.json "$P"
+check "stop_hook_active true + someone else's marker → exit 2 (gate runs)" \
+  "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+rm -f "$P/.operator/.stopguard/OTHER-SESS"
+# 4g: the marker lifecycle — a blocking fire WRITES my marker, the allowing
+# fire CLEARS it. Block first (ordinary stop, pending present):
+run_hook stop-session-a.json "$P"
+check "blocking fire stamps .stopguard/<sid> (#116)" \
+  "$([ -f "$P/.operator/.stopguard/SESS-A" ] && echo 0 || echo 1)"
+# Then allow (pending cleared) — marker must be gone, or a future foreign
+# continuation is mistaken for our own.
+rm -f "$P/.operator/pending/T-9"
+run_hook stop-session-a.json "$P"
+check "allowing fire clears .stopguard/<sid> (#116)" \
+  "$([ ! -e "$P/.operator/.stopguard/SESS-A" ] && echo 0 || echo 1)"
+# 4h: a marker whose session id is EMPTY cannot exist (path guard) — the
+# no-session-id payload of 4d is exactly this: marker absent → gate runs.
 rm -rf "$P"
 
 ########################################################################

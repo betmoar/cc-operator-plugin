@@ -219,6 +219,13 @@ done
 # this hook is the only thing that knows a session boundary was crossed.
 [ -d "$cwd/.operator/.autobar" ] && rm -rf "$cwd/.operator/.autobar" 2>/dev/null
 
+# Stop-hook own-block markers (#116): the loop guard distinguishes "my own
+# continuation" from another hook's by this directory, so a marker for a
+# session that is gone must not survive into a future one with the same id
+# (same reasoning as .autobar above — one stale marker = the gate stands down
+# for one stop, which is the pre-#116 behaviour, but wiped is better).
+[ -d "$cwd/.operator/.stopguard" ] && rm -rf "$cwd/.operator/.stopguard" 2>/dev/null
+
 # v1→v2 gitignore migration, every session (this is what carries a project
 # that never re-runs /cc-operator:start). The schemes contradict, so REPLACE,
 # keeping .gitignore.v1.bak; body pinned identical to ops-init's _gi_write

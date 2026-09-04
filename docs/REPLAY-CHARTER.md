@@ -208,8 +208,12 @@ equally reachable:
      rc 0 and silent. Without this a block is unattributable — it could be any
      of the other Stop hooks a real install carries (zclean, cc-reload,
      cc-repete were all present on the 2026-08-14 machine).
-  2. **Verify the loop guard** — `stop_hook_active: true` must give rc 0 — so
-     the block costs exactly one turn and cannot wedge the session.
+  2. **Verify the loop guard (#116 shape)** — `stop_hook_active: true` with
+     THIS hook's `.operator/.stopguard/<sid>` marker present (the sequence's
+     own block writes it) must give rc 0 — so the block costs exactly one turn
+     and cannot wedge the session. `stop_hook_active: true` with NO marker
+     (another hook's continuation) must give the gate's normal verdict — rc 2
+     with the sentinel open, plus the "gate runs normally" notice on stderr.
   3. **Use a probe task id that exists nowhere else** (`r2b-live`). The
      returned message names it, which is what makes the block attributable to
      *this* hook rather than to a coincidence.

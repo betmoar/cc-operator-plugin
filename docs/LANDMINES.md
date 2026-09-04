@@ -756,6 +756,26 @@ CLAUDE.md; the full original cell — nothing reworded — lives here.
 
 - **a `_"…"_` citation in CLAUDE.md, or a case/section title one names** — they must agree — `check_coupling_case_refs` resolves every citation LINE-WISE against the CARRIER lines in `tests/` (or `docs/LANDMINES.md` when the surrounding prose names that file: classification is by CONTEXT, not by string) — since #115 a carrier is a suite `check`/`-- Case`/`# ---` line, a node assertion title (including its continuation line), or a python `def test_`/`assertFires(` line, never an arbitrary fixture string (#115's live escape: this repo's own fixture satisfied the production citations). `…` is an elision: its fragments must appear in order on one line. Markdown escapes are the author's, not the title's (`dev\[N\] mirror` cites `dev[N] mirror`). Fewer than 40 citations found is itself a FINDING — a head regex that stops matching reports green about a set it never read (`_tool_loops`' shape). **A test fixture must never contain a real case title**: `CouplingCaseRefsTest`'s first draft reused two, they satisfied the production citations from inside `tests/`, and the rename mutation ESCAPED — the escape was in the fixture, not the check
 
+- **`stop_hook_active` is a shared field, and a shared field used as a
+  private loop guard disarms the gate (#116).** The Stop hook's guard read
+  `[ "$active" = "true" ] && exit 0` — "never re-block an already-active
+  stop." But the harness sets that flag on the Stop after ANY hook-forced
+  continuation, and cc-repete's loop blocks every Stop while it runs: an
+  active loop therefore disarmed cc-operator's evidence gate for the whole
+  loop window after its first turn, silently — the fail-OPEN class this file
+  treats as the worst. cc-reload gets the contrast right: it stands down
+  DELIBERATELY (reads `.repete/loop.local.md`, names the reason), while our
+  stand-down was a side effect of sharing a field. The fix keys "my own
+  block" on a per-session marker (`.operator/.stopguard/<sid>`, stamped by
+  every exit 2, cleared by the allowing exit 0, wiped by SessionStart beside
+  `.autobar/`): `active AND my marker` = my continuation, stand down;
+  `active` alone = someone else's, run the gate and say so on stderr. The
+  marker is advisory and fails safe both ways: an unwritable `.operator/`
+  makes the guard read absent (gate RUNS — toward blocking, like the
+  unowned-sentinel default); a stale marker costs exactly one stand-down —
+  the pre-fix behaviour, never worse. The producer side now declares the
+  contract (cc-repete#27, v0.2.4) and bounds it (cc-repete#29).
+
 ### Provenance narratives moved from CLAUDE.md (0.11.9)
 
 

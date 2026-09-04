@@ -22,6 +22,21 @@ single source of truth; bump it in the same commit as the changelog entry.
   headroom under the clip, the F19 lesson: a cap without a gate is a target),
   mutation-verified red on the pre-diet file and green on the result, with
   `ClaudeMdSizeTest` (5 cases; fires/boundary/absent/real-tree/cap-under-clip).
+- **Fixed #116: the Stop-hook loop guard no longer disarms on a sibling's
+  continuation.** `stop_hook_active` is a harness field every Stop hook
+  receives — cc-repete's loop sets it on every Stop it blocks, so the old
+  `[ "$active" = "true" ] && exit 0` disarmed the evidence gate for an entire
+  active loop after its first turn (fail-OPEN silent disarm, the worst
+  class). The guard now distinguishes my own continuation (per-session
+  marker `.operator/.stopguard/<sid>`, stamped by every blocking exit 2,
+  cleared by the allowing exit 0, wiped by SessionStart beside `.autobar/`)
+  from someone else's — the latter runs the gate normally and says so on
+  stderr. Marker is advisory and fails safe both directions. Cases 4d-4h in
+  the bash suite (foreign continuation blocks, own marker stands down,
+  marker write/clear lifecycle, deviation-block stamps too); mutation run
+  red (old guard restored → the foreign-continuation case fails). Coupling
+  row + LANDMINES narrative added; REPLAY-CHARTER's R2 expectation updated
+  to the #116 shape.
 - **Household slimming (the diet's other half).** Removed maintainer-local
   audit scaffolding that had drifted into the tree: `AUDIT_LOG.md`,
   `AUDIT_STATE.md`, `docs/DEBLOAT-0.10.md`, `docs/audit-2026-08-31-principal.md`,
