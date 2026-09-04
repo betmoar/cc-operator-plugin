@@ -2602,6 +2602,54 @@ def check_resolver_renderer_parity(root, problems):
             f"bindings on a stale namespace")
 
 
+class _MetaBlock:
+    """A stand-in for the re.Match the meta locator used to return — .group(0)
+    is all the computed-meta pins ever read. Kept match-shaped so callers
+    don't learn which locator found the block."""
+
+    __slots__ = ("_text",)
+
+    def __init__(self, text):
+        self._text = text
+
+    def group(self, _=0):
+        return self._text
+
+
+def _locate_meta_block(text, rel, problems):
+    """Return the `export const meta = {…};` statement, or None (+ a finding).
+
+    String-aware brace depth: the block ends at the `}` that balances the
+    object's own opener with quotes skipped, so a `};` inside a meta string
+    (a quoted snippet) cannot truncate it — the failure the non-greedy
+    regex shipped as (#118 review): the match stopped mid-string and every
+    computed tail after the cut was invisible to the pins."""
+    m = re.search(r"export const meta\s*=\s*\{", text)
+    if m is None:
+        return None
+    i, depth, q = m.end() - 1, 0, None
+    while i < len(text):
+        c = text[i]
+        if q:                        # inside a string literal
+            if c == "\\":
+                i += 1               # skip the escaped char
+            elif c == q:
+                q = None
+        elif c in "\"'`":
+            q = c
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                i += 1               # past the balancing close
+                break
+        i += 1
+    if depth == 0 and text[i:i + 1] == ";":
+        return _MetaBlock(text[m.start():i + 1])
+    return None      # unbalanced object / no terminating `;` — not locatable
+
+
 def check_workflows(root, problems):
     """
     Workflow meta pins + the model-id guard.
@@ -2647,7 +2695,15 @@ def check_workflows(root, problems):
         # None and every meta pin below skipped silently while the
         # `startswith` pin stayed green — a computed meta inside a one-line
         # block passed every check (measured). No-candidate is a FINDING.
-        meta_block = re.search(r"export const meta\s*=\s*\{.*?\};", text, re.S)
+        # PR #118 review: the widened `.*?` then stopped at the FIRST `};` —
+        # one inside a meta STRING (a quoted snippet, `"1};2"`) truncated the
+        # block mid-string and every computed tail after the cut was
+        # invisible: a truncated match reads as checked-and-clean, #114's
+        # fail-open pointed the other way. The locator now walks the object
+        # with string-aware brace DEPTH and ends at the `}` that balances the
+        # object's own opener, quotes skipped, so a `};` inside a string
+        # cannot end the statement early.
+        meta_block = _locate_meta_block(text, rel, problems)
         if meta_block is None:
             problems.append(
                 f"{rel}: cannot locate the `export const meta = {{…}}` block "
@@ -3590,10 +3646,17 @@ def check_coupling_case_refs(root, problems):
     # content-then-close-and-comma, which a keyword or identifier cannot
     # shape, so prose continuation lines in fixtures do not slip in.
     _CONTINUATION_RE = re.compile(r'^"[^"]*"\)?[;,)]*\s*$')
+    # PR #118 review: a quote-only line is a carrier only as the CONTINUATION
+    # of an ok()/throws() head. The first cut accepted any quote-only line,
+    # which made a data literal inside `for (const cmd of […])` (a shape
+    # tests/test_compress.mjs already ships) a carrier — the #115 escape
+    # reopened by its own fix.
+    _ASSERT_OPEN_RE = re.compile(r'^(?:await\s+)?(?:ok|throws)\(')
     def suite_lines(p):
         if not p.is_file():
             return []
         out = []
+        pend = False  # inside an ok()/throws( argument list (title may follow)
         for ln in p.read_text(encoding="utf-8", errors="replace").splitlines():
             s = ln.strip()
             if p.suffix == ".sh":
@@ -3612,12 +3675,22 @@ def check_coupling_case_refs(root, problems):
                 # (`ok(cond, "#92 …: the refusal spends ZERO agents")`), cases
                 # are DECLARED on `console.log("-- Case: …")`, and section
                 # markers are `// ── … ──` comments — the node analog of the
-                # shell `# ---` marker.
-                if "-- Case" in s or s.startswith("ok(") or \
-                        s.startswith("await throws(") or s.startswith("throws(") \
-                        or s.startswith("// ──") or s.startswith("// ---") or \
-                        _CONTINUATION_RE.match(s):
+                # shell `# ---` marker. A title on its own line is a carrier
+                # only while the assertion is still OPEN (`pend`): set by the
+                # head, cleared by a statement-ending line. A quote-only line
+                # under a `for (const cmd of […])` head is DATA, and must not
+                # resolve anybody's citation.
+                if "-- Case" in s or s.startswith("// ──") or s.startswith("// ---"):
                     out.append(ln)
+                elif _ASSERT_OPEN_RE.match(s):
+                    out.append(ln)
+                    pend = not s.endswith(";")
+                elif pend and _CONTINUATION_RE.match(s):
+                    out.append(ln)
+                    if s.endswith(";") or s.endswith(")"):
+                        pend = False
+                elif s.endswith(";"):
+                    pend = False
             elif p.suffix == ".py":
                 # `def test_` names and assertFires()/assert-argument lines —
                 # an assertion's EXPECTED STRING is a carrier; a fixture's

@@ -4154,6 +4154,38 @@ class CouplingCaseRefsTest(unittest.TestCase):
             self._probs(self.FILL + ' see the _"zzfixture continuation title"_ case.\n'),
             [])
 
+    def test_a_quoted_string_inside_a_non_assertion_array_is_not_a_carrier(self):
+        """PR #118 review: the continuation carve-out's first cut accepted ANY
+        quote-only line, so a data literal in a `for (const cmd of [...])`
+        block (the shape tests/test_compress.mjs:67-70 already ships) was a
+        carrier — the #115 escape reopened by its own fix. A continuation
+        carrier must trace back to an ok(/throws( head."""
+        write(self.dir / "tests" / "test_workflows.mjs",
+              'for (const cmd of [\n'
+              '  "zzfixture data literal not a case",\n'
+              ']) {\n  ok(true);\n}\n' + self._filler_mjs())
+        probs = self._probs(
+            self.FILL + ' see the _"zzfixture data literal not a case"_ case.\n')
+        self.assertTrue(
+            any("zzfixture data literal not a case" in p and "resolves nowhere" in p
+                for p in probs), probs)
+
+    def test_an_assertfires_expectation_IS_a_carrier(self):
+        """CONTROL for the narrowing above, and the pin the .py branch lacked:
+        `assertFires("…")` expectation strings are carriers (CLAUDE.md cites
+        `test_autobar_missing_z_flag_fires` through them), and only the real
+        tree exercised that half — a synthetic probe keeps the pin off the
+        real tree's coattails (PR #118 review)."""
+        _sh = self.dir / "tests" / "test-scripts.sh"
+        write(_sh, _sh.read_text(encoding="utf-8")
+              + 'check "zzrenamed beyond recognition" 0\n' + self._filler_sh())
+        write(self.dir / "tests" / "test_validate_plugin.py",
+              'class F:\n    def test_probe(self):\n'
+              '        self.assertFires("zzfixture fires title", "check_x")\n')
+        self.assertEqual(
+            self._probs(self.FILL + ' see the _"zzfixture fires title"_ case.\n'),
+            [])
+
     def _filler_sh(self):
         return "".join(f'check "zzfiller {i}" 0\n' for i in range(45))
 
@@ -4218,6 +4250,23 @@ class MetaLocatorTest(unittest.TestCase):
         probs = []
         vp.check_workflows(self.dir, probs)
         self.assertEqual([p for p in probs if "cannot locate" in p], [])
+
+    def test_an_embedded_close_inside_a_meta_string_does_not_truncate(self):
+        """PR #118 review: the locator's `.*?` stops at the FIRST `};` — one
+        inside a meta STRING (a quoted snippet, e.g. `"1};2"`) truncates the
+        block mid-string and every computed-meta pin after the cut is
+        invisible. That is #114's fail-open pointed the other way: a truncated
+        match reads as checked-and-clean. The locator must stop at the
+        statement's real close, not the shortest close."""
+        f = self._wf()
+        o = f.read_text(encoding="utf-8")
+        f.write_text(o.replace(
+            'name: "brainstorm", description: "d"',
+            'name: "brainstorm", description: "1};2", whenToUse: "y" + compute()'),
+            encoding="utf-8")
+        probs = []
+        vp.check_workflows(self.dir, probs)
+        self.assertTrue(any("concatenation" in p for p in probs), probs)
 
 
 class FragmentScanLocatorTest(unittest.TestCase):

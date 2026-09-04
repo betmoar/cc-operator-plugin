@@ -13,7 +13,8 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 The validator made honest about what it actually read (#110, #114, #115) —
 two measured fail-open defects fixed, both in the class where a pin reports
-green about a set it never read.
+green about a set it never read. Two more of the same class were found in
+the first fixes themselves and are fixed here too (PR #118's own review).
 
 ### Added
 
@@ -37,13 +38,21 @@ green about a set it never read.
   resolve only against CARRIER lines: suite `check`/`-- Case`/`# ---` lines,
   node assertion titles including their continuation lines, python
   `def test_`/`assertFires(` lines. Measured: renamed real case + planted
-  fixture string stayed green before, fires now.
+  fixture string stayed green before, fires now. The first cut's continuation
+  carve-out accepted ANY quote-only line, which made a data literal inside
+  `for (const cmd of […])` a carrier — the same escape reopened by the fix,
+  caught in this PR's own review; a continuation carrier must now trace to
+  an open `ok(`/`throws(` head, and `assertFires(` carries a synthetic pin.
 - **`check_workflows`' meta locator could not read the inline-closed meta
   shape (#114)** — the regex required the closing `};` on its own line, the
   good-tree fixture closes inline, so every fixture-based meta-pin test was
   testing nothing and a computed meta in a one-line block passed every pin
   (A/B measured: `located=False` before, fires after). A locator that stops
-  locating now reports instead of skipping.
+  locating now reports instead of skipping. The widened regex then stopped at
+  the FIRST `};` — one inside a meta string truncated the block and every
+  computed tail after the cut was invisible (found in this PR's own review);
+  the locator now walks the object with string-aware brace depth and ends at
+  the balancing `}`, quotes skipped.
 - **`check_guard_parity`'s F17 arm reported only a missing `retro_gate`
   scanner (#114)** — deleting `--reconcile`'s said nothing, and half a
   comparison is satisfied by deleting the other half. Each side reports by
@@ -64,7 +73,7 @@ green about a set it never read.
   the bash suite while the validator pin written for it stays vacuous. The
   python cases already assert the specific check fires; CLAUDE.md's prose
   owes the same granularity.
-- `FLOOR_python` 315 → 327: the twelve cases this change adds. Executor-
+- `FLOOR_python` 315 → 330: the fifteen cases this change adds. Executor-
   invariant (no skipIf/skipTest in the python suites), so the floor can sit
   at the observed count.
 
@@ -1465,11 +1474,6 @@ graph work now computes the answer that issue needs.
   root placement leaves nonexistent — same class, same fix.
 
 [#66]: https://github.com/betmoar/cc-operator-plugin/issues/66
-[#110]: https://github.com/betmoar/cc-operator-plugin/issues/110
-[#111]: https://github.com/betmoar/cc-operator-plugin/issues/111
-[#114]: https://github.com/betmoar/cc-operator-plugin/issues/114
-[#115]: https://github.com/betmoar/cc-operator-plugin/issues/115
-[#117]: https://github.com/betmoar/cc-operator-plugin/issues/117
 [#73]: https://github.com/betmoar/cc-operator-plugin/issues/73
 [#76]: https://github.com/betmoar/cc-operator-plugin/issues/76
 
