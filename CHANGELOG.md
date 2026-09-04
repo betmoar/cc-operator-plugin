@@ -43,6 +43,10 @@ the first fixes themselves and are fixed here too (PR #118's own review).
   `for (const cmd of […])` a carrier — the same escape reopened by the fix,
   caught in this PR's own review; a continuation carrier must now trace to
   an open `ok(`/`throws(` head, and `assertFires(` carries a synthetic pin.
+  Round 2 of the review found the carve-out's window close had an unpinned
+  `)` disjunct and dropped the two-string continuation the suites really
+  write (`throws(fn, "title", "expect")` — 26 lines in test_workflows.mjs);
+  both pinned, each mutation red.
 - **`check_workflows`' meta locator could not read the inline-closed meta
   shape (#114)** — the regex required the closing `};` on its own line, the
   good-tree fixture closes inline, so every fixture-based meta-pin test was
@@ -73,7 +77,7 @@ the first fixes themselves and are fixed here too (PR #118's own review).
   the bash suite while the validator pin written for it stays vacuous. The
   python cases already assert the specific check fires; CLAUDE.md's prose
   owes the same granularity.
-- `FLOOR_python` 315 → 330: the fifteen cases this change adds. Executor-
+- `FLOOR_python` 315 → 333: the eighteen cases this change adds. Executor-
   invariant (no skipIf/skipTest in the python suites), so the floor can sit
   at the observed count.
 

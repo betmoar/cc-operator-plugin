@@ -4154,6 +4154,29 @@ class CouplingCaseRefsTest(unittest.TestCase):
             self._probs(self.FILL + ' see the _"zzfixture continuation title"_ case.\n'),
             [])
 
+    def test_a_continuation_ending_in_a_close_paren_closes_the_window(self):
+        """PR #118 review, round 2: the pend window closes on `;` OR `)` —
+        the `)` disjunct is load-bearing and unproven by the two-line fixture
+        (whose title line ends `");`, satisfying both at once). Here the
+        title line ends with a bare `)` and NO `;`-ending line intervenes
+        before the data literal, so ONLY the `)` disjunct can close the
+        window; the literal after it must NOT be a carrier. Dropping
+        `or s.endswith(")")` makes the window leak open and the data line a
+        carrier (measured: mutation red)."""
+        write(self.dir / "tests" / "test_workflows.mjs",
+              'ok(cond,\n  "zzfixture paren closed title")\n'
+              'for (const cmd of [\n'
+              '  "zzfixture after close not a carrier",\n'
+              ']) {\n  ok(true);\n}\n' + self._filler_mjs())
+        self.assertEqual(
+            self._probs(self.FILL + ' see the _"zzfixture paren closed title"_ case.\n'),
+            [])
+        probs = self._probs(
+            self.FILL + ' see the _"zzfixture after close not a carrier"_ case.\n')
+        self.assertTrue(
+            any("zzfixture after close not a carrier" in p and "resolves nowhere" in p
+                for p in probs), probs)
+
     def test_a_quoted_string_inside_a_non_assertion_array_is_not_a_carrier(self):
         """PR #118 review: the continuation carve-out's first cut accepted ANY
         quote-only line, so a data literal in a `for (const cmd of [...])`
@@ -4169,6 +4192,21 @@ class CouplingCaseRefsTest(unittest.TestCase):
         self.assertTrue(
             any("zzfixture data literal not a case" in p and "resolves nowhere" in p
                 for p in probs), probs)
+
+    def test_a_two_string_continuation_is_a_carrier(self):
+        """Round 2: node suites really write `throws(fn,\\n  "title",
+        "expect");` — 26 such lines in test_workflows.mjs. The first cut of
+        the continuation regex matched exactly ONE string, so those title
+        lines were dropped (latent: no citation targets one yet, but a future
+        citation would report "resolves nowhere" against a title that IS in
+        the file). Comma-separated string runs are carriers inside an open
+        window; the round-1 escape (for-array data literal) still is not."""
+        write(self.dir / "tests" / "test_workflows.mjs",
+              'throws(() => run(WF("plan.js"), {}, fx),\n'
+              '  "zzfixture two string title", "expect");\n' + self._filler_mjs())
+        self.assertEqual(
+            self._probs(self.FILL + ' see the _"zzfixture two string title"_ case.\n'),
+            [])
 
     def test_an_assertfires_expectation_IS_a_carrier(self):
         """CONTROL for the narrowing above, and the pin the .py branch lacked:
@@ -4267,6 +4305,22 @@ class MetaLocatorTest(unittest.TestCase):
         probs = []
         vp.check_workflows(self.dir, probs)
         self.assertTrue(any("concatenation" in p for p in probs), probs)
+
+    def test_an_unterminated_string_in_meta_reports_cannot_locate(self):
+        """PR #118 review, round 2: an unterminated string in the meta block
+        (file ends mid-quote, or a quote swallowed by a newline) leaves the
+        walker inside a string at EOF — depth never balances, the locator
+        returns None, and "cannot locate" must FIRE. The alternative — a
+        locator that silently returns some prefix — would feed the pins a
+        truncated block, the exact fail-open of the embedded-`};` case. Not
+        pinned until this test (round 2's gap 2)."""
+        f = self._wf()
+        o = f.read_text(encoding="utf-8")
+        f.write_text(o.replace('description: "d"', 'description: "unterminated'),
+                     encoding="utf-8")
+        probs = []
+        vp.check_workflows(self.dir, probs)
+        self.assertTrue(any("cannot locate" in p for p in probs), probs)
 
 
 class FragmentScanLocatorTest(unittest.TestCase):

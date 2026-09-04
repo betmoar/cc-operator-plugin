@@ -2616,8 +2616,9 @@ class _MetaBlock:
         return self._text
 
 
-def _locate_meta_block(text, rel, problems):
-    """Return the `export const meta = {…};` statement, or None (+ a finding).
+def _locate_meta_block(text):
+    """Return the `export const meta = {…};` statement, or None (the CALLER
+    appends the no-candidate finding — this locator only locates).
 
     String-aware brace depth: the block ends at the `}` that balances the
     object's own opener with quotes skipped, so a `};` inside a meta string
@@ -2703,7 +2704,7 @@ def check_workflows(root, problems):
         # with string-aware brace DEPTH and ends at the `}` that balances the
         # object's own opener, quotes skipped, so a `};` inside a string
         # cannot end the statement early.
-        meta_block = _locate_meta_block(text, rel, problems)
+        meta_block = _locate_meta_block(text)
         if meta_block is None:
             problems.append(
                 f"{rel}: cannot locate the `export const meta = {{…}}` block "
@@ -3644,8 +3645,14 @@ def check_coupling_case_refs(root, problems):
     # head sits on the previous line — node suites write `ok(cond,\n  "msg")`)
     # is a carrier: the title lives in that literal. Matched by quote-then-
     # content-then-close-and-comma, which a keyword or identifier cannot
-    # shape, so prose continuation lines in fixtures do not slip in.
-    _CONTINUATION_RE = re.compile(r'^"[^"]*"\)?[;,)]*\s*$')
+    # shape, so prose continuation lines in fixtures do not slip in. Round 2:
+    # the FIRST cut matched exactly ONE string, dropping the two-argument
+    # shape the suites really write (`throws(fn,\n  "title", "expect");` —
+    # 26 such lines in test_workflows.mjs); a comma-separated run of strings
+    # is still quote-then-content, still cannot shape as code, and still only
+    # counts inside an OPEN assertion window (`pend`), so the round-1 escape
+    # (a data literal inside `for (const cmd of […])`) stays excluded.
+    _CONTINUATION_RE = re.compile(r'^"[^"]*"(?:,\s*"[^"]*")*\)?[;,)]*\s*$')
     # PR #118 review: a quote-only line is a carrier only as the CONTINUATION
     # of an ok()/throws() head. The first cut accepted any quote-only line,
     # which made a data literal inside `for (const cmd of […])` (a shape
@@ -3677,9 +3684,10 @@ def check_coupling_case_refs(root, problems):
                 # markers are `// ── … ──` comments — the node analog of the
                 # shell `# ---` marker. A title on its own line is a carrier
                 # only while the assertion is still OPEN (`pend`): set by the
-                # head, cleared by a statement-ending line. A quote-only line
-                # under a `for (const cmd of […])` head is DATA, and must not
-                # resolve anybody's citation.
+                # head, cleared by a statement-ending line — a continuation
+                # ending `;` or `)`, or any other line ending `;`. A quote-only
+                # line under a `for (const cmd of […])` head is DATA, and must
+                # not resolve anybody's citation.
                 if "-- Case" in s or s.startswith("// ──") or s.startswith("// ---"):
                     out.append(ln)
                 elif _ASSERT_OPEN_RE.match(s):
