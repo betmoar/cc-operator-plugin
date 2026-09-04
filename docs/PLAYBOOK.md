@@ -181,6 +181,21 @@ catches that. Never treat a green validator as evidence the gate works.
 4. **If it cannot discriminate, say so in the test itself.** There are
    `HONESTY NOTE` comments in the suite for exactly this. A test that proves
    nothing while looking authoritative is worse than no test.
+5. **Purge `__pycache__` between mutate and restore (measured 2026-09-04,
+   #113).** A byte-identical restore can keep executing the MUTANT from a
+   stale `.pyc` whose embedded source-mtime still matches — the restore
+   landed within the filesystem's mtime granularity, so `import` trusted the
+   cached bytecode. The symptom is maddening: source reads restored, the
+   suite stays red, hand-running the logic agrees with the source. One
+   `find scripts/__pycache__ -name '<module>*' -delete` between the two runs
+   makes the red/green pair honest.
+6. **Name the gate that went red (#111).** "Mutation-checked" alone records
+   that SOMETHING fired; a shell mutation can go red in the bash suite while
+   the validator pin written for it stays vacuous. The record — commit
+   message, CHANGELOG, CLAUDE.md coupling row — says "red in
+   `check_autobar`" / "red in the F118 cases", never bare
+   "mutation-checked". The python suite already asserts the specific check
+   fires; the prose owes the same granularity.
 
 ## What a green suite does NOT prove
 

@@ -9,6 +9,17 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+- **Convention (#111): "mutation-checked" names the gate that went red.**
+  Bare "mutation-checked" records that SOMETHING fired — a shell mutation can
+  go red in the bash suite while the validator pin written for it stays
+  vacuous. The coupling-table rule now requires the granularity the python
+  suite already asserts (`test_autobar_missing_z_flag_fires` names its
+  check); the four bare sites in CLAUDE.md are retrofitted with their gates.
+  PLAYBOOK's "Verifying a fix" gains step 5 (purge `__pycache__` between
+  mutate and restore — a byte-identical restore kept executing the mutant
+  from a stale `.pyc` whose embedded mtime still matched, measured during
+  the #113 audit) and step 6 (the naming rule itself).
+
 ## [0.11.9] - 2026-09-04
 
 - **Docs: CLAUDE.md char diet (60,237 → 33,922 chars).** The harness injects
