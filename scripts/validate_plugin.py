@@ -1468,6 +1468,15 @@ def check_guard_parity(root, problems):
             problems.append(
                 "scripts/ops-verdict.sh: cannot locate retro_gate's fragment "
                 "scan — F17 parity pin could not be applied (report, not skip)")
+        if "row" not in by_var:
+            # #114: the elif above reported only the retro_gate half. A missing
+            # --reconcile `row` scanner said NOTHING — the parity pin applied to
+            # half a comparison, and half a comparison is satisfied by deleting
+            # the other half.
+            problems.append(
+                "scripts/ops-verdict.sh: cannot locate --reconcile's fragment "
+                "scan — the F17 parity pin cannot be applied to a comparison "
+                "with a missing side (report, not skip; #114)")
 
     # F14: the hooks' json_get() must coerce JSON booleans to "true"/"false" —
     # a bare print(v) renders Python True/False and every `= "true"` test
@@ -2593,6 +2602,55 @@ def check_resolver_renderer_parity(root, problems):
             f"bindings on a stale namespace")
 
 
+class _MetaBlock:
+    """A stand-in for the re.Match the meta locator used to return — .group(0)
+    is all the computed-meta pins ever read. Kept match-shaped so callers
+    don't learn which locator found the block."""
+
+    __slots__ = ("_text",)
+
+    def __init__(self, text):
+        self._text = text
+
+    def group(self, _=0):
+        return self._text
+
+
+def _locate_meta_block(text):
+    """Return the `export const meta = {…};` statement, or None (the CALLER
+    appends the no-candidate finding — this locator only locates).
+
+    String-aware brace depth: the block ends at the `}` that balances the
+    object's own opener with quotes skipped, so a `};` inside a meta string
+    (a quoted snippet) cannot truncate it — the failure the non-greedy
+    regex shipped as (#118 review): the match stopped mid-string and every
+    computed tail after the cut was invisible to the pins."""
+    m = re.search(r"export const meta\s*=\s*\{", text)
+    if m is None:
+        return None
+    i, depth, q = m.end() - 1, 0, None
+    while i < len(text):
+        c = text[i]
+        if q:                        # inside a string literal
+            if c == "\\":
+                i += 1               # skip the escaped char
+            elif c == q:
+                q = None
+        elif c in "\"'`":
+            q = c
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                i += 1               # past the balancing close
+                break
+        i += 1
+    if depth == 0 and text[i:i + 1] == ";":
+        return _MetaBlock(text[m.start():i + 1])
+    return None      # unbalanced object / no terminating `;` — not locatable
+
+
 def check_workflows(root, problems):
     """
     Workflow meta pins + the model-id guard.
@@ -2633,7 +2691,28 @@ def check_workflows(root, problems):
         # (b) meta: first statement, PURE literal. A concatenation inside it
         # is rejected by the harness AT LAUNCH — the workflow silently never
         # runs, and no suite here launches one (plan.js shipped this once).
-        meta_block = re.search(r"export const meta\s*=\s*\{.*?\n\};", text, re.S)
+        # #114: the locator once required the closing brace on its OWN line
+        # (`\n};`), so an inline-closed `export const meta = {…};` returned
+        # None and every meta pin below skipped silently while the
+        # `startswith` pin stayed green — a computed meta inside a one-line
+        # block passed every check (measured). No-candidate is a FINDING.
+        # PR #118 review: the widened `.*?` then stopped at the FIRST `};` —
+        # one inside a meta STRING (a quoted snippet, `"1};2"`) truncated the
+        # block mid-string and every computed tail after the cut was
+        # invisible: a truncated match reads as checked-and-clean, #114's
+        # fail-open pointed the other way. The locator now walks the object
+        # with string-aware brace DEPTH and ends at the `}` that balances the
+        # object's own opener, quotes skipped, so a `};` inside a string
+        # cannot end the statement early.
+        meta_block = _locate_meta_block(text)
+        if meta_block is None:
+            problems.append(
+                f"{rel}: cannot locate the `export const meta = {{…}}` block "
+                f"— the meta pins (pure-literal, concatenation, template "
+                f"literal, structural) have nothing to check. A reshaped or "
+                f"renamed meta declaration must update this locator, not "
+                f"silently skip it (#114: no-candidate is a finding, never "
+                f"a pass)")
         if meta_block and re.search(r'"\s*\+|\+\s*"', meta_block.group(0)):
             problems.append(
                 f"workflows/{f.name}: `meta` contains a concatenation — the harness "
@@ -3549,10 +3628,90 @@ def check_coupling_case_refs(root, problems):
                 out += p.read_text(encoding="utf-8", errors="replace").splitlines()
         return out
 
+    # #115: a citation resolves against SUITE FILES (a shell/node case title)
+    # or a `def test_` line in the python suite — never an arbitrary string
+    # literal anywhere under tests/. The first draft of this check scanned
+    # every .sh/.mjs/.py line, and CouplingCaseRefsTest's own fixture reused
+    # two REAL case titles as sample data, so those fixture strings satisfied
+    # the production citations: renaming the real case in tests/test-scripts.sh
+    # stayed GREEN. The escape was in the fixture, not the check, but the
+    # check's SELECTION made the escape possible — any string literal in any
+    # file under tests/ counted as a resolution. Narrowing the selection to
+    # the lines that CARRY cases (suite `check "…"` / `-- Case:` lines, node
+    # test titles, python `def test_` names) closes the class: a fixture
+    # string in a python body is not a def line and can no longer stand in
+    # for the thing under test.
+    # A string-literal CONTINUATION line (the message argument of a call whose
+    # head sits on the previous line — node suites write `ok(cond,\n  "msg")`)
+    # is a carrier: the title lives in that literal. Matched by quote-then-
+    # content-then-close-and-comma, which a keyword or identifier cannot
+    # shape, so prose continuation lines in fixtures do not slip in. Round 2:
+    # the FIRST cut matched exactly ONE string, dropping the two-argument
+    # shape the suites really write (`throws(fn,\n  "title", "expect");` —
+    # 26 such lines in test_workflows.mjs); a comma-separated run of strings
+    # is still quote-then-content, still cannot shape as code, and still only
+    # counts inside an OPEN assertion window (`pend`), so the round-1 escape
+    # (a data literal inside `for (const cmd of […])`) stays excluded.
+    _CONTINUATION_RE = re.compile(r'^"[^"]*"(?:,\s*"[^"]*")*\)?[;,)]*\s*$')
+    # PR #118 review: a quote-only line is a carrier only as the CONTINUATION
+    # of an ok()/throws() head. The first cut accepted any quote-only line,
+    # which made a data literal inside `for (const cmd of […])` (a shape
+    # tests/test_compress.mjs already ships) a carrier — the #115 escape
+    # reopened by its own fix.
+    _ASSERT_OPEN_RE = re.compile(r'^(?:await\s+)?(?:ok|throws)\(')
+    def suite_lines(p):
+        if not p.is_file():
+            return []
+        out = []
+        pend = False  # inside an ok()/throws( argument list (title may follow)
+        for ln in p.read_text(encoding="utf-8", errors="replace").splitlines():
+            s = ln.strip()
+            if p.suffix == ".sh":
+                # A case is ASSERTED on a `check "title" …` line, DECLARED on
+                # an `echo "-- Case N: title"` line, or SECTIONED by a
+                # `# --- title ---` marker comment (the shape CLAUDE.md's own
+                # note warns about: anchors may be section titles INSIDE a
+                # case block). Everything else in the suite file — fixtures
+                # it builds, strings it greps for — is data about cases, not
+                # a case title.
+                if s.startswith("check ") or "-- Case" in s or \
+                        s.startswith("# ---"):
+                    out.append(ln)
+            elif p.suffix == ".mjs":
+                # Assertion TITLES ride the ok()/throws() message argument
+                # (`ok(cond, "#92 …: the refusal spends ZERO agents")`), cases
+                # are DECLARED on `console.log("-- Case: …")`, and section
+                # markers are `// ── … ──` comments — the node analog of the
+                # shell `# ---` marker. A title on its own line is a carrier
+                # only while the assertion is still OPEN (`pend`): set by the
+                # head, cleared by a statement-ending line — a continuation
+                # ending `;` or `)`, or any other line ending `;`. A quote-only
+                # line under a `for (const cmd of […])` head is DATA, and must
+                # not resolve anybody's citation.
+                if "-- Case" in s or s.startswith("// ──") or s.startswith("// ---"):
+                    out.append(ln)
+                elif _ASSERT_OPEN_RE.match(s):
+                    out.append(ln)
+                    pend = not s.endswith(";")
+                elif pend and _CONTINUATION_RE.match(s):
+                    out.append(ln)
+                    if s.endswith(";") or s.endswith(")"):
+                        pend = False
+                elif s.endswith(";"):
+                    pend = False
+            elif p.suffix == ".py":
+                # `def test_` names and assertFires()/assert-argument lines —
+                # an assertion's EXPECTED STRING is a carrier; a fixture's
+                # INPUT string (a write() body) is not, and that distinction
+                # is the whole fix.
+                if s.startswith("def test_") or "assertFires(" in s:
+                    out.append(ln)
+        return out
+
     tests_dir = root / "tests"
     targets = {
-        "tests/": lines_of(sorted(p for p in tests_dir.rglob("*")
-                                  if p.suffix in {".sh", ".mjs", ".py"}))
+        "tests/": lines_of([]) + sum((suite_lines(p) for p in sorted(
+            tests_dir.rglob("*")) if p.suffix in {".sh", ".mjs", ".py"}), [])
         if tests_dir.is_dir() else [],
         "docs/LANDMINES.md": lines_of([root / "docs" / "LANDMINES.md"]),
     }

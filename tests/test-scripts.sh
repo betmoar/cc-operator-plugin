@@ -4665,8 +4665,14 @@ echo "-- Case: gate-suite.sh holds a rung to its MARKER and its FLOOR (0.11.7)"
 GS="$SCRIPTS/gate-suite.sh"
 GSD="$(mktemp -d "${TMPDIR:-/tmp}/gatesuite.XXXXXX")"
 _gsfloor="$(sed -n 's/^FLOOR_shell=\([0-9]*\)$/\1/p' "$REPO/tests/floors.env")"
-check "gate-suite: tests/floors.env declares an integer FLOOR_shell" \
-  "$(case "$_gsfloor" in ''|*[!0-9]*) echo 1 ;; *) echo 0 ;; esac)"
+# NOT `$(case …)`: bash 3.2 (macOS /bin/bash, an executor this suite runs on)
+# mis-parses a `case` with a `|` pattern inside command substitution — the
+# substitution breaks at the glob bar and the `check` receives the remainder
+# of the line as its word (measured: "integer expression expected" against
+# ` echo 1 ;; *) echo 0 ;; esac)`). The plain case assigns first; the
+# substitution only carries `$_gs_rc`, which parses everywhere.
+case "$_gsfloor" in ''|*[!0-9]*) _gs_rc=1 ;; *) _gs_rc=0 ;; esac
+check "gate-suite: tests/floors.env declares an integer FLOOR_shell" "$_gs_rc"
 
 printf '== summary: %s passed, 0 failed ==\n' "$_gsfloor" > "$GSD/at.log"
 # THE CONTROL, first: a wrapper that refuses everything passes every rejection
