@@ -300,6 +300,18 @@ weaker claim the 2026-08-14 run mistakenly recorded as the whole phase.
    framework failure has misread the stamp's contract: provenance, never
    attestation. Restore calc.sh.
 
+   **Run the probe at a 1-path delta (#122, measured 2026-09-04).** Since #85,
+   "no task open" is unreachable whenever the working tree carries ≥2 changed
+   project paths — autobar arms, the hook returns rc 2 with the auto-arm
+   block, and the probe reads as a FAIL it is not. That is the armer working,
+   not the gate broken: the probe files are dirty by design, so an honest
+   replay of this phase sits exactly on the armer's threshold. Before probing,
+   drop to ONE changed path (remove `dirty.txt` from step 2, keep only the
+   broken `calc.sh`), and if autobar has already armed, defer its sentinel and
+   re-measure — the probe's expected reading is taken on the cleaned state.
+   Option (c) of #122 was considered and rejected: clearing the whole tree
+   first would also clear the broken criterion the probe exists to keep.
+
 **Negative control (R4):** step 2 is the control for step 1 — `+dirty` appearing
 only when the tree is dirty is what makes the stamp a measurement rather than a
 constant. Check the pair explicitly: the two rows must carry the SAME sha and
