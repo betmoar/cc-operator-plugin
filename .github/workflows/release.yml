@@ -35,26 +35,23 @@ jobs:
           docker run --rm -v "$PWD":/w -w /w koalaman/shellcheck-alpine:v0.10.0 \
             sh -c 'shellcheck --version | grep version:; shellcheck scripts/*.sh scripts/lib/*.sh tests/test-scripts.sh'
 
+      # Same wrapper validate.yml uses, so the PUBLISHING build carries the
+      # floors and the run-markers too (#38 keeps this job a superset). A
+      # release that gates less than a PR is the shape that check exists for.
       - name: Validate plugin contracts
-        run: python3 scripts/validate_plugin.py
+        run: bash scripts/gate-suite.sh validator
 
       - name: Run Python tests
-        run: python3 -m unittest discover -s tests
+        run: bash scripts/gate-suite.sh python
 
       - name: Run shell script tests
-        run: bash tests/test-scripts.sh
+        run: bash scripts/gate-suite.sh shell
 
-      # These two were absent while the header above claimed "full validation"
-      # (#38): a tag build gated LESS than any PR build, and 0.7.1 changed the
-      # ROUTABLE regex in all four workflows — code test_workflows.mjs covers
-      # and a release build would not have run a single case over. Keep this
-      # job a superset of validate.yml; a gate that names one scope and runs
-      # another is the class docs/PLAYBOOK.md exists to catch.
       - name: Run workflow logic tests
-        run: node tests/test_workflows.mjs
+        run: bash scripts/gate-suite.sh workflows
 
       - name: Run compressor replay tests
-        run: node tests/test_compress.mjs
+        run: bash scripts/gate-suite.sh compress
 
       - name: Publish GitHub release
         env:

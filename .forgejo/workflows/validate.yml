@@ -78,21 +78,27 @@ jobs:
           /tmp/shellcheck-v0.10.0/shellcheck --version | grep version:
           /tmp/shellcheck-v0.10.0/shellcheck scripts/*.sh scripts/lib/*.sh tests/test-scripts.sh
 
+      # Every rung goes through gate-suite.sh, never the raw command — it
+      # requires the rung's completion MARKER (exit 0 is also what a step that
+      # ran nothing returns) and holds the case count to tests/floors.env.
+      #
+      # The prose that used to live here is why the file exists: "local macOS
+      # runs 683; a rootful ubuntu container runs 675 (8 self-skips); a count
+      # BELOW those is a real regression". Measured 2026-09-03 on a rootful
+      # ubuntu container: 820. The comment was stale by ~145 cases and nothing
+      # noticed, because nothing read it. The executor spread it describes is
+      # real and is now permanent slack under the floor, documented there.
       - name: Validate plugin contracts
-        run: python3 scripts/validate_plugin.py
+        run: bash scripts/gate-suite.sh validator
 
       - name: Run Python tests
-        run: python3 -m unittest discover -s tests -v
+        run: bash scripts/gate-suite.sh python
 
-      # The counts differ by executor and that is expected, not drift: cases
-      # that require a non-root user self-skip when the runner is root. Local
-      # macOS runs 683; a rootful ubuntu container runs 675 (8 self-skips).
-      # A count BELOW those is a real regression, not an environment quirk.
       - name: Run shell script tests
-        run: bash tests/test-scripts.sh
+        run: bash scripts/gate-suite.sh shell
 
       - name: Run workflow logic tests
-        run: node tests/test_workflows.mjs
+        run: bash scripts/gate-suite.sh workflows
 
       - name: Run compressor replay tests
-        run: node tests/test_compress.mjs
+        run: bash scripts/gate-suite.sh compress

@@ -3716,22 +3716,17 @@ class ReleaseGateCoverageTest(unittest.TestCase):
     every tag build, while release.yml's header claimed "full validation".
     """
 
-    VALIDATE = (
-        "jobs:\n  validate:\n    steps:\n"
-        "      - run: python3 scripts/validate_plugin.py\n"
-        "      - run: python3 -m unittest discover -s tests\n"
-        "      - run: bash tests/test-scripts.sh\n"
-        "      - run: node tests/test_workflows.mjs\n"
-        "      - run: node tests/test_compress.mjs\n"
-    )
-    RELEASE_FULL = (
-        "jobs:\n  release:\n    steps:\n"
-        "      - run: python3 scripts/validate_plugin.py\n"
-        "      - run: python3 -m unittest discover -s tests\n"
-        "      - run: bash tests/test-scripts.sh\n"
-        "      - run: node tests/test_workflows.mjs\n"
-        "      - run: node tests/test_compress.mjs\n"
-    )
+    # 0.11.7: every rung moved behind `gate-suite.sh <rung>`, and the SUITES
+    # tuple this check compares moved with it. The move EMPTIED the check for
+    # one commit — raw suite paths were gone from validate.yml, so `vsuites`
+    # was empty and the superset test passed against a release job running
+    # nothing. These fixtures use the invocation for that reason: a wrapper is
+    # exactly the indirection that empties a check aimed at what it wraps.
+    _STEPS = "".join(
+        f"      - run: bash scripts/gate-suite.sh {rung}\n"
+        for rung in vp.SUITE_RUNGS)
+    VALIDATE = "jobs:\n  validate:\n    steps:\n" + _STEPS
+    RELEASE_FULL = "jobs:\n  release:\n    steps:\n" + _STEPS
 
     def setUp(self):
         self.dir = pathlib.Path(tempfile.mkdtemp())
@@ -3760,8 +3755,8 @@ class ReleaseGateCoverageTest(unittest.TestCase):
     def test_missing_node_suites_fire(self):
         # The exact #38 shape: release.yml drops both node steps.
         subset = self.RELEASE_FULL.replace(
-            "      - run: node tests/test_workflows.mjs\n", "").replace(
-            "      - run: node tests/test_compress.mjs\n", "")
+            "      - run: bash scripts/gate-suite.sh workflows\n", "").replace(
+            "      - run: bash scripts/gate-suite.sh compress\n", "")
         self._write(self.VALIDATE, subset)
         probs = self._probs()
         self.assertEqual(len(probs), 2, probs)
@@ -3790,21 +3785,21 @@ class ReleaseGateCoverageTest(unittest.TestCase):
         accepted it — the tag build reads as gated in a diff and runs nothing
         (audited 2026-08-25)."""
         subset = self.RELEASE_FULL.replace(
-            "      - run: node tests/test_workflows.mjs\n",
-            "      # - run: node tests/test_workflows.mjs\n")
+            "      - run: bash scripts/gate-suite.sh workflows\n",
+            "      # - run: bash scripts/gate-suite.sh workflows\n")
         self._write(self.VALIDATE, subset)
         probs = self._probs()
-        self.assertTrue(any("test_workflows.mjs" in p and "LIVE" in p for p in probs), probs)
+        self.assertTrue(any("gate-suite.sh workflows" in p and "LIVE" in p for p in probs), probs)
 
     def test_if_false_step_does_not_count(self):
         """Present but skipped is not run — same reading in a diff, same zero
         coverage at the tag."""
         subset = self.RELEASE_FULL.replace(
-            "      - run: node tests/test_workflows.mjs\n",
-            "      - if: false\n        run: node tests/test_workflows.mjs\n")
+            "      - run: bash scripts/gate-suite.sh workflows\n",
+            "      - if: false\n        run: bash scripts/gate-suite.sh workflows\n")
         self._write(self.VALIDATE, subset)
         probs = self._probs()
-        self.assertTrue(any("test_workflows.mjs" in p and "LIVE" in p for p in probs), probs)
+        self.assertTrue(any("gate-suite.sh workflows" in p and "LIVE" in p for p in probs), probs)
 
     def test_forgejo_release_is_checked_too(self):
         """`.forgejo/` is the job that actually publishes on this LAN, and the
@@ -3843,8 +3838,8 @@ class ReleaseGateCoverageTest(unittest.TestCase):
         is handled by the grouping — it must not be reported as a disabled job,
         or the message sends a maintainer to the wrong line."""
         subset = self.RELEASE_FULL.replace(
-            "      - run: node tests/test_workflows.mjs\n",
-            "      - if: false\n        run: node tests/test_workflows.mjs\n")
+            "      - run: bash scripts/gate-suite.sh workflows\n",
+            "      - if: false\n        run: bash scripts/gate-suite.sh workflows\n")
         self._write(self.VALIDATE, subset)
         probs = self._probs()
         self.assertFalse(any("job- or workflow-level" in p for p in probs), probs)
@@ -3857,3 +3852,254 @@ class ReleaseGateCoverageTest(unittest.TestCase):
 
 
 
+
+class SuiteFloorsTest(unittest.TestCase):
+    """check_suite_floors: the ratchet, and the wrapper every CI path runs.
+
+    Until 0.11.7 the only floor in this repo was a COMMENT above the shell-suite
+    step in .forgejo/workflows/validate.yml claiming 683/675 cases. Measured
+    2026-09-03 in a rootful container: 820. Stale by ~145 and nothing noticed,
+    because nothing read it. Every case below is one of the mutations run RED
+    before the check was believed.
+
+    The tree copies the SHIPPED scripts/gate-suite.sh and tests/floors.env, not
+    a stub: claim 4 EXECUTES the wrapper (F140/F144), and a probe against a
+    hand-written imitation proves nothing about what ships.
+    """
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        write(self.dir / "tests" / "floors.env",
+              (ROOT / "tests" / "floors.env").read_text(encoding="utf-8"))
+        write(self.dir / "scripts" / "gate-suite.sh",
+              (ROOT / "scripts" / "gate-suite.sh").read_text(encoding="utf-8"))
+        steps = "".join(f"      - run: bash scripts/gate-suite.sh {r}\n"
+                        for r in vp.SUITE_RUNGS)
+        for rel in vp._CI_FILES:
+            write(self.dir / rel, "jobs:\n  j:\n    steps:\n" + steps)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _probs(self):
+        probs = []
+        vp.check_suite_floors(self.dir, probs)
+        return probs
+
+    def _edit(self, rel, old, new):
+        p = self.dir / rel
+        s = p.read_text(encoding="utf-8")
+        self.assertIn(old, s, f"anchor missing in {rel}")
+        p.write_text(s.replace(old, new, 1), encoding="utf-8")
+
+    def test_good_tree_is_clean(self):
+        # THE CONTROL. Without it every rejection case below is satisfied by a
+        # check that fires on everything.
+        self.assertEqual(self._probs(), [])
+
+    def test_nothing_configured_at_all_is_skipped(self):
+        # A plugin fixture with no harness is the one legitimate skip, matching
+        # check_release_gates_cover_validate's no-workflows case.
+        empty = pathlib.Path(tempfile.mkdtemp())
+        try:
+            probs = []
+            vp.check_suite_floors(empty, probs)
+            self.assertEqual(probs, [])
+        finally:
+            shutil.rmtree(empty, ignore_errors=True)
+
+    def test_half_configured_is_reported_not_skipped(self):
+        # CI present, floors gone: the shape a real regression takes.
+        (self.dir / "tests" / "floors.env").unlink()
+        self.assertTrue(any("floors.env" in p and "missing" in p
+                            for p in self._probs()), self._probs())
+
+    def test_wrapper_missing_is_reported(self):
+        (self.dir / "scripts" / "gate-suite.sh").unlink()
+        self.assertTrue(any("gate-suite.sh" in p and "missing" in p
+                            for p in self._probs()), self._probs())
+
+    def _shell_floor_line(self):
+        """The FLOOR_shell line as it stands. Read, never hardcoded — the first
+        draft pinned `FLOOR_shell=820` and broke on the very next raise, which
+        is a test that fails for the one reason a floor is supposed to move."""
+        s = (self.dir / "tests" / "floors.env").read_text(encoding="utf-8")
+        m = re.search(r"^FLOOR_shell=\d+$", s, re.M)
+        self.assertIsNotNone(m, "floors.env carries no FLOOR_shell line")
+        return m.group(0)
+
+    def test_a_rungs_floor_deleted_fires(self):
+        self._edit("tests/floors.env", self._shell_floor_line() + "\n", "")
+        self.assertTrue(any("FLOOR_shell" in p for p in self._probs()),
+                        self._probs())
+
+    def test_a_floor_of_zero_fires(self):
+        # "A floor of 0 is not a floor; it is the absence of one wearing a
+        # number" — the reflex way to make a red ratchet green.
+        self._edit("tests/floors.env", self._shell_floor_line(), "FLOOR_shell=0")
+        self.assertTrue(any("not a positive integer" in p
+                            for p in self._probs()), self._probs())
+
+    def test_wrapper_no_longer_sources_the_declaration_fires(self):
+        self._edit("scripts/gate-suite.sh", '. "$FLOORS" || die', 'true || die')
+        self.assertTrue(any("source line" in p for p in self._probs()),
+                        self._probs())
+
+    def test_a_second_floor_declaration_in_the_wrapper_fires(self):
+        # CR4: a value in two places is a value in neither the moment they
+        # drift, and the one CI reads wins silently.
+        self._edit("scripts/gate-suite.sh", "  RC=0\n", "  RC=0\n  FLOOR_shell=1\n")
+        self.assertTrue(any("literal" in p for p in self._probs()),
+                        self._probs())
+
+    def test_a_ci_file_reverting_to_the_raw_command_fires_twice(self):
+        # Two independent claims: the rung is no longer wrapped, AND a raw
+        # invocation is back. Either alone would let the other regress.
+        self._edit(".github/workflows/validate.yml",
+                   "      - run: bash scripts/gate-suite.sh shell\n",
+                   "      - run: bash tests/test-scripts.sh\n")
+        probs = self._probs()
+        self.assertTrue(any("no live `gate-suite.sh shell`" in p for p in probs), probs)
+        self.assertTrue(any("bypassing" in p for p in probs), probs)
+
+    def test_a_commented_out_rung_does_not_count(self):
+        self._edit(".forgejo/workflows/release.yml",
+                   "      - run: bash scripts/gate-suite.sh compress\n",
+                   "      # - run: bash scripts/gate-suite.sh compress\n")
+        self.assertTrue(any("gate-suite.sh compress" in p for p in self._probs()),
+                        self._probs())
+
+    def test_a_neutered_wrapper_fires_the_executed_probe(self):
+        """THE vacuity mutation. Every claim above is a substring test on a
+        body, and a body is blind to control flow: `exit 0` on line two leaves
+        every literal in place and checks nothing."""
+        self._edit("scripts/gate-suite.sh", "set -uo pipefail",
+                   "set -uo pipefail\nexit 0")
+        self.assertTrue(any("the contract is 1" in p for p in self._probs()),
+                        self._probs())
+
+    def test_a_wrapper_that_refuses_everything_fires_the_control_probe(self):
+        """The other half. Rejection probes alone are satisfied by a guard that
+        dies on everything — only the accepts-the-ordinary-case control sees
+        this one."""
+        self._edit("scripts/gate-suite.sh", "set -uo pipefail",
+                   "set -uo pipefail\nexit 1")
+        probs = self._probs()
+        self.assertTrue(any("control" in p and "the contract is 0" in p
+                            for p in probs), probs)
+
+    def test_reflowing_the_wrapper_is_free(self):
+        """NEGATIVE control: a pin that fires on cosmetic change trades a
+        vacuity for a false positive, which trains the same ignoring."""
+        self._edit("scripts/gate-suite.sh", 'die() {', '\ndie() {')
+        self.assertEqual(self._probs(), [])
+
+    def test_the_real_tree_passes(self):
+        probs = []
+        vp.check_suite_floors(ROOT, probs)
+        self.assertEqual(probs, [])
+
+
+class CouplingCaseRefsTest(unittest.TestCase):
+    """check_coupling_case_refs: CLAUDE.md's citations must still resolve.
+
+    The coupling table points at test cases and landmine sections BY TITLE, and
+    nothing read CLAUDE.md — so deleting a referenced case shipped green and
+    left the table pointing at nothing, which CLAUDE.md's own note calls worse
+    than pointing nowhere.
+    """
+
+    HEAD = "# CLAUDE.md\n\n"
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        # SYNTHETIC titles only. The first draft reused two REAL ones
+        # (`dev[N] mirror`, the seat-line case) and, because check_coupling_case_refs
+        # scans every file under tests/ — this one included — those fixture strings
+        # satisfied the production references: renaming the real case in
+        # tests/test-scripts.sh stayed GREEN, the mutation ESCAPED, and the escape
+        # was in the test rather than in the check. A fixture that can stand in for
+        # the thing under test is not a fixture.
+        write(self.dir / "tests" / "test-scripts.sh",
+              'echo "-- Case: zzfixture case title"\n'
+              'check "zzfixture dev[Q] mirror holds" 0\n'
+              'check "a zzfixture line in probe.env is dropped by the stub" 0\n'
+              + "".join(f'check "zzfixture filler {i}" 0\n' for i in range(45)))
+        write(self.dir / "docs" / "LANDMINES.md",
+              "## A zzfixture landmine heading\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _probs(self, body):
+        write(self.dir / "CLAUDE.md", self.HEAD + body)
+        probs = []
+        vp.check_coupling_case_refs(self.dir, probs)
+        return probs
+
+    # Enough DISTINCT resolving references to satisfy _MIN_REFS in every case
+    # that is not about _MIN_REFS itself — otherwise each one fires for two
+    # reasons and the assertion cannot tell them apart. Distinct, because the
+    # scan de-duplicates: 45 copies of one citation is one reference, which is
+    # how the first draft of this fixture was wrong (the check was right).
+    FILL = "".join(f' see the _"zzfixture filler {i}"_ case.\n' for i in range(45))
+
+    def test_resolving_references_are_clean(self):
+        self.assertEqual(self._probs(self.FILL), [])
+
+    def test_a_reference_resolving_nowhere_fires(self):
+        probs = self._probs(self.FILL + ' and the _"a case nobody wrote"_ case.\n')
+        self.assertTrue(any("a case nobody wrote" in p for p in probs), probs)
+
+    def test_an_ellipsis_reference_matches_in_order_on_one_line(self):
+        # `…` is an elision the PROSE made; the fragments must appear in order
+        # on one line. CLAUDE.md really does cite this case that way.
+        self.assertEqual(
+            self._probs(self.FILL + ' the _"zzfixture line … dropped by the stub"_ case.\n'),
+            [])
+
+    def test_an_ellipsis_reference_whose_fragments_are_out_of_order_fires(self):
+        # CONTROL for the case above: `…` must not degrade into "any of these
+        # words appear somewhere".
+        probs = self._probs(
+            self.FILL + ' the _"dropped by the stub … zzfixture line"_ case.\n')
+        self.assertTrue(probs, "an out-of-order elision must not resolve")
+
+    def test_a_markdown_escape_is_the_authors_not_the_titles(self):
+        # CLAUDE.md writes `dev\[N\] mirror` for a case named `dev[N] mirror`.
+        self.assertEqual(self._probs(self.FILL + ' the _"zzfixture dev\\[Q\\] mirror"_ case.\n'), [])
+
+    def test_a_landmine_reference_resolves_against_the_landmine_file(self):
+        self.assertEqual(
+            self._probs(self.FILL +
+                        ' Why: `docs/LANDMINES.md` _"A zzfixture landmine heading"_.\n'),
+            [])
+
+    def test_the_classification_is_by_context_not_by_string(self):
+        """A landmine heading cited WITHOUT naming the landmine file is looked
+        for in tests/, where it is not — this is the 'assert the SELECTION'
+        half. A checker perfectly correct about the wrong bytes reads exactly
+        like a working one."""
+        probs = self._probs(self.FILL + ' the _"A zzfixture landmine heading"_ case.\n')
+        self.assertTrue(any("zzfixture landmine heading" in p and "tests/" in p
+                            for p in probs), probs)
+
+    def test_the_convention_going_away_is_a_finding_not_a_pass(self):
+        """`if refs:` going silent when a head regex stops matching is a bug
+        this repo has already shipped (_tool_loops). No candidates must fail."""
+        probs = self._probs("no citations here at all, just prose.\n")
+        self.assertTrue(any("expected at least" in p for p in probs), probs)
+
+    def test_absent_claude_md_is_skipped(self):
+        empty = pathlib.Path(tempfile.mkdtemp())
+        try:
+            probs = []
+            vp.check_coupling_case_refs(empty, probs)
+            self.assertEqual(probs, [])
+        finally:
+            shutil.rmtree(empty, ignore_errors=True)
+
+    def test_the_real_tree_passes(self):
+        probs = []
+        vp.check_coupling_case_refs(ROOT, probs)
+        self.assertEqual(probs, [])

@@ -4655,6 +4655,76 @@ RVC="$(newproj)"
 check "reverify: a clean ledger (header only) exits 0" \
   "$( if ( cd "$RVC" && bash "$INIT" >/dev/null 2>&1 && bash "$RV" >/dev/null 2>&1 ); then echo 0; else echo 1; fi )"
 
+echo "-- Case: gate-suite.sh holds a rung to its MARKER and its FLOOR (0.11.7)"
+# Two claims that fail independently. The FLOOR catches deletion; the MARKER
+# catches a rung that exited 0 without running — which is what a step whose
+# command silently no-opped returns, and `echo $?` cannot tell those apart.
+# Until 0.11.7 the only floor here was a COMMENT in .forgejo/workflows/validate.yml
+# claiming 683/675 cases while the suite emitted 820: stale by ~145, and nothing
+# noticed, because nothing read it.
+GS="$SCRIPTS/gate-suite.sh"
+GSD="$(mktemp -d "${TMPDIR:-/tmp}/gatesuite.XXXXXX")"
+_gsfloor="$(sed -n 's/^FLOOR_shell=\([0-9]*\)$/\1/p' "$REPO/tests/floors.env")"
+check "gate-suite: tests/floors.env declares an integer FLOOR_shell" \
+  "$(case "$_gsfloor" in ''|*[!0-9]*) echo 1 ;; *) echo 0 ;; esac)"
+
+printf '== summary: %s passed, 0 failed ==\n' "$_gsfloor" > "$GSD/at.log"
+# THE CONTROL, first: a wrapper that refuses everything passes every rejection
+# case below, so the ordinary case has to be proven to pass.
+bash "$GS" --check shell "$GSD/at.log" >/dev/null 2>&1
+check "gate-suite: a clean run exactly AT the floor is accepted (control)" "$?"
+
+printf '== summary: %s passed, 0 failed ==\n' "$((_gsfloor - 1))" > "$GSD/below.log"
+bash "$GS" --check shell "$GSD/below.log" >/dev/null 2>&1
+check "gate-suite: one case below the floor is REFUSED (rc 1)" \
+  "$([ $? -eq 1 ] && echo 0 || echo 1)"
+
+printf '  ok   a case\n  ok   another\n' > "$GSD/nomarker.log"
+_gsout="$(bash "$GS" --check shell "$GSD/nomarker.log" 2>&1)"; _gsrc=$?
+check "gate-suite: no completion marker is REFUSED even though nothing failed" \
+  "$([ $_gsrc -eq 1 ] && echo 0 || echo 1)"
+check "gate-suite: the marker refusal names the missing marker, not the count" \
+  "$(printf '%s' "$_gsout" | grep -q 'no completion marker' && echo 0 || echo 1)"
+
+printf '== summary: %s passed, 2 failed ==\n' "$_gsfloor" > "$GSD/red.log"
+bash "$GS" --check shell "$GSD/red.log" >/dev/null 2>&1
+check "gate-suite: a summary reporting failures while exiting 0 is REFUSED" \
+  "$([ $? -eq 1 ] && echo 0 || echo 1)"
+
+# An unknown rung must stop at the allowlist rather than resolving to an empty
+# command and an empty floor — a rung with no floor is a rung with no ratchet.
+bash "$GS" bogus >/dev/null 2>&1
+check "gate-suite: an unknown rung is a usage error (rc 2), not a silent pass" \
+  "$([ $? -eq 2 ] && echo 0 || echo 1)"
+bash "$GS" --check shell "$GSD/does-not-exist.log" >/dev/null 2>&1
+check "gate-suite: --check with no readable log is a usage error (rc 2)" \
+  "$([ $? -eq 2 ] && echo 0 || echo 1)"
+
+# unittest's marker is `OK` or `OK (skipped=N)`; a FAILED run must not satisfy it.
+printf 'Ran 9 tests in 1s\n\nOK\n' > "$GSD/py.log"
+_gspf=1
+[ -n "$(sed -n 's/^FLOOR_python=\([0-9]*\)$/\1/p' "$REPO/tests/floors.env")" ] && _gspf=0
+check "gate-suite: tests/floors.env declares FLOOR_python too" "$_gspf"
+printf 'Ran 99999 tests in 1s\n\nFAILED (failures=1)\n' > "$GSD/pyf.log"
+bash "$GS" --check python "$GSD/pyf.log" >/dev/null 2>&1
+check "gate-suite: a FAILED unittest run does not satisfy the OK marker" \
+  "$([ $? -eq 1 ] && echo 0 || echo 1)"
+
+# The floors are ONE declaration. Point the wrapper at a copy with the rung's
+# floor removed: it must refuse, not fall back to an unbounded default.
+mkdir -p "$GSD/repo/scripts" "$GSD/repo/tests"
+cp "$GS" "$GSD/repo/scripts/gate-suite.sh"
+grep -v '^FLOOR_shell=' "$REPO/tests/floors.env" > "$GSD/repo/tests/floors.env"
+bash "$GSD/repo/scripts/gate-suite.sh" --check shell "$GSD/at.log" >/dev/null 2>&1
+check "gate-suite: a rung with no floor in floors.env is refused (rc 2), never defaulted" \
+  "$([ $? -eq 2 ] && echo 0 || echo 1)"
+rm -f "$GSD/repo/tests/floors.env"
+bash "$GSD/repo/scripts/gate-suite.sh" --check shell "$GSD/at.log" >/dev/null 2>&1
+check "gate-suite: an ABSENT floors.env is refused (rc 2) — the floors are the gate" \
+  "$([ $? -eq 2 ] && echo 0 || echo 1)"
+rm -rf "$GSD"
+
+
 if [ "$FAIL" -ne 0 ]; then
   echo "== failed cases =="
   printf '%s\n' "$FAILED_NAMES" | sed '/^$/d'
