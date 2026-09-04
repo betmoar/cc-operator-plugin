@@ -471,10 +471,19 @@ def _packet_block(text):
     the contract while the word survived in a sentence about it. Measured on
     the shipped HANDOUT.md: REACH appears both inside and outside the fence.
     The packet is the artifact; the prose is commentary about it.
+
+    LAST match, not first (#113, measured 2026-09-04): a doc that shows an
+    EXAMPLE packet before the real one (the handout's own teaching shape)
+    puts a complete decoy ahead of the contract itself, and a first-match
+    selection read the decoy while the real packet lost a field — the PR-#72
+    escape one level up. The document's own packet is the last one carrying
+    the marker; an example ahead of it is commentary by the doc's own shape.
     """
+    found = None
     for block in re.findall(r"```.*?```", text, re.S):
         if "TASK / TEXT / SCENE" in block:
-            return block
+            found = block
+    return found
     return None
 
 

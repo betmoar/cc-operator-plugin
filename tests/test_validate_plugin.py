@@ -948,6 +948,33 @@ class ValidatorTest(unittest.TestCase):
                 any(repr(field) in p for p in probs),
                 f"dropping {field!r} from the handout packet did not fire: {probs}")
 
+    def test_the_packet_block_selection_is_pinned_first_match(self):
+        """#113: _packet_block selects the FIRST fence carrying 'TASK / TEXT /
+        SCENE' — a selection, and it went untested at its edge. Measured
+        2026-09-04: a COMPLETE decoy fence ahead of a BROKEN real packet reads
+        clean (FALSE PASS — the field can vanish from the contract while a
+        prose example satisfies the pin, the PR-#72 shape one level up); a
+        broken decoy ahead of a complete packet fires (false positive, the
+        safer direction but still wrong-by-selection). Both halves pinned:
+        the pin must follow the LAST/real packet, not the first fence."""
+        c = self.dir / "templates" / "OPERATOR.md"
+        write(c, c.read_text() + "\n" + self._PACKET)
+        h = self.dir / "docs" / "HANDOUT.md"
+        # Dangerous direction: decoy complete, real packet lost CHANGED.
+        broken = self._PACKET.replace("CHANGED: <paths>|none", "")
+        write(h, "prose example:\n" + self._PACKET + "\n\nthe packet itself:\n" + broken)
+        probs = []
+        vp.check_handout_packet(self.dir, probs)
+        self.assertTrue(
+            any("CHANGED" in p for p in probs),
+            "a complete decoy fence must not satisfy the pin while the real "
+            f"packet is broken: {probs}")
+        # Control: the complete packet alone still reads clean.
+        write(h, "packet:\n" + self._PACKET)
+        probs = []
+        vp.check_handout_packet(self.dir, probs)
+        self.assertEqual(probs, [])
+
     def test_handout_packet_pin_checks_the_charter_itself(self):
         # Parity between handout and charter passes perfectly when the CHARTER is
         # what lost the field (F30); with no packet at all, every field must fire.
