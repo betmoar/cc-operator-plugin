@@ -66,6 +66,11 @@ CHARTER_MAX_LINES = 150
 # it must also bound what a line and the file may weigh, or packing defeats it.
 CHARTER_MAX_LINE_CHARS = 100   # non-table lines; the file's own wrap is ~80
 CHARTER_MAX_BYTES = 9000       # file is ~8.3KB today; headroom, not a target
+# CLAUDE.md is injected whole into every session (the harness clips at 40.0k
+# chars with a warning). The pin sits at 38k: budget under the clip, headroom
+# for map growth, and a hard gate so the file cannot silently creep back over
+# the limit — the same reason CHARTER_MAX_BYTES exists (F19's lesson).
+CLAUDE_MD_MAX_CHARS = 38000
 CHARTER_SECTION_ORDER = [
     "ROLE",
     "SOLO MODE",
@@ -3592,6 +3597,32 @@ def check_suite_floors(root, problems):
                     f"pin EXECUTES it for that reason")
 
 
+def check_claude_md_size(root, problems):
+    """CLAUDE.md stays under the harness's 40.0k-char injection clip.
+
+    The harness injects the project CLAUDE.md whole into every session and
+    warns above 40.0k chars. Nothing in the repo read that number, so the
+    file grew to ~60k by 0.11.8 — every session paying the overage in its
+    context budget. The pin sits 2k under the clip (headroom, not a target:
+    adding a row is free until it is not, and the failure mode is the
+    harness's warning, which nothing here sees).
+
+    Chars, not bytes: the clip is the harness's own unit, and a byte bound
+    would drift from it on every non-ASCII em-dash this file loves.
+    """
+    md = root / "CLAUDE.md"
+    if not md.is_file():
+        return  # fixture trees carry no maintainer handoff
+    n = len(md.read_text(encoding="utf-8"))
+    if n > CLAUDE_MD_MAX_CHARS:
+        problems.append(
+            f"CLAUDE.md: {n} chars > {CLAUDE_MD_MAX_CHARS} cap — the harness "
+            f"injects this file whole into every session and clips above "
+            f"40.0k; move the narrative to docs/LANDMINES.md (the 0.11.2/"
+            f"0.11.9 extraction pattern) and keep the coupling + citations "
+            f"in the row")
+
+
 def check_coupling_case_refs(root, problems):
     """Every `_"…"_` reference in CLAUDE.md still resolves to something.
 
@@ -3768,8 +3799,8 @@ def check_coupling_case_refs(root, problems):
 
 # The registry, in run order. Both main() and the test suite iterate THIS —
 # a hand-copied second list is how three guardrails (reader bounds, guard
-# parity, lock parity) ended up running in the build but not in the test that
-# asserts a good tree is clean, which is the test most likely to be trusted.
+# parity, lock parity) ended up running in the build but not in the good-tree
+# test, which is the test most likely to be trusted.
 CHECKS = (
     check_manifests,
     check_statusline,
@@ -3802,6 +3833,7 @@ CHECKS = (
     check_release_gates_cover_validate,
     check_suite_floors,
     check_coupling_case_refs,
+    check_claude_md_size,
 )
 
 

@@ -4418,3 +4418,58 @@ class CheckRegistryTest(unittest.TestCase):
         names = [f.__name__ for f in vp.CHECKS]
         self.assertEqual(set(names),
                          {f.__name__ for f in reversed(vp.CHECKS)})
+
+
+class ClaudeMdSizeTest(unittest.TestCase):
+    """check_claude_md_size: CLAUDE.md stays under the harness 40.0k clip.
+
+    The harness injects the project CLAUDE.md whole into every session and
+    warns above 40.0k chars. Nothing in the repo read that number, so the
+    file crept to ~60k by 0.11.8 — every session paying the overage. The pin
+    sits 2k under the clip. Both directions were run red/green on 2026-09-04
+    before this case was believed: the 60,237-char pre-diet file fired it;
+    a 9-char file stayed green.
+    """
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        (self.dir / "CLAUDE.md").write_text("# small handoff\n", encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _probs(self):
+        probs = []
+        vp.check_claude_md_size(self.dir, probs)
+        return probs
+
+    def test_an_oversized_file_fires(self):
+        # 0.11.8's real shape, reduced: padding past the cap must fire, and
+        # the message must name the cap and the escape (LANDMINES extraction).
+        (self.dir / "CLAUDE.md").write_text(
+            "x" * (vp.CLAUDE_MD_MAX_CHARS + 1), encoding="utf-8")
+        probs = self._probs()
+        self.assertTrue(probs, "an oversized CLAUDE.md must fire")
+        self.assertIn(str(vp.CLAUDE_MD_MAX_CHARS), probs[0])
+        self.assertIn("LANDMINES", probs[0])
+
+    def test_a_file_at_the_cap_stays_green(self):
+        # Boundary: AT the cap is compliant — the contract is >, not >=.
+        (self.dir / "CLAUDE.md").write_text(
+            "y" * vp.CLAUDE_MD_MAX_CHARS, encoding="utf-8")
+        self.assertEqual(self._probs(), [])
+
+    def test_an_absent_file_is_skipped(self):
+        (self.dir / "CLAUDE.md").unlink()
+        self.assertEqual(self._probs(), [])
+
+    def test_the_real_tree_passes(self):
+        probs = []
+        vp.check_claude_md_size(ROOT, probs)
+        self.assertEqual(probs, [])
+
+    def test_the_cap_sits_under_the_harness_clip(self):
+        # The pin's REASON is the harness's 40.0k injection clip; if the cap
+        # ever rises above it, the pin guards nothing the harness does not
+        # already warn about — and a cap above the clip is a contradiction.
+        self.assertLess(vp.CLAUDE_MD_MAX_CHARS, 40000)

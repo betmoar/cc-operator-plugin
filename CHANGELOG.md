@@ -9,6 +9,20 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.9] - 2026-09-04
+
+- **Docs: CLAUDE.md char diet (60,237 → 33,922 chars).** The harness injects
+  the project CLAUDE.md whole into every session and warns above 40.0k chars;
+  the file had crept to ~60k by 0.11.8 with nothing in the repo reading that
+  number. The long why-narratives that had accreted back into the coupling
+  table cells (the 0.11.2 extraction, repeated) moved byte-faithful to
+  `docs/LANDMINES.md` under "Extracted from the coupling table (0.11.9)";
+  every row keeps the coupling, all 53 unique `_"…"_` citations, and a
+  pointer. New validator pin `check_claude_md_size` (cap 38,000 chars —
+  headroom under the clip, the F19 lesson: a cap without a gate is a target),
+  mutation-verified red on the pre-diet file and green on the result, with
+  `ClaudeMdSizeTest` (5 cases; fires/boundary/absent/real-tree/cap-under-clip).
+
 ## [0.11.8] - 2026-09-04
 
 The validator made honest about what it actually read (#110, #114, #115) —
