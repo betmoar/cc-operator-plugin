@@ -9,6 +9,44 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.9] - 2026-09-04
+
+- **Docs: CLAUDE.md char diet (60,237 → 33,922 chars).** The harness injects
+  the project CLAUDE.md whole into every session and warns above 40.0k chars;
+  the file had crept to ~60k by 0.11.8 with nothing in the repo reading that
+  number. The long why-narratives that had accreted back into the coupling
+  table cells (the 0.11.2 extraction, repeated) moved byte-faithful to
+  `docs/LANDMINES.md` under "Extracted from the coupling table (0.11.9)";
+  every row keeps the coupling, all 53 unique `_"…"_` citations, and a
+  pointer. New validator pin `check_claude_md_size` (cap 38,000 chars —
+  headroom under the clip, the F19 lesson: a cap without a gate is a target),
+  mutation-verified red on the pre-diet file and green on the result, with
+  `ClaudeMdSizeTest` (5 cases; fires/boundary/absent/real-tree/cap-under-clip).
+- **Fixed #116: the Stop-hook loop guard no longer disarms on a sibling's
+  continuation.** `stop_hook_active` is a harness field every Stop hook
+  receives — cc-repete's loop sets it on every Stop it blocks, so the old
+  `[ "$active" = "true" ] && exit 0` disarmed the evidence gate for an entire
+  active loop after its first turn (fail-OPEN silent disarm, the worst
+  class). The guard now distinguishes my own continuation (per-session
+  marker `.operator/.stopguard/<sid>`, stamped by every blocking exit 2,
+  cleared by the allowing exit 0, wiped by SessionStart beside `.autobar/`)
+  from someone else's — the latter runs the gate normally and says so on
+  stderr. Marker is advisory and fails safe both directions. Cases 4d-4h in
+  the bash suite (foreign continuation blocks, own marker stands down,
+  marker write/clear lifecycle, deviation-block stamps too); mutation run
+  red (old guard restored → the foreign-continuation case fails). Coupling
+  row + LANDMINES narrative added; REPLAY-CHARTER's R2 expectation updated
+  to the #116 shape.
+- **Household slimming (the diet's other half).** Removed maintainer-local
+  audit scaffolding that had drifted into the tree: `AUDIT_LOG.md`,
+  `AUDIT_STATE.md`, `docs/DEBLOAT-0.10.md`, `docs/audit-2026-08-31-principal.md`,
+  `docs/audit-2026-09-02-principal.md`, and `docs/spec/backlog-charter.md` —
+  all live in git history now, the same pattern as the 0.3.0 removals.
+  `docs/spec/TAGS.md` moved to `docs/TAGS.md` (the dir emptied), with its
+  pinned references updated: `check_charter`'s path + messages, the python
+  fixture, CLAUDE.md's map + provenance, `commands/tiers.md`, LANDMINES,
+  UNKNOWNS. Validator + all four suites green.
+
 ## [0.11.8] - 2026-09-04
 
 The validator made honest about what it actually read (#110, #114, #115) —

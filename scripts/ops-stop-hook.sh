@@ -3,13 +3,15 @@
 #
 # Contract (exit codes are the interface — Claude Code reads them):
 #   exit 0  — allow the stop. Cases: no .operator/ reachable (no-op guard);
-#             .operator/pending/ empty; stop_hook_active true (loop guard);
-#             no JSON parser available (fail-open — a broken hook must never
-#             brick a session).
+#             .operator/pending/ empty; stop_hook_active true WITH this hook's
+#             own .stopguard marker (our continuation — the loop guard; a
+#             FOREIGN continuation does NOT exit 0, #116); no JSON parser
+#             available (fail-open — a broken hook must never brick a session).
 #   exit 2  — block the stop. This session OWNS a pending sentinel (or one is
-#             unowned) and stop_hook_active is false; stderr names those ids and
-#             the command to clear them (Claude Code feeds stderr back as
-#             guidance).
+#             unowned), or unpresented decisions exist; stderr names those ids
+#             and the command to clear them (Claude Code feeds stderr back as
+#             guidance). Every exit 2 stamps .operator/.stopguard/<sid> first
+#             (#116 — see the loop guard below).
 #
 # Ownership: the sentinel FILENAME carries the owner — `pending/<sid>__<task>`
 # is owned (ops-task.sh --owner stamps it by naming it), `pending/<task>` is
@@ -78,9 +80,6 @@ cwd="$(json_get cwd)"
 active="$(json_get stop_hook_active)"
 session="$(json_get session_id)"
 
-# --- loop guard: never re-block an already-active stop -----------------------
-[ "$active" = "true" ] && exit 0
-
 # --- no-op guard: not an operator project → stay out of the way --------------
 # An empty cwd has two very different causes: a payload that legitimately has
 # no cwd (fine, stay out of the way) and a payload that FAILED TO PARSE
@@ -110,7 +109,66 @@ while [ -n "$walk" ]; do
 done
 [ -n "$opdir" ] || exit 0
 
-# --- the partition rule, shared with the statusline ---------------------------
+# --- loop guard: never re-block MY OWN block, never disarm for anyone else's --
+# stop_hook_active is a HARNESS field every Stop hook receives, not a private
+# one (#116): it is true on the Stop AFTER any hook-forced continuation — ours,
+# but equally cc-repete's re-inject or any sibling's block. The old guard
+# `[ "$active" = "true" ] && exit 0` could not tell those apart, so an active
+# cc-repete loop (which blocks every Stop while it runs) disarmed this gate
+# for the whole loop window after its first turn — a fail-OPEN silent disarm,
+# the worst class in docs/LANDMINES.md.
+#
+# The marker closes the ambiguity: we stamp .operator/.stopguard/<sid> when WE
+# block, clear it when WE allow. "Active AND my marker" = the continuation of
+# my own block → stand down (the guard's original purpose: never re-block the
+# stop I myself forced, or the operator cannot escape the loop). "Active and
+# NO marker" = someone else's continuation → run the gate normally.
+#
+# The marker is advisory-only and fail-safe in both directions: an unwritable
+# .operator/ makes the guard read absent (gate RUNS — we fail toward blocking,
+# the same direction as the unowned-sentinel default), and a stale marker from
+# a crashed session is wiped by ops-sessionstart-hook.sh beside .autobar/, and
+# at worst makes us stand down for one stop — the pre-#116 behaviour, never
+# worse.
+_stopguard_path() { # → "" (not a project) or "$opdir/.stopguard/$session"
+  [ -n "${opdir:-}" ] || return 0
+  [ -n "$session" ] || return 0
+  printf '%s/.stopguard/%s' "$opdir" "$session"
+}
+
+stopguard_mark_blocked() { # record that THIS hook blocked (advisory, builtin)
+  _sgp="$(_stopguard_path)"
+  [ -n "$_sgp" ] || return 0
+  mkdir -p "${_sgp%/*}" 2>/dev/null || return 0
+  # set -C (O_EXCL) so a planted symlink at the marker path is refused rather
+  # than followed — the same discipline as the autobar sentinel write above.
+  ( set -C; : > "$_sgp" ) 2>/dev/null
+  # A pre-existing regular file is our own marker from the previous block:
+  # presence is the whole state, so a refused overwrite of our own marker is
+  # success, and a symlink at the path is failure (the marker would lie).
+  [ -f "$_sgp" ] && [ ! -L "$_sgp" ]
+}
+
+stopguard_clear() { # we allowed the stop — my block, if any, is over
+  _sgp="$(_stopguard_path)"
+  [ -n "$_sgp" ] || return 0
+  rm -f -- "$_sgp" 2>/dev/null
+}
+
+if [ "$active" = "true" ] && [ ! -f "$(_stopguard_path)" ]; then
+  # Someone else's continuation. Say so on stderr (it is guidance, and the
+  # silence here was the #116 report's first confusion) and RUN the gate.
+  echo "operator: stop_hook_active is true but no block of ours caused it (no .stopguard marker) — another hook's continuation does not suspend the evidence gate (#116); gate runs normally." >&2
+elif [ "$active" = "true" ]; then
+  # MY OWN continuation (I blocked last Stop, the harness re-fired with
+  # stop_hook_active true, the operator is acting on my instruction). This is
+  # the guard's original purpose: never re-block the stop I myself forced, or
+  # the operator cannot escape the loop.
+  exit 0
+fi
+# stop_hook_active false (the ordinary stop): fall through to the gate.
+
+
 case "${BASH_SOURCE[0]}" in
   */*) _libdir="${BASH_SOURCE[0]%/*}/lib" ;;
   *)   _libdir="lib" ;;
@@ -311,6 +369,7 @@ if [ -n "$pending" ] || [ "$MALFORMED" -gt 0 ]; then
   # printing "pending verdict(s): " with an empty list is the useless guidance
   # this whole branch exists to avoid.
   [ -n "$pending" ] && echo "operator: pending verdict(s): $pending — run $verdict_cmd <id> <criterion> <evidence> <PASS|FAIL>, or --defer \"<reason>\"" >&2
+  stopguard_mark_blocked
   exit 2
 fi
 
@@ -353,7 +412,13 @@ if [ "$deviations_scan_failed" = 0 ] && [ "$deviations_unpresented" -gt 0 ]; the
 $deviations_rows
 EOF
   fi
+  stopguard_mark_blocked
   exit 2
 fi
 
+# Allowing the stop: my own block, if there was one, is over — clear the
+# marker so a FUTURE hook-forced continuation (someone else's) is not mistaken
+# for ours (#116). Ordering: clear only after every blocking branch has been
+# passed, so the marker always reflects "this hook last blocked".
+stopguard_clear
 exit 0

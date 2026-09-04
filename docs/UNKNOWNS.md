@@ -75,8 +75,8 @@ indistinguishable from one nobody thought of.
 
 ## Related registers
 
-- `docs/spec/backlog-charter.md` §8 — per-claim residuals for that spec (what a
-  green suite does *not* prove). Local-only; `docs/spec/` is gitignored wholesale.
+- `docs/spec/backlog-charter.md` §8 (removed 0.11.9 — git history) — per-claim
+  residuals for that spec (what a green suite does *not* prove).
 - `docs/LANDMINES.md` — already-hit failure classes, the backward-looking twin of
   this register.
 - `.operator/VERDICTS.md` — the evidence ledger. An unknown closes here first and
