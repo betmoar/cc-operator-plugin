@@ -39,7 +39,10 @@ and the maintainer's local `.archive/dev/` (untracked).
   the same file. Both are right: an unparseable payload is a plugin failure, an
   unowned sentinel is a real open task. `CLAUDE_SESSION_ID` is **not** in the
   Bash tool env — only hooks get `session_id` — so the SessionStart hook is
-  load-bearing, not a convenience.
+  load-bearing, not a convenience. Sibling SessionStart hooks (cc-reload's
+  rehydrate) write `additionalContext` in the same event; the harness
+  concatenates both and the id banner survives (live-confirmed 2026-09-04,
+  #117 item 2) — both hooks stay append-only.
 - **The charter references the gate CLIs at `.operator/bin/...`** — the copies
   `ops-init.sh` installs into the target project, because the model's shell has
   no `${CLAUDE_PLUGIN_ROOT}` and a `scripts/` path resolves only inside this
