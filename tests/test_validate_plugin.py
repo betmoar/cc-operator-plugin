@@ -4084,6 +4084,28 @@ class CouplingCaseRefsTest(unittest.TestCase):
         self.assertTrue(any("zzfixture landmine heading" in p and "tests/" in p
                             for p in probs), probs)
 
+    def test_the_context_window_edge_is_pinned_at_120(self):
+        """#113: the 120-char lookback IS a selection, and its edge went
+        untested — measured live on 2026-09-04 (the CLAUDE.md diet): a
+        citation whose only `docs/LANDMINES.md` mention sits just OUTSIDE the
+        window misclassifies as tests/ and fires a FALSE 'resolves nowhere'
+        against a correct table — the false-positive direction, which blocks a
+        correct change. Both halves pinned: outside fires tests/, inside
+        (the control) resolves against the landmine file."""
+        gap = "y" * 125  # >120 chars between the mention and the citation
+        probs = self._probs(
+            self.FILL + f' see docs/LANDMINES.md {gap} and the '
+                        '_"A zzfixture landmine heading"_ ref.\n')
+        self.assertTrue(
+            any("zzfixture landmine heading" in p and "tests/" in p for p in probs),
+            "a mention outside the 120-char window must classify as tests/")
+        probs = self._probs(
+            self.FILL + ' see docs/LANDMINES.md and the '
+                        '_"A zzfixture landmine heading"_ ref.\n')
+        self.assertFalse(
+            any("zzfixture landmine heading" in p for p in probs),
+            "a mention inside the window must resolve against the landmine file")
+
     def test_the_convention_going_away_is_a_finding_not_a_pass(self):
         """`if refs:` going silent when a head regex stops matching is a bug
         this repo has already shipped (_tool_loops). No candidates must fail."""
