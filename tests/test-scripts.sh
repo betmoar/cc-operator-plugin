@@ -34,11 +34,19 @@ fi
 
 PASS=0
 FAIL=0
+SKIP=0
 pass() { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 # Names are accumulated, not just printed, so an intermittent failure can be identified after a re-run.
 FAILED_NAMES=""
 fail() { FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
   $1"; printf '  FAIL %s\n' "$1"; }
+# skip (#109): a case that CANNOT hold on this executor, counted so the floor
+# can be taken against passed+skipped — executor-invariant, which deletes the
+# permanent slack the old at-or-below-lowest-executor floor carried. A skip is
+# per-CASE: a block that cannot run owes one skip() per check it replaces, or
+# the count is as loose as the echo it replaced. Never a silent pass: the
+# premise must be executor-conditional (root, missing tool), not "flaky here".
+skip() { SKIP=$((SKIP+1)); printf '  skip %s\n' "$1"; }
 check() { # check <desc> <0|1 condition-result>
   if [ "$2" -eq 0 ]; then pass "$1"; else fail "$1"; fi
 }
@@ -810,10 +818,11 @@ check "premise: ledger exists" "$([ -f "$P/.operator/VERDICTS.md" ] && echo 0 ||
 chmod 000 "$P/.operator/VERDICTS.md"
 ROUT="$( cd "$P" && bash "$VERDICT" --reconcile 2>&1 )"; RRC=$?
 chmod 600 "$P/.operator/VERDICTS.md"
-# Root reads 000 files, so this case's premise cannot hold there — announced (a skip, not a silent pass) since
+# Root reads 000 files, so this case's premise cannot hold there — announced (a counted skip, #109) since
 # root is the normal way to reproduce CI locally.
 if [ "$(id -u)" = "0" ]; then
-  echo "  skip 12c: running as root, a 000 ledger is still readable"
+  skip "12c: running as root, a 000 ledger is still readable (--reconcile exits NON-ZERO on an unreadable VERDICTS.md)"
+  skip "12c: running as root (--reconcile does NOT report '0 restored' success on grep failure)"
 else
   check "--reconcile exits NON-ZERO on an unreadable VERDICTS.md" "$([ "$RRC" -ne 0 ] && echo 0 || echo 1)"
   check "--reconcile does NOT report '0 restored' success on grep failure" "$(! printf '%s' "$ROUT" | grep -q '0 row(s) restored' && echo 0 || echo 1)"
@@ -3064,7 +3073,15 @@ stamp_of() { # stamp_of <project> -> the @-token of the last VERDICTS row
 }
 
 if ! command -v git >/dev/null 2>&1; then
-  echo "  SKIP S1 (no git on PATH — the stamp's own no-vcs branch is all that is testable here)"
+  # One skip per check the no-git branch replaces (#109): the S1 stamp cases
+  # are 7, and a block-level echo hid that count from the floor arithmetic.
+  skip "S1 (no git on PATH): S1.1 clean tree -> evidence cell carries @<sha>"
+  skip "S1 (no git on PATH): S1.2 dirty -> +dirty"
+  skip "S1 (no git on PATH): S1.3 no-vcs row form"
+  skip "S1 (no git on PATH): S1.4 exclude .operator from the dirty test"
+  skip "S1 (no git on PATH): S1.5 staged-only changes still +dirty"
+  skip "S1 (no git on PATH): S1.6 unknown sha -> +unknown"
+  skip "S1 (no git on PATH): S1.7 unborn HEAD -> @no-commit"
 else
 P="$(gitproj)"
 SHA="$(cd "$P" && git rev-parse --verify --short=12 HEAD)"
@@ -3163,7 +3180,11 @@ check "healthy git project: no warning" \
   "$(printf '%s' "$W2ERR" | grep -q 'gitignored by a rule outside' && echo 1 || echo 0)"
 rm -rf "$P"
 else
-  echo "  SKIP init-warning cases (no git on PATH)"
+  # 4 checks in this branch (#109), one skip each.
+  skip "init-warning (no git on PATH): defeating rule is NAMED via check-ignore -v"
+  skip "init-warning (no git on PATH): healthy git project: no warning"
+  skip "init-warning (no git on PATH): outside-git scaffold carries no warning line"
+  skip "init-warning (no git on PATH): warning fires only once (not per ledger file)"
 fi
 # Outside git the check must not run at all (and must not break the scaffold).
 P="$(newproj)"
@@ -3198,7 +3219,11 @@ check "git add -A does NOT stage the new ephemera file" \
   "$(printf '%s' "$GIST" | grep -q 'some-new-ephemera.tmp' && echo 1 || echo 0)"
 rm -rf "$P"
 else
-  echo "  SKIP allowlist-content cases (no git on PATH)"
+  # 4 checks in this branch (#109), one skip each.
+  skip "allowlist-content (no git on PATH): allowlist admits VERDICTS.md"
+  skip "allowlist-content (no git on PATH): allowlist admits DECISIONS.md"
+  skip "allowlist-content (no git on PATH): git add -A stages the handoff artifact"
+  skip "allowlist-content (no git on PATH): git add -A does NOT stage new ephemera"
 fi
 
 echo "-- Case: SessionStart refreshes a STALE bin/ even when the version has not moved (#34)"
@@ -3481,7 +3506,9 @@ echo "-- Case: the suites do not contaminate the tree with bytecode"
 # hand-run may have left a real __pycache__ here. Gated on pytest, not python3 — ubuntu-latest has python3 and
 # no pytest, and gating on python3 alone made a missing-pytest rc read as a genuine collection error.
 if ! python3 -c "import pytest" >/dev/null 2>&1; then
-  echo "  skip bytecode hygiene: pytest not importable (the mechanisms under test are pytest's)"
+  # 2 checks in this branch (#109), one skip each.
+  skip "bytecode hygiene (no pytest): pytest writes no __pycache__ for imported modules (conftest suppression works)"
+  skip "bytecode hygiene (no pytest): norecursedirs keeps an unimportable seed dir out of collection"
 else
   HYG="$(newproj)"
   mkdir -p "$HYG/scripts" "$HYG/tests"
@@ -3522,7 +3549,19 @@ echo "-- Case: gitignored build state diverges in-tree from a clean checkout (#2
 # the .pyc's own header (offset 8, PEP 552), not a pre-edit stat — a timing-derived stamp passed only 4/12.
 # Skipped without python3 (the mechanism is CPython's cache); a printed skip, not a silent no-run.
 if ! command -v python3 >/dev/null 2>&1; then
-  echo "  skip #23 fixture: python3 not available (the mechanism is CPython's .pyc cache)"
+  skip "#23 fixture: python3 not available (the mechanism is CPython's .pyc cache)"
+elif [ -n "$(python3 -c 'import sys; print(getattr(sys, "pycache_prefix", "") or "")' 2>/dev/null)" ]; then
+  # Apple's system python3 (3.9, /usr/bin/python3) sets pycache_prefix to a
+  # user cache dir — it NEVER writes __pycache__ beside sources, so the stale-
+  # .pyc fixture cannot build and every case in this block would fail on the
+  # fixture, not the mechanism (measured 2026-09-05 under a restricted PATH).
+  # A counted skip per case (#109), not a silent red: the executor condition
+  # is real, and the block runs on every pyenv/vanilla-CPython executor.
+  skip "#23 fixture: this python3 redirects .pyc to pycache_prefix (Apple system build) — builder's tree reports clean"
+  skip "#23 fixture (pycache_prefix): the defect verifies GREEN in the builder's tree (stale .pyc served)"
+  skip "#23 fixture (pycache_prefix): a clean checkout of that commit has no __pycache__"
+  skip "#23 fixture (pycache_prefix): the SAME commit FAILS in a clean checkout (verdict is tree-dependent)"
+  skip "#23 fixture (pycache_prefix): --expect-clean is green here yet reports the ignored entry"
 else
   I23="$(newproj)"
   (
@@ -4727,6 +4766,26 @@ bash "$GS" --check shell "$GSD/red.log" >/dev/null 2>&1
 check "gate-suite: a summary reporting failures while exiting 0 is REFUSED" \
   "$([ $? -eq 1 ] && echo 0 || echo 1)"
 
+# --- #109: the skip group rides in the marker and the floor is passed+skipped ---
+# An executor that skips cases must still clear the floor: the total is
+# executor-invariant, which is the whole point of counting skips.
+printf '== summary: %s passed, 0 failed, 15 skipped ==\n' "$((_gsfloor - 15))" > "$GSD/skips.log"
+bash "$GS" --check shell "$GSD/skips.log" >/dev/null 2>&1
+check "gate-suite: skipped cases COUNT toward the floor (passed+skipped, #109)" "$?"
+
+# And a skip cannot HIDE a deletion: same skipped count, two fewer passed —
+# the total drops below the floor and the wrapper refuses. This is the case
+# that deletes the slack the old floor carried.
+printf '== summary: %s passed, 0 failed, 15 skipped ==\n' "$((_gsfloor - 17))" > "$GSD/skips-below.log"
+bash "$GS" --check shell "$GSD/skips-below.log" >/dev/null 2>&1
+check "gate-suite: a deletion under skip cover is still REFUSED (#109)" \
+  "$([ $? -eq 1 ] && echo 0 || echo 1)"
+
+# The old marker shape (node suites) still matches — the group is optional.
+printf '== summary: %s passed, 0 failed ==\n' "$_gsfloor" > "$GSD/oldshape.log"
+bash "$GS" --check shell "$GSD/oldshape.log" >/dev/null 2>&1
+check "gate-suite: the OLD marker shape (no skip group) still accepted" "$?"
+
 # An unknown rung must stop at the allowlist rather than resolving to an empty
 # command and an empty floor — a rung with no floor is a rung with no ratchet.
 bash "$GS" bogus >/dev/null 2>&1
@@ -4765,5 +4824,8 @@ if [ "$FAIL" -ne 0 ]; then
   echo "== failed cases =="
   printf '%s\n' "$FAILED_NAMES" | sed '/^$/d'
 fi
-echo "== summary: $PASS passed, $FAIL failed =="
+# The skipped count rides in the summary (#109) so gate-suite can floor
+# passed+skipped — executor-invariant. A suite that skips 15 on root and 0 on
+# macOS reports the same total on both, and the floor stops carrying slack.
+echo "== summary: $PASS passed, $FAIL failed, $SKIP skipped =="
 [ "$FAIL" -eq 0 ]

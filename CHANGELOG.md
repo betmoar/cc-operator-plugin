@@ -9,6 +9,23 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+- **Counted `skip()` in the shell suite — the floor is executor-invariant
+  (#109).** `tests/test-scripts.sh` gains a `SKIP` counter and a `skip()`
+  helper; every executor-conditional block now owes ONE skip per check it
+  replaces (the block-level `echo "SKIP …"` hid the count from the floor
+  arithmetic). The summary line carries a third group (`N skipped`);
+  `gate-suite.sh`'s marker regex takes it optionally and the floor is taken
+  against **passed+skipped**. `FLOOR_shell` 832 → 850 — AT the true total,
+  so the permanent root/macOS spread stops being slack a deletion can hide
+  in (measured both executors: 850/0/0 full-PATH; 843+7 on a git-less,
+  Apple-python3 PATH — the restricted run also exposed that Apple's system
+  python3 sets `pycache_prefix` and never writes `__pycache__` beside
+  sources, so the #23 stale-pyc block is now gated on that with 5 counted
+  skips instead of failing on the fixture). Three wrapper cases pin the new
+  arithmetic; mutation red (wrapper ignoring skips fails the count case).
+  F121-class note: the marker contract moved, and the rung coupling row
+  follows it.
+
 - **Convention (#111): "mutation-checked" names the gate that went red.**
   Bare "mutation-checked" records that SOMETHING fired — a shell mutation can
   go red in the bash suite while the validator pin written for it stays

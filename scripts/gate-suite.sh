@@ -103,11 +103,20 @@ case "$RUNG" in
     OBSERVED="$(grep -oE '^Ran [0-9]+ tests?' "$LOG" | grep -oE '[0-9]+' | tail -1)"
     ;;
   shell | workflows | compress)
-    SUMMARY="$(grep -oE '^== summary: [0-9]+ passed, [0-9]+ failed ==$' "$LOG" | tail -1)"
+    # Two marker shapes (#109): the shell suite reports its skip count since
+    # the counted-skip change; the node suites never skip and keep the old
+    # shape. The skip group is optional so the old marker still matches.
+    SUMMARY="$(grep -oE '^== summary: [0-9]+ passed, [0-9]+ failed(, [0-9]+ skipped)? ==$' "$LOG" | tail -1)"
     [ -n "$SUMMARY" ] \
-      || fail "no completion marker ('== summary: N passed, M failed ==') — the suite exited 0 without reporting"
+      || fail "no completion marker ('== summary: N passed, M failed[, K skipped] ==') — the suite exited 0 without reporting"
     OBSERVED="$(printf '%s' "$SUMMARY" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+')"
     FAILED="$(printf '%s' "$SUMMARY" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+')"
+    # The floor is taken against passed+skipped (#109): executor-invariant, so
+    # the floor can sit at the TRUE total and the root/macOS spread (15
+    # per-case skips on a git-less executor, 2 as root) stops being slack a
+    # deletion can hide in.
+    SKIPPED="$(printf '%s' "$SUMMARY" | grep -oE '[0-9]+ skipped' | grep -oE '[0-9]+' || true)"
+    OBSERVED=$((OBSERVED + ${SKIPPED:-0}))
     # Belt and braces: a harness that reports failures but exits 0 is exactly
     # the shape this file exists to refuse.
     [ "$FAILED" -eq 0 ] || fail "the summary reports $FAILED failed case(s) while exiting 0"
