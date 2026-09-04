@@ -9,6 +9,25 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+- **Fixed #123 — the #116 `.stopguard` marker's three gaps.** All three
+  measured against `b61217b` by the review session that filed the issue, and
+  reproduced locally before fixing:
+  **(A)** the own-continuation stand-down kept the marker, so a later foreign
+  continuation inherited it and read as ours — the stand-down now SPENDS the
+  block (`stopguard_clear` before `exit 0`). **(B)** the reader used bare
+  `[ -f ]`, which follows a symlink — any link at the marker path pointing at
+  a regular file disarmed the guard; the reader is now `-L` before `-f`, the
+  sixth site of the `pending/<id>` type-test convention. **(C)** an
+  unmarkable project (a non-dir at `.stopguard/`) blocked every continuation
+  forever — a session that cannot end, which the hook's own header forbids;
+  the polarity is now deliberate and written in the code: such a project
+  stands down as pre-#116 on `active=true` (the ordinary-stop gate is
+  unaffected), the write failure is SAID on stderr, and an EMPTY session id
+  is explicitly not the C case (a no-session payload never owned a marker;
+  treating it as unmarkable was the #116 disarm through the back door —
+  caught by case 4d going red on the first cut). Five cases (4i-4k), each
+  mutation red in the bash suite (A: 2, B: 1, C: 1); `FLOOR_shell` 850 → 855.
+
 - **Counted `skip()` in the shell suite — the floor is executor-invariant
   (#109).** `tests/test-scripts.sh` gains a `SKIP` counter and a `skip()`
   helper; every executor-conditional block now owes ONE skip per check it

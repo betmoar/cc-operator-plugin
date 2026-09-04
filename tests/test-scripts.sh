@@ -213,6 +213,37 @@ rm -f "$P/.operator/pending/T-9"
 run_hook stop-session-a.json "$P"
 check "allowing fire clears .stopguard/<sid> (#116)" \
   "$([ ! -e "$P/.operator/.stopguard/SESS-A" ] && echo 0 || echo 1)"
+# 4i (#123 A): STANDING DOWN SPENDS THE BLOCK — the own-continuation branch
+# clears the marker too. Block, stand down once, then a second active=true
+# fire (a FOREIGN continuation: the marker is gone) must run the gate.
+: > "$P/.operator/pending/T-9"
+run_hook stop-session-a.json "$P"
+[ "$HRC" = 2 ] || echo "4i setup: block did not fire (rc=$HRC)"
+run_hook stop-loopguard-sid.json "$P"
+check "#123A own-continuation stand-down CLEARS the marker (spent, not kept)" \
+  "$([ ! -e "$P/.operator/.stopguard/SESS-A" ] && echo 0 || echo 1)"
+run_hook stop-loopguard-sid.json "$P"
+check "#123A a SECOND active=true fire runs the gate (foreign: rc 2, no stale marker)" \
+  "$([ "$HRC" = 2 ] && echo 0 || echo 1)"
+# 4j (#123 B): the reader's type test — a SYMLINK at the marker path pointing
+# at a real regular file must read NOT-MINE (-f follows links; the write side
+# already refused them, the read side was the gap).
+rm -rf "$P/.operator/.stopguard"; mkdir -p "$P/.operator/.stopguard"
+ln -s /etc/hosts "$P/.operator/.stopguard/SESS-A"
+run_hook stop-loopguard-sid.json "$P"
+check "#123B a symlink at the marker path reads NOT-mine (gate runs, rc 2)" \
+  "$([ "$HRC" = 2 ] && echo 0 || echo 1)"
+# 4k (#123 C): an UNMARKABLE project (.stopguard is a plain file) must not
+# brick the session — the ordinary stop still blocks, the continuation stands
+# down as pre-#116, and both are said on stderr.
+rm -rf "$P/.operator/.stopguard"; : > "$P/.operator/.stopguard"
+run_hook stop-session-a.json "$P"
+check "#123C unmarkable project: ordinary stop still blocks (rc 2) + warns" \
+  "$([ "$HRC" = 2 ] && printf '%s' "$HERR" | grep -q 'could not write the .stopguard marker' && echo 0 || echo 1)"
+run_hook stop-loopguard-sid.json "$P"
+check "#123C unmarkable project: continuation stands down as pre-#116 (rc 0, said)" \
+  "$([ "$HRC" = 0 ] && printf '%s' "$HERR" | grep -q 'cannot carry a .stopguard marker' && echo 0 || echo 1)"
+rm -rf "$P/.operator/.stopguard"
 # 4h: a marker whose session id is EMPTY cannot exist (path guard) — the
 # no-session-id payload of 4d is exactly this: marker absent → gate runs.
 rm -rf "$P"
