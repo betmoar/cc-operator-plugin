@@ -22,6 +22,15 @@ single source of truth; bump it in the same commit as the changelog entry.
   headroom under the clip, the F19 lesson: a cap without a gate is a target),
   mutation-verified red on the pre-diet file and green on the result, with
   `ClaudeMdSizeTest` (5 cases; fires/boundary/absent/real-tree/cap-under-clip).
+- **Household slimming (the diet's other half).** Removed maintainer-local
+  audit scaffolding that had drifted into the tree: `AUDIT_LOG.md`,
+  `AUDIT_STATE.md`, `docs/DEBLOAT-0.10.md`, `docs/audit-2026-08-31-principal.md`,
+  `docs/audit-2026-09-02-principal.md`, and `docs/spec/backlog-charter.md` —
+  all live in git history now, the same pattern as the 0.3.0 removals.
+  `docs/spec/TAGS.md` moved to `docs/TAGS.md` (the dir emptied), with its
+  pinned references updated: `check_charter`'s path + messages, the python
+  fixture, CLAUDE.md's map + provenance, `commands/tiers.md`, LANDMINES,
+  UNKNOWNS. Validator + all four suites green.
 
 ## [0.11.8] - 2026-09-04
 

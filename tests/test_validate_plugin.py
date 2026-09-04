@@ -209,7 +209,7 @@ def make_good_tree(root):
     write(root / "templates" / "OPERATOR.md", GOOD_CHARTER)
     # Every [DOC:spec-<key>] in the charter needs a `### spec-<key>` entry in
     # the tag index (#76 step E) — the fixture cites spec-D4.
-    write(root / "docs" / "spec" / "TAGS.md",
+    write(root / "docs" / "TAGS.md",
           "# Tags\n\n### spec-D4\n\nThe evidence gate.\n")
     write(root / "templates" / "VERDICTS-header.md",
           "# Verdicts\n" + vp.VERDICTS_HEADER + "\n|---|---|---|---|\n")
@@ -1023,20 +1023,20 @@ class ValidatorTest(unittest.TestCase):
         self.assertFires("no citation tag")
 
     def test_charter_doc_tag_without_index_entry_fires(self):
-        # A [DOC:spec-*] tag with no `### spec-*` entry in docs/spec/TAGS.md must
+        # A [DOC:spec-*] tag with no `### spec-*` entry in docs/TAGS.md must
         # fail — the index is where DOC tags resolve in a clone (#76 step E).
         write(self.dir / "templates" / "OPERATOR.md",
               GOOD_CHARTER.replace("[DOC:spec-D4]", "[DOC:spec-D4] [DOC:spec-ghost]", 1))
         self.assertFires("[DOC:spec-ghost] has no `### spec-ghost` entry")
 
     def test_charter_doc_tags_with_missing_index_fires(self):
-        (self.dir / "docs" / "spec" / "TAGS.md").unlink()
-        self.assertFires("docs/spec/TAGS.md: missing")
+        (self.dir / "docs" / "TAGS.md").unlink()
+        self.assertFires("docs/TAGS.md: missing")
 
     def test_charter_orphan_index_entry_is_not_a_finding(self):
         # The reverse direction is deliberately unchecked: a surviving entry for a
         # retired tag is history, not rot.
-        p = self.dir / "docs" / "spec" / "TAGS.md"
+        p = self.dir / "docs" / "TAGS.md"
         p.write_text(p.read_text() + "\n### spec-retired\n\nold entry.\n",
                      encoding="utf-8")
         probs = []

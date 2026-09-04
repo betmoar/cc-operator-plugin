@@ -403,13 +403,14 @@ def check_charter(root, problems):
             f"templates/OPERATOR.md: only {len(tags)} citation tags for "
             f"{len(headings)} sections — every rule line must carry [D:]/[DOC:]")
     # Every [DOC:spec-<key>] must resolve to a `### spec-<key>` heading in
-    # docs/spec/TAGS.md (#76 step E). Orphan entries are deliberately allowed:
+    # docs/TAGS.md (#76 step E; moved from docs/spec/ in 0.11.9). Orphan
+    # entries are deliberately allowed:
     # history, not rot.
     doc_keys = {t[5:-1] for t in tags if t.startswith("[DOC:")}
-    tags_md = root / "docs" / "spec" / "TAGS.md"
+    tags_md = root / "docs" / "TAGS.md"
     if doc_keys and not tags_md.is_file():
         problems.append(
-            "docs/spec/TAGS.md: missing — the charter carries "
+            "docs/TAGS.md: missing — the charter carries "
             f"{len(doc_keys)} [DOC:*] tags and this index is where they "
             f"resolve in a clone (the original spec files were never "
             f"committed); ship the index or drop the tags")
@@ -420,7 +421,7 @@ def check_charter(root, problems):
         for key in sorted(doc_keys - headings_md):
             problems.append(
                 f"templates/OPERATOR.md: [DOC:{key}] has no `### {key}` entry "
-                f"in docs/spec/TAGS.md — every DOC tag must resolve in-tree; "
+                f"in docs/TAGS.md — every DOC tag must resolve in-tree; "
                 f"add the entry (what the rule anchors as shipped) or use a "
                 f"[D:] tag for a self-describing decision reference")
     # no ## section (other than the title) should be entirely tag-free

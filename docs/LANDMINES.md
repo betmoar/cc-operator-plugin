@@ -763,7 +763,7 @@ Everything under `docs/` is read-only rationale — why the code is shaped this
 way. None of it is loaded by the plugin at runtime; the validator reads only
 `templates/`, `scripts/`, `hooks/`, `agents/`, and the manifests.
 
-- `docs/spec/TAGS.md` — **the in-tree resolution index for every charter
+- `docs/TAGS.md` — **the in-tree resolution index for every charter
   `[DOC:spec-*]` tag** (#76 step E). The original spec files
   (`chief-operator-spec.md`, D1–D6; `concurrent-sessions.md`, the 0.4.0
   ownership design) were never committed — they quoted the prior project's
@@ -775,7 +775,8 @@ way. None of it is loaded by the plugin at runtime; the validator reads only
   lost, the entry says so), and `check_charter` fails the build on a charter
   DOC tag with no `### spec-<key>` entry, so the index cannot fall behind.
   Orphan entries (a retired tag's survivor) are deliberately allowed: history,
-  not rot. `docs/spec/backlog-charter.md` still ships alongside it.
+  not rot. (Moved from `docs/spec/` in 0.11.9 when the directory emptied;
+  `backlog-charter.md` removed — git history.)
 - `docs/PLAYBOOK.md` — the executable procedures (adding a guard, adding a
   reader, touching the lock), each derived from a bug that happened here.
 - `docs/REPLAY-CHARTER.md` — the live-session replay protocol (R0–R8): re-proves

@@ -3,7 +3,9 @@
 This is the map a maintainer (human or agent) needs before editing. It records
 the couplings that break silently; the landmine narratives (the _why_ behind each
 already-hit failure class) live in `docs/LANDMINES.md`, read on demand. For the
-design rationale behind every decision, read `docs/spec/`. The build
+design rationale behind every decision, read `docs/TAGS.md` (the in-tree
+spec index; the spec dir itself emptied in 0.11.9 — rationale now lives in
+`docs/` and git history). The build
 ledger, plans, pilot runbook/findings, and prior-project evidence were removed
 from the shipped tree in 0.3.0 — they live in the git history (tree ≤ v0.2.0)
 and the maintainer's local `.archive/dev/` (untracked).
@@ -27,7 +29,8 @@ and the maintainer's local `.archive/dev/` (untracked).
   ownership mechanism keys on. The sentinel filename `<id>` is the shared key;
   change the convention in one place and you break the gate.
 - **Sentinel ownership is what makes the gate concurrency-safe** (0.4.0 spec
-  `docs/spec/concurrent-sessions.md`; 0.9.0 moved the stamp from body to
+  `concurrent-sessions.md`, never committed — its shipped invariants are
+  indexed in `docs/TAGS.md`; 0.9.0 moved the stamp from body to
   filename). The sentinel filename carries the owner — `pending/<sid>__<task>`
   is owned, `pending/<task>` is unowned; `ops-stop-hook.sh` blocks on
   _mine + unowned_ and merely reports _foreign_.
@@ -188,11 +191,11 @@ way. None of it is loaded by the plugin at runtime; the validator reads only
 narrative behind each item below moved to `docs/LANDMINES.md` (0.11.9);
 this is the always-on summary.
 
-- **`docs/spec/TAGS.md`** is the in-tree resolution index for every charter
+- **`docs/TAGS.md`** is the in-tree resolution index for every charter
   `[DOC:spec-*]` tag; `check_charter` fails the build on a tag with no
   `### spec-<key>` entry, so the index cannot fall behind. Orphan entries (a
-  retired tag's survivor) are allowed on purpose. `docs/spec/backlog-charter.md`
-  ships alongside it.
+  retired tag's survivor) are allowed on purpose. The spec dir emptied in
+  0.11.9 (backlog-charter removed; see git history).
 - **`docs/PLAYBOOK.md`** holds the executable procedures (adding a guard,
   adding a reader, touching the lock), each derived from a bug that happened
   here.
