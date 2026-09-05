@@ -42,6 +42,22 @@ single source of truth; bump it in the same commit as the changelog entry.
   count that had already moved and nothing raised it since — the hand-
   maintenance lapse #109 predicts, found by re-measuring rather than by a gate,
   because a floor is a floor and slack is green.
+- **PR #124 second review round (panel over the fix commits themselves).**
+  Findings fixed: 4l's close ran UNCHECKED and — the real defect under it —
+  invoked the CLI from the suite's cwd, so the project walk-up resolved to
+  THIS repo's `.operator` and 20 stray T-9 rows accumulated in the dogfood
+  ledger while `$P`'s sentinel survived (the CLI was correct; the harness
+  violated the cd-first convention every other case follows). Fixed both
+  invocations, purged the ledger, and made the premise a counted check.
+  **The clear-warning path pinned** (final-allow site: marker present, dir
+  read-only between mark and clear → rc 0 AND warned; the own-continuation
+  route cannot reach it — `can_mark` stands down earlier — so the case
+  documents which site it exercises). The classifier window's boundary pair
+  is now DERIVED from the window constant instead of hardcoded, so a window
+  change moves the test with it. The permission-allowlist comment block was
+  rewritten cleanly (the edit had pasted it twice); the "guard removed"
+  arm's message now names the move case. `FLOOR_shell` 859 → 862 after the
+  rebase (this round's two cases on top of the measured 859).
 
 - **PR #124 review round — two critical, four important, all fixed.** Panel:
   code / tests / silent-failures / comments (types N/A for this diff).

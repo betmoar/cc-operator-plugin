@@ -4141,7 +4141,16 @@ class CouplingCaseRefsTest(unittest.TestCase):
         # plus ' and the ' (9 chars) and the window slice is half-open, so
         # gap 98 is the last INSIDE and 99 the first OUTSIDE. An off-by-one
         # in [max(0, m.start()-120):m.start()] flips exactly this pair.
-        for gap, expect_tests in ((99, True), (98, False)):
+        # DERIVED from the classifier's own window, not hardcoded (second-
+        # round panel finding: a hardcoded 98/99 floats free of the 120 and
+        # silently tests a dead boundary if the window ever changes). The
+        # fixture's literals are fixed: from the end of 'LANDMINES.md' to the
+        # citation start spans gap + 11 chars, and the mention is inside the
+        # half-open [start-W, start) iff its FIRST char falls there, i.e.
+        # gap + 22 <= W. Last inside: W-22; first outside: W-21 (measured:
+        # W=120 -> 98/99, exactly the hand-measured crossover).
+        _W = 120  # mirrors validate_plugin.check_coupling_case_refs's window
+        for gap, expect_tests in ((_W - 21, True), (_W - 22, False)):
             probs = self._probs(
                 self.FILL + f' see docs/LANDMINES.md {"y" * gap} and the '
                             '_"A zzfixture landmine heading"_ ref.\n')

@@ -940,16 +940,13 @@ def check_permission_guards(root, problems):
     """
     # site -> why it is allowed to exist. Comments are stripped before counting,
     # so the header prose in that same file does not inflate the number.
-    # site -> why it is allowed to exist. Comments are stripped before counting,
-    # so the header prose in that same file does not inflate the number.
     ALLOWED = {
-        # PR #124 follow-up (the declined-then-taken finding):
-    # the declined-then-taken finding). Best-effort half by the prescription:
-    # paired with the uid-invariant TYPE test (`-d`) in the same branch, the
-    # downstream marker write's failure is READ and SAID on stderr (so root
-    # learns the state one event later instead of never), and the inertness
-    # is documented at the call site. Raising the count with exactly this
-    # reasoning, as the failure message demands.
+        # stopguard_can_mark's `[ -w ]` (PR #124 follow-up, the
+        # declined-then-taken finding): best-effort half by the prescription —
+        # paired with the uid-invariant TYPE test (`-d`) in the same branch,
+        # the downstream marker write's failure is READ and SAID on stderr
+        # (so root learns the state one event later instead of never), and
+        # the inertness is documented at the call site.
         "scripts/ops-stop-hook.sh": 1,
     }
     # Both bracket spellings AND `test`: `test -w "$PWD"` has identical
@@ -984,8 +981,11 @@ def check_permission_guards(root, problems):
         elif n < allowed:
             problems.append(
                 f"{rel}: {n} permission test(s), allowlist expects "
-                f"{allowed} — a guard was REMOVED. If deliberate, lower the count "
-                f"in check_permission_guards; if not, #19/#27 have regressed")
+                f"{allowed} — a guard was REMOVED (or MOVED: the glob covers "
+                f"scripts/lib/ too, and a file whose count drops while "
+                f"another's rises is a move, not a regression). If deliberate, "
+                f"move the allowlist entry with it; if not, #19/#27 (or the "
+                f"#124 stopguard `-w`) have regressed")
 
 
 def check_scripts(root, problems):

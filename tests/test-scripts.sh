@@ -258,7 +258,17 @@ rm -rf "$P/.operator/.stopguard"
 # 4l (#124 review): the SECOND mark site (deviations block, pending EMPTY)
 # stamps + warns on an unmarkable project — the first cut only exercised the
 # pending-path site. Requires: no pending sentinel, one unpresented DEVIATION.
-bash "$P/.operator/bin/ops-verdict.sh" T-9 "c" "e" PASS --owner SESS-A >/dev/null 2>&1
+# The close's rc is CHECKED (second-round panel): silently, a failed close
+# leaves T-9 pending and the case would exercise the FIRST mark site while
+# claiming the deviations path — a false-premise pass.
+# INVOCATION SHAPE (second-round panel, hard-learned): the CLIs resolve the
+# project by WALKING UP FROM CWD — run from the suite's cwd, the walk finds
+# THIS REPO's .operator and the row lands in the wrong ledger while $P's
+# sentinel survives (measured: 20 stray T-9 rows in the repo ledger). Every
+# other case in this file cds first; these two must too.
+( cd "$P" && bash .operator/bin/ops-verdict.sh T-9 "c" "e" PASS --owner SESS-A >/dev/null 2>&1 ); _4lclose=$?
+check "4l setup premise: T-9 closed in the right project (rc 0, pending empty)" \
+  "$([ "$_4lclose" = 0 ] && [ -z "$(ls "$P/.operator/pending/" 2>/dev/null)" ] && echo 0 || echo 1)"
 printf '2026-09-04 | t | DEVIATION | [sid:SESS-A] a deviation to gate on | r\n' > "$P/.operator/DECISIONS.md"
 : > "$P/.operator/.stopguard"   # non-dir: unmarkable
 run_hook stop-session-a.json "$P"
@@ -305,6 +315,30 @@ run_hook stop-basic.json "$NOS"
 check "#124 a session-less payload SAYS its block can never be spent (no silent state)" \
   "$([ "$HRC" = 2 ] && printf '%s' "$HERR" | grep -q 'carries no session id' && echo 0 || echo 1)"
 rm -rf "$NOS"
+# 4p (#124 second-round panel): the CLEAR-warning path needs its red/green
+# pair. The OWN-CONTINUATION route cannot reach it (a read-only dir makes
+# can_mark say unmarkable first — the C-arm stands down earlier), so the
+# reachable shape is the FINAL-ALLOW site: marker present from an earlier
+# block, dir made read-only between mark and clear, gate otherwise allows.
+# Expected: rc 0 (the allow must not depend on the marker) AND the warning.
+# Non-root only (root ignores bits, #21).
+mkdir -p "$P/.operator/.stopguard"
+if [ "$(id -u)" = "0" ]; then
+  skip "4o unremovable marker (root): chmod 500 still permits the unlink"
+else
+  : > "$P/.operator/.stopguard/SESS-A"
+  chmod 500 "$P/.operator/.stopguard"
+  # Premise: pending empty (T-9 closed at 4l) AND the 4l deviation
+  # presented+marked, or the ordinary stop blocks on the deviation gate
+  # instead of reaching the final-allow clear.
+  [ -z "$(ls "$P/.operator/pending/" 2>/dev/null)" ] || { echo "4o SETUP: pending not empty (case premise broken)"; }
+  ( cd "$P" && bash .operator/bin/ops-verdict.sh --mark-handoff --owner SESS-A >/dev/null 2>&1 )
+  run_hook stop-session-a.json "$P"
+  check "#124 final-allow with an unremovable marker: rc 0 AND the clear-failure WARNED" \
+    "$([ "$HRC" = 0 ] && printf '%s' "$HERR" | grep -q 'could not clear the .stopguard marker' && echo 0 || echo 1)"
+fi
+chmod 700 "$P/.operator/.stopguard" 2>/dev/null
+rm -rf "$P/.operator/.stopguard"
 # 4h: a marker whose session id is EMPTY cannot exist (path guard) — the
 # no-session-id payload of 4d is exactly this: marker absent → gate runs.
 rm -rf "$P"
