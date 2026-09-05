@@ -27,6 +27,16 @@ single source of truth; bump it in the same commit as the changelog entry.
   back door — but `stopguard_mark_blocked` returned success and said nothing,
   so the operator saw a block repeat with no account of why. It warns now;
   case 4o pins it. Exit codes unchanged.
+- **The #123B pin no longer depends on a file outside the repo.** Its symlink
+  target is a regular file created in the test project, with a setup assertion
+  that fails loud if that stops being true. The pin was already load-bearing on
+  both platforms (`/etc/hosts` exists on Linux and macOS — it replaced a first
+  cut using `/etc/hostname`, which does not exist on macOS), so this is not a
+  found vacuity: it removes the external dependency whose absence would make a
+  DANGLING link fail `-f` as well, passing the case for the wrong reason with
+  no signal. Mutation re-run after the change: dropping `! -L` from
+  `stopguard_is_mine` goes RED in the bash suite's `#123B` case (#111's naming
+  rule), restored byte-identical.
 - **Floors raised to the measured counts** (859 shell as passed+skipped, 340
   python). The python one was DRIFT, not new cases: 0.11.8 set 333 against a
   count that had already moved and nothing raised it since — the hand-

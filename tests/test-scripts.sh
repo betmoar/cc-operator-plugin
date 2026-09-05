@@ -229,10 +229,21 @@ check "#123A a SECOND active=true fire runs the gate (foreign: rc 2, no stale ma
 # at a real regular file must read NOT-MINE (-f follows links; the write side
 # already refused them, the read side was the gap).
 rm -rf "$P/.operator/.stopguard"; mkdir -p "$P/.operator/.stopguard"
-ln -s /etc/hosts "$P/.operator/.stopguard/SESS-A"
+# The link TARGET must be a real regular file or this case cannot discriminate:
+# a DANGLING link fails `-f` as well, so the gate would run for the wrong reason
+# and the `-L` guard is never exercised — rc 2 either way, vacuous and silent.
+# /etc/hosts does exist on Linux and macOS (which is why it replaced the first
+# cut's /etc/hostname, absent on macOS), but it is still an EXTERNAL file a
+# minimal image can drop. A hermetic target cannot go missing, and the setup
+# assertion below makes a broken setup fail LOUD instead of passing hollow.
+_SGT="$P/.stopguard-link-target"; : > "$_SGT"
+check "#123B setup: the link target is a real regular file (else the case is vacuous)" \
+  "$([ -f "$_SGT" ] && [ ! -L "$_SGT" ] && echo 0 || echo 1)"
+ln -s "$_SGT" "$P/.operator/.stopguard/SESS-A"
 run_hook stop-loopguard-sid.json "$P"
 check "#123B a symlink at the marker path reads NOT-mine (gate runs, rc 2)" \
   "$([ "$HRC" = 2 ] && echo 0 || echo 1)"
+rm -f "$_SGT"
 # 4k (#123 C): an UNMARKABLE project (.stopguard is a plain file) must not
 # brick the session — the ordinary stop still blocks, the continuation stands
 # down as pre-#116, and both are said on stderr.
