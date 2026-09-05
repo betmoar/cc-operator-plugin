@@ -16,8 +16,16 @@
 # What it can and cannot catch — known boundaries, on purpose:
 #   CATCHES (hard red):
 #     - a floor LOWERED, REMOVED, or hidden behind a DUPLICATE key (the file
-#       is sourced, so the last assignment is the effective one)
-#     - a check REMOVED from the validator's CHECKS registry
+#       is sourced, so the last assignment is the effective one), or a
+#       floors.env line of ANY shape other than `FLOOR_<name>=<digits>` (the
+#       file is sourced, so every line is executed; a line this gate cannot
+#       read is a value it cannot compare — three fail-opens, see arm 1)
+#     - a check REMOVED from the validator's CHECKS registry, or the registry
+#       REBOUND after the tuple (python runs the last assignment)
+#     - a `gate-suite.sh <rung>` step REMOVED from a CI file, or a CI file
+#       removed — the CI file is the one enforcer the PR-side validator
+#       pins from the PR's own copy (check_suite_floors), so the base must
+#       hold the rung set itself
 #     - an enforcer file (validator, wrapper, this script) or any tests/ path
 #       that exists at the base and NOT at the PR ref — deleted, renamed, or
 #       moved; the arm asks the tree, so a swap that holds the count equal is
@@ -74,7 +82,12 @@ done
 #   CORE_FILES — deleting one of these IS the gate removed (hard red).
 #   CORE_GLOBS — touching one is enforcer-core work the human must see.
 CORE_FILES="scripts/validate_plugin.py scripts/gate-suite.sh scripts/base-gate.sh"
-CORE_GLOBS="tests/"
+CORE_GLOBS="tests/ .github/workflows/ .forgejo/workflows/"
+# The CI files that RUN the rungs. Listed here, not derived from a glob: the
+# rung arm below asks each one by name at both refs. A forge whose file is
+# absent at the BASE is not configured and makes no claim; absent at the PR
+# ref while present at the base is the file deleted.
+CI_FILES=".github/workflows/validate.yml .forgejo/workflows/validate.yml"
 
 is_core_path() {  # is_core_path <path> → 0 when the path is enforcer core
   local p="$1" f g
@@ -152,6 +165,28 @@ BASE_FLOORS="$(mktemp "${_TMPDIR_T}/basegate.bf.XXXXXX")"
 PR_FLOORS="$(mktemp "${_TMPDIR_T}/basegate.pf.XXXXXX")"
 extract_floors "$BASE_SHA" "$BASE_FLOORS"
 extract_floors "$PR_SHA" "$PR_FLOORS"
+# THE SHAPE IS CLOSED, NOT THE INSTANCES. gate-suite.sh SOURCES this file, so
+# every line it carries is executed, and a line the value-compare below cannot
+# parse is a line the runtime still obeys. Three bypasses of that compare, all
+# fail-OPEN (BASE_GATE_PASSED, exit 0), measured 2026-09-05 in review:
+#     FLOOR_shell=1 # 20       `[0-9]+$` read the trailing comment: 20
+#     FLOOR_shell=1 ;: 20      same, through a no-op command
+#     FLOOR_shell=$((1))       invisible to ^FLOOR_…=[0-9]+ after a kept
+#                              FLOOR_shell=20, so the compare saw 20; sourced: 1
+# So at the PR ref a floors.env line is blank, a comment, or EXACTLY
+# `FLOOR_<name>=<digits>` — anything else is red, whatever it evaluates to.
+# Deliberately strict: a legitimately indented or `export`ed assignment is
+# refused too, and the fix is to write it in the one shape (floors.env is
+# four lines of that shape under a comment header, by design).
+_PR_FLOORS_RAW="$(mktemp "${_TMPDIR_T}/basegate.praw.XXXXXX")"
+if git -C "$REPO" show "${PR_SHA}:tests/floors.env" > "$_PR_FLOORS_RAW" 2>/dev/null; then
+  _bad_line="$(grep -vE '^[[:space:]]*(#|$)' "$_PR_FLOORS_RAW" \
+               | grep -vE '^FLOOR_[A-Za-z0-9_]+=[0-9]+$' | head -1)"
+  if [ -n "$_bad_line" ]; then
+    fail "FLOOR: tests/floors.env at the PR ref carries a line that is not blank, a comment, or exactly FLOOR_<name>=<digits> — gate-suite.sh sources every line, so a line this gate cannot read is a value it cannot compare (first offender: ${_bad_line})"
+  fi
+fi
+rm -f "$_PR_FLOORS_RAW"
 # a missing PR floors.env is a deleted ratchet — RED, named
 if [ ! -s "$PR_FLOORS" ] && [ -s "$BASE_FLOORS" ]; then
   fail "tests/floors.env is gone or empty at the PR ref — the ratchet is deleted"
@@ -206,6 +241,18 @@ BASE_CHECKS="$(mktemp "${_TMPDIR_T}/basegate.bc.XXXXXX")"
 PR_CHECKS="$(mktemp "${_TMPDIR_T}/basegate.pc.XXXXXX")"
 extract_checks "$BASE_SHA" > "$BASE_CHECKS"
 extract_checks "$PR_SHA" > "$PR_CHECKS"
+# ONE BINDING. The extractor reads the tuple BLOCK; python runs the LAST
+# assignment. A `CHECKS = (check_x,)` rebound after the full tuple leaves the
+# block intact for the extractor and shrinks the registry that actually runs —
+# measured fail-OPEN 2026-09-05 (the same shape as the duplicate floor key,
+# one file over). Counted on the comment-stripped view at column 0, which is
+# where a module-level binding lives; an indented `CHECKS =` inside a function
+# would be a rewrite of the runner, and that is #112's gap, not this arm's.
+_n_checks_bind="$(git -C "$REPO" show "${PR_SHA}:scripts/validate_plugin.py" 2>/dev/null \
+                  | grep -vE '^[[:space:]]*#' | grep -cE '^CHECKS[[:space:]]*=')"
+if [ "${_n_checks_bind:-0}" -gt 1 ]; then
+  fail "CHECKS: the registry is bound ${_n_checks_bind} times at the PR ref — this gate reads the tuple block, python runs the LAST binding, so a rebinding after the tuple hides the registry that actually runs"
+fi
 if [ ! -s "$PR_CHECKS" ]; then
   fail "the CHECKS registry is gone or empty at the PR ref — a validator that runs nothing reports nothing"
 else
@@ -267,6 +314,38 @@ while IFS= read -r _t; do
     || fail "GONE: ${_t} exists at the base and NOT at the pr ref — the suites are the enforcer"
 done < "$_TESTS_BASE"
 rm -f "$_TESTS_BASE" "$_TESTS_PR"
+
+# --- arm 3b: the CI files keep every rung they run at the base ----------------
+# The one enforcer the arms above did not reach. `check_suite_floors` pins
+# that every CI file runs `gate-suite.sh <rung>` for every rung — from the
+# PR's OWN copy of the validator, in the PR's own run. A PR that deletes the
+# shell rung from validate.yml and the pin from validate_plugin.py in one
+# commit passes its own run, and until this arm the base copy never looked at
+# a CI file at all (measured 2026-09-05: rung removed, BASE_GATE_PASSED). So
+# the rung SET at the base must survive at the PR ref, per file: a file
+# absent at the base is a forge not configured (no claim); absent at the PR
+# ref while present at the base is the file deleted (red); present at both,
+# every `gate-suite.sh <rung>` token the base runs must still be run.
+# Comment-stripped on both sides, the shell_code() discipline.
+_ci_rungs() {  # _ci_rungs <sha> <file> → the rung tokens run, one per line
+  git -C "$REPO" show "${1}:${2}" 2>/dev/null \
+    | grep -vE '^[[:space:]]*#' | grep -oE 'gate-suite\.sh [a-z]+' | sort -u
+}
+for _ci in $CI_FILES; do
+  [ -n "$(git -C "$REPO" ls-tree -r --name-only "${BASE_SHA}" -- "$_ci")" ] || continue
+  if [ -z "$(git -C "$REPO" ls-tree -r --name-only "${PR_SHA}" -- "$_ci")" ]; then
+    fail "GONE: ${_ci} exists at the base and NOT at the pr ref — the CI file is what runs the rungs"
+    continue
+  fi
+  _RUNGS_PR="$(mktemp "${_TMPDIR_T}/basegate.rungs.XXXXXX")"
+  _ci_rungs "$PR_SHA" "$_ci" > "$_RUNGS_PR"
+  while IFS= read -r _r; do
+    [ -n "$_r" ] || continue
+    grep -qxF "$_r" "$_RUNGS_PR" \
+      || fail "RUNG: '${_r}' is run by ${_ci} at the base and NOT at the pr ref — a rung dropped from the CI file is a suite that never runs, and the PR-side pin (check_suite_floors) is the PR's to edit"
+  done < <(_ci_rungs "$BASE_SHA" "$_ci")
+  rm -f "$_RUNGS_PR"
+done
 
 # --- arm 4: the trusted delta is REPORTED, never the only red ------------------
 # What remains — a check REWRITTEN in place (body neutered, registry intact,

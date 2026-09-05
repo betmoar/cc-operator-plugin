@@ -4972,6 +4972,10 @@ printf 'summary line\n' > "$BGD/tests/test-one.sh"
 # gate-suite.sh must exist AT BASE or the delete mutant has nothing to delete:
 # base and pr would agree and the case would pass for the wrong reason.
 printf '#!/usr/bin/env bash\n: the wrapper\n' > "$BGD/scripts/gate-suite.sh"
+# A CI file at the base, running two rungs: the rung arm (3b) holds that set.
+# Comment header on purpose — the arm must read the comment-stripped view.
+mkdir -p "$BGD/.github/workflows"
+printf '# ci\nsteps:\n  - run: bash scripts/gate-suite.sh shell\n  - run: bash scripts/gate-suite.sh python\n' > "$BGD/.github/workflows/validate.yml"
 git -C "$BGD" add -A >/dev/null 2>&1
 git -C "$BGD" commit -qm base
 BG_BASE="$(git -C "$BGD" rev-parse HEAD)"
@@ -5122,6 +5126,86 @@ git -C "$BGD" commit -qam m8b
 bg_run m-forge-intests
 check "base-gate: the same marker INSIDE tests/ is not a forgery (control)" \
   "$([ "$BG_RC" = 0 ] && echo 0 || echo 1)"
+
+# --- arm 1, the SHAPE: three fail-opens of the value compare (PR #125 review)
+# gate-suite.sh SOURCES floors.env, so every line is executed; the compare
+# reads `FLOOR_x=<digits>` lines and the trailing `[0-9]+$`. Each of these
+# passed the shipped gate with BASE_GATE_PASSED, exit 0, while the sourced
+# value was 1 (measured 2026-09-05, scratch repo). Red in the bash suite.
+git -C "$BGD" checkout -q -b m-floorcomment "$BG_BASE"
+printf 'FLOOR_python=10\nFLOOR_shell=1 # 20\n' > "$BGD/tests/floors.env"
+git -C "$BGD" commit -qam m14
+bg_run m-floorcomment
+check "base-gate: a floor hidden behind a TRAILING COMMENT (FLOOR_shell=1 # 20) is refused" \
+  "$([ "$BG_RC" = 1 ] && echo 0 || echo 1)"
+check "base-gate: the shape refusal names the offending line" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'first offender: FLOOR_shell=1 # 20' && echo 0 || echo 1)"
+git -C "$BGD" checkout -q -b m-floorarith "$BG_BASE"
+# `\044` is `$` in a printf FORMAT — the fixture wants a literal `$((1))` in
+# the file and shellcheck reads a `$(` inside single quotes as SC2016.
+printf 'FLOOR_python=10\nFLOOR_shell=20\nFLOOR_shell=\044((1))\n' > "$BGD/tests/floors.env"
+git -C "$BGD" commit -qam m15
+bg_run m-floorarith
+check "base-gate: a floor rebound through ARITHMETIC (FLOOR_shell=\$((1)) after a kept 20) is refused" \
+  "$([ "$BG_RC" = 1 ] && echo 0 || echo 1)"
+# The shape arm's control: the real floors.env is a comment header, blank
+# lines and four exact assignments — that shape must pass, or the arm is red
+# on every honest floor raise.
+git -C "$BGD" checkout -q -b g-floorshape "$BG_BASE"
+printf '# THE RATCHET — header prose\n#\n# FLOOR_shell 20 -> 21: one case added\n\nFLOOR_python=10\nFLOOR_shell=21\n' > "$BGD/tests/floors.env"
+git -C "$BGD" commit -qam g3
+bg_run g-floorshape
+check "base-gate: comments, blank lines and exact assignments PASS the shape arm (control)" \
+  "$([ "$BG_RC" = 0 ] && echo 0 || echo 1)"
+
+# --- arm 2, ONE BINDING: the registry rebound after the tuple ---------------
+# The extractor reads the tuple block; python runs the LAST binding. A
+# `CHECKS = (check_floors,)` after the full tuple left the block intact and
+# ran one check — BASE_GATE_PASSED on the shipped gate (measured 2026-09-05).
+git -C "$BGD" checkout -q -b m-rebind "$BG_BASE"
+printf 'CHECKS = (\n    check_hook,\n    check_floors,\n)\nCHECKS = (check_floors,)\n' > "$BGD/scripts/validate_plugin.py"
+git -C "$BGD" commit -qam m16
+bg_run m-rebind
+check "base-gate: CHECKS REBOUND after the tuple is refused (python runs the last binding)" \
+  "$([ "$BG_RC" = 1 ] && echo 0 || echo 1)"
+check "base-gate: the rebind refusal counts the bindings" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'bound 2 times' && echo 0 || echo 1)"
+
+# --- arm 3b, the RUNG SET: a CI file may not drop a rung it runs at the base
+# check_suite_floors pins this from the PR's OWN validator, so a PR that
+# drops the rung and the pin together passes its own run; the base copy had
+# never read a CI file at all (measured 2026-09-05: rung removed, PASSED).
+git -C "$BGD" checkout -q -b m-rung "$BG_BASE"
+printf '# ci\nsteps:\n  - run: bash scripts/gate-suite.sh python\n' > "$BGD/.github/workflows/validate.yml"
+git -C "$BGD" commit -qam m17
+bg_run m-rung
+check "base-gate: a RUNG removed from a CI file is refused, named" \
+  "$(printf '%s' "$BG_OUT" | grep -q "RUNG: 'gate-suite.sh shell' is run by .github/workflows/validate.yml at the base" && echo 0 || echo 1)"
+check "base-gate: the CI file is in the delta report (enforcer core)" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'M .github/workflows/validate.yml' && echo 0 || echo 1)"
+# A rung COMMENTED OUT is a rung removed — the arm reads the stripped view.
+git -C "$BGD" checkout -q -b m-rungcomment "$BG_BASE"
+printf '# ci\nsteps:\n  # - run: bash scripts/gate-suite.sh shell\n  - run: bash scripts/gate-suite.sh python\n' > "$BGD/.github/workflows/validate.yml"
+git -C "$BGD" commit -qam m18
+bg_run m-rungcomment
+check "base-gate: a rung COMMENTED OUT in a CI file counts as removed" \
+  "$([ "$BG_RC" = 1 ] && echo 0 || echo 1)"
+git -C "$BGD" checkout -q -b m-delci "$BG_BASE"
+git -C "$BGD" rm -q .github/workflows/validate.yml && git -C "$BGD" commit -qm m19
+bg_run m-delci
+check "base-gate: a DELETED CI file is refused by name" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'GONE: .github/workflows/validate.yml' && echo 0 || echo 1)"
+# Growth is allowed: a rung ADDED to the CI file passes.
+git -C "$BGD" checkout -q -b g-rungadd "$BG_BASE"
+printf '# ci\nsteps:\n  - run: bash scripts/gate-suite.sh shell\n  - run: bash scripts/gate-suite.sh python\n  - run: bash scripts/gate-suite.sh compress\n' > "$BGD/.github/workflows/validate.yml"
+git -C "$BGD" commit -qam g4
+bg_run g-rungadd
+check "base-gate: a rung ADDED to a CI file passes (control)" \
+  "$([ "$BG_RC" = 0 ] && echo 0 || echo 1)"
+# A forge NOT configured at the base makes no claim: the second CI file is
+# absent at both refs in this fixture and the arm must stay silent about it.
+check "base-gate: a CI file absent at BOTH refs is not a finding (control)" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'forgejo' && echo 1 || echo 0)"
 
 # --- fail-closed: unreadable base -----------------------------------------
 # The MESSAGE is asserted, not only the code. rc 2 alone is vacuous here:

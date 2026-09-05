@@ -83,6 +83,24 @@ single source of truth; bump it in the same commit as the changelog entry.
   locator dropped each file's last line (`"\n".join(splitlines())` loses the
   trailing newline), so a job ending a file lost its final step; the fix is
   mutation-checked red in `BaseGateTest`.
+- **Three more fail-opens, found by the PR review (all `BASE_GATE_PASSED`,
+  exit 0, on the shipped gate; each reproduced before it was fixed).** (f) The
+  floor arm read VALUES and the file is SOURCED: `FLOOR_shell=1 # 20`
+  satisfied the trailing `[0-9]+$` with the comment, and `FLOOR_shell=$((1))`
+  after a kept `FLOOR_shell=20` was invisible to the `=[0-9]+` extractor —
+  both enforce 1 at runtime. The arm now closes the SHAPE, not the instances:
+  at the PR ref a floors.env line is blank, a comment, or exactly
+  `FLOOR_<name>=<digits>`, anything else red. (g) The registry arm read the
+  tuple BLOCK and python runs the LAST binding: `CHECKS = (check_x,)` after
+  the full tuple shrank the registry that runs with the block intact — the
+  duplicate-key bypass one file over. One binding at column 0, or red. (h)
+  No arm read a CI file at all: a PR that drops `gate-suite.sh shell` from
+  validate.yml and the `check_suite_floors` pin in the same commit passes its
+  own run, and the base copy never looked. Arm 3b now holds each CI file's
+  rung set from the base (comment-stripped, per forge; a file absent at the
+  base makes no claim, absent only at the PR ref is red), and the workflow
+  dirs are enforcer core for the delta report. Twelve cases, each arm mutated
+  red in the bash suite; floors shell 898 → 910.
 - Floors raised in the same commit: shell 862 → 881, python 340 → 353.
 
 ## [0.11.10] - 2026-09-05
