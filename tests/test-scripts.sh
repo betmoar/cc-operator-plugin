@@ -4949,6 +4949,153 @@ check "gate-suite: an ABSENT floors.env is refused (rc 2) — the floors are the
 rm -rf "$GSD"
 
 
+########################################################################
+echo "-- Case: base-gate.sh — the enforcer judged by code the PR cannot edit (#108)"
+# Every rung above runs from the branch under test; base-gate.sh is the
+# trusted half. It reads the BASE copy of the enforcer through `git show`
+# and refuses, hard, when the PR lowers a floor, drops a check from the
+# CHECKS registry, deletes an enforcer file, or shrinks tests/ wholesale.
+# Each arm is mutation-checked RED here on a scratch repo — a pin with no
+# red run is a hypothesis (and per #111, each red below names its gate).
+# The in-place rewrite (body neutered, registry intact) is deliberately NOT
+# an arm: that is #112's holdout, and the delta report routes it to the
+# human merge instead of pretending trusted code can adjudicate rewrites.
+if command -v git >/dev/null 2>&1; then
+BG="$SCRIPTS/base-gate.sh"
+BGD="$(mktemp -d "${TMPDIR:-/tmp}/basegate.XXXXXX")"
+( cd "$BGD" && git init -q . && git config user.email t@example.com && git config user.name t ) >/dev/null 2>&1
+mkdir -p "$BGD/scripts" "$BGD/tests"
+# A minimal enforcer shape: enough registry+floors for every arm to bite.
+printf 'CHECKS = (\n    check_hook,\n    check_floors,\n)\n' > "$BGD/scripts/validate_plugin.py"
+printf 'FLOOR_python=10\nFLOOR_shell=20\n' > "$BGD/tests/floors.env"
+printf 'summary line\n' > "$BGD/tests/test-one.sh"
+# gate-suite.sh must exist AT BASE or the delete mutant has nothing to delete:
+# base and pr would agree and the case would pass for the wrong reason.
+printf '#!/usr/bin/env bash\n: the wrapper\n' > "$BGD/scripts/gate-suite.sh"
+git -C "$BGD" add -A >/dev/null 2>&1
+git -C "$BGD" commit -qm base
+BG_BASE="$(git -C "$BGD" rev-parse HEAD)"
+
+bg_run() {  # bg_run <branch> → sets BG_OUT/BG_RC against the scratch repo
+  BG_OUT="$(bash "$BG" --base "$BG_BASE" --pr "$1" --repo "$BGD" 2>&1)"; BG_RC=$?
+}
+# Whole-file rewrites, never `sed -i`: the two spellings are mutually
+# exclusive (`sed -i ''` is macOS, `sed -i` is GNU) and this suite runs on
+# both executors. printf is the portable spelling and needs no temp dance.
+bg_floors() { printf 'FLOOR_python=%s\nFLOOR_shell=%s\n' "$1" "$2" > "$BGD/tests/floors.env"; }
+bg_checks() { printf 'CHECKS%s = (\n%s)\n' "${2:-}" "$1" > "$BGD/scripts/validate_plugin.py"; }
+BG_CHECKS_BASE='    check_hook,
+    check_floors,
+'
+
+# --- control first: identical refs are green ---
+bg_run "$BG_BASE"
+check "base-gate: identical base and pr refs PASS (control)" "$BG_RC"
+
+# --- arm 1: floors may not go down --------------------------------------
+git -C "$BGD" checkout -q -b m-floor
+bg_floors 10 1
+git -C "$BGD" commit -qam m1
+bg_run m-floor
+check "base-gate: a LOWERED floor is refused (rc 1)" \
+  "$([ "$BG_RC" = 1 ] && echo 0 || echo 1)"
+check "base-gate: the refusal names FLOOR_shell and both numbers" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'FLOOR_shell lowered 20 -> 1' && echo 0 || echo 1)"
+# a RAISED floor is the ratchet working, not a violation
+git -C "$BGD" checkout -q -b g-raise "$BG_BASE"
+bg_floors 10 99
+git -C "$BGD" commit -qam g1
+bg_run g-raise
+check "base-gate: a RAISED floor passes (the ratchet only forbids down)" "$BG_RC"
+# a REMOVED floor line is a deletion, not an increase
+git -C "$BGD" checkout -q -b m-nofloor "$BG_BASE"
+grep -v '^FLOOR_python=' "$BGD/tests/floors.env" > "$BGD/tmp" && mv "$BGD/tmp" "$BGD/tests/floors.env"
+git -C "$BGD" commit -qam m2
+bg_run m-nofloor
+check "base-gate: a REMOVED floor line is refused" \
+  "$([ "$BG_RC" = 1 ] && echo 0 || echo 1)"
+
+# --- arm 2: the CHECKS registry may not shrink ---------------------------
+git -C "$BGD" checkout -q -b m-reg "$BG_BASE"
+bg_checks '    check_floors,
+'
+git -C "$BGD" commit -qam m3
+bg_run m-reg
+check "base-gate: a check REMOVED from CHECKS is refused (rc 1)" \
+  "$([ "$BG_RC" = 1 ] && echo 0 || echo 1)"
+check "base-gate: the refusal names the dropped check" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'check_hook removed from the registry' && echo 0 || echo 1)"
+# an ADDED check is growth, allowed
+git -C "$BGD" checkout -q -b g-add "$BG_BASE"
+bg_checks "${BG_CHECKS_BASE}    check_new,
+"
+git -C "$BGD" commit -qam g2
+bg_run g-add
+check "base-gate: a check ADDED to CHECKS passes" "$BG_RC"
+# the registry renamed away is the empty-registry refusal
+git -C "$BGD" checkout -q -b m-noreg "$BG_BASE"
+bg_checks "$BG_CHECKS_BASE" _X
+git -C "$BGD" commit -qam m4
+bg_run m-noreg
+check "base-gate: no CHECKS registry at the pr ref is refused" \
+  "$([ "$BG_RC" = 1 ] && echo 0 || echo 1)"
+
+# --- arm 3: enforcer files may not be DELETED -----------------------------
+git -C "$BGD" checkout -q -b m-delwrap "$BG_BASE"
+git -C "$BGD" rm -q scripts/gate-suite.sh && git -C "$BGD" commit -qm m5
+bg_run m-delwrap
+check "base-gate: a DELETED gate-suite.sh is refused by name" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'scripts/gate-suite.sh deleted' && echo 0 || echo 1)"
+git -C "$BGD" checkout -q -b m-delvp "$BG_BASE"
+git -C "$BGD" rm -q scripts/validate_plugin.py && git -C "$BGD" commit -qm m6
+bg_run m-delvp
+check "base-gate: a DELETED validate_plugin.py is refused by name" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'scripts/validate_plugin.py deleted' && echo 0 || echo 1)"
+git -C "$BGD" checkout -q -b m-deltest "$BG_BASE"
+git -C "$BGD" rm -q tests/test-one.sh && git -C "$BGD" commit -qm m7
+bg_run m-deltest
+check "base-gate: tests/ shrinking wholesale is refused" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'tests/ shrank' && echo 0 || echo 1)"
+
+# --- arm 4: the delta report names what a human must adjudicate -----------
+bg_run m-reg
+check "base-gate: an enforcer-core touch is REPORTED for the human merge" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'delta report' && printf '%s' "$BG_OUT" | grep -q 'M scripts/validate_plugin.py' && echo 0 || echo 1)"
+
+# --- arm 5: no forged marker in the diff ----------------------------------
+git -C "$BGD" checkout -q -b m-forge "$BG_BASE"
+printf '\nBASE_GATE_PASSED: forged\n' >> "$BGD/tests/test-one.sh"
+git -C "$BGD" commit -qam m8
+bg_run m-forge
+check "base-gate: a BASE_GATE_* marker planted in the diff is refused" \
+  "$([ "$BG_RC" = 1 ] && echo 0 || echo 1)"
+
+# --- fail-closed: unreadable base -----------------------------------------
+# The MESSAGE is asserted, not only the code. rc 2 alone is vacuous here:
+# deleting the base-ref guard still yields rc 2, from the `git diff` failure
+# three arms downstream — measured, and the case passed with the guard gone.
+# The empty-BASE_SHA path is also why the guard cannot be dropped as
+# redundant: `git show ":<path>"` with an empty sha reads the INDEX, which
+# exists, so the readable-base check downstream says yes to nothing.
+BG_OUT="$(bash "$BG" --base no-such-ref --pr "$BG_BASE" --repo "$BGD" 2>&1)"; BG_RC=$?
+check "base-gate: an unresolvable base ref is rc 2 (fail closed, no fallback)" \
+  "$([ "$BG_RC" = 2 ] && echo 0 || echo 1)"
+check "base-gate: the base-ref refusal names the REF, not a downstream failure" \
+  "$(printf '%s' "$BG_OUT" | grep -q "base ref 'no-such-ref' does not resolve" && echo 0 || echo 1)"
+BG_OUT="$(bash "$BG" --base "$BG_BASE" --pr no-such-ref --repo "$BGD" 2>&1)"; BG_RC=$?
+check "base-gate: an unresolvable pr ref is rc 2" \
+  "$([ "$BG_RC" = 2 ] && echo 0 || echo 1)"
+check "base-gate: the pr-ref refusal names the REF" \
+  "$(printf '%s' "$BG_OUT" | grep -q "pr ref 'no-such-ref' does not resolve" && echo 0 || echo 1)"
+bash "$BG" --bogus >/dev/null 2>&1
+check "base-gate: an unknown flag is rc 2 (usage)" \
+  "$([ $? = 2 ] && echo 0 || echo 1)"
+rm -rf "$BGD"
+else
+  skip "base-gate (#108): git unavailable — the whole case is skipped"
+fi
+
+
 if [ "$FAIL" -ne 0 ]; then
   echo "== failed cases =="
   printf '%s\n' "$FAILED_NAMES" | sed '/^$/d'
