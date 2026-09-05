@@ -348,7 +348,11 @@ def make_good_tree(root):
     lookup, duploop = f136_lookup, F136_DUPLOOP
     # autobar.sh sourced AFTER partition.sh: it calls sentinel_owner_of_name.
     write(root / "scripts" / "ops-stop-hook.sh",
-          "#!/usr/bin/env bash\n. lib/partition.sh\n. lib/autobar.sh\n" + JSON_GET)
+          # the [ -w ] half of stopguard_can_mark (#124 follow-up): the good-tree
+          # stub mirrors the real file's permission-test count, which the
+          # allowlist pins at 1 — a stub below it reads as a REMOVED guard.
+          "#!/usr/bin/env bash\nstopguard_can_mark() { [ -d \"$d\" ] && [ -w \"$d\" ]; }\n"
+          ". lib/partition.sh\n. lib/autobar.sh\n" + JSON_GET)
     write(root / "scripts" / "ops-task.sh",
           "#!/usr/bin/env bash\n" + guards + nolink + lookup("sentinel_for") + duploop
           + GOOD_ROOT_BLOCK)
@@ -947,6 +951,45 @@ class ValidatorTest(unittest.TestCase):
             self.assertTrue(
                 any(repr(field) in p for p in probs),
                 f"dropping {field!r} from the handout packet did not fire: {probs}")
+
+    def test_the_packet_block_selection_is_pinned_first_match(self):
+        """#113: _packet_block selects the FIRST fence carrying 'TASK / TEXT /
+        SCENE' — a selection, and it went untested at its edge. Measured
+        2026-09-04: a COMPLETE decoy fence ahead of a BROKEN real packet reads
+        clean (FALSE PASS — the field can vanish from the contract while a
+        prose example satisfies the pin, the PR-#72 shape one level up); a
+        broken decoy ahead of a complete packet fires (false positive, the
+        safer direction but still wrong-by-selection). Both halves pinned:
+        the pin must follow the LAST/real packet, not the first fence."""
+        c = self.dir / "templates" / "OPERATOR.md"
+        write(c, c.read_text() + "\n" + self._PACKET)
+        h = self.dir / "docs" / "HANDOUT.md"
+        # Dangerous direction: decoy complete, real packet lost CHANGED.
+        broken = self._PACKET.replace("CHANGED: <paths>|none", "")
+        write(h, "prose example:\n" + self._PACKET + "\n\nthe packet itself:\n" + broken)
+        probs = []
+        vp.check_handout_packet(self.dir, probs)
+        self.assertTrue(
+            any("CHANGED" in p for p in probs),
+            "a complete decoy fence must not satisfy the pin while the real "
+            f"packet is broken: {probs}")
+        # Control: the complete packet alone still reads clean.
+        write(h, "packet:\n" + self._PACKET)
+        probs = []
+        vp.check_handout_packet(self.dir, probs)
+        self.assertEqual(probs, [])
+        # And the SYMMETRIC shape (#124 review): a decoy AFTER the real packet.
+        # Last-match selection must read the REAL (first) packet, not a later
+        # example — a "common mistakes" appendix quoting a complete packet
+        # while the contract above lost a field is the same false-pass class
+        # in the opposite direction.
+        write(h, "the contract:\n" + broken + "\nappendix example:\n" + self._PACKET)
+        probs = []
+        vp.check_handout_packet(self.dir, probs)
+        self.assertTrue(
+            any("CHANGED" in p for p in probs),
+            "a decoy AFTER a broken real packet must not satisfy the pin "
+            f"(last-match reads the wrong fence): {probs}")
 
     def test_handout_packet_pin_checks_the_charter_itself(self):
         # Parity between handout and charter passes perfectly when the CHARTER is
@@ -4083,6 +4126,41 @@ class CouplingCaseRefsTest(unittest.TestCase):
         probs = self._probs(self.FILL + ' the _"A zzfixture landmine heading"_ case.\n')
         self.assertTrue(any("zzfixture landmine heading" in p and "tests/" in p
                             for p in probs), probs)
+
+    def test_the_context_window_edge_is_pinned_at_120(self):
+        """#113: the 120-char lookback IS a selection, and its edge went
+        untested — measured live on 2026-09-04 (the CLAUDE.md diet): a
+        citation whose only `docs/LANDMINES.md` mention sits just OUTSIDE the
+        window misclassifies as tests/ and fires a FALSE 'resolves nowhere'
+        against a correct table — the false-positive direction, which blocks a
+        correct change. Both halves pinned: outside fires tests/, inside
+        (the control) resolves against the landmine file."""
+        # The boundary pinned EXACTLY (PR #124 review: the first cut used 125
+        # and ~19 — nothing caught an off-by-one in the slice itself). The
+        # distances were MEASURED, not derived: the separator is the y-run
+        # plus ' and the ' (9 chars) and the window slice is half-open, so
+        # gap 98 is the last INSIDE and 99 the first OUTSIDE. An off-by-one
+        # in [max(0, m.start()-120):m.start()] flips exactly this pair.
+        # DERIVED from the classifier's own window, not hardcoded (second-
+        # round panel finding: a hardcoded 98/99 floats free of the 120 and
+        # silently tests a dead boundary if the window ever changes). The
+        # fixture's literals are fixed: from the end of 'LANDMINES.md' to the
+        # citation start spans gap + 11 chars, and the mention is inside the
+        # half-open [start-W, start) iff its FIRST char falls there, i.e.
+        # gap + 22 <= W. Last inside: W-22; first outside: W-21 (measured:
+        # W=120 -> 98/99, exactly the hand-measured crossover).
+        _W = 120  # mirrors validate_plugin.check_coupling_case_refs's window
+        for gap, expect_tests in ((_W - 21, True), (_W - 22, False)):
+            probs = self._probs(
+                self.FILL + f' see docs/LANDMINES.md {"y" * gap} and the '
+                            '_"A zzfixture landmine heading"_ ref.\n')
+            hit = any("zzfixture landmine heading" in p and "tests/" in p
+                      for p in probs)
+            self.assertEqual(
+                hit, expect_tests,
+                f"a {gap}-char gap must classify as "
+                f"{'tests/ (outside)' if expect_tests else 'landmine (inside)'}: "
+                f"{probs}")
 
     def test_the_convention_going_away_is_a_finding_not_a_pass(self):
         """`if refs:` going silent when a head regex stops matching is a bug

@@ -9,6 +9,131 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.10] - 2026-09-05
+
+- **CI was red on one test, and the cause was this file.** `test_release_gate.
+  test_real_repo_gate_passes` refuses a non-empty `[Unreleased]` while
+  `plugin.json` still names a released version — the round's notes sat under
+  `[Unreleased]` at 0.11.9. Version bumped to 0.11.10 and the notes retitled;
+  no v0.11.x tag exists (latest is v0.9.0), so nothing published was rewritten,
+  and folding into `[0.11.9]` would have back-dated this round's work into a
+  section that describes a different commit.
+- **The last silent state in the `.stopguard` mechanism now speaks.** A Stop
+  payload with NO session id cannot ADDRESS a marker, so its block can never be
+  spent: every continuation falls to the foreign branch, re-runs the gate and
+  blocks again (measured rc 2, 2, 2). The polarity is right and stays —
+  `stopguard_can_mark` deliberately refuses to call this the C case, because
+  standing down for every session-less payload is the #116 disarm through the
+  back door — but `stopguard_mark_blocked` returned success and said nothing,
+  so the operator saw a block repeat with no account of why. It warns now;
+  case 4o pins it. Exit codes unchanged.
+- **The #123B pin no longer depends on a file outside the repo.** Its symlink
+  target is a regular file created in the test project, with a setup assertion
+  that fails loud if that stops being true. The pin was already load-bearing on
+  both platforms (`/etc/hosts` exists on Linux and macOS — it replaced a first
+  cut using `/etc/hostname`, which does not exist on macOS), so this is not a
+  found vacuity: it removes the external dependency whose absence would make a
+  DANGLING link fail `-f` as well, passing the case for the wrong reason with
+  no signal. Mutation re-run after the change: dropping `! -L` from
+  `stopguard_is_mine` goes RED in the bash suite's `#123B` case (#111's naming
+  rule), restored byte-identical.
+- **Floors raised to the measured counts** (859 shell as passed+skipped, 340
+  python). The python one was DRIFT, not new cases: 0.11.8 set 333 against a
+  count that had already moved and nothing raised it since — the hand-
+  maintenance lapse #109 predicts, found by re-measuring rather than by a gate,
+  because a floor is a floor and slack is green.
+- **PR #124 second review round (panel over the fix commits themselves).**
+  Findings fixed: 4l's close ran UNCHECKED and — the real defect under it —
+  invoked the CLI from the suite's cwd, so the project walk-up resolved to
+  THIS repo's `.operator` and 20 stray T-9 rows accumulated in the dogfood
+  ledger while `$P`'s sentinel survived (the CLI was correct; the harness
+  violated the cd-first convention every other case follows). Fixed both
+  invocations, purged the ledger, and made the premise a counted check.
+  **The clear-warning path pinned** (final-allow site: marker present, dir
+  read-only between mark and clear → rc 0 AND warned; the own-continuation
+  route cannot reach it — `can_mark` stands down earlier — so the case
+  documents which site it exercises). The classifier window's boundary pair
+  is now DERIVED from the window constant instead of hardcoded, so a window
+  change moves the test with it. The permission-allowlist comment block was
+  rewritten cleanly (the edit had pasted it twice); the "guard removed"
+  arm's message now names the move case. `FLOOR_shell` 859 → 862 after the
+  rebase (this round's two cases on top of the measured 859).
+
+- **PR #124 review round — two critical, four important, all fixed.** Panel:
+  code / tests / silent-failures / comments (types N/A for this diff).
+  **Critical:** `stopguard_clear`'s failure was never read or reported at
+  either call site — a silently-failed clear leaves exactly the stale marker
+  the next foreign continuation misreads as ours (the two-claims rule applied
+  to the set, not the clear); both sites now warn. The header contract said
+  "a FOREIGN continuation does NOT exit 0" while the #123-C arm stands down
+  for foreign continuations on an unmarkable project — the header now carries
+  the carve-out. **Important:** the DEVIATIONS-path mark site and
+  `stopguard_can_mark`'s mkdir-success path were unexercised (cases 4l/4m);
+  three root-conditional blocks were still unconverted `echo` skips,
+  re-introducing exactly the #109 slack (6 skips converted — a root executor
+  now reports the same 857 total); `_packet_block`'s last-match fix had the
+  symmetric hole (a decoy AFTER a broken real packet read clean — the
+  after-decoy test went red on the code as shipped), now EVERY-match: any
+  fence carrying the packet marker must teach every field; dead `return
+  None` removed. **Boundary tightened:** the classifier's window edge pinned
+  at the measured crossover (gap 98 inside / 99 outside) instead of 125/19 —
+  an off-by-one in the slice now flips exactly that pair. `FLOOR_shell`
+  855 → 857.
+- **The declined finding, taken (#124 follow-up):** `stopguard_can_mark` now
+  tests WRITABILITY, not bare existence, of `.stopguard/` — a read-only dir
+  previously made the loop-guard polarity decision on a false premise
+  (existence said markable; the write then failed). Case 4n pins it both ways
+  (read-only → pre-#116 stand-down; writable → gate runs), root-skipped per
+  #109's counted-skip rule; mutation red on the existence-only revert.
+  `FLOOR_shell` 857 → 858.
+
+- **Fixed #123 — the #116 `.stopguard` marker's three gaps.** All three
+  measured against `b61217b` by the review session that filed the issue, and
+  reproduced locally before fixing:
+  **(A)** the own-continuation stand-down kept the marker, so a later foreign
+  continuation inherited it and read as ours — the stand-down now SPENDS the
+  block (`stopguard_clear` before `exit 0`). **(B)** the reader used bare
+  `[ -f ]`, which follows a symlink — any link at the marker path pointing at
+  a regular file disarmed the guard; the reader is now `-L` before `-f`, the
+  sixth site of the `pending/<id>` type-test convention. **(C)** an
+  unmarkable project (a non-dir at `.stopguard/`) blocked every continuation
+  forever — a session that cannot end, which the hook's own header forbids;
+  the polarity is now deliberate and written in the code: such a project
+  stands down as pre-#116 on `active=true` (the ordinary-stop gate is
+  unaffected), the write failure is SAID on stderr, and an EMPTY session id
+  is explicitly not the C case (a no-session payload never owned a marker;
+  treating it as unmarkable was the #116 disarm through the back door —
+  caught by case 4d going red on the first cut). Five cases (4i-4k), each
+  mutation red in the bash suite (A: 2, B: 1, C: 1); `FLOOR_shell` 850 → 855.
+
+- **Counted `skip()` in the shell suite — the floor is executor-invariant
+  (#109).** `tests/test-scripts.sh` gains a `SKIP` counter and a `skip()`
+  helper; every executor-conditional block now owes ONE skip per check it
+  replaces (the block-level `echo "SKIP …"` hid the count from the floor
+  arithmetic). The summary line carries a third group (`N skipped`);
+  `gate-suite.sh`'s marker regex takes it optionally and the floor is taken
+  against **passed+skipped**. `FLOOR_shell` 832 → 850 — AT the true total,
+  so the permanent root/macOS spread stops being slack a deletion can hide
+  in (measured both executors: 850/0/0 full-PATH; 843+7 on a git-less,
+  Apple-python3 PATH — the restricted run also exposed that Apple's system
+  python3 sets `pycache_prefix` and never writes `__pycache__` beside
+  sources, so the #23 stale-pyc block is now gated on that with 5 counted
+  skips instead of failing on the fixture). Three wrapper cases pin the new
+  arithmetic; mutation red (wrapper ignoring skips fails the count case).
+  F121-class note: the marker contract moved, and the rung coupling row
+  follows it.
+
+- **Convention (#111): "mutation-checked" names the gate that went red.**
+  Bare "mutation-checked" records that SOMETHING fired — a shell mutation can
+  go red in the bash suite while the validator pin written for it stays
+  vacuous. The coupling-table rule now requires the granularity the python
+  suite already asserts (`test_autobar_missing_z_flag_fires` names its
+  check); the four bare sites in CLAUDE.md are retrofitted with their gates.
+  PLAYBOOK's "Verifying a fix" gains step 5 (purge `__pycache__` between
+  mutate and restore — a byte-identical restore kept executing the mutant
+  from a stale `.pyc` whose embedded mtime still matched, measured during
+  the #113 audit) and step 6 (the naming rule itself).
+
 ## [0.11.9] - 2026-09-04
 
 - **Docs: CLAUDE.md char diet (60,237 → 33,922 chars).** The harness injects

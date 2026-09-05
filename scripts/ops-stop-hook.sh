@@ -5,8 +5,11 @@
 #   exit 0  — allow the stop. Cases: no .operator/ reachable (no-op guard);
 #             .operator/pending/ empty; stop_hook_active true WITH this hook's
 #             own .stopguard marker (our continuation — the loop guard; a
-#             FOREIGN continuation does NOT exit 0, #116); no JSON parser
-#             available (fail-open — a broken hook must never brick a session).
+#             FOREIGN continuation does NOT exit 0, #116 — EXCEPT on a project
+#             that cannot carry a marker at all, which stands down as pre-#116
+#             because a session that cannot end is the worse failure, #123 C);
+#             no JSON parser available (fail-open — a broken hook must never
+#             brick a session).
 #   exit 2  — block the stop. This session OWNS a pending sentinel (or one is
 #             unowned), or unpresented decisions exist; stderr names those ids
 #             and the command to clear them (Claude Code feeds stderr back as
@@ -124,13 +127,33 @@ done
 # stop I myself forced, or the operator cannot escape the loop). "Active and
 # NO marker" = someone else's continuation → run the gate normally.
 #
-# The marker is advisory-only and fail-safe in both directions: an unwritable
-# .operator/ makes the guard read absent (gate RUNS — we fail toward blocking,
-# the same direction as the unowned-sentinel default), and a stale marker from
-# a crashed session is wiped by ops-sessionstart-hook.sh beside .autobar/, and
-# at worst makes us stand down for one stop — the pre-#116 behaviour, never
-# worse.
-_stopguard_path() { # → "" (not a project) or "$opdir/.stopguard/$session"
+# STANDING DOWN SPENDS THE BLOCK (#123 A): the own-continuation branch clears
+# the marker too. The first cut kept it ("at worst one stand-down"), but the
+# reachable chain is exactly #116's: we block → we stand down (marker kept) →
+# cc-repete blocks that same Stop → the NEXT Stop still carries
+# stop_hook_active true AND our stale marker → a foreign continuation reads
+# as ours and the gate is off for the rest of the loop window. One stand-down
+# per block, spent when taken.
+#
+# READER TYPE TEST (#123 B): the marker is a NON-SYMLINK regular file on the
+# read side too — `[ -f ]` follows a link, so a symlink at the marker path
+# pointing at any regular file read as "ours" and disarmed the guard (the
+# write side already refused links; the read side was the sixth `-L before -f`
+# site the pending/<id> convention names).
+#
+# UNMARKABLE PROJECT (#123 C): if the marker cannot be written (a non-dir at
+# .stopguard/, an unwritable .operator/), every ordinary stop blocks and every
+# continuation ALSO blocks — a session that cannot end, which this file's own
+# header forbids ("a broken hook must never brick a session"). Failing toward
+# blocking once is defensible; failing toward blocking forever is not. The
+# polarity chosen: a project that cannot carry the marker is PRE-#116 for
+# loop-guard purposes — active=true stands down unconditionally there,
+# trading the #116 disarm back for a session that CAN end. The block itself
+# still fires on the ordinary stop (the gate is not disabled), and the write
+# failure is SAID on stderr (a silent flag is the two-claims rule).
+_stopguard_path() { # prints "" (not a project / no session) or the marker path.
+  # CONTRACT: callers consume STDOUT and test [ -n ] — the EXIT status is
+  # always 0 and carries no meaning (a prior comment implied otherwise).
   [ -n "${opdir:-}" ] || return 0
   [ -n "$session" ] || return 0
   printf '%s/.stopguard/%s' "$opdir" "$session"
@@ -138,15 +161,34 @@ _stopguard_path() { # → "" (not a project) or "$opdir/.stopguard/$session"
 
 stopguard_mark_blocked() { # record that THIS hook blocked (advisory, builtin)
   _sgp="$(_stopguard_path)"
-  [ -n "$_sgp" ] || return 0
-  mkdir -p "${_sgp%/*}" 2>/dev/null || return 0
+  if [ -z "$_sgp" ]; then
+    # No session id in the payload: the marker cannot be ADDRESSED at all, so
+    # this block can never be spent by a later continuation. Every subsequent
+    # stop_hook_active fire falls to the foreign-continuation branch, re-runs
+    # the gate and blocks again (measured on this branch: rc 2, 2, 2).
+    #
+    # That polarity is deliberate — stopguard_can_mark deliberately does NOT
+    # call this the C case, because standing down for every session-less
+    # payload is the #116 disarm through the back door — but it must not be
+    # SILENT. Returning 0 here (nothing to mark is not a failed write) while
+    # saying nothing was the last unreported state in this mechanism: the
+    # operator saw a block repeat with no account of why it could not be
+    # spent. Two claims, both made.
+    echo "operator: warning — this Stop payload carries no session id, so no .stopguard marker can be written and this block can never be spent. Every continuation will re-run the gate and block again until the pending work is cleared or deferred; there is no loop-guard escape for a session-less payload (#123/#124)." >&2
+    return 0
+  fi
+  mkdir -p "${_sgp%/*}" 2>/dev/null || return 1
   # set -C (O_EXCL) so a planted symlink at the marker path is refused rather
   # than followed — the same discipline as the autobar sentinel write above.
   ( set -C; : > "$_sgp" ) 2>/dev/null
   # A pre-existing regular file is our own marker from the previous block:
   # presence is the whole state, so a refused overwrite of our own marker is
   # success, and a symlink at the path is failure (the marker would lie).
-  [ -f "$_sgp" ] && [ ! -L "$_sgp" ]
+  [ -f "$_sgp" ] && [ ! -L "$_sgp" ] && return 0
+  # Distinguish "cannot mark" (return 1 — the C case) from "nothing to mark"
+  # (the empty path above returns 0): a failed write is REPORTED, never
+  # silently treated as success.
+  return 1
 }
 
 stopguard_clear() { # we allowed the stop — my block, if any, is over
@@ -155,7 +197,58 @@ stopguard_clear() { # we allowed the stop — my block, if any, is over
   rm -f -- "$_sgp" 2>/dev/null
 }
 
-if [ "$active" = "true" ] && [ ! -f "$(_stopguard_path)" ]; then
+# The reader's type test, one helper used by BOTH guard arms (#123 B).
+stopguard_is_mine() { # → 0 if a regular non-symlink marker is present
+  _sgp="$(_stopguard_path)"
+  [ -n "$_sgp" ] || return 1
+  [ -f "$_sgp" ] && [ ! -L "$_sgp" ]
+}
+
+# C's polarity, as code: a project that cannot CARRY a marker at all (the
+# .stopguard path is a non-directory, or .operator/ is unwritable) is pre-#116
+# for loop-guard purposes — active=true stands down, because the alternative
+# is a continuation that blocks forever on a marker it can never spend.
+# Distinct from B's symlink case: a LINK at the marker path is tampering
+# (reads as not-mine, gate RUNS); an ABSENT marker DIRECTORY is environment.
+stopguard_can_mark() { # → 0 if the marker's parent dir exists AND is writable (or creatable)
+  # Empty PATH (no session id in the payload): NOT the C case. A no-session
+  # payload can never have owned a marker, so there is nothing to spend and
+  # nothing to escape from — the foreign-continuation branch below is the
+  # honest reading (rc 2 with the notice). Treating it as "unmarkable" would
+  # stand the guard down for every payload that lacks a session id, which is
+  # the #116 disarm through the back door (measured: case 4d went 2 -> 0).
+  _sgp="$(_stopguard_path)"
+  [ -n "$_sgp" ] || return 0
+  # WRITABILITY, not bare existence (PR #124 review): a read-only .stopguard/
+  # dir made the polarity decision on a false premise — can_mark said
+  # "markable", the later write failed, and the guard had already chosen
+  # "gate runs" for this continuation on evidence that was about to be
+  # contradicted.
+  #
+  # #21 DISCIPLINE — this `[ -w ]` is a BEST-EFFORT HALF, inert for uid 0
+  # (root bypasses mode bits; the validator's permission-test allowlist is
+  # raised for exactly this one with that reasoning). The uid-invariant half
+  # of the guard is the TYPE test in the same branch (`-d`, holds on every
+  # uid) plus the warned write failure downstream: on root, a read-only dir
+  # reads markable, the marker write then fails, and the call site SAYS so on
+  # stderr — the operator learns the state one event later instead of at
+  # decision time. That is the documented trade, not an oversight.
+  if [ -d "${_sgp%/*}" ]; then
+    [ -w "${_sgp%/*}" ]
+    return $?
+  fi
+  # A dir we just created via mkdir is writable by construction (we made it);
+  # a failed mkdir already returns 1 here.
+  mkdir -p "${_sgp%/*}" 2>/dev/null && return 0
+  return 1
+}
+
+if [ "$active" = "true" ] && ! stopguard_can_mark; then
+  # The C escape: unmarkable project, pre-#116 polarity, said on stderr.
+  echo "operator: stop_hook_active is true and this project cannot carry a .stopguard marker ($opdir/.stopguard is not a directory / not creatable) — standing down as pre-#116 (#123): a session that can never end is the worse failure. The ordinary-stop gate below is unaffected." >&2
+  exit 0
+fi
+if [ "$active" = "true" ] && ! stopguard_is_mine; then
   # Someone else's continuation. Say so on stderr (it is guidance, and the
   # silence here was the #116 report's first confusion) and RUN the gate.
   echo "operator: stop_hook_active is true but no block of ours caused it (no .stopguard marker) — another hook's continuation does not suspend the evidence gate (#116); gate runs normally." >&2
@@ -163,7 +256,13 @@ elif [ "$active" = "true" ]; then
   # MY OWN continuation (I blocked last Stop, the harness re-fired with
   # stop_hook_active true, the operator is acting on my instruction). This is
   # the guard's original purpose: never re-block the stop I myself forced, or
-  # the operator cannot escape the loop.
+  # the operator cannot escape the loop. Standing down SPENDS the block
+  # (#123 A): clear now, or a later foreign continuation inherits the stale
+  # marker and reads as ours. The clear's status is READ and a failure SAID
+  # (#124 review): a silently-failed clear leaves exactly the stale marker the
+  # NEXT foreign continuation misreads as ours — the #116 disarm back, with no
+  # diagnostic trail. The stand-down itself still happens.
+  stopguard_clear || echo "operator: warning — could not clear the .stopguard marker ($opdir/.stopguard/$session unwritable or not removable). The stop is still allowed, but a later continuation may misread the stale marker as ours (#123/#124)." >&2
   exit 0
 fi
 # stop_hook_active false (the ordinary stop): fall through to the gate.
@@ -369,7 +468,11 @@ if [ -n "$pending" ] || [ "$MALFORMED" -gt 0 ]; then
   # printing "pending verdict(s): " with an empty list is the useless guidance
   # this whole branch exists to avoid.
   [ -n "$pending" ] && echo "operator: pending verdict(s): $pending — run $verdict_cmd <id> <criterion> <evidence> <PASS|FAIL>, or --defer \"<reason>\"" >&2
-  stopguard_mark_blocked
+  # The mark's status is READ and the failure SAID (#123 C): the gate still
+  # blocks either way, but without this line the operator cannot know why the
+  # next continuation will block again — and on an unmarkable project the
+  # loop-guard polarity below is what keeps the session endable at all.
+  stopguard_mark_blocked || echo "operator: warning — could not write the .stopguard marker (a non-directory at $opdir/.stopguard, an unwritable .operator/, or a symlink at the marker path). The gate still blocked; on the next stop_hook_active continuation this project is treated as pre-#116 and stands down, because a session that can never end is the worse failure (#123)." >&2
   exit 2
 fi
 
@@ -412,13 +515,20 @@ if [ "$deviations_scan_failed" = 0 ] && [ "$deviations_unpresented" -gt 0 ]; the
 $deviations_rows
 EOF
   fi
-  stopguard_mark_blocked
+  # The mark's status is READ and the failure SAID (#123 C): the gate still
+  # blocks either way, but without this line the operator cannot know why the
+  # next continuation will block again — and on an unmarkable project the
+  # loop-guard polarity below is what keeps the session endable at all.
+  stopguard_mark_blocked || echo "operator: warning — could not write the .stopguard marker (a non-directory at $opdir/.stopguard, an unwritable .operator/, or a symlink at the marker path). The gate still blocked; on the next stop_hook_active continuation this project is treated as pre-#116 and stands down, because a session that can never end is the worse failure (#123)." >&2
   exit 2
 fi
 
 # Allowing the stop: my own block, if there was one, is over — clear the
 # marker so a FUTURE hook-forced continuation (someone else's) is not mistaken
 # for ours (#116). Ordering: clear only after every blocking branch has been
-# passed, so the marker always reflects "this hook last blocked".
-stopguard_clear
+# passed, so the marker always reflects "this hook last blocked". Status
+# read and failures said (#124 review) — the two-claims rule, same as the
+# mark sites: a silent clear-failure leaves the stale marker the NEXT
+# foreign continuation misreads as ours.
+stopguard_clear || echo "operator: warning — could not clear the .stopguard marker; a later stop_hook_active continuation may misread the stale marker as ours (#123/#124)." >&2
 exit 0

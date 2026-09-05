@@ -471,11 +471,18 @@ def _packet_block(text):
     the contract while the word survived in a sentence about it. Measured on
     the shipped HANDOUT.md: REACH appears both inside and outside the fence.
     The packet is the artifact; the prose is commentary about it.
+
+    EVERY match, not first (#113, measured 2026-09-04) and not last (#124
+    review, measured): a doc that shows an EXAMPLE packet ahead of the real
+    one made a first-match selection read the decoy while the contract lost a
+    field; last-match merely moved the hole — an appendix example quoting a
+    complete packet after a broken contract read clean. A fence that carries
+    the packet marker CLAIMS to be the packet, whatever its position; the
+    pin's contract ("the packet teaches every field") is violated if ANY such
+    fence lacks one. Callers append findings per block; no selection at all.
     """
-    for block in re.findall(r"```.*?```", text, re.S):
-        if "TASK / TEXT / SCENE" in block:
-            return block
-    return None
+    return [block for block in re.findall(r"```.*?```", text, re.S)
+            if "TASK / TEXT / SCENE" in block]
 
 
 def check_handout_packet(root, problems):
@@ -501,17 +508,18 @@ def check_handout_packet(root, problems):
                 continue
             problems.append(f"{rel}: missing — the charter is not optional")
             continue
-        block = _packet_block(f.read_text(encoding="utf-8"))
-        if block is None:
+        blocks = _packet_block(f.read_text(encoding="utf-8"))
+        if not blocks:
             problems.append(
                 f"{rel}: no fenced dispatch-packet block found (looked for a "
                 f"``` block containing 'TASK / TEXT / SCENE') — a moved or "
                 f"unfenced packet is REPORTED, never silently skipped")
             continue
-        for token in HANDOUT_PACKET_SPINE:
-            if token not in block:
-                problems.append(
-                    f"{rel}: the dispatch packet is missing {token!r} — {note}")
+        for block in blocks:
+            for token in HANDOUT_PACKET_SPINE:
+                if token not in block:
+                    problems.append(
+                        f"{rel}: the dispatch packet is missing {token!r} — {note}")
 
 
 # The source-state stamp (U10/#22) — an unstamped row looks stamped until
@@ -932,7 +940,15 @@ def check_permission_guards(root, problems):
     """
     # site -> why it is allowed to exist. Comments are stripped before counting,
     # so the header prose in that same file does not inflate the number.
-    ALLOWED = {}
+    ALLOWED = {
+        # stopguard_can_mark's `[ -w ]` (PR #124 follow-up, the
+        # declined-then-taken finding): best-effort half by the prescription —
+        # paired with the uid-invariant TYPE test (`-d`) in the same branch,
+        # the downstream marker write's failure is READ and SAID on stderr
+        # (so root learns the state one event later instead of never), and
+        # the inertness is documented at the call site.
+        "scripts/ops-stop-hook.sh": 1,
+    }
     # Both bracket spellings AND `test`: `test -w "$PWD"` has identical
     # semantics and walked past the bracket-only regex (audited 2026-08-25).
     pat = re.compile(r"(?:\[\[?\s+!?\s*-[rwx]\s|\btest\s+!?\s*-[rwx]\s)")
@@ -965,8 +981,11 @@ def check_permission_guards(root, problems):
         elif n < allowed:
             problems.append(
                 f"{rel}: {n} permission test(s), allowlist expects "
-                f"{allowed} — a guard was REMOVED. If deliberate, lower the count "
-                f"in check_permission_guards; if not, #19/#27 have regressed")
+                f"{allowed} — a guard was REMOVED (or MOVED: the glob covers "
+                f"scripts/lib/ too, and a file whose count drops while "
+                f"another's rises is a move, not a regression). If deliberate, "
+                f"move the allowlist entry with it; if not, #19/#27 (or the "
+                f"#124 stopguard `-w`) have regressed")
 
 
 def check_scripts(root, problems):

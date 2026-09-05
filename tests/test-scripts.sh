@@ -34,11 +34,19 @@ fi
 
 PASS=0
 FAIL=0
+SKIP=0
 pass() { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 # Names are accumulated, not just printed, so an intermittent failure can be identified after a re-run.
 FAILED_NAMES=""
 fail() { FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
   $1"; printf '  FAIL %s\n' "$1"; }
+# skip (#109): a case that CANNOT hold on this executor, counted so the floor
+# can be taken against passed+skipped — executor-invariant, which deletes the
+# permanent slack the old at-or-below-lowest-executor floor carried. A skip is
+# per-CASE: a block that cannot run owes one skip() per check it replaces, or
+# the count is as loose as the echo it replaced. Never a silent pass: the
+# premise must be executor-conditional (root, missing tool), not "flaky here".
+skip() { SKIP=$((SKIP+1)); printf '  skip %s\n' "$1"; }
 check() { # check <desc> <0|1 condition-result>
   if [ "$2" -eq 0 ]; then pass "$1"; else fail "$1"; fi
 }
@@ -205,6 +213,132 @@ rm -f "$P/.operator/pending/T-9"
 run_hook stop-session-a.json "$P"
 check "allowing fire clears .stopguard/<sid> (#116)" \
   "$([ ! -e "$P/.operator/.stopguard/SESS-A" ] && echo 0 || echo 1)"
+# 4i (#123 A): STANDING DOWN SPENDS THE BLOCK — the own-continuation branch
+# clears the marker too. Block, stand down once, then a second active=true
+# fire (a FOREIGN continuation: the marker is gone) must run the gate.
+: > "$P/.operator/pending/T-9"
+run_hook stop-session-a.json "$P"
+[ "$HRC" = 2 ] || echo "4i setup: block did not fire (rc=$HRC)"
+run_hook stop-loopguard-sid.json "$P"
+check "#123A own-continuation stand-down CLEARS the marker (spent, not kept)" \
+  "$([ ! -e "$P/.operator/.stopguard/SESS-A" ] && echo 0 || echo 1)"
+run_hook stop-loopguard-sid.json "$P"
+check "#123A a SECOND active=true fire runs the gate (foreign: rc 2, no stale marker)" \
+  "$([ "$HRC" = 2 ] && echo 0 || echo 1)"
+# 4j (#123 B): the reader's type test — a SYMLINK at the marker path pointing
+# at a real regular file must read NOT-MINE (-f follows links; the write side
+# already refused them, the read side was the gap).
+rm -rf "$P/.operator/.stopguard"; mkdir -p "$P/.operator/.stopguard"
+# The link TARGET must be a real regular file or this case cannot discriminate:
+# a DANGLING link fails `-f` as well, so the gate would run for the wrong reason
+# and the `-L` guard is never exercised — rc 2 either way, vacuous and silent.
+# /etc/hosts does exist on Linux and macOS (which is why it replaced the first
+# cut's /etc/hostname, absent on macOS), but it is still an EXTERNAL file a
+# minimal image can drop. A hermetic target cannot go missing, and the setup
+# assertion below makes a broken setup fail LOUD instead of passing hollow.
+_SGT="$P/.stopguard-link-target"; : > "$_SGT"
+check "#123B setup: the link target is a real regular file (else the case is vacuous)" \
+  "$([ -f "$_SGT" ] && [ ! -L "$_SGT" ] && echo 0 || echo 1)"
+ln -s "$_SGT" "$P/.operator/.stopguard/SESS-A"
+run_hook stop-loopguard-sid.json "$P"
+check "#123B a symlink at the marker path reads NOT-mine (gate runs, rc 2)" \
+  "$([ "$HRC" = 2 ] && echo 0 || echo 1)"
+rm -f "$_SGT"
+# 4k (#123 C): an UNMARKABLE project (.stopguard is a plain file) must not
+# brick the session — the ordinary stop still blocks, the continuation stands
+# down as pre-#116, and both are said on stderr.
+rm -rf "$P/.operator/.stopguard"; : > "$P/.operator/.stopguard"
+run_hook stop-session-a.json "$P"
+check "#123C unmarkable project: ordinary stop still blocks (rc 2) + warns" \
+  "$([ "$HRC" = 2 ] && printf '%s' "$HERR" | grep -q 'could not write the .stopguard marker' && echo 0 || echo 1)"
+run_hook stop-loopguard-sid.json "$P"
+check "#123C unmarkable project: continuation stands down as pre-#116 (rc 0, said)" \
+  "$([ "$HRC" = 0 ] && printf '%s' "$HERR" | grep -q 'cannot carry a .stopguard marker' && echo 0 || echo 1)"
+rm -rf "$P/.operator/.stopguard"
+# 4l (#124 review): the SECOND mark site (deviations block, pending EMPTY)
+# stamps + warns on an unmarkable project — the first cut only exercised the
+# pending-path site. Requires: no pending sentinel, one unpresented DEVIATION.
+# The close's rc is CHECKED (second-round panel): silently, a failed close
+# leaves T-9 pending and the case would exercise the FIRST mark site while
+# claiming the deviations path — a false-premise pass.
+# INVOCATION SHAPE (second-round panel, hard-learned): the CLIs resolve the
+# project by WALKING UP FROM CWD — run from the suite's cwd, the walk finds
+# THIS REPO's .operator and the row lands in the wrong ledger while $P's
+# sentinel survives (measured: 20 stray T-9 rows in the repo ledger). Every
+# other case in this file cds first; these two must too.
+( cd "$P" && bash .operator/bin/ops-verdict.sh T-9 "c" "e" PASS --owner SESS-A >/dev/null 2>&1 ); _4lclose=$?
+check "4l setup premise: T-9 closed in the right project (rc 0, pending empty)" \
+  "$([ "$_4lclose" = 0 ] && [ -z "$(ls "$P/.operator/pending/" 2>/dev/null)" ] && echo 0 || echo 1)"
+printf '2026-09-04 | t | DEVIATION | [sid:SESS-A] a deviation to gate on | r\n' > "$P/.operator/DECISIONS.md"
+: > "$P/.operator/.stopguard"   # non-dir: unmarkable
+run_hook stop-session-a.json "$P"
+check "#124 the DEVIATIONS-path mark site also blocks+warns on an unmarkable project" \
+  "$([ "$HRC" = 2 ] && printf '%s' "$HERR" | grep -q 'could not write the .stopguard marker' && echo 0 || echo 1)"
+rm -rf "$P/.operator/.stopguard"
+# 4m (#124 review): stopguard_can_mark's mkdir SUCCESS path — a FRESH project
+# with no .stopguard dir at all must NOT read as unmarkable (the first cut's
+# mkdir line unexercised; deleting it would stand down every brand-new
+# project's continuation). Deviation still open from 4l.
+run_hook stop-loopguard-sid.json "$P"
+check "#124 a fresh project (no .stopguard dir) is markable — gate runs on foreign continuation" \
+  "$([ "$HRC" = 2 ] && printf '%s' "$HERR" | grep -q 'gate runs normally' && echo 0 || echo 1)"
+[ -d "$P/.operator/.stopguard" ] && echo "  (mkdir created the dir — can_mark success path exercised)"
+rm -rf "$P/.operator/.stopguard"
+# 4n (#124, the declined finding, now taken): a READ-ONLY .stopguard dir must
+# read as UNMARKABLE — can_mark's polarity decision has to be truthful, not
+# premise-on-existence (the reviewer's finding: existence said markable, the
+# write then failed, and the continuation had already been routed to
+# "gate runs" on a false premise). Root ignores write bits (#21), so the
+# non-root half asserts the stand-down; the root half skips per #109.
+mkdir -p "$P/.operator/.stopguard"
+if [ "$(id -u)" = "0" ]; then
+  skip "4n read-only .stopguard (root): chmod 500 still permits the write"
+else
+  chmod 500 "$P/.operator/.stopguard"
+  run_hook stop-loopguard-sid.json "$P"
+  check "#124 read-only .stopguard dir reads UNMARKABLE — continuation stands down as pre-#116" \
+    "$([ "$HRC" = 0 ] && printf '%s' "$HERR" | grep -q 'cannot carry a .stopguard marker' && echo 0 || echo 1)"
+fi
+chmod 700 "$P/.operator/.stopguard" 2>/dev/null
+rm -rf "$P/.operator/.stopguard"
+# 4o (#124 review follow-up): a payload with NO session id cannot ADDRESS a
+# marker at all, so its block can never be spent — every continuation falls to
+# the foreign branch, re-runs the gate and blocks again (measured rc 2, 2, 2).
+# That polarity is deliberate: can_mark refuses to call this the C case,
+# because standing down for every session-less payload is the #116 disarm
+# through the back door. But it was the last SILENT state in this mechanism —
+# a block repeating with no account of why it cannot be spent. The mark site
+# says it now; this pins that it does.
+NOS="$(newproj)"
+( cd "$NOS" && bash "$INIT" >/dev/null 2>&1 && bash "$TASK" T-nos >/dev/null 2>&1 )
+run_hook stop-basic.json "$NOS"
+check "#124 a session-less payload SAYS its block can never be spent (no silent state)" \
+  "$([ "$HRC" = 2 ] && printf '%s' "$HERR" | grep -q 'carries no session id' && echo 0 || echo 1)"
+rm -rf "$NOS"
+# 4p (#124 second-round panel): the CLEAR-warning path needs its red/green
+# pair. The OWN-CONTINUATION route cannot reach it (a read-only dir makes
+# can_mark say unmarkable first — the C-arm stands down earlier), so the
+# reachable shape is the FINAL-ALLOW site: marker present from an earlier
+# block, dir made read-only between mark and clear, gate otherwise allows.
+# Expected: rc 0 (the allow must not depend on the marker) AND the warning.
+# Non-root only (root ignores bits, #21).
+mkdir -p "$P/.operator/.stopguard"
+if [ "$(id -u)" = "0" ]; then
+  skip "4p unremovable marker (root): chmod 500 still permits the unlink"
+else
+  : > "$P/.operator/.stopguard/SESS-A"
+  chmod 500 "$P/.operator/.stopguard"
+  # Premise: pending empty (T-9 closed at 4l) AND the 4l deviation
+  # presented+marked, or the ordinary stop blocks on the deviation gate
+  # instead of reaching the final-allow clear.
+  [ -z "$(ls "$P/.operator/pending/" 2>/dev/null)" ] || { echo "4p SETUP: pending not empty (case premise broken)"; }
+  ( cd "$P" && bash .operator/bin/ops-verdict.sh --mark-handoff --owner SESS-A >/dev/null 2>&1 )
+  run_hook stop-session-a.json "$P"
+  check "#124 final-allow with an unremovable marker: rc 0 AND the clear-failure WARNED" \
+    "$([ "$HRC" = 0 ] && printf '%s' "$HERR" | grep -q 'could not clear the .stopguard marker' && echo 0 || echo 1)"
+fi
+chmod 700 "$P/.operator/.stopguard" 2>/dev/null
+rm -rf "$P/.operator/.stopguard"
 # 4h: a marker whose session id is EMPTY cannot exist (path guard) — the
 # no-session-id payload of 4d is exactly this: marker absent → gate runs.
 rm -rf "$P"
@@ -810,10 +944,11 @@ check "premise: ledger exists" "$([ -f "$P/.operator/VERDICTS.md" ] && echo 0 ||
 chmod 000 "$P/.operator/VERDICTS.md"
 ROUT="$( cd "$P" && bash "$VERDICT" --reconcile 2>&1 )"; RRC=$?
 chmod 600 "$P/.operator/VERDICTS.md"
-# Root reads 000 files, so this case's premise cannot hold there — announced (a skip, not a silent pass) since
+# Root reads 000 files, so this case's premise cannot hold there — announced (a counted skip, #109) since
 # root is the normal way to reproduce CI locally.
 if [ "$(id -u)" = "0" ]; then
-  echo "  skip 12c: running as root, a 000 ledger is still readable"
+  skip "12c: running as root, a 000 ledger is still readable (--reconcile exits NON-ZERO on an unreadable VERDICTS.md)"
+  skip "12c: running as root (--reconcile does NOT report '0 restored' success on grep failure)"
 else
   check "--reconcile exits NON-ZERO on an unreadable VERDICTS.md" "$([ "$RRC" -ne 0 ] && echo 0 || echo 1)"
   check "--reconcile does NOT report '0 restored' success on grep failure" "$(! printf '%s' "$ROUT" | grep -q '0 row(s) restored' && echo 0 || echo 1)"
@@ -3064,7 +3199,15 @@ stamp_of() { # stamp_of <project> -> the @-token of the last VERDICTS row
 }
 
 if ! command -v git >/dev/null 2>&1; then
-  echo "  SKIP S1 (no git on PATH — the stamp's own no-vcs branch is all that is testable here)"
+  # One skip per check the no-git branch replaces (#109): the S1 stamp cases
+  # are 7, and a block-level echo hid that count from the floor arithmetic.
+  skip "S1 (no git on PATH): S1.1 clean tree -> evidence cell carries @<sha>"
+  skip "S1 (no git on PATH): S1.2 dirty -> +dirty"
+  skip "S1 (no git on PATH): S1.3 no-vcs row form"
+  skip "S1 (no git on PATH): S1.4 exclude .operator from the dirty test"
+  skip "S1 (no git on PATH): S1.5 staged-only changes still +dirty"
+  skip "S1 (no git on PATH): S1.6 unknown sha -> +unknown"
+  skip "S1 (no git on PATH): S1.7 unborn HEAD -> @no-commit"
 else
 P="$(gitproj)"
 SHA="$(cd "$P" && git rev-parse --verify --short=12 HEAD)"
@@ -3163,7 +3306,11 @@ check "healthy git project: no warning" \
   "$(printf '%s' "$W2ERR" | grep -q 'gitignored by a rule outside' && echo 1 || echo 0)"
 rm -rf "$P"
 else
-  echo "  SKIP init-warning cases (no git on PATH)"
+  # 4 checks in this branch (#109), one skip each.
+  skip "init-warning (no git on PATH): defeating rule is NAMED via check-ignore -v"
+  skip "init-warning (no git on PATH): healthy git project: no warning"
+  skip "init-warning (no git on PATH): outside-git scaffold carries no warning line"
+  skip "init-warning (no git on PATH): warning fires only once (not per ledger file)"
 fi
 # Outside git the check must not run at all (and must not break the scaffold).
 P="$(newproj)"
@@ -3198,7 +3345,11 @@ check "git add -A does NOT stage the new ephemera file" \
   "$(printf '%s' "$GIST" | grep -q 'some-new-ephemera.tmp' && echo 1 || echo 0)"
 rm -rf "$P"
 else
-  echo "  SKIP allowlist-content cases (no git on PATH)"
+  # 4 checks in this branch (#109), one skip each.
+  skip "allowlist-content (no git on PATH): allowlist admits VERDICTS.md"
+  skip "allowlist-content (no git on PATH): allowlist admits DECISIONS.md"
+  skip "allowlist-content (no git on PATH): git add -A stages the handoff artifact"
+  skip "allowlist-content (no git on PATH): git add -A does NOT stage new ephemera"
 fi
 
 echo "-- Case: SessionStart refreshes a STALE bin/ even when the version has not moved (#34)"
@@ -3335,7 +3486,9 @@ MIGWOUT="$(sed "s|<tmp>|$MIGW|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SS
 chmod 700 "$MIGW/.operator"
 # Same root caveat: chmod 500 doesn't stop root writing, so the copy this case needs to FAIL succeeds under root.
 if [ "$(id -u)" = "0" ]; then
-  echo "  skip unwritable-dir migration: running as root, chmod 500 does not refuse a write"
+  skip "unwritable-dir migration (root): the v1 rule survives (cp failed, so no overwrite)"
+  skip "unwritable-dir migration (root): no MIGRATED claim over a backup that does not exist"
+  skip "unwritable-dir migration (root): no .v1.bak was left behind"
 else
   check "unwritable dir: the v1 rule survives (cp failed, so no overwrite)" \
     "$(grep -q 'my-own-rule' "$MIGW/.operator/.gitignore" && echo 0 || echo 1)"
@@ -3481,7 +3634,9 @@ echo "-- Case: the suites do not contaminate the tree with bytecode"
 # hand-run may have left a real __pycache__ here. Gated on pytest, not python3 — ubuntu-latest has python3 and
 # no pytest, and gating on python3 alone made a missing-pytest rc read as a genuine collection error.
 if ! python3 -c "import pytest" >/dev/null 2>&1; then
-  echo "  skip bytecode hygiene: pytest not importable (the mechanisms under test are pytest's)"
+  # 2 checks in this branch (#109), one skip each.
+  skip "bytecode hygiene (no pytest): pytest writes no __pycache__ for imported modules (conftest suppression works)"
+  skip "bytecode hygiene (no pytest): norecursedirs keeps an unimportable seed dir out of collection"
 else
   HYG="$(newproj)"
   mkdir -p "$HYG/scripts" "$HYG/tests"
@@ -3522,7 +3677,19 @@ echo "-- Case: gitignored build state diverges in-tree from a clean checkout (#2
 # the .pyc's own header (offset 8, PEP 552), not a pre-edit stat — a timing-derived stamp passed only 4/12.
 # Skipped without python3 (the mechanism is CPython's cache); a printed skip, not a silent no-run.
 if ! command -v python3 >/dev/null 2>&1; then
-  echo "  skip #23 fixture: python3 not available (the mechanism is CPython's .pyc cache)"
+  skip "#23 fixture: python3 not available (the mechanism is CPython's .pyc cache)"
+elif [ -n "$(python3 -c 'import sys; print(getattr(sys, "pycache_prefix", "") or "")' 2>/dev/null)" ]; then
+  # Apple's system python3 (3.9, /usr/bin/python3) sets pycache_prefix to a
+  # user cache dir — it NEVER writes __pycache__ beside sources, so the stale-
+  # .pyc fixture cannot build and every case in this block would fail on the
+  # fixture, not the mechanism (measured 2026-09-05 under a restricted PATH).
+  # A counted skip per case (#109), not a silent red: the executor condition
+  # is real, and the block runs on every pyenv/vanilla-CPython executor.
+  skip "#23 fixture: this python3 redirects .pyc to pycache_prefix (Apple system build) — builder's tree reports clean"
+  skip "#23 fixture (pycache_prefix): the defect verifies GREEN in the builder's tree (stale .pyc served)"
+  skip "#23 fixture (pycache_prefix): a clean checkout of that commit has no __pycache__"
+  skip "#23 fixture (pycache_prefix): the SAME commit FAILS in a clean checkout (verdict is tree-dependent)"
+  skip "#23 fixture (pycache_prefix): --expect-clean is green here yet reports the ignored entry"
 else
   I23="$(newproj)"
   (
@@ -3657,7 +3824,8 @@ HOLDERR="$(cat "$P/holder.err")"
 HOLDREC="$(cat "$P/holder.out")"
 # root can read a 000 file, so the redirection never fails there — skip rather than assert an unexhibitable property.
 if [ "$(id -u)" = "0" ]; then
-  echo "  skip holder-read case: running as root, a 000 file is still readable"
+  skip "holder-read (root): a failed holder read prints no raw bash error to the operator"
+  skip "holder-read (root): control — the probe's read actually failed (guard was exercised)"
 else
   check "a failed holder read prints no raw bash error to the operator" \
     "$(printf '%s' "$HOLDERR" | grep -qE 'No such file|Permission denied' && echo 1 || echo 0)"
@@ -4301,7 +4469,7 @@ check "SYMLINK ledger fails OPEN — not a ledger our scaffold wrote" \
 # The state the header lied about. Skipped as root: chmod 000 does not refuse root a read, so the
 # case would pass for the wrong reason.
 if [ "$(id -u)" = "0" ]; then
-  echo "  skip unreadable-ledger polarity: running as root, chmod 000 does not refuse a read"
+  skip "unreadable-ledger polarity (root): chmod 000 VERDICTS.md does not refuse a read as root"
 else
   chmod 000 "$D"
   check "UNREADABLE ledger fails CLOSED (unpresented=1, NOT scan_failed) — the file exists" \
@@ -4727,6 +4895,26 @@ bash "$GS" --check shell "$GSD/red.log" >/dev/null 2>&1
 check "gate-suite: a summary reporting failures while exiting 0 is REFUSED" \
   "$([ $? -eq 1 ] && echo 0 || echo 1)"
 
+# --- #109: the skip group rides in the marker and the floor is passed+skipped ---
+# An executor that skips cases must still clear the floor: the total is
+# executor-invariant, which is the whole point of counting skips.
+printf '== summary: %s passed, 0 failed, 15 skipped ==\n' "$((_gsfloor - 15))" > "$GSD/skips.log"
+bash "$GS" --check shell "$GSD/skips.log" >/dev/null 2>&1
+check "gate-suite: skipped cases COUNT toward the floor (passed+skipped, #109)" "$?"
+
+# And a skip cannot HIDE a deletion: same skipped count, two fewer passed —
+# the total drops below the floor and the wrapper refuses. This is the case
+# that deletes the slack the old floor carried.
+printf '== summary: %s passed, 0 failed, 15 skipped ==\n' "$((_gsfloor - 17))" > "$GSD/skips-below.log"
+bash "$GS" --check shell "$GSD/skips-below.log" >/dev/null 2>&1
+check "gate-suite: a deletion under skip cover is still REFUSED (#109)" \
+  "$([ $? -eq 1 ] && echo 0 || echo 1)"
+
+# The old marker shape (node suites) still matches — the group is optional.
+printf '== summary: %s passed, 0 failed ==\n' "$_gsfloor" > "$GSD/oldshape.log"
+bash "$GS" --check shell "$GSD/oldshape.log" >/dev/null 2>&1
+check "gate-suite: the OLD marker shape (no skip group) still accepted" "$?"
+
 # An unknown rung must stop at the allowlist rather than resolving to an empty
 # command and an empty floor — a rung with no floor is a rung with no ratchet.
 bash "$GS" bogus >/dev/null 2>&1
@@ -4765,5 +4953,8 @@ if [ "$FAIL" -ne 0 ]; then
   echo "== failed cases =="
   printf '%s\n' "$FAILED_NAMES" | sed '/^$/d'
 fi
-echo "== summary: $PASS passed, $FAIL failed =="
+# The skipped count rides in the summary (#109) so gate-suite can floor
+# passed+skipped — executor-invariant. A suite that skips 15 on root and 0 on
+# macOS reports the same total on both, and the floor stops carrying slack.
+echo "== summary: $PASS passed, $FAIL failed, $SKIP skipped =="
 [ "$FAIL" -eq 0 ]
