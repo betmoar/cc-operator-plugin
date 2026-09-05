@@ -5,8 +5,11 @@
 #   exit 0  — allow the stop. Cases: no .operator/ reachable (no-op guard);
 #             .operator/pending/ empty; stop_hook_active true WITH this hook's
 #             own .stopguard marker (our continuation — the loop guard; a
-#             FOREIGN continuation does NOT exit 0, #116); no JSON parser
-#             available (fail-open — a broken hook must never brick a session).
+#             FOREIGN continuation does NOT exit 0, #116 — EXCEPT on a project
+#             that cannot carry a marker at all, which stands down as pre-#116
+#             because a session that cannot end is the worse failure, #123 C);
+#             no JSON parser available (fail-open — a broken hook must never
+#             brick a session).
 #   exit 2  — block the stop. This session OWNS a pending sentinel (or one is
 #             unowned), or unpresented decisions exist; stderr names those ids
 #             and the command to clear them (Claude Code feeds stderr back as
@@ -148,7 +151,9 @@ done
 # trading the #116 disarm back for a session that CAN end. The block itself
 # still fires on the ordinary stop (the gate is not disabled), and the write
 # failure is SAID on stderr (a silent flag is the two-claims rule).
-_stopguard_path() { # → "" (not a project) or "$opdir/.stopguard/$session"
+_stopguard_path() { # prints "" (not a project / no session) or the marker path.
+  # CONTRACT: callers consume STDOUT and test [ -n ] — the EXIT status is
+  # always 0 and carries no meaning (a prior comment implied otherwise).
   [ -n "${opdir:-}" ] || return 0
   [ -n "$session" ] || return 0
   printf '%s/.stopguard/%s' "$opdir" "$session"
@@ -219,8 +224,11 @@ elif [ "$active" = "true" ]; then
   # the guard's original purpose: never re-block the stop I myself forced, or
   # the operator cannot escape the loop. Standing down SPENDS the block
   # (#123 A): clear now, or a later foreign continuation inherits the stale
-  # marker and reads as ours.
-  stopguard_clear
+  # marker and reads as ours. The clear's status is READ and a failure SAID
+  # (#124 review): a silently-failed clear leaves exactly the stale marker the
+  # NEXT foreign continuation misreads as ours — the #116 disarm back, with no
+  # diagnostic trail. The stand-down itself still happens.
+  stopguard_clear || echo "operator: warning — could not clear the .stopguard marker ($opdir/.stopguard/$session unwritable or not removable). The stop is still allowed, but a later continuation may misread the stale marker as ours (#123/#124)." >&2
   exit 0
 fi
 # stop_hook_active false (the ordinary stop): fall through to the gate.
@@ -484,6 +492,9 @@ fi
 # Allowing the stop: my own block, if there was one, is over — clear the
 # marker so a FUTURE hook-forced continuation (someone else's) is not mistaken
 # for ours (#116). Ordering: clear only after every blocking branch has been
-# passed, so the marker always reflects "this hook last blocked".
-stopguard_clear
+# passed, so the marker always reflects "this hook last blocked". Status
+# read and failures said (#124 review) — the two-claims rule, same as the
+# mark sites: a silent clear-failure leaves the stale marker the NEXT
+# foreign continuation misreads as ours.
+stopguard_clear || echo "operator: warning — could not clear the .stopguard marker; a later stop_hook_active continuation may misread the stale marker as ours (#123/#124)." >&2
 exit 0

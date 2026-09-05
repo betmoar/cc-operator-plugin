@@ -974,6 +974,18 @@ class ValidatorTest(unittest.TestCase):
         probs = []
         vp.check_handout_packet(self.dir, probs)
         self.assertEqual(probs, [])
+        # And the SYMMETRIC shape (#124 review): a decoy AFTER the real packet.
+        # Last-match selection must read the REAL (first) packet, not a later
+        # example — a "common mistakes" appendix quoting a complete packet
+        # while the contract above lost a field is the same false-pass class
+        # in the opposite direction.
+        write(h, "the contract:\n" + broken + "\nappendix example:\n" + self._PACKET)
+        probs = []
+        vp.check_handout_packet(self.dir, probs)
+        self.assertTrue(
+            any("CHANGED" in p for p in probs),
+            "a decoy AFTER a broken real packet must not satisfy the pin "
+            f"(last-match reads the wrong fence): {probs}")
 
     def test_handout_packet_pin_checks_the_charter_itself(self):
         # Parity between handout and charter passes perfectly when the CHARTER is
@@ -4119,19 +4131,23 @@ class CouplingCaseRefsTest(unittest.TestCase):
         against a correct table — the false-positive direction, which blocks a
         correct change. Both halves pinned: outside fires tests/, inside
         (the control) resolves against the landmine file."""
-        gap = "y" * 125  # >120 chars between the mention and the citation
-        probs = self._probs(
-            self.FILL + f' see docs/LANDMINES.md {gap} and the '
-                        '_"A zzfixture landmine heading"_ ref.\n')
-        self.assertTrue(
-            any("zzfixture landmine heading" in p and "tests/" in p for p in probs),
-            "a mention outside the 120-char window must classify as tests/")
-        probs = self._probs(
-            self.FILL + ' see docs/LANDMINES.md and the '
-                        '_"A zzfixture landmine heading"_ ref.\n')
-        self.assertFalse(
-            any("zzfixture landmine heading" in p for p in probs),
-            "a mention inside the window must resolve against the landmine file")
+        # The boundary pinned EXACTLY (PR #124 review: the first cut used 125
+        # and ~19 — nothing caught an off-by-one in the slice itself). The
+        # distances were MEASURED, not derived: the separator is the y-run
+        # plus ' and the ' (9 chars) and the window slice is half-open, so
+        # gap 98 is the last INSIDE and 99 the first OUTSIDE. An off-by-one
+        # in [max(0, m.start()-120):m.start()] flips exactly this pair.
+        for gap, expect_tests in ((99, True), (98, False)):
+            probs = self._probs(
+                self.FILL + f' see docs/LANDMINES.md {"y" * gap} and the '
+                            '_"A zzfixture landmine heading"_ ref.\n')
+            hit = any("zzfixture landmine heading" in p and "tests/" in p
+                      for p in probs)
+            self.assertEqual(
+                hit, expect_tests,
+                f"a {gap}-char gap must classify as "
+                f"{'tests/ (outside)' if expect_tests else 'landmine (inside)'}: "
+                f"{probs}")
 
     def test_the_convention_going_away_is_a_finding_not_a_pass(self):
         """`if refs:` going silent when a head regex stops matching is a bug

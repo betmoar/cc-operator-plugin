@@ -472,19 +472,17 @@ def _packet_block(text):
     the shipped HANDOUT.md: REACH appears both inside and outside the fence.
     The packet is the artifact; the prose is commentary about it.
 
-    LAST match, not first (#113, measured 2026-09-04): a doc that shows an
-    EXAMPLE packet before the real one (the handout's own teaching shape)
-    puts a complete decoy ahead of the contract itself, and a first-match
-    selection read the decoy while the real packet lost a field — the PR-#72
-    escape one level up. The document's own packet is the last one carrying
-    the marker; an example ahead of it is commentary by the doc's own shape.
+    EVERY match, not first (#113, measured 2026-09-04) and not last (#124
+    review, measured): a doc that shows an EXAMPLE packet ahead of the real
+    one made a first-match selection read the decoy while the contract lost a
+    field; last-match merely moved the hole — an appendix example quoting a
+    complete packet after a broken contract read clean. A fence that carries
+    the packet marker CLAIMS to be the packet, whatever its position; the
+    pin's contract ("the packet teaches every field") is violated if ANY such
+    fence lacks one. Callers append findings per block; no selection at all.
     """
-    found = None
-    for block in re.findall(r"```.*?```", text, re.S):
-        if "TASK / TEXT / SCENE" in block:
-            found = block
-    return found
-    return None
+    return [block for block in re.findall(r"```.*?```", text, re.S)
+            if "TASK / TEXT / SCENE" in block]
 
 
 def check_handout_packet(root, problems):
@@ -510,17 +508,18 @@ def check_handout_packet(root, problems):
                 continue
             problems.append(f"{rel}: missing — the charter is not optional")
             continue
-        block = _packet_block(f.read_text(encoding="utf-8"))
-        if block is None:
+        blocks = _packet_block(f.read_text(encoding="utf-8"))
+        if not blocks:
             problems.append(
                 f"{rel}: no fenced dispatch-packet block found (looked for a "
                 f"``` block containing 'TASK / TEXT / SCENE') — a moved or "
                 f"unfenced packet is REPORTED, never silently skipped")
             continue
-        for token in HANDOUT_PACKET_SPINE:
-            if token not in block:
-                problems.append(
-                    f"{rel}: the dispatch packet is missing {token!r} — {note}")
+        for block in blocks:
+            for token in HANDOUT_PACKET_SPINE:
+                if token not in block:
+                    problems.append(
+                        f"{rel}: the dispatch packet is missing {token!r} — {note}")
 
 
 # The source-state stamp (U10/#22) — an unstamped row looks stamped until

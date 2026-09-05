@@ -244,6 +244,25 @@ run_hook stop-loopguard-sid.json "$P"
 check "#123C unmarkable project: continuation stands down as pre-#116 (rc 0, said)" \
   "$([ "$HRC" = 0 ] && printf '%s' "$HERR" | grep -q 'cannot carry a .stopguard marker' && echo 0 || echo 1)"
 rm -rf "$P/.operator/.stopguard"
+# 4l (#124 review): the SECOND mark site (deviations block, pending EMPTY)
+# stamps + warns on an unmarkable project — the first cut only exercised the
+# pending-path site. Requires: no pending sentinel, one unpresented DEVIATION.
+bash "$P/.operator/bin/ops-verdict.sh" T-9 "c" "e" PASS --owner SESS-A >/dev/null 2>&1
+printf '2026-09-04 | t | DEVIATION | [sid:SESS-A] a deviation to gate on | r\n' > "$P/.operator/DECISIONS.md"
+: > "$P/.operator/.stopguard"   # non-dir: unmarkable
+run_hook stop-session-a.json "$P"
+check "#124 the DEVIATIONS-path mark site also blocks+warns on an unmarkable project" \
+  "$([ "$HRC" = 2 ] && printf '%s' "$HERR" | grep -q 'could not write the .stopguard marker' && echo 0 || echo 1)"
+rm -rf "$P/.operator/.stopguard"
+# 4m (#124 review): stopguard_can_mark's mkdir SUCCESS path — a FRESH project
+# with no .stopguard dir at all must NOT read as unmarkable (the first cut's
+# mkdir line unexercised; deleting it would stand down every brand-new
+# project's continuation). Deviation still open from 4l.
+run_hook stop-loopguard-sid.json "$P"
+check "#124 a fresh project (no .stopguard dir) is markable — gate runs on foreign continuation" \
+  "$([ "$HRC" = 2 ] && printf '%s' "$HERR" | grep -q 'gate runs normally' && echo 0 || echo 1)"
+[ -d "$P/.operator/.stopguard" ] && echo "  (mkdir created the dir — can_mark success path exercised)"
+rm -rf "$P/.operator/.stopguard"
 # 4h: a marker whose session id is EMPTY cannot exist (path guard) — the
 # no-session-id payload of 4d is exactly this: marker absent → gate runs.
 rm -rf "$P"
@@ -3391,7 +3410,9 @@ MIGWOUT="$(sed "s|<tmp>|$MIGW|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SS
 chmod 700 "$MIGW/.operator"
 # Same root caveat: chmod 500 doesn't stop root writing, so the copy this case needs to FAIL succeeds under root.
 if [ "$(id -u)" = "0" ]; then
-  echo "  skip unwritable-dir migration: running as root, chmod 500 does not refuse a write"
+  skip "unwritable-dir migration (root): the v1 rule survives (cp failed, so no overwrite)"
+  skip "unwritable-dir migration (root): no MIGRATED claim over a backup that does not exist"
+  skip "unwritable-dir migration (root): no .v1.bak was left behind"
 else
   check "unwritable dir: the v1 rule survives (cp failed, so no overwrite)" \
     "$(grep -q 'my-own-rule' "$MIGW/.operator/.gitignore" && echo 0 || echo 1)"
@@ -3727,7 +3748,8 @@ HOLDERR="$(cat "$P/holder.err")"
 HOLDREC="$(cat "$P/holder.out")"
 # root can read a 000 file, so the redirection never fails there — skip rather than assert an unexhibitable property.
 if [ "$(id -u)" = "0" ]; then
-  echo "  skip holder-read case: running as root, a 000 file is still readable"
+  skip "holder-read (root): a failed holder read prints no raw bash error to the operator"
+  skip "holder-read (root): control — the probe's read actually failed (guard was exercised)"
 else
   check "a failed holder read prints no raw bash error to the operator" \
     "$(printf '%s' "$HOLDERR" | grep -qE 'No such file|Permission denied' && echo 1 || echo 0)"
@@ -4371,7 +4393,7 @@ check "SYMLINK ledger fails OPEN — not a ledger our scaffold wrote" \
 # The state the header lied about. Skipped as root: chmod 000 does not refuse root a read, so the
 # case would pass for the wrong reason.
 if [ "$(id -u)" = "0" ]; then
-  echo "  skip unreadable-ledger polarity: running as root, chmod 000 does not refuse a read"
+  skip "unreadable-ledger polarity (root): chmod 000 VERDICTS.md does not refuse a read as root"
 else
   chmod 000 "$D"
   check "UNREADABLE ledger fails CLOSED (unpresented=1, NOT scan_failed) — the file exists" \

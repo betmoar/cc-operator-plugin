@@ -9,6 +9,27 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+- **PR #124 review round — two critical, four important, all fixed.** Panel:
+  code / tests / silent-failures / comments (types N/A for this diff).
+  **Critical:** `stopguard_clear`'s failure was never read or reported at
+  either call site — a silently-failed clear leaves exactly the stale marker
+  the next foreign continuation misreads as ours (the two-claims rule applied
+  to the set, not the clear); both sites now warn. The header contract said
+  "a FOREIGN continuation does NOT exit 0" while the #123-C arm stands down
+  for foreign continuations on an unmarkable project — the header now carries
+  the carve-out. **Important:** the DEVIATIONS-path mark site and
+  `stopguard_can_mark`'s mkdir-success path were unexercised (cases 4l/4m);
+  three root-conditional blocks were still unconverted `echo` skips,
+  re-introducing exactly the #109 slack (6 skips converted — a root executor
+  now reports the same 857 total); `_packet_block`'s last-match fix had the
+  symmetric hole (a decoy AFTER a broken real packet read clean — the
+  after-decoy test went red on the code as shipped), now EVERY-match: any
+  fence carrying the packet marker must teach every field; dead `return
+  None` removed. **Boundary tightened:** the classifier's window edge pinned
+  at the measured crossover (gap 98 inside / 99 outside) instead of 125/19 —
+  an off-by-one in the slice now flips exactly that pair. `FLOOR_shell`
+  855 → 857.
+
 - **Fixed #123 — the #116 `.stopguard` marker's three gaps.** All three
   measured against `b61217b` by the review session that filed the issue, and
   reproduced locally before fixing:
