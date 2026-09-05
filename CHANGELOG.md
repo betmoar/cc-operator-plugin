@@ -9,6 +9,30 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.10] - 2026-09-05
+
+- **CI was red on one test, and the cause was this file.** `test_release_gate.
+  test_real_repo_gate_passes` refuses a non-empty `[Unreleased]` while
+  `plugin.json` still names a released version — the round's notes sat under
+  `[Unreleased]` at 0.11.9. Version bumped to 0.11.10 and the notes retitled;
+  no v0.11.x tag exists (latest is v0.9.0), so nothing published was rewritten,
+  and folding into `[0.11.9]` would have back-dated this round's work into a
+  section that describes a different commit.
+- **The last silent state in the `.stopguard` mechanism now speaks.** A Stop
+  payload with NO session id cannot ADDRESS a marker, so its block can never be
+  spent: every continuation falls to the foreign branch, re-runs the gate and
+  blocks again (measured rc 2, 2, 2). The polarity is right and stays —
+  `stopguard_can_mark` deliberately refuses to call this the C case, because
+  standing down for every session-less payload is the #116 disarm through the
+  back door — but `stopguard_mark_blocked` returned success and said nothing,
+  so the operator saw a block repeat with no account of why. It warns now;
+  case 4o pins it. Exit codes unchanged.
+- **Floors raised to the measured counts** (859 shell as passed+skipped, 340
+  python). The python one was DRIFT, not new cases: 0.11.8 set 333 against a
+  count that had already moved and nothing raised it since — the hand-
+  maintenance lapse #109 predicts, found by re-measuring rather than by a gate,
+  because a floor is a floor and slack is green.
+
 - **PR #124 review round — two critical, four important, all fixed.** Panel:
   code / tests / silent-failures / comments (types N/A for this diff).
   **Critical:** `stopguard_clear`'s failure was never read or reported at

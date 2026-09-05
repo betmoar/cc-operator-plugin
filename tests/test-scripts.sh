@@ -280,6 +280,20 @@ else
 fi
 chmod 700 "$P/.operator/.stopguard" 2>/dev/null
 rm -rf "$P/.operator/.stopguard"
+# 4o (#124 review follow-up): a payload with NO session id cannot ADDRESS a
+# marker at all, so its block can never be spent — every continuation falls to
+# the foreign branch, re-runs the gate and blocks again (measured rc 2, 2, 2).
+# That polarity is deliberate: can_mark refuses to call this the C case,
+# because standing down for every session-less payload is the #116 disarm
+# through the back door. But it was the last SILENT state in this mechanism —
+# a block repeating with no account of why it cannot be spent. The mark site
+# says it now; this pins that it does.
+NOS="$(newproj)"
+( cd "$NOS" && bash "$INIT" >/dev/null 2>&1 && bash "$TASK" T-nos >/dev/null 2>&1 )
+run_hook stop-basic.json "$NOS"
+check "#124 a session-less payload SAYS its block can never be spent (no silent state)" \
+  "$([ "$HRC" = 2 ] && printf '%s' "$HERR" | grep -q 'carries no session id' && echo 0 || echo 1)"
+rm -rf "$NOS"
 # 4h: a marker whose session id is EMPTY cannot exist (path guard) — the
 # no-session-id payload of 4d is exactly this: marker absent → gate runs.
 rm -rf "$P"

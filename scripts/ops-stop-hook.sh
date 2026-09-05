@@ -161,7 +161,22 @@ _stopguard_path() { # prints "" (not a project / no session) or the marker path.
 
 stopguard_mark_blocked() { # record that THIS hook blocked (advisory, builtin)
   _sgp="$(_stopguard_path)"
-  [ -n "$_sgp" ] || return 0
+  if [ -z "$_sgp" ]; then
+    # No session id in the payload: the marker cannot be ADDRESSED at all, so
+    # this block can never be spent by a later continuation. Every subsequent
+    # stop_hook_active fire falls to the foreign-continuation branch, re-runs
+    # the gate and blocks again (measured on this branch: rc 2, 2, 2).
+    #
+    # That polarity is deliberate — stopguard_can_mark deliberately does NOT
+    # call this the C case, because standing down for every session-less
+    # payload is the #116 disarm through the back door — but it must not be
+    # SILENT. Returning 0 here (nothing to mark is not a failed write) while
+    # saying nothing was the last unreported state in this mechanism: the
+    # operator saw a block repeat with no account of why it could not be
+    # spent. Two claims, both made.
+    echo "operator: warning — this Stop payload carries no session id, so no .stopguard marker can be written and this block can never be spent. Every continuation will re-run the gate and block again until the pending work is cleared or deferred; there is no loop-guard escape for a session-less payload (#123/#124)." >&2
+    return 0
+  fi
   mkdir -p "${_sgp%/*}" 2>/dev/null || return 1
   # set -C (O_EXCL) so a planted symlink at the marker path is refused rather
   # than followed — the same discipline as the autobar sentinel write above.
