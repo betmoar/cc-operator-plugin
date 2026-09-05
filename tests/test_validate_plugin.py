@@ -4540,7 +4540,11 @@ class BaseGateTest(unittest.TestCase):
         "      - name: Fetch the PR head (never checked out)\n"
         "        run: git fetch --no-tags --depth=1 origin sha\n"
         "      - name: Trusted base-ref gate (#108)\n"
-        "        run: bash scripts/base-gate.sh --base b --pr p\n"
+        "        run: |\n"
+        "          if [ ! -f scripts/base-gate.sh ]; then\n"
+        "            echo BASE_GATE_BOOTSTRAP; exit 0\n"
+        "          fi\n"
+        "          bash scripts/base-gate.sh --base b --pr p\n"
     )
 
     def setUp(self):
@@ -4603,9 +4607,12 @@ class BaseGateTest(unittest.TestCase):
     def test_job_that_never_invokes_the_script_fires(self):
         # The costume: the job has the name and not the gate.
         self._edit(".github/workflows/validate.yml",
-                   "        run: bash scripts/base-gate.sh --base b --pr p\n",
-                   "        run: echo placeholder\n")
-        self.assertTrue(any("never invokes" in p for p in self._probs()),
+                   "          bash scripts/base-gate.sh --base b --pr p\n",
+                   "          echo placeholder\n")
+        # The needle is the RUN claim: the bootstrap branch legitimately names
+        # the path in a `[ -f … ]` test, so a pin matching the bare path is
+        # satisfied by a job that only checks whether the gate exists.
+        self.assertTrue(any("never RUNS" in p for p in self._probs()),
                         self._probs())
 
     def test_checkout_without_a_base_ref_fires(self):
@@ -4642,11 +4649,48 @@ class BaseGateTest(unittest.TestCase):
         self.assertTrue(any("must gate on `pull_request_target`" in p
                             for p in self._probs()), self._probs())
 
+    def test_a_step_level_if_does_not_stand_in_for_the_job_guard(self):
+        # ANCHOR CASE. A step-level `if:` is legitimate (a conditional
+        # cleanup step) and can sit textually BEFORE the job-level one. A
+        # locator matching the first `if:` in the block would read that step's
+        # condition as the guard — so here the job guard is wrong
+        # (`pull_request`) while a step carries a correct-looking
+        # `pull_request_target` string. The check must still fire.
+        # Two properties are needed for this to discriminate, both measured:
+        # the decoy must come FIRST (with the job guard first, loose and
+        # anchored regexes return the same line), and it must be a step
+        # PROPERTY `if:` (8 spaces, no dash) — a `- if:` list item does not
+        # match `^\s*if:` either, so it would prove nothing about the anchor.
+        self._edit(".github/workflows/validate.yml",
+                   "    if: github.event_name == 'pull_request_target'\n"
+                   "    runs-on: ubuntu-latest\n"
+                   "    steps:\n",
+                   "    runs-on: ubuntu-latest\n"
+                   "    steps:\n"
+                   "      - name: a conditional cleanup step\n"
+                   "        if: github.event_name == 'pull_request_target'\n"
+                   "        run: echo decoy\n"
+                   "    if: github.event_name == 'pull_request'\n")
+        self.assertTrue(any("must gate on `pull_request_target`" in p
+                            for p in self._probs()), self._probs())
+
     def test_the_job_with_no_guard_fires(self):
         self._edit(".forgejo/workflows/validate.yml",
                    "    if: github.event_name == 'pull_request_target'\n", "")
         self.assertTrue(any("no `if:` guard" in p for p in self._probs()),
                         self._probs())
+
+    def test_the_bootstrap_branch_removed_fires(self):
+        # Before #108 lands on the default branch the BASE has no
+        # base-gate.sh, so the step exits 127 — "command not found", which
+        # reads as a broken runner rather than "no gate here yet" (measured
+        # on Forgejo, task 483). The branch must announce itself: a silent
+        # `exit 0` in its place is indistinguishable from a clean run.
+        self._edit(".github/workflows/validate.yml",
+                   "            echo BASE_GATE_BOOTSTRAP; exit 0\n",
+                   "            exit 0\n")
+        self.assertTrue(any("BASE_GATE_BOOTSTRAP" in p
+                            for p in self._probs()), self._probs())
 
     def test_an_arm_deleted_from_the_script_fires(self):
         # base-gate.sh's registry arm removed — function AND both call sites,

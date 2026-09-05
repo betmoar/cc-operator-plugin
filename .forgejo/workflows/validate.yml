@@ -128,6 +128,11 @@ jobs:
     # is honest; one that runs from the PR head is not.
     if: github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
+    # See the GitHub copy: least privilege matters most on this event, where
+    # the token is the BASE repo's and the subject is untrusted code. The job
+    # only reads git objects.
+    permissions:
+      contents: read
     steps:
       - uses: https://github.com/actions/checkout@v4
         with:

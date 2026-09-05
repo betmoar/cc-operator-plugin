@@ -3628,12 +3628,17 @@ def check_base_gate(root, problems):
     and read through `git show`/`git diff`. This pin holds the wiring to that
     shape; base-gate.sh's own behaviour is held by the bash suite's cases.
 
-    Four claims, each failing independently:
+    Five claims, each failing independently:
       1. the script exists and declares its contract (exit codes, fail-closed);
-      2. every CI file that has a validate.yml carries a LIVE base-gate job —
-         `pull_request_target:` as the trigger, not `pull_request:` (the
-         on:-block form grades the PR with the PR's own workflow file, which
-         is the original bug restated in YAML);
+      2. every CI file that has a validate.yml carries a LIVE base-gate job,
+         and the workflow declares `pull_request_target:` as a trigger;
+      2b. THE JOB'S OWN `if:` gates on pull_request_target. NOT a restatement
+         of (2): a workflow can declare the trigger in `on:` and still guard
+         the job with `if: github.event_name == 'pull_request'`, which runs it
+         in the UNTRUSTED event — the workflow file AND base-gate.sh both
+         from the PR head. That is what the first draft shipped, and a real
+         Forgejo run measured it (task 483, 2026-09-05: the job ran under
+         `pull_request` and would have been skipped under the trusted event);
       3. the job's steps reach base-gate.sh and NEVER checkout the head — a
          `uses: actions/checkout` without a base-pinned `ref:` in a
          pull_request_target job is the classic pwn-request shape, and here it
@@ -3693,6 +3698,15 @@ def check_base_gate(root, problems):
         # claim 2: the trigger. `pull_request_target:` must appear as a key,
         # NOT `pull_request:` alone for the base-gate job. The jobs are
         # separated by top-level `  <job-name>:` blocks at 2-space indent.
+        #
+        # THE INDENT IS LOAD-BEARING, and deliberately so. A reindent of
+        # validate.yml makes this locator miss — and it then fires "no live
+        # base-gate: job" rather than passing quietly, which is the safe
+        # direction (#114: the empty answer must not read as a negative
+        # answer). Do NOT "fix" that false alarm by loosening this to
+        # arbitrary indentation: the 4-space step indent is what keeps the
+        # block from swallowing the NEXT job, and a block that swallows its
+        # neighbour finds a `ref:` and an `if:` that belong to other code.
         job_block = re.search(
             r"^  base-gate:\n((?:[ ]{4}.*\n|\s*\n)*)", live, re.M)
         if not job_block:
@@ -3706,10 +3720,35 @@ def check_base_gate(root, problems):
                 f"{rel}: the workflow lacks `pull_request_target:` — without "
                 f"it the workflow file and the gate script both come from the "
                 f"PR head, which is the self-judging loop #108 exists to break")
-        if "base-gate.sh" not in block:
+        # The INVOCATION, not merely the name. `bash scripts/base-gate.sh` —
+        # a bare mention is satisfied by the bootstrap branch's own `[ -f
+        # scripts/base-gate.sh ]` test, which is how a job that only checks
+        # whether the gate EXISTS reads as a job that RUNS it. (Measured:
+        # replacing the real invocation with `echo placeholder` left this
+        # pin green while the file still named the path twice.)
+        if not re.search(r"bash\s+scripts/base-gate\.sh", block):
             problems.append(
-                f"{rel}: the base-gate job never invokes scripts/base-gate.sh "
-                f"— a job that has the name and not the gate is a costume")
+                f"{rel}: the base-gate job never RUNS `bash "
+                f"scripts/base-gate.sh` — a job that has the name and not the "
+                f"gate is a costume (naming the path in a `[ -f … ]` test is "
+                f"not running it)")
+
+        # The BOOTSTRAP branch. A pull_request_target workflow is read from
+        # the BASE branch, so before this lands the base has no base-gate.sh
+        # and the step exits 127 — "command not found", which reads as a
+        # broken runner rather than "there is no gate here yet" (measured on
+        # Forgejo, task 483). The branch must be PRESENT and must announce
+        # itself: an `exit 0` with no marker is indistinguishable from the
+        # gate having run and found nothing, which is the one thing this
+        # whole file exists to prevent.
+        if "BASE_GATE_BOOTSTRAP" not in block:
+            problems.append(
+                f"{rel}: the base-gate job has no BASE_GATE_BOOTSTRAP branch "
+                f"— before this lands on the default branch the base carries "
+                f"no base-gate.sh and the step dies 127, which reads as a "
+                f"broken runner instead of 'no gate here yet'. A silent "
+                f"`exit 0` in its place is worse: it is indistinguishable "
+                f"from a clean run")
 
         # The job's own `if:` must gate on pull_request_TARGET. Measured on
         # Forgejo (task 483, 2026-09-05): with `== 'pull_request'` the job
@@ -3719,7 +3758,11 @@ def check_base_gate(root, problems):
         # inversion is invisible in review (both spellings look deliberate)
         # and produces a job that appears to run correctly, which is why it
         # is pinned rather than left to care.
-        if_m = re.search(r"^\s*if:\s*(.+)$", block, re.M)
+        # The JOB-level `if:` — anchored at exactly 4 spaces, the job-property
+        # indent. A bare `^\s*if:` takes the FIRST if: in the block, which a
+        # step-level one (legitimate for a conditional cleanup step) can
+        # precede — and then the pin checks a line that was never the guard.
+        if_m = re.search(r"^ {4}if:\s*(.+)$", block, re.M)
         if not if_m:
             problems.append(
                 f"{rel}: the base-gate job has no `if:` guard — it would run "

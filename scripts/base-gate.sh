@@ -15,11 +15,13 @@
 #
 # What it can and cannot catch — known boundaries, on purpose:
 #   CATCHES (hard red):
-#     - a floor LOWERED (a case-deletion PR must lower a floor to pass its
-#       own branch run; this is the moment the deletion becomes visible)
+#     - a floor LOWERED, REMOVED, or hidden behind a DUPLICATE key (the file
+#       is sourced, so the last assignment is the effective one)
 #     - a check REMOVED from the validator's CHECKS registry
-#     - an enforcer file DELETED (validator, wrapper, this script) or the
-#       tests/ tree shrunk wholesale
+#     - an enforcer file (validator, wrapper, this script) or any tests/ path
+#       that exists at the base and NOT at the PR ref — deleted, renamed, or
+#       moved; the arm asks the tree, so a swap that holds the count equal is
+#       caught too
 #     - a forged marker line planted in the PR's diff (the anti-wormhole)
 #   CANNOT CATCH (needs judgment — routed to the human at merge time):
 #     - a check REWRITTEN in place (body neutered, registry intact). The
@@ -80,11 +82,13 @@ is_core_path() {  # is_core_path <path> → 0 when the path is enforcer core
   for g in $CORE_GLOBS; do [ "${p#"$g"}" != "$p" ] && return 0; done
   return 1
 }
-is_core_file() {  # is_core_file <path> → 0 when deleting it removes the gate
-  local p="$1" f
-  for f in $CORE_FILES; do [ "$p" = "$f" ] && return 0; done
-  return 1
-}
+# There is deliberately NO is_core_file() companion. It existed while arm 3
+# keyed on the diff's status letter, and died with that design: the arm now
+# asks the TREE whether each CORE_FILES entry still exists at the PR ref, so
+# the set is iterated directly. Left as a comment because "add a helper back"
+# is the reflex when reading `for _f in $CORE_FILES` and wondering where the
+# predicate went — the answer is that a predicate over a diff STATUS was the
+# bug (a rename reports R, never D, and the file is gone all the same).
 
 FAILS=0
 
@@ -152,13 +156,31 @@ extract_floors "$PR_SHA" "$PR_FLOORS"
 if [ ! -s "$PR_FLOORS" ] && [ -s "$BASE_FLOORS" ]; then
   fail "tests/floors.env is gone or empty at the PR ref — the ratchet is deleted"
 elif ! diff -q "$BASE_FLOORS" "$PR_FLOORS" >/dev/null; then
-  # some floor line changed: any DECREASE or REMOVAL is red
+  # some floor line changed: any DECREASE or REMOVAL is red.
+  #
+  # THE EFFECTIVE VALUE IS THE LAST ONE. `gate-suite.sh` reads this file with
+  # `. "$FLOORS"` (its line 60), and a shell sources assignments in order —
+  # so a file carrying `FLOOR_shell=862` and later `FLOOR_shell=1` enforces
+  # 1. An adversarial verifier found that exact bypass on 2026-09-05: the
+  # first draft's `grep | grep -oE` collected BOTH values, `[ "$PRV" -lt …]`
+  # got a two-line operand, printed "integer expression expected" to stderr,
+  # evaluated FALSY — and the run exited 0. A fail-OPEN, which is the one
+  # direction this gate may never fail. `tail -1` now takes the value the
+  # runtime would actually use, and a duplicate key is additionally reported
+  # in its own right (a legitimate floors.env never restates a key, and the
+  # only reason to add one is to hide the second value).
   while IFS='=' read -r k v; do
     [ -n "$k" ] || continue
-    PRV="$(grep -E "^${k}=" "$PR_FLOORS" | grep -oE '[0-9]+$')"
+    _n_decl="$(grep -cE "^${k}=" "$PR_FLOORS")"
+    PRV="$(grep -E "^${k}=" "$PR_FLOORS" | tail -1 | grep -oE '[0-9]+$')"
     if [ -z "$PRV" ]; then
       fail "FLOOR: ${k} removed at the PR ref (base ${v})"
-    elif [ "$PRV" -lt "$v" ]; then
+      continue
+    fi
+    if [ "$_n_decl" -gt 1 ]; then
+      fail "FLOOR: ${k} is declared ${_n_decl} times at the PR ref — the LAST assignment is the one gate-suite.sh sources, so a restated key hides the value it enforces (effective: ${PRV})"
+    fi
+    if [ "$PRV" -lt "$v" ]; then
       fail "FLOOR: ${k} lowered ${v} -> ${PRV} — deleting cases requires lowering the floor; the trusted copy catches it here"
     fi
   done < "$BASE_FLOORS"
@@ -170,8 +192,15 @@ rm -f "$BASE_FLOORS" "$PR_FLOORS"
 # files, but nothing refuses a check being DROPPED from the registry — a
 # validator with fewer checks reports fewer problems, and nothing counts.
 extract_checks() {  # extract_checks <sha> → stdout
+  # COMMENTS STRIPPED FIRST. `# check_b,` inside the tuple leaves the token
+  # in the raw text while python sees one fewer callable — the registry
+  # shrank and a token grep said it did not (found by review, reproduced
+  # 2026-09-05). This mirrors validate_plugin.py's own `shell_code()`
+  # discipline: a pin over raw text is satisfied by a comment.
   git -C "$REPO" show "${1}:scripts/validate_plugin.py" 2>/dev/null \
-    | awk '/^CHECKS = \($/,/^\)$/' | grep -oE 'check_[A-Za-z0-9_]+' | grep -v '^check_$'
+    | awk '/^CHECKS = \($/,/^\)$/' \
+    | grep -vE '^[[:space:]]*#' \
+    | grep -oE 'check_[A-Za-z0-9_]+' | grep -v '^check_$'
 }
 BASE_CHECKS="$(mktemp "${_TMPDIR_T}/basegate.bc.XXXXXX")"
 PR_CHECKS="$(mktemp "${_TMPDIR_T}/basegate.pc.XXXXXX")"
@@ -189,34 +218,55 @@ else
 fi
 rm -f "$BASE_CHECKS" "$PR_CHECKS"
 
-# --- arm 3: an enforcer-core file may not be DELETED or EMPTIED ---------------
-# Two deletions are hard RED on their own, before any scan: the wrapper every
-# CI rung goes through, and the validator itself. Deleting either is not
-# "restructuring" — it is the gate removed, and a diff that consists only of
-# minus-lines has no ADD lines for any content scan to fire on.
+# --- arm 3: an enforcer-core file must still EXIST at the PR ref --------------
+# ASK THE TREE, NOT THE DIFF. The first draft keyed this arm on the diff's
+# status letter (`D` = deleted) and two attacks walked past it, both measured
+# on 2026-09-05:
+#
+#   * `git mv scripts/gate-suite.sh scripts/gate-suite-old.sh` reports R100,
+#     never D — the wrapper is gone from the tree and the arm says nothing.
+#   * deleting one tests/ file while ADDING a junk one keeps the COUNT equal,
+#     and a count is not a set.
+#
+# A status letter describes an EDIT; the question this arm asks is about the
+# RESULTING TREE. So both halves now read `ls-tree` at the PR ref: a core
+# file must be present there, and every tests/ path present at the base must
+# still be present. A rename is then automatically red (the old path is
+# absent) — which is correct: `check_suite_floors` requires
+# `gate-suite.sh <rung>` at that exact path in every CI file, so moving it IS
+# removing it, whatever git calls the edit.
 CORE_TOUCHED="$(mktemp "${_TMPDIR_T}/basegate.core.XXXXXX")"
 : > "$CORE_TOUCHED"
 while IFS='|' read -r st path; do
   [ -n "$path" ] || continue
   is_core_path "$path" || continue
-  # M/A/D/R/C all count: a deleted enforcer file is the loudest delta.
+  # M/A/D/R/C all count for the REPORT: the human sees every core touch.
   printf '%s %s\n' "$st" "$path" >> "$CORE_TOUCHED"
-  # A deleted CORE_FILE is the gate removed. A deleted tests/ path is caught
-  # by the count below (and floors.env additionally by arm 1) — not here,
-  # because a legitimate test rename shows as D+A and must not be a red.
-  if [ "$st" = "D" ] && is_core_file "$path"; then
-    fail "DELETE: ${path} deleted — the gate itself removed"
-  fi
 done < "$CHANGED_TMP"
 
-# A DELETED tests/ tree cannot be caught path-by-path (the paths no longer
-# exist on the PR side), so it is caught by count: the suite files may not
-# vanish wholesale.
-N_TESTS_BASE="$(git -C "$REPO" ls-tree -r --name-only "${BASE_SHA}" -- tests/ | grep -c '\.')"
-N_TESTS_PR="$(git -C "$REPO" ls-tree -r --name-only "${PR_SHA}" -- tests/ | grep -c '\.')"
-if [ "$N_TESTS_PR" -lt "$N_TESTS_BASE" ]; then
-  fail "DELETE: tests/ shrank (${N_TESTS_BASE} -> ${N_TESTS_PR} files) — the suites are the enforcer"
-fi
+# The two presence tests. `ls-tree <sha> -- <path>` prints the path when it
+# exists at that commit and nothing when it does not; the empty answer is the
+# finding here, not a skip.
+for _f in $CORE_FILES; do
+  if [ -n "$(git -C "$REPO" ls-tree -r --name-only "${BASE_SHA}" -- "$_f")" ] \
+     && [ -z "$(git -C "$REPO" ls-tree -r --name-only "${PR_SHA}" -- "$_f")" ]; then
+    fail "GONE: ${_f} exists at the base and NOT at the pr ref — the gate itself removed (deleted, renamed, or moved: the path is what CI runs)"
+  fi
+done
+
+# Every tests/ path present at the base must still be present. Set membership,
+# not a count — a swap (one file deleted, one added) leaves the count equal
+# and the coverage gone.
+_TESTS_BASE="$(mktemp "${_TMPDIR_T}/basegate.tb.XXXXXX")"
+_TESTS_PR="$(mktemp "${_TMPDIR_T}/basegate.tp.XXXXXX")"
+git -C "$REPO" ls-tree -r --name-only "${BASE_SHA}" -- tests/ > "$_TESTS_BASE"
+git -C "$REPO" ls-tree -r --name-only "${PR_SHA}"  -- tests/ > "$_TESTS_PR"
+while IFS= read -r _t; do
+  [ -n "$_t" ] || continue
+  grep -qxF "$_t" "$_TESTS_PR" \
+    || fail "GONE: ${_t} exists at the base and NOT at the pr ref — the suites are the enforcer"
+done < "$_TESTS_BASE"
+rm -f "$_TESTS_BASE" "$_TESTS_PR"
 
 # --- arm 4: the trusted delta is REPORTED, never the only red ------------------
 # What remains — a check REWRITTEN in place (body neutered, registry intact,
@@ -240,10 +290,38 @@ fi
 # passed, the gate has been forged — the marker exists only in BASE-GATE
 # output, never in a tree. (Simple grep over the diff; the marker language
 # is deliberately not a valid bash or python token.)
-if git -C "$REPO" diff "${BASE_SHA}" "${PR_SHA}" 2>/dev/null \
-     | grep -qE '^\+.*BASE_GATE_(FAILED|PASSED)'; then
+# THE DIFF'S OWN EXIT STATUS IS CHECKED FIRST. Piping it straight into
+# `grep -q` was the one git call in this file with no failure check, and the
+# two outcomes are indistinguishable: `grep -q` on empty input exits 1
+# whether the diff found no marker or never ran. Reproduced 2026-09-05 by
+# removing a blob object (the shape a truncated shallow fetch takes, which
+# is exactly how this job fetches the PR head): `git diff` printed
+# `fatal: unable to read <blob>`, the arm stood down, and the run reported
+# BASE_GATE_PASSED while an enforcer-core file was modified. `die` rather
+# than `fail`: unreadable is a harder failure than readable-and-violating,
+# the same polarity as every other refusal here.
+# SCOPE: everything EXCEPT the suites and this script. A test that asserts
+# the gate's own refusal text necessarily contains the marker, and so does
+# this file — scanning them makes the arm fire on every PR that touches its
+# own tests, which is a false positive that trains people to ignore it.
+# Measured: the first version went red on the very PR that added these
+# cases. The exclusion is narrow on purpose — a marker planted anywhere a
+# human reads CI output as evidence (source, docs, workflows) is still red.
+_MARKER_DIFF="$(mktemp "${_TMPDIR_T}/basegate.marker.XXXXXX")"
+if ! git -C "$REPO" diff "${BASE_SHA}" "${PR_SHA}" \
+       -- . ':(exclude)tests/' ':(exclude)scripts/base-gate.sh' \
+       > "$_MARKER_DIFF" 2>/dev/null; then
+  rm -f "$_MARKER_DIFF"
+  die "git diff base..pr (full content) failed — refusing (a diff failure must not read as 'no forged marker')"
+fi
+# The EMITTED SHAPE, not the bare token: a marker line is
+# `BASE_GATE_PASSED: <text>` at the start of an output line. Matching the
+# token alone red-flagged this repo's own validator pin, which names the
+# marker as a string it looks for — naming it is not forging it.
+if grep -qE '^\+[[:space:]]*BASE_GATE_(FAILED|PASSED):' "$_MARKER_DIFF"; then
   fail "the PR diff ADDS a BASE_GATE_* marker line — markers exist only in this gate's output, never in a tree; this is a forged result"
 fi
+rm -f "$_MARKER_DIFF"
 
 if [ "$FAILS" -gt 0 ]; then
   echo "base-gate: ${FAILS} violation(s) — the PR weakens the base enforcer (#108)" >&2

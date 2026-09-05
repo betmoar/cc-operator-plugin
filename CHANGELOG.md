@@ -30,6 +30,52 @@ single source of truth; bump it in the same commit as the changelog entry.
   a gate that red-flags both is one nobody reads. Those touches ride the
   DELTA REPORT to the human merge instead — no auto-merge exists here. #112
   (the holdout) is the structural version of that gap and is unchanged.
+- **The first draft of this change shipped the gate under the WRONG EVENT,
+  and only a real forge run found it.** The job was guarded with
+  `if: github.event_name == 'pull_request'` — under which the workflow file
+  and `base-gate.sh` itself both come from the PR head, so the gate judged
+  the PR with the PR's own code, while `pull_request_target` (the trusted
+  event, the entire reason the job exists) was skipped. Every local gate
+  passed: `act` cannot parse the Forgejo `uses:` form and no local run has a
+  PR context. Measured on lokaal, task 483 (2026-09-05), the job ran under
+  the untrusted event. `check_base_gate` now pins the job's own `if:` and
+  reports the string it found — both spellings read as deliberate in review.
+- **A bootstrap state, from the same run.** A `pull_request_target` workflow
+  is always read from the BASE branch, so until this lands on the default
+  branch the base has no `base-gate.sh` and the step exits 127 — which reads
+  as a broken runner, not "there is no gate here yet". Both copies now report
+  `BASE_GATE_BOOTSTRAP` and pass: with no trusted enforcer at the base there
+  is nothing to weaken, and failing closed would block the very PR that adds
+  the gate. Self-limiting; after the merge the base always carries it.
+- **Five bypasses found by a five-lens review panel.**
+  All three passed the gate before the fix, all three are now red with the
+  mutation recorded: (a) a floor hidden behind a DUPLICATE key — the file is
+  sourced, so the last assignment is the effective one, and the draft's
+  two-line operand made `[ -lt ]` print "integer expression expected" to
+  stderr and evaluate FALSY, a genuine fail-open; (b) an enforcer file
+  RENAMED rather than deleted (git reports `R`, never `D`, and the path CI
+  invokes is gone all the same); (c) a tests/ SWAP — one file deleted, one
+  junk file added — holding the count equal while coverage shrank. The root
+  cause of (b) and (c) was one design error: arm 3 reasoned about the diff's
+  status LETTER instead of the resulting TREE. It now asks `ls-tree` at the
+  PR ref, which makes all three shapes the same question. Then (d) a
+  COMMENTED-OUT registry entry — `# check_b,` leaves the token in the raw
+  text while python sees one fewer callable, so a token grep reported a
+  registry that had actually shrunk; the extractor strips comments first now,
+  the same discipline `shell_code()` applies on the python side. And (e) the
+  anti-wormhole arm piped `git diff` straight into `grep -q`, the one git
+  call in the file with no failure check: `grep -q` on empty input exits 1
+  whether the diff found no marker or never ran. Reproduced by removing a
+  blob — the shape a truncated shallow fetch takes, which is how this job
+  fetches the PR head — the full diff died 128, the arm stood down, and the
+  run reported PASS while an enforcer file was modified. It now refuses.
+- **The marker arm is scoped to what a human reads as evidence.** Its first
+  version went red on the very PR that added its own test cases: a suite
+  asserting the gate's refusal text necessarily contains the marker. `tests/`
+  and this script are exempt, and the match anchors on the emitted line shape
+  (`BASE_GATE_PASSED:`) rather than the bare token — naming the marker is not
+  forging it. A false positive that fires on every PR touching its own tests
+  is how an alarm gets ignored, so the exemption carries its own control.
 - **Two vacuities found by mutation-checking this change's own tests.** The
   fail-closed case asserted `rc 2` alone, and deleting the base-ref guard
   still yields `rc 2` three arms downstream (from the `git diff` failure) —

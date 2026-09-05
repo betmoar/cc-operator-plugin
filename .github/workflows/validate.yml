@@ -81,6 +81,14 @@ jobs:
     # one. Both spellings read as deliberate, so check_base_gate pins it.
     if: github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
+    # Least privilege, and on THIS event it is not boilerplate:
+    # `pull_request_target` runs with the base repo's token rather than a
+    # fork's, so the default repo-wide scope (often `contents: write`) would
+    # be handed to a job whose whole subject is untrusted code. The job only
+    # ever READS git objects. Pinned here so a future step that adds an API
+    # call has to widen this deliberately instead of inheriting the reach.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
