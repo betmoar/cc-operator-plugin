@@ -3711,6 +3711,28 @@ def check_base_gate(root, problems):
                 f"{rel}: the base-gate job never invokes scripts/base-gate.sh "
                 f"— a job that has the name and not the gate is a costume")
 
+        # The job's own `if:` must gate on pull_request_TARGET. Measured on
+        # Forgejo (task 483, 2026-09-05): with `== 'pull_request'` the job
+        # ran under the UNTRUSTED event — which reads this file and every
+        # script it calls from the PR HEAD, the exact loop the job exists to
+        # break — and would have been skipped under the trusted one. The
+        # inversion is invisible in review (both spellings look deliberate)
+        # and produces a job that appears to run correctly, which is why it
+        # is pinned rather than left to care.
+        if_m = re.search(r"^\s*if:\s*(.+)$", block, re.M)
+        if not if_m:
+            problems.append(
+                f"{rel}: the base-gate job has no `if:` guard — it would run "
+                f"on push too, where there is no PR to judge and the head sha "
+                f"is empty")
+        elif "pull_request_target" not in if_m.group(1):
+            problems.append(
+                f"{rel}: the base-gate job's guard is `{if_m.group(1).strip()}` "
+                f"— it must gate on `pull_request_target`. Under "
+                f"`pull_request` the workflow AND base-gate.sh come from the "
+                f"PR head, so the job judges the PR with the PR's own code "
+                f"(measured on Forgejo, task 483)")
+
         # claim 3: no checkout of the head inside the target job. The
         # checkout in this job must pin the BASE sha; a bare `uses:
         # .../checkout` step in a pull_request_target workflow checks out the

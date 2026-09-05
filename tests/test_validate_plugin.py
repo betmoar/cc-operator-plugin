@@ -4531,7 +4531,7 @@ class BaseGateTest(unittest.TestCase):
     # for the CI files, so a fixture of pure code is the honest shape).
     JOB = (
         "  base-gate:\n"
-        "    if: github.event_name == 'pull_request'\n"
+        "    if: github.event_name == 'pull_request_target'\n"
         "    runs-on: ubuntu-latest\n"
         "    steps:\n"
         "      - uses: actions/checkout@v4\n"
@@ -4627,6 +4627,26 @@ class BaseGateTest(unittest.TestCase):
                    "          ref: ${{ github.event.pull_request.head.sha }}")
         self.assertTrue(any("does not pin the base ref" in p
                             for p in self._probs()), self._probs())
+
+    def test_the_job_guarded_on_pull_request_fires(self):
+        # THE DEFECT THIS PIN EXISTS FOR, and it shipped in the first draft
+        # of #108: `pull_request` reads the workflow AND base-gate.sh from
+        # the PR HEAD, so the job judges the PR with the PR's own code, while
+        # `pull_request_target` — the trusted event — is skipped. Measured on
+        # Forgejo, task 483 (2026-09-05): the job ran under the untrusted
+        # event. Both spellings read as deliberate, which is why care is not
+        # the mechanism here.
+        self._edit(".github/workflows/validate.yml",
+                   "    if: github.event_name == 'pull_request_target'",
+                   "    if: github.event_name == 'pull_request'")
+        self.assertTrue(any("must gate on `pull_request_target`" in p
+                            for p in self._probs()), self._probs())
+
+    def test_the_job_with_no_guard_fires(self):
+        self._edit(".forgejo/workflows/validate.yml",
+                   "    if: github.event_name == 'pull_request_target'\n", "")
+        self.assertTrue(any("no `if:` guard" in p for p in self._probs()),
+                        self._probs())
 
     def test_an_arm_deleted_from_the_script_fires(self):
         # base-gate.sh's registry arm removed — function AND both call sites,

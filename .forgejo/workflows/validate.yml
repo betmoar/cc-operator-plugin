@@ -115,7 +115,18 @@ jobs:
   # host-qualified per this file's header rule (data.forgejo.org otherwise
   # resolves the name against DIFFERENT code).
   base-gate:
-    if: github.event_name == 'pull_request'
+    # See the GitHub copy: `pull_request` reads this file and every script it
+    # calls FROM THE PR HEAD (the loop this job breaks); only
+    # `pull_request_target` reads them from the base. MEASURED here, task 483
+    # on 2026-09-05: with the guard on `pull_request` the job ran under the
+    # untrusted event — Forgejo fires `pull_request` for a PR and this job
+    # went with it. Whether this forge fires `pull_request_target` at all is
+    # STILL unmeasured (no such row exists yet; a PR that ADDS a
+    # pull_request_target workflow cannot trigger it, because the base has no
+    # copy to run). If it never fires here, this job simply never runs on
+    # Forgejo and the GitHub half carries the gate — a job that does not run
+    # is honest; one that runs from the PR head is not.
+    if: github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
     steps:
       - uses: https://github.com/actions/checkout@v4
@@ -128,6 +139,15 @@ jobs:
             "${{ github.event.pull_request.head.sha }}"
       - name: Trusted base-ref gate (#108)
         run: |
+          set -e
+          # BOOTSTRAP — see the GitHub copy. Until this lands on the default
+          # branch the BASE has no base-gate.sh and the step exits 127
+          # (measured, task 483). Nothing trusted exists to weaken yet.
+          if [ ! -f scripts/base-gate.sh ]; then
+            echo "BASE_GATE_BOOTSTRAP: the base ref carries no scripts/base-gate.sh"
+            echo "  — nothing trusted to run yet (expected only until #108 lands)."
+            exit 0
+          fi
           bash scripts/base-gate.sh \
             --base "${{ github.event.pull_request.base.sha }}" \
             --pr  "${{ github.event.pull_request.head.sha }}"
