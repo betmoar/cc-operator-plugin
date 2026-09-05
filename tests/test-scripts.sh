@@ -324,14 +324,14 @@ rm -rf "$NOS"
 # Non-root only (root ignores bits, #21).
 mkdir -p "$P/.operator/.stopguard"
 if [ "$(id -u)" = "0" ]; then
-  skip "4o unremovable marker (root): chmod 500 still permits the unlink"
+  skip "4p unremovable marker (root): chmod 500 still permits the unlink"
 else
   : > "$P/.operator/.stopguard/SESS-A"
   chmod 500 "$P/.operator/.stopguard"
   # Premise: pending empty (T-9 closed at 4l) AND the 4l deviation
   # presented+marked, or the ordinary stop blocks on the deviation gate
   # instead of reaching the final-allow clear.
-  [ -z "$(ls "$P/.operator/pending/" 2>/dev/null)" ] || { echo "4o SETUP: pending not empty (case premise broken)"; }
+  [ -z "$(ls "$P/.operator/pending/" 2>/dev/null)" ] || { echo "4p SETUP: pending not empty (case premise broken)"; }
   ( cd "$P" && bash .operator/bin/ops-verdict.sh --mark-handoff --owner SESS-A >/dev/null 2>&1 )
   run_hook stop-session-a.json "$P"
   check "#124 final-allow with an unremovable marker: rc 0 AND the clear-failure WARNED" \
