@@ -206,6 +206,12 @@ def make_good_tree(root):
         "plugins": [{"name": "cc-operator", "source": "./", "description": "d"}],
     }))
     write(root / "CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n## [0.1.0] - 2026-07-06\n\n- init\n")
+    # The SHIPPED base-gate.sh (#108), not a stub: check_base_gate reads that
+    # file's own code, so a hand-written imitation here would prove nothing
+    # about what ships — and a fixture edited only to go green is how a check
+    # gets disabled with every gate passing (F30's shape).
+    write(root / "scripts" / "base-gate.sh",
+          (ROOT / "scripts" / "base-gate.sh").read_text(encoding="utf-8"))
     write(root / "templates" / "OPERATOR.md", GOOD_CHARTER)
     # Every [DOC:spec-<key>] in the charter needs a `### spec-<key>` entry in
     # the tag index (#76 step E) — the fixture cites spec-D4.
@@ -4496,6 +4502,194 @@ class CheckRegistryTest(unittest.TestCase):
         names = [f.__name__ for f in vp.CHECKS]
         self.assertEqual(set(names),
                          {f.__name__ for f in reversed(vp.CHECKS)})
+
+
+class BaseGateTest(unittest.TestCase):
+    """check_base_gate (#108): the enforcer is judged by code the PR cannot edit.
+
+    Every ordinary CI step runs from the PR's own checkout, so a branch that
+    lowers a floor, drops a check, or deletes the wrapper supplies the code
+    that grades it — the sibling project's `run-gate.py` incident exactly (a
+    guard that SAW both violations, NAMED them, and waved itself through).
+    The base-gate job breaks that loop: `pull_request_target` runs the
+    workflow and the script from the BASE ref, checks out the base sha, and
+    reads the PR only through `git show`/`git diff`.
+
+    Each case below is a mutation that was run RED against the real tree
+    before this check was believed (#111 — the gate that went red is named
+    per case, and it is `check_base_gate` throughout; base-gate.sh's own
+    ARMS are mutation-checked separately, red in the bash suite's
+    `base-gate` cases).
+
+    The tree copies the SHIPPED scripts/base-gate.sh, not a stub: the pin
+    reads that file's own code, and a probe against a hand-written imitation
+    proves nothing about what ships.
+    """
+
+    # The base-gate job as it ships, minus the comments (the pin reads a
+    # comment-stripped view for the script and a comment-stripped LIVE view
+    # for the CI files, so a fixture of pure code is the honest shape).
+    JOB = (
+        "  base-gate:\n"
+        "    if: github.event_name == 'pull_request'\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/checkout@v4\n"
+        "        with:\n"
+        "          ref: ${{ github.event.pull_request.base.sha }}\n"
+        "      - name: Fetch the PR head (never checked out)\n"
+        "        run: git fetch --no-tags --depth=1 origin sha\n"
+        "      - name: Trusted base-ref gate (#108)\n"
+        "        run: bash scripts/base-gate.sh --base b --pr p\n"
+    )
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        write(self.dir / "scripts" / "base-gate.sh",
+              (ROOT / "scripts" / "base-gate.sh").read_text(encoding="utf-8"))
+        for rel in vp._CI_FILES:
+            if pathlib.PurePath(rel).name != "validate.yml":
+                continue
+            write(self.dir / rel,
+                  "on:\n  pull_request:\n  pull_request_target:\n"
+                  "jobs:\n  validate:\n    steps:\n      - run: true\n"
+                  + self.JOB)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _probs(self):
+        probs = []
+        vp.check_base_gate(self.dir, probs)
+        return probs
+
+    def _edit(self, rel, old, new):
+        p = self.dir / rel
+        s = p.read_text(encoding="utf-8")
+        self.assertIn(old, s, f"anchor missing in {rel}")
+        p.write_text(s.replace(old, new, 1), encoding="utf-8")
+
+    def test_good_tree_is_clean(self):
+        # THE CONTROL, first. Without it every rejection below is satisfied by
+        # a check that fires on everything.
+        self.assertEqual(self._probs(), [])
+
+    def test_script_missing_fires(self):
+        (self.dir / "scripts" / "base-gate.sh").unlink()
+        self.assertTrue(any("base-gate.sh" in p and "missing" in p
+                            for p in self._probs()), self._probs())
+
+    def test_trigger_missing_fires(self):
+        # `pull_request:` alone runs the workflow file FROM THE PR HEAD — the
+        # self-judging loop restated in YAML.
+        self._edit(".github/workflows/validate.yml",
+                   "  pull_request_target:\n", "")
+        self.assertTrue(any("pull_request_target" in p
+                            for p in self._probs()), self._probs())
+
+    def test_commented_out_trigger_fires(self):
+        # The raw-text vacuity shape (2026-08-31 audit): a comment holding the
+        # token must not satisfy the pin.
+        self._edit(".github/workflows/validate.yml",
+                   "  pull_request_target:", "  # pull_request_target:")
+        self.assertTrue(any("pull_request_target" in p
+                            for p in self._probs()), self._probs())
+
+    def test_job_missing_fires(self):
+        self._edit(".forgejo/workflows/validate.yml", self.JOB, "")
+        self.assertTrue(any("base-gate:" in p and "unwired" in p
+                            for p in self._probs()), self._probs())
+
+    def test_job_that_never_invokes_the_script_fires(self):
+        # The costume: the job has the name and not the gate.
+        self._edit(".github/workflows/validate.yml",
+                   "        run: bash scripts/base-gate.sh --base b --pr p\n",
+                   "        run: echo placeholder\n")
+        self.assertTrue(any("never invokes" in p for p in self._probs()),
+                        self._probs())
+
+    def test_checkout_without_a_base_ref_fires(self):
+        # THE PWN-REQUEST SHAPE. In a pull_request_target workflow a bare
+        # checkout is the PR HEAD on disk — the exact bytes this gate exists
+        # to judge rather than trust, executed by the job that judges them.
+        self._edit(".github/workflows/validate.yml",
+                   "        with:\n"
+                   "          ref: ${{ github.event.pull_request.base.sha }}\n",
+                   "")
+        self.assertTrue(any("does not pin the base ref" in p
+                            for p in self._probs()), self._probs())
+
+    def test_checkout_pinned_to_the_head_ref_fires(self):
+        # Sharper than the bare-checkout case: a `ref:` IS present, and it
+        # names the head. A pin that only asked "is there a ref:" would pass.
+        self._edit(".github/workflows/validate.yml",
+                   "          ref: ${{ github.event.pull_request.base.sha }}",
+                   "          ref: ${{ github.event.pull_request.head.sha }}")
+        self.assertTrue(any("does not pin the base ref" in p
+                            for p in self._probs()), self._probs())
+
+    def test_an_arm_deleted_from_the_script_fires(self):
+        # base-gate.sh's registry arm removed — function AND both call sites,
+        # because a dangling reference would leave the token present and the
+        # mutation would prove nothing about the arm (the anchor rule, #114).
+        p = self.dir / "scripts" / "base-gate.sh"
+        s = p.read_text(encoding="utf-8")
+        s = re.sub(r"extract_checks\(\) \{.*?\n\}\n", "", s, count=1,
+                   flags=re.S)
+        s = s.replace('extract_checks "$BASE_SHA" > "$BASE_CHECKS"\n', "")
+        s = s.replace('extract_checks "$PR_SHA" > "$PR_CHECKS"\n', "")
+        self.assertNotIn("extract_checks", s)
+        p.write_text(s, encoding="utf-8")
+        self.assertTrue(any("extract_checks" in p_ and "absent from code" in p_
+                            for p_ in self._probs()), self._probs())
+
+    def test_the_core_declaration_removed_fires(self):
+        # CORE_FILES/is_core_path are the ONE declaration of the enforcer
+        # core; a second hardcoded copy beside them is how the two drift.
+        p = self.dir / "scripts" / "base-gate.sh"
+        s = p.read_text(encoding="utf-8")
+        p.write_text(s.replace("CORE_FILES", "ZZ_GONE"), encoding="utf-8")
+        self.assertTrue(any("CORE_FILES" in p_ for p_ in self._probs()),
+                        self._probs())
+
+    def test_a_comment_does_not_satisfy_an_arm_pin(self):
+        # The arm pins read shell_code (comments stripped): moving an arm into
+        # a comment is deletion wearing a hash.
+        p = self.dir / "scripts" / "base-gate.sh"
+        s = p.read_text(encoding="utf-8")
+        s = re.sub(r"^extract_checks\(\) \{", "# extract_checks() {", s,
+                   count=1, flags=re.M)
+        s = s.replace('extract_checks "$BASE_SHA" > "$BASE_CHECKS"',
+                      '# extract_checks "$BASE_SHA"')
+        s = s.replace('extract_checks "$PR_SHA" > "$PR_CHECKS"',
+                      '# extract_checks "$PR_SHA"')
+        p.write_text(s, encoding="utf-8")
+        self.assertTrue(any("extract_checks" in p_ and "absent from code" in p_
+                            for p_ in self._probs()), self._probs())
+
+    def test_release_yml_is_not_required_to_carry_the_job(self):
+        # NEGATIVE CONTROL. release.yml has no PR context, so the pin must
+        # look only at validate.yml — a check that demanded the job everywhere
+        # would be a false positive that trains the same ignoring as a
+        # vacuous pin.
+        write(self.dir / ".github" / "workflows" / "release.yml",
+              "on:\n  push:\n    tags: ['v*']\njobs:\n  r:\n    steps:\n"
+              "      - run: true\n")
+        self.assertEqual(self._probs(), [])
+
+    def test_no_workflows_at_all_is_skipped(self):
+        # A plugin fixture with no CI is the one legitimate skip (matching
+        # check_suite_floors and check_release_gates_cover_validate).
+        empty = pathlib.Path(tempfile.mkdtemp())
+        try:
+            write(empty / "scripts" / "base-gate.sh",
+                  (ROOT / "scripts" / "base-gate.sh").read_text(
+                      encoding="utf-8"))
+            probs = []
+            vp.check_base_gate(empty, probs)
+            self.assertEqual(probs, [])
+        finally:
+            shutil.rmtree(empty, ignore_errors=True)
 
 
 class ClaudeMdSizeTest(unittest.TestCase):

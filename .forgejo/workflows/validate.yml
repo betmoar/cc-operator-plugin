@@ -27,6 +27,12 @@ name: validate
 on:
   push:
   pull_request:
+  # See the GitHub copy's comment — `pull_request_target:` is what makes the
+  # base-gate job run this file from the base ref. (Forgejo's runner support
+  # for the target event is the one genuinely unmeasured surface here; the
+  # job is `if:`-guarded so a forge that never fires it simply never runs it,
+  # and check_base_gate pins its presence, not its execution.)
+  pull_request_target:
 
 jobs:
   validate:
@@ -102,3 +108,26 @@ jobs:
 
       - name: Run compressor replay tests
         run: bash scripts/gate-suite.sh compress
+
+  # The trusted half of #108, the Forgejo mirror of the GitHub base-gate job.
+  # Same rule: the job checks out the BASE ref only, fetches the PR head, and
+  # reads it through `git show`/`git diff` — never a checkout. `uses:` is
+  # host-qualified per this file's header rule (data.forgejo.org otherwise
+  # resolves the name against DIFFERENT code).
+  base-gate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: https://github.com/actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+      - name: Fetch the PR head (never checked out)
+        run: |
+          set -e
+          git fetch --no-tags --depth=1 origin \
+            "${{ github.event.pull_request.head.sha }}"
+      - name: Trusted base-ref gate (#108)
+        run: |
+          bash scripts/base-gate.sh \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --pr  "${{ github.event.pull_request.head.sha }}"

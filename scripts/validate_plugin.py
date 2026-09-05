@@ -3617,6 +3617,120 @@ def check_suite_floors(root, problems):
                     f"pin EXECUTES it for that reason")
 
 
+def check_base_gate(root, problems):
+    """#108: the trusted base-ref gate exists, is wired on both forges, and
+    never checks out the PR head.
+
+    Every ordinary CI step runs from the PR's own checkout — the branch under
+    test supplies the code that grades it. The base-gate job is the exception
+    that breaks that loop: `pull_request_target` (workflow file from the BASE
+    ref) + a checkout pinned to the base sha + the PR head only ever FETCHED
+    and read through `git show`/`git diff`. This pin holds the wiring to that
+    shape; base-gate.sh's own behaviour is held by the bash suite's cases.
+
+    Four claims, each failing independently:
+      1. the script exists and declares its contract (exit codes, fail-closed);
+      2. every CI file that has a validate.yml carries a LIVE base-gate job —
+         `pull_request_target:` as the trigger, not `pull_request:` (the
+         on:-block form grades the PR with the PR's own workflow file, which
+         is the original bug restated in YAML);
+      3. the job's steps reach base-gate.sh and NEVER checkout the head — a
+         `uses: actions/checkout` without a base-pinned `ref:` in a
+         pull_request_target job is the classic pwn-request shape, and here it
+         would put PR bytes on the disk this gate exists to keep them off;
+      4. the script's own arms are present — the floor compare, the registry
+         compare, and the fail-closed refusals (presence pins; the bash suite
+         mutation-checks each arm RED, so these exist to catch deletion of the
+         arm, not to prove it works).
+    """
+    bg_rel = "scripts/base-gate.sh"
+    bg = root / bg_rel
+    if not bg.is_file():
+        problems.append(
+            f"{bg_rel}: missing — the trusted half of #108 is gone and every "
+            f"CI rung is judged by the branch under test again")
+        return
+    text = bg.read_text(encoding="utf-8")
+
+    # claim 1: the contract is declared in the file itself
+    for token in ("FLOOR_", "CHECKS", "fail closed", "exit 1"):
+        if token not in text:
+            problems.append(
+                f"{bg_rel}: does not mention {token!r} — the trusted gate's "
+                f"own contract drifted; this pin refuses a silent reshape")
+
+    # claim 4: the arms. Presence pins anchored on code, not comments —
+    # matched against the comment-stripped view (the three vacuity shapes of
+    # the 2026-08-31 audit).
+    code = shell_code(bg)
+    # CORE_FILES/is_core_path are the ONE declaration of the enforcer core
+    # (a hardcoded second copy beside them is how the two drift and the gate
+    # stops covering a file it still names).
+    for token in ("FLOOR_", "extract_checks", "CORE_FILES", "is_core_path",
+                  "BASE_GATE_FAILED", "die "):
+        if token not in code:
+            problems.append(
+                f"{bg_rel}: the arm keyed on {token!r} is absent from code "
+                f"(comments stripped) — an arm deleted from the trusted gate "
+                f"leaves its CI step green and meaningless")
+
+    # claims 2+3: the wiring, per forge
+    for rel in _CI_FILES:
+        f = root / rel
+        if not f.is_file() or f.name != "validate.yml":
+            continue  # release.yml has no PR context; a forge not configured
+        text = f.read_text(encoding="utf-8")
+        # live view: comments cannot satisfy the pin
+        # The trailing newline is RE-ADDED: `"\n".join(splitlines())` drops
+        # it, and the block regex below matches line-at-a-time with `\n` — so
+        # without it the LAST line of the file is invisible to the scan. Two
+        # cases caught this (a job that ends the file lost its final step),
+        # and it is the same class as any locator that reports a truncated
+        # view as a complete one.
+        live = "".join(ln + "\n" for ln in text.splitlines()
+                       if not ln.strip().startswith("#"))
+
+        # claim 2: the trigger. `pull_request_target:` must appear as a key,
+        # NOT `pull_request:` alone for the base-gate job. The jobs are
+        # separated by top-level `  <job-name>:` blocks at 2-space indent.
+        job_block = re.search(
+            r"^  base-gate:\n((?:[ ]{4}.*\n|\s*\n)*)", live, re.M)
+        if not job_block:
+            problems.append(
+                f"{rel}: no live `base-gate:` job — the trusted half of #108 "
+                f"is unwired on this forge and every rung is self-graded")
+            continue
+        block = job_block.group(1)
+        if not re.search(r"^\s*pull_request_target:", live, re.M):
+            problems.append(
+                f"{rel}: the workflow lacks `pull_request_target:` — without "
+                f"it the workflow file and the gate script both come from the "
+                f"PR head, which is the self-judging loop #108 exists to break")
+        if "base-gate.sh" not in block:
+            problems.append(
+                f"{rel}: the base-gate job never invokes scripts/base-gate.sh "
+                f"— a job that has the name and not the gate is a costume")
+
+        # claim 3: no checkout of the head inside the target job. The
+        # checkout in this job must pin the BASE sha; a bare `uses:
+        # .../checkout` step in a pull_request_target workflow checks out the
+        # PR head — the pwn-request shape, and here the exact inversion of
+        # the trusted-subject relationship.
+        for m in re.finditer(
+                r"uses:\s*(\S+checkout\S*)", block):
+            # the `with:` block that follows this uses-line, if any
+            after = block[m.end():]
+            with_m = re.match(r"\s*with:\n((?:\s{6,}.*\n|\s*\n)*)", after)
+            ref_m = (re.search(r"ref:\s*(.+)", with_m.group(1))
+                     if with_m else None)
+            if not (ref_m and "base" in ref_m.group(1)):
+                problems.append(
+                    f"{rel}: the base-gate job's checkout does not pin the "
+                    f"base ref — in a pull_request_target workflow a bare "
+                    f"checkout is the PR HEAD on disk, the exact bytes this "
+                    f"gate exists to judge, not trust")
+
+
 def check_claude_md_size(root, problems):
     """CLAUDE.md stays under the harness's 40.0k-char injection clip.
 
@@ -3852,6 +3966,7 @@ CHECKS = (
     check_commands,
     check_release_gates_cover_validate,
     check_suite_floors,
+    check_base_gate,
     check_coupling_case_refs,
     check_claude_md_size,
 )

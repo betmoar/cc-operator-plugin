@@ -9,6 +9,36 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.11] - 2026-09-05
+
+- **The validator no longer grades the pull request that edits it (#108).**
+  Every CI rung ran `scripts/validate_plugin.py` from the PR's own checkout,
+  so a branch that lowered a floor, dropped a check from `CHECKS`, or deleted
+  `gate-suite.sh` supplied the code that judged it. This is the shape of the
+  sibling project's worst incident: a guard that SAW both violations, NAMED
+  them, and exited 0. `scripts/base-gate.sh` is the trusted half — it runs
+  from the BASE ref via a `pull_request_target` job, checks out the base sha,
+  and reads the PR only through `git show`/`git diff`; PR bytes are never on
+  disk and never executed. Four hard-red arms: a floor lowered or removed, a
+  check dropped from the registry, an enforcer file deleted or `tests/`
+  shrunk, and a forged `BASE_GATE_*` marker planted in the diff. It fails
+  CLOSED on an unresolvable base ref — falling back to the branch's copy is
+  the original bug wearing a fallback's clothes.
+- **What it deliberately does not do.** A check REWRITTEN in place (body
+  neutered, registry intact) is NOT an arm: trusted code cannot separate that
+  from legitimate pin evolution, which this repo does in nearly every PR, and
+  a gate that red-flags both is one nobody reads. Those touches ride the
+  DELTA REPORT to the human merge instead — no auto-merge exists here. #112
+  (the holdout) is the structural version of that gap and is unchanged.
+- **Two vacuities found by mutation-checking this change's own tests.** The
+  fail-closed case asserted `rc 2` alone, and deleting the base-ref guard
+  still yields `rc 2` three arms downstream (from the `git diff` failure) —
+  it now asserts the MESSAGE names the ref. And `check_base_gate`'s job-block
+  locator dropped each file's last line (`"\n".join(splitlines())` loses the
+  trailing newline), so a job ending a file lost its final step; the fix is
+  mutation-checked red in `BaseGateTest`.
+- Floors raised in the same commit: shell 862 → 881, python 340 → 353.
+
 ## [0.11.10] - 2026-09-05
 
 - **CI was red on one test, and the cause was this file.** `test_release_gate.

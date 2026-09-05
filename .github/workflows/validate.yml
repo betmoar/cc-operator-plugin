@@ -4,6 +4,14 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The base-gate job's trigger. `pull_request:` checks out and runs the PR's
+  # own files; `pull_request_target:` runs THIS file (and the scripts it
+  # calls) from the base ref with a PR context — which is what makes the
+  # trusted-subject split possible. Both are listed: the ordinary jobs use
+  # the PR checkout, base-gate uses the target context and guards itself
+  # with `if: github.event_name == 'pull_request'` so a push run skips it
+  # (on a push there is no PR to judge and FETCH_HEAD would be wrong).
+  pull_request_target:
 
 jobs:
   validate:
@@ -47,3 +55,34 @@ jobs:
         run: bash scripts/gate-suite.sh workflows
       - name: Run compressor replay tests
         run: bash scripts/gate-suite.sh compress
+
+  # The trusted half of #108. Every step above runs from the PR's OWN
+  # checkout, so a branch that neuters a pin, drops a check, or lowers a
+  # floor edits the code that grades it. This job never checks the PR head
+  # out: it runs from the BASE ref (the default branch as CI sees it), only
+  # FETCHES the PR, and reads PR content exclusively through `git show` /
+  # `git diff` — trusted code, untrusted subject. base-gate.sh fails closed
+  # on an unreadable base (it never falls back to the branch's copy).
+  # `pull_request_target` is what makes the workflow file and the script it
+  # runs come from main, not from the PR — that is the entire point, and it
+  # is why this job must never gain a `checkout` of the head or a
+  # PR-supplied ref outside `github.event.pull_request.head.sha`.
+  base-gate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # base only: shallow is enough — base-gate reads `origin/main`'s
+          # tree via git show and the PR head via the fetch below.
+          ref: ${{ github.event.pull_request.base.sha }}
+      - name: Fetch the PR head (never checked out)
+        run: |
+          set -e
+          git fetch --no-tags --depth=1 origin \
+            "${{ github.event.pull_request.head.sha }}"
+      - name: Trusted base-ref gate (#108)
+        run: |
+          bash scripts/base-gate.sh \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --pr  "${{ github.event.pull_request.head.sha }}"
