@@ -195,7 +195,7 @@ stopguard_is_mine() { # → 0 if a regular non-symlink marker is present
 # is a continuation that blocks forever on a marker it can never spend.
 # Distinct from B's symlink case: a LINK at the marker path is tampering
 # (reads as not-mine, gate RUNS); an ABSENT marker DIRECTORY is environment.
-stopguard_can_mark() { # → 0 if the marker's parent dir exists (or is creatable)
+stopguard_can_mark() { # → 0 if the marker's parent dir exists AND is writable (or creatable)
   # Empty PATH (no session id in the payload): NOT the C case. A no-session
   # payload can never have owned a marker, so there is nothing to spend and
   # nothing to escape from — the foreign-continuation branch below is the
@@ -204,7 +204,26 @@ stopguard_can_mark() { # → 0 if the marker's parent dir exists (or is creatabl
   # the #116 disarm through the back door (measured: case 4d went 2 -> 0).
   _sgp="$(_stopguard_path)"
   [ -n "$_sgp" ] || return 0
-  [ -d "${_sgp%/*}" ] && return 0
+  # WRITABILITY, not bare existence (PR #124 review): a read-only .stopguard/
+  # dir made the polarity decision on a false premise — can_mark said
+  # "markable", the later write failed, and the guard had already chosen
+  # "gate runs" for this continuation on evidence that was about to be
+  # contradicted.
+  #
+  # #21 DISCIPLINE — this `[ -w ]` is a BEST-EFFORT HALF, inert for uid 0
+  # (root bypasses mode bits; the validator's permission-test allowlist is
+  # raised for exactly this one with that reasoning). The uid-invariant half
+  # of the guard is the TYPE test in the same branch (`-d`, holds on every
+  # uid) plus the warned write failure downstream: on root, a read-only dir
+  # reads markable, the marker write then fails, and the call site SAYS so on
+  # stderr — the operator learns the state one event later instead of at
+  # decision time. That is the documented trade, not an oversight.
+  if [ -d "${_sgp%/*}" ]; then
+    [ -w "${_sgp%/*}" ]
+    return $?
+  fi
+  # A dir we just created via mkdir is writable by construction (we made it);
+  # a failed mkdir already returns 1 here.
   mkdir -p "${_sgp%/*}" 2>/dev/null && return 0
   return 1
 }

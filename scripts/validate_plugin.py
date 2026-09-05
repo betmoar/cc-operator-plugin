@@ -940,7 +940,18 @@ def check_permission_guards(root, problems):
     """
     # site -> why it is allowed to exist. Comments are stripped before counting,
     # so the header prose in that same file does not inflate the number.
-    ALLOWED = {}
+    # site -> why it is allowed to exist. Comments are stripped before counting,
+    # so the header prose in that same file does not inflate the number.
+    ALLOWED = {
+        # PR #124 follow-up (the declined-then-taken finding):
+    # the declined-then-taken finding). Best-effort half by the prescription:
+    # paired with the uid-invariant TYPE test (`-d`) in the same branch, the
+    # downstream marker write's failure is READ and SAID on stderr (so root
+    # learns the state one event later instead of never), and the inertness
+    # is documented at the call site. Raising the count with exactly this
+    # reasoning, as the failure message demands.
+        "scripts/ops-stop-hook.sh": 1,
+    }
     # Both bracket spellings AND `test`: `test -w "$PWD"` has identical
     # semantics and walked past the bracket-only regex (audited 2026-08-25).
     pat = re.compile(r"(?:\[\[?\s+!?\s*-[rwx]\s|\btest\s+!?\s*-[rwx]\s)")

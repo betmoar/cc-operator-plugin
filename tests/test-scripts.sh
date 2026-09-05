@@ -263,6 +263,23 @@ check "#124 a fresh project (no .stopguard dir) is markable — gate runs on for
   "$([ "$HRC" = 2 ] && printf '%s' "$HERR" | grep -q 'gate runs normally' && echo 0 || echo 1)"
 [ -d "$P/.operator/.stopguard" ] && echo "  (mkdir created the dir — can_mark success path exercised)"
 rm -rf "$P/.operator/.stopguard"
+# 4n (#124, the declined finding, now taken): a READ-ONLY .stopguard dir must
+# read as UNMARKABLE — can_mark's polarity decision has to be truthful, not
+# premise-on-existence (the reviewer's finding: existence said markable, the
+# write then failed, and the continuation had already been routed to
+# "gate runs" on a false premise). Root ignores write bits (#21), so the
+# non-root half asserts the stand-down; the root half skips per #109.
+mkdir -p "$P/.operator/.stopguard"
+if [ "$(id -u)" = "0" ]; then
+  skip "4n read-only .stopguard (root): chmod 500 still permits the write"
+else
+  chmod 500 "$P/.operator/.stopguard"
+  run_hook stop-loopguard-sid.json "$P"
+  check "#124 read-only .stopguard dir reads UNMARKABLE — continuation stands down as pre-#116" \
+    "$([ "$HRC" = 0 ] && printf '%s' "$HERR" | grep -q 'cannot carry a .stopguard marker' && echo 0 || echo 1)"
+fi
+chmod 700 "$P/.operator/.stopguard" 2>/dev/null
+rm -rf "$P/.operator/.stopguard"
 # 4h: a marker whose session id is EMPTY cannot exist (path guard) — the
 # no-session-id payload of 4d is exactly this: marker absent → gate runs.
 rm -rf "$P"

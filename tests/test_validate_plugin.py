@@ -348,7 +348,11 @@ def make_good_tree(root):
     lookup, duploop = f136_lookup, F136_DUPLOOP
     # autobar.sh sourced AFTER partition.sh: it calls sentinel_owner_of_name.
     write(root / "scripts" / "ops-stop-hook.sh",
-          "#!/usr/bin/env bash\n. lib/partition.sh\n. lib/autobar.sh\n" + JSON_GET)
+          # the [ -w ] half of stopguard_can_mark (#124 follow-up): the good-tree
+          # stub mirrors the real file's permission-test count, which the
+          # allowlist pins at 1 — a stub below it reads as a REMOVED guard.
+          "#!/usr/bin/env bash\nstopguard_can_mark() { [ -d \"$d\" ] && [ -w \"$d\" ]; }\n"
+          ". lib/partition.sh\n. lib/autobar.sh\n" + JSON_GET)
     write(root / "scripts" / "ops-task.sh",
           "#!/usr/bin/env bash\n" + guards + nolink + lookup("sentinel_for") + duploop
           + GOOD_ROOT_BLOCK)

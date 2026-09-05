@@ -29,6 +29,13 @@ single source of truth; bump it in the same commit as the changelog entry.
   at the measured crossover (gap 98 inside / 99 outside) instead of 125/19 —
   an off-by-one in the slice now flips exactly that pair. `FLOOR_shell`
   855 → 857.
+- **The declined finding, taken (#124 follow-up):** `stopguard_can_mark` now
+  tests WRITABILITY, not bare existence, of `.stopguard/` — a read-only dir
+  previously made the loop-guard polarity decision on a false premise
+  (existence said markable; the write then failed). Case 4n pins it both ways
+  (read-only → pre-#116 stand-down; writable → gate runs), root-skipped per
+  #109's counted-skip rule; mutation red on the existence-only revert.
+  `FLOOR_shell` 857 → 858.
 
 - **Fixed #123 — the #116 `.stopguard` marker's three gaps.** All three
   measured against `b61217b` by the review session that filed the issue, and
