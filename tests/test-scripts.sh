@@ -3418,23 +3418,50 @@ rm -rf "$GHOSTPLUG" "$GHOSTP" "$CTLP"
 echo "-- Case: SessionStart replaces bin/ CLIs ATOMICALLY — the inode changes (F5)"
 # The upgrade used to write each CLI in place with cp (O_TRUNC, same inode), so a concurrently-executing bash
 # could be truncated mid-run (F5). Fix writes a temp file then mv's it over the target, swapping the inode.
+# `stat` has two incompatible spellings and this suite runs on both executors:
+# BSD/macOS is `stat -f '%i'`, GNU/Linux is `stat -c '%i'` (where `-f` means
+# FILESYSTEM and errors out — but NOT empty-handed: the error goes to stderr
+# and the filesystem TABLE goes to stdout, so `$(stat -f '%i' f 2>/dev/null)`
+# on GNU captured 237 bytes of `Blocks: … Free: N` (measured 2026-09-06,
+# rootful Linux). Two calls to it differ exactly when the free counters
+# drifted between them, so the "NEW inode" check passed on DRIFT (the upgrade
+# writes files) and the steady-state check passed when nothing moved — and
+# went red on lokaal (task 490) when something did. A nondeterministic pass,
+# which is worse than a vacuous one: it is green on one Linux run and red on
+# the next with no code change. One helper, probed once against a real file.
+_ino() {  # _ino <path> → inode number, or empty if neither spelling works
+  stat -c '%i' "$1" 2>/dev/null || stat -f '%i' "$1" 2>/dev/null
+}
+# The helper's own control, and it asserts a SHAPE for the reason above: a
+# broken probe does not reliably return "" — the GNU `-f` case returned a
+# whole filesystem table, and comparing two tables is a coin flip on whether
+# the free counters moved. So the checks below cannot be trusted to fail when
+# the probe is wrong; only "is this a NUMBER" refuses a table, an empty
+# string, and an error message alike, before anything compares them.
+# NOT `$(case … )`: bash 3.2 mis-parses a `case` with a `|` pattern inside a
+# command substitution — it breaks at the glob bar and hands `check` the rest
+# of the line as its word. The suite already carries this scar in the
+# gate-suite case; assign the verdict first, substitute only the variable.
+_ino_probe="$(_ino "$SCRIPTS/ops-verdict.sh")"
+case "$_ino_probe" in ''|*[!0-9]*) _ino_rc=1 ;; *) _ino_rc=0 ;; esac
+check "F5 the inode probe returns a number on this executor (control)" "$_ino_rc"
 INOP="$(newproj)"
 ( cd "$INOP" && git init -q . 2>/dev/null && "$BASH_ABS" "$SCRIPTS/ops-init.sh" >/dev/null 2>&1 )
 # Plant an OLD copy, note its inode, and force an upgrade via a stale stamp.
 printf '#!/usr/bin/env bash\n# STALE COPY\n' > "$INOP/.operator/bin/ops-verdict.sh"
 printf '0.1.0-old\n' > "$INOP/.operator/.version"
-_old_ino="$(stat -f '%i' "$INOP/.operator/bin/ops-verdict.sh" 2>/dev/null)"
+_old_ino="$(_ino "$INOP/.operator/bin/ops-verdict.sh")"
 sed "s|<tmp>|$INOP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
-_new_ino="$(stat -f '%i' "$INOP/.operator/bin/ops-verdict.sh" 2>/dev/null)"
+_new_ino="$(_ino "$INOP/.operator/bin/ops-verdict.sh")"
 check "F5 the upgraded bin/ CLI has a NEW inode (atomic replace, not in-place truncation)" \
   "$([ -n "$_old_ino" ] && [ -n "$_new_ino" ] && [ "$_old_ino" != "$_new_ino" ] && echo 0 || echo 1)"
 check "F5 the upgraded bin/ CLI is byte-identical to the plugin's copy" \
   "$(cmp -s "$INOP/.operator/bin/ops-verdict.sh" "$SCRIPTS/ops-verdict.sh" && echo 0 || echo 1)"
 # Steady state (nothing stale): no rewrite, so the inode is stable — proving the inode change above was a real upgrade.
-_cur_ino="$(stat -f '%i' "$INOP/.operator/bin/ops-verdict.sh" 2>/dev/null)"
+_cur_ino="$(_ino "$INOP/.operator/bin/ops-verdict.sh")"
 sed "s|<tmp>|$INOP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
 check "F5 steady-state (version matches) does NOT rewrite, so the inode is stable" \
-  "$([ -n "$_cur_ino" ] && [ "$_cur_ino" = "$(stat -f '%i' "$INOP/.operator/bin/ops-verdict.sh" 2>/dev/null)" ] && echo 0 || echo 1)"
+  "$([ -n "$_cur_ino" ] && [ "$_cur_ino" = "$(_ino "$INOP/.operator/bin/ops-verdict.sh")" ] && echo 0 || echo 1)"
 rm -rf "$INOP"
 
 echo "-- Case: the SessionStart v1→v2 migration announces itself (#32)"
@@ -4947,6 +4974,377 @@ bash "$GSD/repo/scripts/gate-suite.sh" --check shell "$GSD/at.log" >/dev/null 2>
 check "gate-suite: an ABSENT floors.env is refused (rc 2) — the floors are the gate" \
   "$([ $? -eq 2 ] && echo 0 || echo 1)"
 rm -rf "$GSD"
+
+
+########################################################################
+echo "-- Case: base-gate.sh — the enforcer judged by code the PR cannot edit (#108)"
+# Every rung above runs from the branch under test; base-gate.sh is the
+# trusted half. It reads the BASE copy of the enforcer through `git show`
+# and refuses, hard, when the PR lowers a floor, drops a check from the
+# CHECKS registry, deletes an enforcer file, or shrinks tests/ wholesale.
+# Each arm is mutation-checked RED here on a scratch repo — a pin with no
+# red run is a hypothesis (and per #111, each red below names its gate).
+# The in-place rewrite (body neutered, registry intact) is deliberately NOT
+# an arm: that is #112's holdout, and the delta report routes it to the
+# human merge instead of pretending trusted code can adjudicate rewrites.
+if command -v git >/dev/null 2>&1; then
+BG="$SCRIPTS/base-gate.sh"
+BGD="$(mktemp -d "${TMPDIR:-/tmp}/basegate.XXXXXX")"
+( cd "$BGD" && git init -q . && git config user.email t@example.com && git config user.name t ) >/dev/null 2>&1
+mkdir -p "$BGD/scripts" "$BGD/tests"
+# A minimal enforcer shape: enough registry+floors for every arm to bite.
+printf 'CHECKS = (\n    check_hook,\n    check_floors,\n)\n' > "$BGD/scripts/validate_plugin.py"
+printf 'FLOOR_python=10\nFLOOR_shell=20\n' > "$BGD/tests/floors.env"
+printf 'summary line\n' > "$BGD/tests/test-one.sh"
+# gate-suite.sh must exist AT BASE or the delete mutant has nothing to delete:
+# base and pr would agree and the case would pass for the wrong reason.
+printf '#!/usr/bin/env bash\n: the wrapper\n' > "$BGD/scripts/gate-suite.sh"
+# A CI file at the base, running two rungs: the rung arm (3b) holds that set.
+# Comment header on purpose — the arm must read the comment-stripped view.
+mkdir -p "$BGD/.github/workflows"
+printf '# ci\nsteps:\n  - run: bash scripts/gate-suite.sh shell\n  - run: bash scripts/gate-suite.sh python\n' > "$BGD/.github/workflows/validate.yml"
+git -C "$BGD" add -A >/dev/null 2>&1
+git -C "$BGD" commit -qm base
+BG_BASE="$(git -C "$BGD" rev-parse HEAD)"
+
+bg_run() {  # bg_run <branch> → sets BG_OUT/BG_RC against the scratch repo
+  BG_OUT="$(bash "$BG" --base "$BG_BASE" --pr "$1" --repo "$BGD" 2>&1)"; BG_RC=$?
+}
+# Whole-file rewrites, never `sed -i`: the two spellings are mutually
+# exclusive (`sed -i ''` is macOS, `sed -i` is GNU) and this suite runs on
+# both executors. printf is the portable spelling and needs no temp dance.
+bg_floors() { printf 'FLOOR_python=%s\nFLOOR_shell=%s\n' "$1" "$2" > "$BGD/tests/floors.env"; }
+bg_checks() { printf 'CHECKS%s = (\n%s)\n' "${2:-}" "$1" > "$BGD/scripts/validate_plugin.py"; }
+BG_CHECKS_BASE='    check_hook,
+    check_floors,
+'
+
+# --- control first: identical refs are green ---
+bg_run "$BG_BASE"
+check "base-gate: identical base and pr refs PASS (control)" "$BG_RC"
+
+# --- arm 1: floors may not go down --------------------------------------
+git -C "$BGD" checkout -q -b m-floor
+bg_floors 10 1
+git -C "$BGD" commit -qam m1
+bg_run m-floor
+check "base-gate: a LOWERED floor is refused (rc 1)" \
+  "$([ "$BG_RC" = 1 ] && echo 0 || echo 1)"
+check "base-gate: the refusal names FLOOR_shell and both numbers" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'FLOOR_shell lowered 20 -> 1' && echo 0 || echo 1)"
+# a RAISED floor is the ratchet working, not a violation
+git -C "$BGD" checkout -q -b g-raise "$BG_BASE"
+bg_floors 10 99
+git -C "$BGD" commit -qam g1
+bg_run g-raise
+check "base-gate: a RAISED floor passes (the ratchet only forbids down)" "$BG_RC"
+# a REMOVED floor line is a deletion, not an increase
+git -C "$BGD" checkout -q -b m-nofloor "$BG_BASE"
+grep -v '^FLOOR_python=' "$BGD/tests/floors.env" > "$BGD/tmp" && mv "$BGD/tmp" "$BGD/tests/floors.env"
+git -C "$BGD" commit -qam m2
+bg_run m-nofloor
+check "base-gate: a REMOVED floor line is refused" \
+  "$([ "$BG_RC" = 1 ] && echo 0 || echo 1)"
+
+# --- arm 2: the CHECKS registry may not shrink ---------------------------
+git -C "$BGD" checkout -q -b m-reg "$BG_BASE"
+bg_checks '    check_floors,
+'
+git -C "$BGD" commit -qam m3
+bg_run m-reg
+check "base-gate: a check REMOVED from CHECKS is refused (rc 1)" \
+  "$([ "$BG_RC" = 1 ] && echo 0 || echo 1)"
+check "base-gate: the refusal names the dropped check" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'check_hook removed from the registry' && echo 0 || echo 1)"
+# an ADDED check is growth, allowed
+git -C "$BGD" checkout -q -b g-add "$BG_BASE"
+bg_checks "${BG_CHECKS_BASE}    check_new,
+"
+git -C "$BGD" commit -qam g2
+bg_run g-add
+check "base-gate: a check ADDED to CHECKS passes" "$BG_RC"
+# the registry renamed away is the empty-registry refusal
+git -C "$BGD" checkout -q -b m-noreg "$BG_BASE"
+bg_checks "$BG_CHECKS_BASE" _X
+git -C "$BGD" commit -qam m4
+bg_run m-noreg
+check "base-gate: no CHECKS registry at the pr ref is refused" \
+  "$([ "$BG_RC" = 1 ] && echo 0 || echo 1)"
+
+# --- arm 3: enforcer files may not be DELETED -----------------------------
+# The arm asks the TREE (`ls-tree` at the pr ref), not the diff's status
+# letter. Two attacks walked past the letter-keyed first draft, both measured
+# 2026-09-05 and both cased below: a RENAME reports R100 and never D, and a
+# tests/ SWAP (one deleted, one added) keeps a count equal.
+git -C "$BGD" checkout -q -b m-delwrap "$BG_BASE"
+git -C "$BGD" rm -q scripts/gate-suite.sh && git -C "$BGD" commit -qm m5
+bg_run m-delwrap
+check "base-gate: a DELETED gate-suite.sh is refused by name" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'GONE: scripts/gate-suite.sh' && echo 0 || echo 1)"
+git -C "$BGD" checkout -q -b m-delvp "$BG_BASE"
+git -C "$BGD" rm -q scripts/validate_plugin.py && git -C "$BGD" commit -qm m6
+bg_run m-delvp
+check "base-gate: a DELETED validate_plugin.py is refused by name" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'GONE: scripts/validate_plugin.py' && echo 0 || echo 1)"
+git -C "$BGD" checkout -q -b m-deltest "$BG_BASE"
+git -C "$BGD" rm -q tests/test-one.sh && git -C "$BGD" commit -qm m7
+bg_run m-deltest
+check "base-gate: a deleted tests/ file is refused" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'GONE: tests/test-one.sh' && echo 0 || echo 1)"
+
+# RENAME, not delete: git reports R100 and the path is still gone from the
+# tree. `check_suite_floors` requires gate-suite.sh at its exact path in every
+# CI file, so moving it IS removing it whatever git calls the edit.
+git -C "$BGD" checkout -q -b m-renwrap "$BG_BASE"
+git -C "$BGD" mv scripts/gate-suite.sh scripts/gate-suite-old.sh
+git -C "$BGD" commit -qm m9
+bg_run m-renwrap
+check "base-gate: a RENAMED gate-suite.sh is refused (R is not D, the path is gone)" \
+  "$([ "$BG_RC" = 1 ] && echo 0 || echo 1)"
+
+# SWAP: delete a real suite file, add a junk one. The count is unchanged and
+# the coverage is gone — set membership is the question, not cardinality.
+git -C "$BGD" checkout -q -b m-swaptest "$BG_BASE"
+git -C "$BGD" rm -q tests/test-one.sh
+printf 'junk\n' > "$BGD/tests/zz-junk.sh"
+git -C "$BGD" add -A >/dev/null 2>&1 && git -C "$BGD" commit -qm m10
+bg_run m-swaptest
+check "base-gate: a tests/ SWAP (count unchanged) is still refused" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'GONE: tests/test-one.sh' && echo 0 || echo 1)"
+
+# The DUPLICATE-KEY bypass, found by an adversarial verifier 2026-09-05 and
+# a genuine fail-OPEN: gate-suite.sh sources this file with `.`, so the LAST
+# assignment is the one enforced. The first draft's grep collected both
+# values, `[ -lt ]` got a two-line operand, printed "integer expression
+# expected" to stderr, evaluated falsy, and the run exited 0.
+git -C "$BGD" checkout -q -b m-dupfloor "$BG_BASE"
+printf 'FLOOR_python=10\nFLOOR_shell=20\nFLOOR_shell=1\n' > "$BGD/tests/floors.env"
+git -C "$BGD" commit -qam m11
+bg_run m-dupfloor
+check "base-gate: a DUPLICATE floor key (decoy high, real low) is refused" \
+  "$([ "$BG_RC" = 1 ] && echo 0 || echo 1)"
+check "base-gate: the duplicate-key refusal names the EFFECTIVE (last) value" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'declared 2 times' && echo 0 || echo 1)"
+check "base-gate: the duplicate-key path does not emit a shell arithmetic error" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'integer expression expected' && echo 1 || echo 0)"
+
+# --- arm 4: the delta report names what a human must adjudicate -----------
+bg_run m-reg
+check "base-gate: an enforcer-core touch is REPORTED for the human merge" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'delta report' && printf '%s' "$BG_OUT" | grep -q 'M scripts/validate_plugin.py' && echo 0 || echo 1)"
+
+# --- arm 5: no forged marker in the diff ----------------------------------
+# The marker must be planted OUTSIDE tests/ — a suite asserting the gate's own
+# refusal text necessarily contains the string, so tests/ and base-gate.sh are
+# exempt (measured: the unscoped arm went red on the very PR that added these
+# cases, which is the false positive that teaches people to ignore an alarm).
+git -C "$BGD" checkout -q -b m-forge "$BG_BASE"
+printf 'BASE_GATE_PASSED: forged\n' > "$BGD/NOTES.md"
+git -C "$BGD" add -A >/dev/null 2>&1 && git -C "$BGD" commit -qm m8
+bg_run m-forge
+check "base-gate: a BASE_GATE_* marker planted in the diff is refused" \
+  "$([ "$BG_RC" = 1 ] && echo 0 || echo 1)"
+
+# The exemption's own control: the SAME marker inside tests/ must NOT fire,
+# or every PR that touches these cases is red for the wrong reason.
+git -C "$BGD" checkout -q -b m-forge-intests "$BG_BASE"
+printf '\ncheck "asserts BASE_GATE_PASSED: appears" 0\n' >> "$BGD/tests/test-one.sh"
+git -C "$BGD" commit -qam m8b
+bg_run m-forge-intests
+check "base-gate: the same marker INSIDE tests/ is not a forgery (control)" \
+  "$([ "$BG_RC" = 0 ] && echo 0 || echo 1)"
+
+# --- arm 1, the SHAPE: three fail-opens of the value compare (PR #125 review)
+# gate-suite.sh SOURCES floors.env, so every line is executed; the compare
+# reads `FLOOR_x=<digits>` lines and the trailing `[0-9]+$`. Each of these
+# passed the shipped gate with BASE_GATE_PASSED, exit 0, while the sourced
+# value was 1 (measured 2026-09-05, scratch repo). Red in the bash suite.
+git -C "$BGD" checkout -q -b m-floorcomment "$BG_BASE"
+printf 'FLOOR_python=10\nFLOOR_shell=1 # 20\n' > "$BGD/tests/floors.env"
+git -C "$BGD" commit -qam m14
+bg_run m-floorcomment
+check "base-gate: a floor hidden behind a TRAILING COMMENT (FLOOR_shell=1 # 20) is refused" \
+  "$([ "$BG_RC" = 1 ] && echo 0 || echo 1)"
+check "base-gate: the shape refusal names the offending line" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'first offender: FLOOR_shell=1 # 20' && echo 0 || echo 1)"
+git -C "$BGD" checkout -q -b m-floorarith "$BG_BASE"
+# `\044` is `$` in a printf FORMAT — the fixture wants a literal `$((1))` in
+# the file and shellcheck reads a `$(` inside single quotes as SC2016.
+printf 'FLOOR_python=10\nFLOOR_shell=20\nFLOOR_shell=\044((1))\n' > "$BGD/tests/floors.env"
+git -C "$BGD" commit -qam m15
+bg_run m-floorarith
+check "base-gate: a floor rebound through ARITHMETIC (FLOOR_shell=\$((1)) after a kept 20) is refused" \
+  "$([ "$BG_RC" = 1 ] && echo 0 || echo 1)"
+# The shape arm's control: the real floors.env is a comment header, blank
+# lines and four exact assignments — that shape must pass, or the arm is red
+# on every honest floor raise.
+git -C "$BGD" checkout -q -b g-floorshape "$BG_BASE"
+printf '# THE RATCHET — header prose\n#\n# FLOOR_shell 20 -> 21: one case added\n\nFLOOR_python=10\nFLOOR_shell=21\n' > "$BGD/tests/floors.env"
+git -C "$BGD" commit -qam g3
+bg_run g-floorshape
+check "base-gate: comments, blank lines and exact assignments PASS the shape arm (control)" \
+  "$([ "$BG_RC" = 0 ] && echo 0 || echo 1)"
+
+# --- arm 2, ONE BINDING: the registry rebound after the tuple ---------------
+# The extractor reads the tuple block; python runs the LAST binding. A
+# `CHECKS = (check_floors,)` after the full tuple left the block intact and
+# ran one check — BASE_GATE_PASSED on the shipped gate (measured 2026-09-05).
+git -C "$BGD" checkout -q -b m-rebind "$BG_BASE"
+printf 'CHECKS = (\n    check_hook,\n    check_floors,\n)\nCHECKS = (check_floors,)\n' > "$BGD/scripts/validate_plugin.py"
+git -C "$BGD" commit -qam m16
+bg_run m-rebind
+check "base-gate: CHECKS REBOUND after the tuple is refused (python runs the last binding)" \
+  "$([ "$BG_RC" = 1 ] && echo 0 || echo 1)"
+check "base-gate: the rebind refusal counts the bindings" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'bound 2 times' && echo 0 || echo 1)"
+
+# --- arm 3b, the RUNG SET: a CI file may not drop a rung it runs at the base
+# check_suite_floors pins this from the PR's OWN validator, so a PR that
+# drops the rung and the pin together passes its own run; the base copy had
+# never read a CI file at all (measured 2026-09-05: rung removed, PASSED).
+git -C "$BGD" checkout -q -b m-rung "$BG_BASE"
+printf '# ci\nsteps:\n  - run: bash scripts/gate-suite.sh python\n' > "$BGD/.github/workflows/validate.yml"
+git -C "$BGD" commit -qam m17
+bg_run m-rung
+check "base-gate: a RUNG removed from a CI file is refused, named" \
+  "$(printf '%s' "$BG_OUT" | grep -q "RUNG: 'gate-suite.sh shell' is run by .github/workflows/validate.yml at the base" && echo 0 || echo 1)"
+check "base-gate: the CI file is in the delta report (enforcer core)" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'M .github/workflows/validate.yml' && echo 0 || echo 1)"
+# A rung COMMENTED OUT is a rung removed — the arm reads the stripped view.
+git -C "$BGD" checkout -q -b m-rungcomment "$BG_BASE"
+printf '# ci\nsteps:\n  # - run: bash scripts/gate-suite.sh shell\n  - run: bash scripts/gate-suite.sh python\n' > "$BGD/.github/workflows/validate.yml"
+git -C "$BGD" commit -qam m18
+bg_run m-rungcomment
+check "base-gate: a rung COMMENTED OUT in a CI file counts as removed" \
+  "$([ "$BG_RC" = 1 ] && echo 0 || echo 1)"
+git -C "$BGD" checkout -q -b m-delci "$BG_BASE"
+git -C "$BGD" rm -q .github/workflows/validate.yml && git -C "$BGD" commit -qm m19
+bg_run m-delci
+check "base-gate: a DELETED CI file is refused by name" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'GONE: .github/workflows/validate.yml' && echo 0 || echo 1)"
+# Growth is allowed: a rung ADDED to the CI file passes.
+git -C "$BGD" checkout -q -b g-rungadd "$BG_BASE"
+printf '# ci\nsteps:\n  - run: bash scripts/gate-suite.sh shell\n  - run: bash scripts/gate-suite.sh python\n  - run: bash scripts/gate-suite.sh compress\n' > "$BGD/.github/workflows/validate.yml"
+git -C "$BGD" commit -qam g4
+bg_run g-rungadd
+check "base-gate: a rung ADDED to a CI file passes (control)" \
+  "$([ "$BG_RC" = 0 ] && echo 0 || echo 1)"
+# A forge NOT configured at the base makes no claim: the second CI file is
+# absent at both refs in this fixture and the arm must stay silent about it.
+check "base-gate: a CI file absent at BOTH refs is not a finding (control)" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'forgejo' && echo 1 || echo 0)"
+
+# --- fail-closed: unreadable base -----------------------------------------
+# The MESSAGE is asserted, not only the code. rc 2 alone is vacuous here:
+# deleting the base-ref guard still yields rc 2, from the `git diff` failure
+# three arms downstream — measured, and the case passed with the guard gone.
+# The empty-BASE_SHA path is also why the guard cannot be dropped as
+# redundant: `git show ":<path>"` with an empty sha reads the INDEX, which
+# exists, so the readable-base check downstream says yes to nothing.
+BG_OUT="$(bash "$BG" --base no-such-ref --pr "$BG_BASE" --repo "$BGD" 2>&1)"; BG_RC=$?
+check "base-gate: an unresolvable base ref is rc 2 (fail closed, no fallback)" \
+  "$([ "$BG_RC" = 2 ] && echo 0 || echo 1)"
+check "base-gate: the base-ref refusal names the REF, not a downstream failure" \
+  "$(printf '%s' "$BG_OUT" | grep -q "base ref 'no-such-ref' does not resolve" && echo 0 || echo 1)"
+BG_OUT="$(bash "$BG" --base "$BG_BASE" --pr no-such-ref --repo "$BGD" 2>&1)"; BG_RC=$?
+check "base-gate: an unresolvable pr ref is rc 2" \
+  "$([ "$BG_RC" = 2 ] && echo 0 || echo 1)"
+check "base-gate: the pr-ref refusal names the REF" \
+  "$(printf '%s' "$BG_OUT" | grep -q "pr ref 'no-such-ref' does not resolve" && echo 0 || echo 1)"
+# rc 2 alone cannot tell these apart — `die()` is the ONLY producer of rc 2
+# and it has seven call sites, so every case below asserts its own MESSAGE.
+# That lesson was learned two cases up (the base-ref guard) and not applied
+# here until a review pointed at the gap.
+BG_OUT="$(bash "$BG" --bogus 2>&1)"; BG_RC=$?
+check "base-gate: an unknown flag is rc 2 (usage)" \
+  "$([ "$BG_RC" = 2 ] && echo 0 || echo 1)"
+check "base-gate: the unknown-flag refusal names the FLAG" \
+  "$(printf '%s' "$BG_OUT" | grep -q "unknown argument '--bogus'" && echo 0 || echo 1)"
+
+# A flag whose value is missing must not swallow the next token as its value.
+BG_OUT="$(bash "$BG" --base 2>&1)"; BG_RC=$?
+check "base-gate: --base with no value is rc 2, named" \
+  "$([ "$BG_RC" = 2 ] && printf '%s' "$BG_OUT" | grep -q 'requires a ref' && echo 0 || echo 1)"
+
+# The equals form is a separate parse arm and was entirely unexercised.
+BG_OUT="$(bash "$BG" "--base=$BG_BASE" "--pr=$BG_BASE" "--repo=$BGD" 2>&1)"; BG_RC=$?
+check "base-gate: the --flag=value form parses (control for the = arms)" \
+  "$([ "$BG_RC" = 0 ] && echo 0 || echo 1)"
+
+# A COMMENTED-OUT registry entry shrinks the registry while leaving the token
+# in the raw text — python sees one fewer callable, a token grep sees none of
+# that. Found by review 2026-09-05; the extractor now strips comments first,
+# the same discipline validate_plugin.py's shell_code() applies.
+git -C "$BGD" checkout -q -b m-commentcheck "$BG_BASE"
+bg_checks '    check_hook,
+    # check_floors,
+'
+git -C "$BGD" commit -qam m12
+bg_run m-commentcheck
+check "base-gate: a COMMENTED-OUT registry entry counts as removed" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'check_floors removed from the registry' && echo 0 || echo 1)"
+
+# THE ANTI-WORMHOLE'S OWN FAILURE MODE. `git diff | grep -q` cannot tell "no
+# marker" from "the diff never ran" — grep on empty input exits 1 either way.
+# Reproduced by removing a blob (the shape a truncated shallow fetch takes,
+# and this job fetches the PR head shallowly): the full-content diff dies 128
+# while --name-status still succeeds, so every other arm carries on happily.
+# The refusal must be rc 2, not a pass.
+git -C "$BGD" checkout -q -b m-corrupt "$BG_BASE"
+printf '#!/usr/bin/env bash\n: modified\n' > "$BGD/scripts/gate-suite.sh"
+git -C "$BGD" commit -qam m13
+_bg_pr="$(git -C "$BGD" rev-parse m-corrupt)"
+_bg_blob="$(git -C "$BGD" rev-parse "m-corrupt:scripts/gate-suite.sh")"
+_bg_obj="$BGD/.git/objects/${_bg_blob%"${_bg_blob#??}"}/${_bg_blob#??}"
+if [ -f "$_bg_obj" ]; then
+  rm -f "$_bg_obj"
+  BG_OUT="$(bash "$BG" --base "$BG_BASE" --pr "$_bg_pr" --repo "$BGD" 2>&1)"; BG_RC=$?
+  check "base-gate: a full-content diff FAILURE is rc 2, never 'no forged marker'" \
+    "$([ "$BG_RC" = 2 ] && echo 0 || echo 1)"
+  check "base-gate: that refusal names the diff, not the marker" \
+    "$(printf '%s' "$BG_OUT" | grep -q 'full content) failed' && echo 0 || echo 1)"
+else
+  # A packed object cannot be removed this way; the case is skipped rather
+  # than silently passing against a repo it never corrupted.
+  skip "base-gate: full-content diff failure (blob is packed, not loose — cannot corrupt in place)"
+  skip "base-gate: full-content diff refusal message (same reason)"
+fi
+
+# --- fail-closed: the base COPY, not just the ref --------------------------
+# The header claims "FAILS CLOSED everywhere"; these are the branches that
+# claim covers and nothing pinned. A base commit missing the validator, or
+# carrying one with no CHECKS registry, must REFUSE — not read as "nothing
+# to compare".
+BGE="$(mktemp -d "${TMPDIR:-/tmp}/basegate2.XXXXXX")"
+( cd "$BGE" && git init -q . && git config user.email t@example.com && git config user.name t ) >/dev/null 2>&1
+mkdir -p "$BGE/scripts" "$BGE/tests"
+printf 'FLOOR_shell=5\n' > "$BGE/tests/floors.env"
+printf 'nothing here\n' > "$BGE/scripts/other.txt"
+git -C "$BGE" add -A >/dev/null 2>&1 && git -C "$BGE" commit -qm noval
+BGE_BASE="$(git -C "$BGE" rev-parse HEAD)"
+BG_OUT="$(bash "$BG" --base "$BGE_BASE" --pr "$BGE_BASE" --repo "$BGE" 2>&1)"; BG_RC=$?
+check "base-gate: a base ref with NO validate_plugin.py is rc 2 (fail closed)" \
+  "$([ "$BG_RC" = 2 ] && echo 0 || echo 1)"
+check "base-gate: that refusal names the unreadable trusted copy" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'cannot read scripts/validate_plugin.py at the base ref' && echo 0 || echo 1)"
+# present but registry-less: the shape the gate does not understand
+printf 'def check_a():\n    pass\n' > "$BGE/scripts/validate_plugin.py"
+git -C "$BGE" add -A >/dev/null 2>&1 && git -C "$BGE" commit -qm noreg
+BGE_B2="$(git -C "$BGE" rev-parse HEAD)"
+BG_OUT="$(bash "$BG" --base "$BGE_B2" --pr "$BGE_B2" --repo "$BGE" 2>&1)"; BG_RC=$?
+check "base-gate: a base validator with NO CHECKS registry is rc 2 (fail closed)" \
+  "$([ "$BG_RC" = 2 ] && echo 0 || echo 1)"
+check "base-gate: that refusal says the trusted copy is not a shape it understands" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'no CHECKS registry at the base ref' && echo 0 || echo 1)"
+# --repo pointing at something that is not a git worktree
+BG_OUT="$(bash "$BG" --base "$BGE_B2" --pr "$BGE_B2" --repo "$BGE/scripts" 2>&1)"; BG_RC=$?
+check "base-gate: --repo on a non-worktree is rc 2, named" \
+  "$([ "$BG_RC" = 2 ] && printf '%s' "$BG_OUT" | grep -q 'is not a git worktree' && echo 0 || echo 1)"
+rm -rf "$BGE"
+rm -rf "$BGD"
+else
+  skip "base-gate (#108): git unavailable — the whole case is skipped"
+fi
 
 
 if [ "$FAIL" -ne 0 ]; then

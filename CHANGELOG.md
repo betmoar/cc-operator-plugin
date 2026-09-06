@@ -9,6 +9,117 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.11] - 2026-09-05
+
+- **The validator no longer grades the pull request that edits it (#108).**
+  Every CI rung ran `scripts/validate_plugin.py` from the PR's own checkout,
+  so a branch that lowered a floor, dropped a check from `CHECKS`, or deleted
+  `gate-suite.sh` supplied the code that judged it. This is the shape of the
+  sibling project's worst incident: a guard that SAW both violations, NAMED
+  them, and exited 0. `scripts/base-gate.sh` is the trusted half — it runs
+  from the BASE ref via a `pull_request_target` job, checks out the base sha,
+  and reads the PR only through `git show`/`git diff`; PR bytes are never on
+  disk and never executed. The hard-red arms, as they stand after the review
+  rounds below: a floor lowered, removed, or written in a shape the runtime
+  and the reader disagree about; a check dropped from the registry or the
+  registry rebound after it; an enforcer file gone from the PR ref (deleted,
+  renamed, moved) or any `tests/` path gone; a `gate-suite.sh` rung dropped
+  from a CI file; and a forged `BASE_GATE_*` marker planted in the diff. It fails
+  CLOSED on an unresolvable base ref — falling back to the branch's copy is
+  the original bug wearing a fallback's clothes.
+- **What it deliberately does not do.** A check REWRITTEN in place (body
+  neutered, registry intact) is NOT an arm: trusted code cannot separate that
+  from legitimate pin evolution, which this repo does in nearly every PR, and
+  a gate that red-flags both is one nobody reads. Those touches ride the
+  DELTA REPORT to the human merge instead — no auto-merge exists here. #112
+  (the holdout) is the structural version of that gap and is unchanged.
+- **The first draft of this change shipped the gate under the WRONG EVENT,
+  and only a real forge run found it.** The job was guarded with
+  `if: github.event_name == 'pull_request'` — under which the workflow file
+  and `base-gate.sh` itself both come from the PR head, so the gate judged
+  the PR with the PR's own code, while `pull_request_target` (the trusted
+  event, the entire reason the job exists) was skipped. Every local gate
+  passed: `act` cannot parse the Forgejo `uses:` form and no local run has a
+  PR context. Measured on lokaal, task 483 (2026-09-05), the job ran under
+  the untrusted event. `check_base_gate` now pins the job's own `if:` and
+  reports the string it found — both spellings read as deliberate in review.
+- **A bootstrap state, from the same run.** A `pull_request_target` workflow
+  is always read from the BASE branch, so until this lands on the default
+  branch the base has no `base-gate.sh` and the step exits 127 — which reads
+  as a broken runner, not "there is no gate here yet". Both copies now report
+  `BASE_GATE_BOOTSTRAP` and pass: with no trusted enforcer at the base there
+  is nothing to weaken, and failing closed would block the very PR that adds
+  the gate. Self-limiting; after the merge the base always carries it.
+- **Five bypasses found by a five-lens review panel.**
+  All three passed the gate before the fix, all three are now red with the
+  mutation recorded: (a) a floor hidden behind a DUPLICATE key — the file is
+  sourced, so the last assignment is the effective one, and the draft's
+  two-line operand made `[ -lt ]` print "integer expression expected" to
+  stderr and evaluate FALSY, a genuine fail-open; (b) an enforcer file
+  RENAMED rather than deleted (git reports `R`, never `D`, and the path CI
+  invokes is gone all the same); (c) a tests/ SWAP — one file deleted, one
+  junk file added — holding the count equal while coverage shrank. The root
+  cause of (b) and (c) was one design error: arm 3 reasoned about the diff's
+  status LETTER instead of the resulting TREE. It now asks `ls-tree` at the
+  PR ref, which makes all three shapes the same question. Then (d) a
+  COMMENTED-OUT registry entry — `# check_b,` leaves the token in the raw
+  text while python sees one fewer callable, so a token grep reported a
+  registry that had actually shrunk; the extractor strips comments first now,
+  the same discipline `shell_code()` applies on the python side. And (e) the
+  anti-wormhole arm piped `git diff` straight into `grep -q`, the one git
+  call in the file with no failure check: `grep -q` on empty input exits 1
+  whether the diff found no marker or never ran. Reproduced by removing a
+  blob — the shape a truncated shallow fetch takes, which is how this job
+  fetches the PR head — the full diff died 128, the arm stood down, and the
+  run reported PASS while an enforcer file was modified. It now refuses.
+- **The marker arm is scoped to what a human reads as evidence.** Its first
+  version went red on the very PR that added its own test cases: a suite
+  asserting the gate's refusal text necessarily contains the marker. `tests/`
+  and this script are exempt, and the match anchors on the emitted line shape
+  (`BASE_GATE_PASSED:`) rather than the bare token — naming the marker is not
+  forging it. A false positive that fires on every PR touching its own tests
+  is how an alarm gets ignored, so the exemption carries its own control.
+- **Two vacuities found by mutation-checking this change's own tests.** The
+  fail-closed case asserted `rc 2` alone, and deleting the base-ref guard
+  still yields `rc 2` three arms downstream (from the `git diff` failure) —
+  it now asserts the MESSAGE names the ref. And `check_base_gate`'s job-block
+  locator dropped each file's last line (`"\n".join(splitlines())` loses the
+  trailing newline), so a job ending a file lost its final step; the fix is
+  mutation-checked red in `BaseGateTest`.
+- **A test that was NONDETERMINISTIC on Linux — green or red with no code
+  change.** `stat -f '%i'` is BSD/macOS; GNU `stat` reads `-f` as FILESYSTEM,
+  errors on stderr, and still prints the filesystem TABLE on stdout, so the
+  captured value was 237 bytes of `Blocks: … Free: N`, not empty (measured in
+  the PR #125 review, rootful Linux, where all three F5 checks were GREEN on
+  the old code). Two captures differ exactly when the free counters drifted
+  between them: the "new inode" check passed on drift and the steady-state
+  check passed only when nothing moved — red on lokaal (task 490), green in
+  the review container, same bytes. The probe takes both spellings now and
+  carries its own control asserting it returns a NUMBER, so a dead or
+  wrong-shaped probe fails 3 cases loudly (mutation-checked: `_ino` emptied
+  → 3 red in the bash suite). Found by pushing the release candidate to the
+  second executor, not by any local run.
+
+- **Three more fail-opens, found by the PR review (all `BASE_GATE_PASSED`,
+  exit 0, on the shipped gate; each reproduced before it was fixed).** (f) The
+  floor arm read VALUES and the file is SOURCED: `FLOOR_shell=1 # 20`
+  satisfied the trailing `[0-9]+$` with the comment, and `FLOOR_shell=$((1))`
+  after a kept `FLOOR_shell=20` was invisible to the `=[0-9]+` extractor —
+  both enforce 1 at runtime. The arm now closes the SHAPE, not the instances:
+  at the PR ref a floors.env line is blank, a comment, or exactly
+  `FLOOR_<name>=<digits>`, anything else red. (g) The registry arm read the
+  tuple BLOCK and python runs the LAST binding: `CHECKS = (check_x,)` after
+  the full tuple shrank the registry that runs with the block intact — the
+  duplicate-key bypass one file over. One binding at column 0, or red. (h)
+  No arm read a CI file at all: a PR that drops `gate-suite.sh shell` from
+  validate.yml and the `check_suite_floors` pin in the same commit passes its
+  own run, and the base copy never looked. Arm 3b now holds each CI file's
+  rung set from the base (comment-stripped, per forge; a file absent at the
+  base makes no claim, absent only at the PR ref is red), and the workflow
+  dirs are enforcer core for the delta report. Twelve cases, each arm mutated
+  red in the bash suite; floors shell 898 → 910.
+- Floors raised in the same commit: shell 862 → 881, python 340 → 353.
+
 ## [0.11.10] - 2026-09-05
 
 - **CI was red on one test, and the cause was this file.** `test_release_gate.
