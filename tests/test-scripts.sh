@@ -3420,10 +3420,15 @@ echo "-- Case: SessionStart replaces bin/ CLIs ATOMICALLY — the inode changes 
 # could be truncated mid-run (F5). Fix writes a temp file then mv's it over the target, swapping the inode.
 # `stat` has two incompatible spellings and this suite runs on both executors:
 # BSD/macOS is `stat -f '%i'`, GNU/Linux is `stat -c '%i'` (where `-f` means
-# FILESYSTEM and errors out). The BSD form alone returned EMPTY on the Linux
-# runner — which made the two inode-comparison checks below compare "" to ""
-# and pass VACUOUSLY, while only the steady-state check went red. Measured on
-# lokaal, task 490 (2026-09-06). One helper, probed once against a real file.
+# FILESYSTEM and errors out — but NOT empty-handed: the error goes to stderr
+# and the filesystem TABLE goes to stdout, so `$(stat -f '%i' f 2>/dev/null)`
+# on GNU captured 237 bytes of `Blocks: … Free: N` (measured 2026-09-06,
+# rootful Linux). Two calls to it differ exactly when the free counters
+# drifted between them, so the "NEW inode" check passed on DRIFT (the upgrade
+# writes files) and the steady-state check passed when nothing moved — and
+# went red on lokaal (task 490) when something did. A nondeterministic pass,
+# which is worse than a vacuous one: it is green on one Linux run and red on
+# the next with no code change. One helper, probed once against a real file.
 _ino() {  # _ino <path> → inode number, or empty if neither spelling works
   stat -c '%i' "$1" 2>/dev/null || stat -f '%i' "$1" 2>/dev/null
 }

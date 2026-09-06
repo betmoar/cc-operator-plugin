@@ -86,14 +86,19 @@ single source of truth; bump it in the same commit as the changelog entry.
   locator dropped each file's last line (`"\n".join(splitlines())` loses the
   trailing newline), so a job ending a file lost its final step; the fix is
   mutation-checked red in `BaseGateTest`.
-- **A test that was VACUOUS on Linux and red only by luck.** `stat -f '%i'`
-  is BSD/macOS; GNU `stat` reads `-f` as FILESYSTEM and errors, returning
-  empty. Two of the F5 inode checks then compared `""` to `""` — the equality
-  one PASSED silently and only the difference one went red, which is how the
-  release run surfaced it (lokaal task 490). The probe takes both spellings
-  now and carries its own control asserting it returns a number, so a dead
-  probe fails 3 cases loudly instead of hiding 2. Found by pushing the
-  release candidate to the second executor, not by any local run.
+- **A test that was NONDETERMINISTIC on Linux — green or red with no code
+  change.** `stat -f '%i'` is BSD/macOS; GNU `stat` reads `-f` as FILESYSTEM,
+  errors on stderr, and still prints the filesystem TABLE on stdout, so the
+  captured value was 237 bytes of `Blocks: … Free: N`, not empty (measured in
+  the PR #125 review, rootful Linux, where all three F5 checks were GREEN on
+  the old code). Two captures differ exactly when the free counters drifted
+  between them: the "new inode" check passed on drift and the steady-state
+  check passed only when nothing moved — red on lokaal (task 490), green in
+  the review container, same bytes. The probe takes both spellings now and
+  carries its own control asserting it returns a NUMBER, so a dead or
+  wrong-shaped probe fails 3 cases loudly (mutation-checked: `_ino` emptied
+  → 3 red in the bash suite). Found by pushing the release candidate to the
+  second executor, not by any local run.
 
 - **Three more fail-opens, found by the PR review (all `BASE_GATE_PASSED`,
   exit 0, on the shipped gate; each reproduced before it was fixed).** (f) The
