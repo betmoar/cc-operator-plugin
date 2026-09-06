@@ -3418,23 +3418,43 @@ rm -rf "$GHOSTPLUG" "$GHOSTP" "$CTLP"
 echo "-- Case: SessionStart replaces bin/ CLIs ATOMICALLY — the inode changes (F5)"
 # The upgrade used to write each CLI in place with cp (O_TRUNC, same inode), so a concurrently-executing bash
 # could be truncated mid-run (F5). Fix writes a temp file then mv's it over the target, swapping the inode.
+# `stat` has two incompatible spellings and this suite runs on both executors:
+# BSD/macOS is `stat -f '%i'`, GNU/Linux is `stat -c '%i'` (where `-f` means
+# FILESYSTEM and errors out). The BSD form alone returned EMPTY on the Linux
+# runner — which made the two inode-comparison checks below compare "" to ""
+# and pass VACUOUSLY, while only the steady-state check went red. Measured on
+# lokaal, task 490 (2026-09-06). One helper, probed once against a real file.
+_ino() {  # _ino <path> → inode number, or empty if neither spelling works
+  stat -c '%i' "$1" 2>/dev/null || stat -f '%i' "$1" 2>/dev/null
+}
+# The helper's own control: if BOTH spellings fail, every inode check below
+# compares "" to "" — the equality one passes and the difference one fails,
+# which is worse than either, because the pass is silent. Assert the probe
+# works before trusting anything it returns.
+# NOT `$(case … )`: bash 3.2 mis-parses a `case` with a `|` pattern inside a
+# command substitution — it breaks at the glob bar and hands `check` the rest
+# of the line as its word. The suite already carries this scar in the
+# gate-suite case; assign the verdict first, substitute only the variable.
+_ino_probe="$(_ino "$SCRIPTS/ops-verdict.sh")"
+case "$_ino_probe" in ''|*[!0-9]*) _ino_rc=1 ;; *) _ino_rc=0 ;; esac
+check "F5 the inode probe returns a number on this executor (control)" "$_ino_rc"
 INOP="$(newproj)"
 ( cd "$INOP" && git init -q . 2>/dev/null && "$BASH_ABS" "$SCRIPTS/ops-init.sh" >/dev/null 2>&1 )
 # Plant an OLD copy, note its inode, and force an upgrade via a stale stamp.
 printf '#!/usr/bin/env bash\n# STALE COPY\n' > "$INOP/.operator/bin/ops-verdict.sh"
 printf '0.1.0-old\n' > "$INOP/.operator/.version"
-_old_ino="$(stat -f '%i' "$INOP/.operator/bin/ops-verdict.sh" 2>/dev/null)"
+_old_ino="$(_ino "$INOP/.operator/bin/ops-verdict.sh")"
 sed "s|<tmp>|$INOP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
-_new_ino="$(stat -f '%i' "$INOP/.operator/bin/ops-verdict.sh" 2>/dev/null)"
+_new_ino="$(_ino "$INOP/.operator/bin/ops-verdict.sh")"
 check "F5 the upgraded bin/ CLI has a NEW inode (atomic replace, not in-place truncation)" \
   "$([ -n "$_old_ino" ] && [ -n "$_new_ino" ] && [ "$_old_ino" != "$_new_ino" ] && echo 0 || echo 1)"
 check "F5 the upgraded bin/ CLI is byte-identical to the plugin's copy" \
   "$(cmp -s "$INOP/.operator/bin/ops-verdict.sh" "$SCRIPTS/ops-verdict.sh" && echo 0 || echo 1)"
 # Steady state (nothing stale): no rewrite, so the inode is stable — proving the inode change above was a real upgrade.
-_cur_ino="$(stat -f '%i' "$INOP/.operator/bin/ops-verdict.sh" 2>/dev/null)"
+_cur_ino="$(_ino "$INOP/.operator/bin/ops-verdict.sh")"
 sed "s|<tmp>|$INOP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
 check "F5 steady-state (version matches) does NOT rewrite, so the inode is stable" \
-  "$([ -n "$_cur_ino" ] && [ "$_cur_ino" = "$(stat -f '%i' "$INOP/.operator/bin/ops-verdict.sh" 2>/dev/null)" ] && echo 0 || echo 1)"
+  "$([ -n "$_cur_ino" ] && [ "$_cur_ino" = "$(_ino "$INOP/.operator/bin/ops-verdict.sh")" ] && echo 0 || echo 1)"
 rm -rf "$INOP"
 
 echo "-- Case: the SessionStart v1→v2 migration announces itself (#32)"

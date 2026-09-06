@@ -86,6 +86,15 @@ single source of truth; bump it in the same commit as the changelog entry.
   locator dropped each file's last line (`"\n".join(splitlines())` loses the
   trailing newline), so a job ending a file lost its final step; the fix is
   mutation-checked red in `BaseGateTest`.
+- **A test that was VACUOUS on Linux and red only by luck.** `stat -f '%i'`
+  is BSD/macOS; GNU `stat` reads `-f` as FILESYSTEM and errors, returning
+  empty. Two of the F5 inode checks then compared `""` to `""` — the equality
+  one PASSED silently and only the difference one went red, which is how the
+  release run surfaced it (lokaal task 490). The probe takes both spellings
+  now and carries its own control asserting it returns a number, so a dead
+  probe fails 3 cases loudly instead of hiding 2. Found by pushing the
+  release candidate to the second executor, not by any local run.
+
 - **Three more fail-opens, found by the PR review (all `BASE_GATE_PASSED`,
   exit 0, on the shipped gate; each reproduced before it was fixed).** (f) The
   floor arm read VALUES and the file is SOURCED: `FLOOR_shell=1 # 20`
