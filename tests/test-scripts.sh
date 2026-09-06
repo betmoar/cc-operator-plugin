@@ -3432,10 +3432,12 @@ echo "-- Case: SessionStart replaces bin/ CLIs ATOMICALLY — the inode changes 
 _ino() {  # _ino <path> → inode number, or empty if neither spelling works
   stat -c '%i' "$1" 2>/dev/null || stat -f '%i' "$1" 2>/dev/null
 }
-# The helper's own control: if BOTH spellings fail, every inode check below
-# compares "" to "" — the equality one passes and the difference one fails,
-# which is worse than either, because the pass is silent. Assert the probe
-# works before trusting anything it returns.
+# The helper's own control, and it asserts a SHAPE for the reason above: a
+# broken probe does not reliably return "" — the GNU `-f` case returned a
+# whole filesystem table, and comparing two tables is a coin flip on whether
+# the free counters moved. So the checks below cannot be trusted to fail when
+# the probe is wrong; only "is this a NUMBER" refuses a table, an empty
+# string, and an error message alike, before anything compares them.
 # NOT `$(case … )`: bash 3.2 mis-parses a `case` with a `|` pattern inside a
 # command substitution — it breaks at the glob bar and hands `check` the rest
 # of the line as its word. The suite already carries this scar in the
