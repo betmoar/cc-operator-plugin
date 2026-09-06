@@ -19,9 +19,12 @@ single source of truth; bump it in the same commit as the changelog entry.
   them, and exited 0. `scripts/base-gate.sh` is the trusted half — it runs
   from the BASE ref via a `pull_request_target` job, checks out the base sha,
   and reads the PR only through `git show`/`git diff`; PR bytes are never on
-  disk and never executed. Four hard-red arms: a floor lowered or removed, a
-  check dropped from the registry, an enforcer file deleted or `tests/`
-  shrunk, and a forged `BASE_GATE_*` marker planted in the diff. It fails
+  disk and never executed. The hard-red arms, as they stand after the review
+  rounds below: a floor lowered, removed, or written in a shape the runtime
+  and the reader disagree about; a check dropped from the registry or the
+  registry rebound after it; an enforcer file gone from the PR ref (deleted,
+  renamed, moved) or any `tests/` path gone; a `gate-suite.sh` rung dropped
+  from a CI file; and a forged `BASE_GATE_*` marker planted in the diff. It fails
   CLOSED on an unresolvable base ref — falling back to the branch's copy is
   the original bug wearing a fallback's clothes.
 - **What it deliberately does not do.** A check REWRITTEN in place (body
