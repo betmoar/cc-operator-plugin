@@ -5475,6 +5475,23 @@ check "CONTROL: a small ledger is not truncated — the budget does not fire on 
 check "scan_caps is defined exactly ONCE — bash runs the last definition (#81's class)" \
   "$([ "$(grep -c '^scan_caps() {' "$SCRIPTS/lib/caps.sh")" = 1 ] && echo 0 || echo 1)"
 
+# --- the SCHEMA coupling, documented as a limitation rather than papered over -
+# caps.sh is now the SECOND reader of the 4-cell row (ops-reverify.sh is the first), and the
+# 4-cell test that correctly skips a hand-edit is WRONG for a schema change: widen the row and
+# every rework round goes silently uncounted, which turns the detector off with every gate green.
+# The same hole from the other side: a new VERDICT WORD is not PASS, so it does not reset a key.
+# Neither is fixable HERE — the fix is at the writer, which is why the coupling row names both
+# parsers. What these two cases buy is that the blindness is MEASURED and named, so the next
+# schema change reads it in the suite instead of discovering it in the field.
+_caps_ledger "$CAPD/v12.md" "| T-1 | crit | ev @a1 | reviewer-x | FAIL |" \
+  "| T-1 | crit | ev @a2 | reviewer-x | FAIL |"
+check "a 5-CELL row is skipped, so a schema widening silently stops the detector (measured, NOT fixed here — the coupling row names both parsers)" \
+  "$([ "$(_caps_state "$CAPD/v12.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+_caps_ledger "$CAPD/v13.md" "| T-1 | crit | ev @a1 | FAIL |" "| T-1 | crit | ev @a2 | MOOT |" \
+  "| T-1 | crit | ev @a3 | FAIL |"
+check "a non-PASS verdict word does NOT reset a key — a MOOT row (#91) would read as a rework round" \
+  "$([ "$(_caps_state "$CAPD/v13.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+
 # --- the gate WIRES it, on every path, and never blocks on it --------------
 # The report runs above every `exit`, because the session that stops CLEAN is exactly the one
 # that needs to hear it: attached to a blocking branch it would surface only when something else

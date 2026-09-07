@@ -57,6 +57,17 @@ single source of truth; bump it in the same commit as the changelog entry.
   shape-independent question (an `exit` reachable from any test of a `caps_*`
   variable, with the block walked by depth), and the lib's definition count is
   its own guard.
+- **The schema coupling is named, not silently inherited.** `caps.sh` is the
+  SECOND reader of `ops-verdict.sh`'s 4-cell row, and its four-cell test —
+  correct for a hand-edit, since no writer of ours produces anything else — is
+  *wrong* for a schema change: a 5-cell row is silently uncounted, so widening
+  the row would turn the detector off with every gate green (measured:
+  `tripped=0` on two real rework rounds). A new verdict word is the mirror; the
+  reset tests `= PASS`, so a `MOOT` row (#91's proposal) reads as a rework
+  round rather than resolving one. Neither is fixable in `caps.sh` — it cannot
+  know what the writer will emit next — so the coupling row for the row
+  `printf` now names BOTH parsers, and two cases pin the blindness where the
+  next schema change will read it.
 - **The fourth was a measured DoS in the detector itself.** The three size
   bounds do not bound the WORK: the ceiling is rows × keys, and at exactly
   those bounds a 20,000-row ledger across 100 failing targets cost **10.2s for

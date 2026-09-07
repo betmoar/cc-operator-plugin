@@ -77,6 +77,24 @@
 # ONE SOURCE: VERDICTS.md. DECISIONS.md carries DEFERRED-VERDICT, which is a
 # task closed honestly rather than a round that failed — counting it would
 # read an honest exit as a rework.
+#
+# THE SCHEMA COUPLING, and it is a LIMITATION, not a guard. This file is the
+# SECOND reader of ops-verdict.sh's 4-cell row (ops-reverify.sh is the first),
+# and it skips any row it cannot split into exactly four cells. That is right
+# for a hand-edit — no writer of ours produces one — and WRONG for a schema
+# change: a 5-cell row is silently uncounted, so widening the row turns this
+# detector off with every gate green. Measured 2026-09-07: a 5-cell ledger
+# carrying two rework rounds reports tripped=0, truncated=0.
+#
+# A new VERDICT WORD is the same hole from the other side. The reset branch
+# tests `= PASS`, so anything else is counted as a failing round — a MOOT row
+# (issue #91's proposal for a criterion that stopped being answerable) would
+# read as a rework rather than resolving one.
+#
+# Neither is fixable here: this file cannot know what the writer will emit
+# next. The fix is at the writer, so CLAUDE.md's coupling row for the 4-cell
+# printf names BOTH parsers, and the two cases in the suite pin the blindness
+# so the next schema change reads it there instead of in the field.
 
 # The cap's own number, from the charter's Cap table: "two rework rounds on one
 # target". Two FAIL rows on one (id, criterion) ARE those two rounds.
