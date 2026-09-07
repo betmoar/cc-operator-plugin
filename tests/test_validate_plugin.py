@@ -94,8 +94,9 @@ GOOD_CAPS_LIB = (
     "CAPS_MAX_KEYS=100\n"
     "CAPS_MAX_LINES=20000\n"
     "CAPS_MAX_BYTES=2097152\n"
+    "CAPS_MAX_STEPS=100000\n"
     "scan_caps() {\n"
-    "  local f=\"$1\" row body id crit ev verdict key r1 r2 i found n=0\n"
+    "  local f=\"$1\" row body id crit ev verdict key r1 r2 i found n=0 steps=0\n"
     "  local LC_ALL=C\n"
     "  caps_tripped=0; caps_rows=\"\"; caps_truncated=0; caps_scan_failed=0\n"
     "  _caps_k=(); _caps_c=(); _caps_n=0\n"
@@ -119,12 +120,14 @@ GOOD_CAPS_LIB = (
     "      [ \"${_caps_k[$i]}\" = \"$key\" ] && { found=\"$i\"; break; }\n"
     "      i=$((i+1))\n"
     "    done\n"
+    "    steps=$((steps + i))\n"
     "    if [ \"$verdict\" = PASS ]; then\n"
     "      [ \"$found\" -ge 0 ] && _caps_c[found]=0\n"
     "      continue\n"
     "    fi\n"
     "    if [ \"$found\" -ge 0 ]; then _caps_c[$found]=$(( ${_caps_c[$found]} + 1 ))\n"
     "    else _caps_k[$_caps_n]=\"$key\"; _caps_c[$_caps_n]=1; _caps_n=$((_caps_n+1)); fi\n"
+    "    if [ \"$steps\" -gt \"$CAPS_MAX_STEPS\" ]; then caps_truncated=1; break; fi\n"
     "  done < \"$f\"\n"
     "  i=0\n"
     "  while [ \"$i\" -lt \"$_caps_n\" ]; do\n"
@@ -4591,6 +4594,9 @@ class CapsTest(unittest.TestCase):
         'if [ "$caps_scan_failed" = 0 ] && [ "$caps_tripped" -gt 0 ]; then\n'
         '  echo "operator: $caps_tripped target(s) at the cap" >&2\n'
         'fi\n'
+        'if [ "$caps_scan_failed" = 0 ] && [ "$caps_truncated" = 1 ]; then\n'
+        '  echo "operator: the cap scan hit a bound" >&2\n'
+        'fi\n'
     )
 
     def setUp(self):
@@ -4704,6 +4710,81 @@ class CapsTest(unittest.TestCase):
         self.assertTrue(self._probs(),
                         "renaming the threshold out of the CAPS_* shape must "
                         "not ship green")
+
+    # --- the adversarial round (2026-09-07) --------------------------------
+    # Four findings, each reproduced against the SHIPPED tree before the fix
+    # and each red in `check_caps` after it. Three were vacuities of the same
+    # family: the pin described ONE SPELLING of a thing shell can write many
+    # ways, which is the base-gate floors lesson (close the SHAPE, not the
+    # instances) arriving one file later.
+
+    def test_a_shadowing_redefinition_fires(self):
+        # Bash runs the LAST definition; the probe's extractor is non-greedy
+        # and reads the FIRST. So a second `scan_caps() { caps_tripped=0; }`
+        # left the probe validating a function bash never runs — the live hook
+        # reported nothing on a ledger that trips under the real code, and the
+        # validator printed "all contracts hold". The probe CANNOT catch this
+        # by construction (it is testing the wrong bytes), so the definition
+        # count is the guard. #81's class, one level up.
+        p = self.dir / "scripts" / "lib" / "caps.sh"
+        p.write_text(p.read_text(encoding="utf-8")
+                     + '\nscan_caps() { caps_tripped=0; caps_rows=""; '
+                       'caps_truncated=0; caps_scan_failed=0; }\n',
+                     encoding="utf-8")
+        self.assertTrue(any("defined 2 times" in p for p in self._probs()),
+                        self._probs())
+
+    def test_exit_on_the_same_line_as_the_caps_test_fires(self):
+        # `[ "$caps_tripped" -gt 0 ] && exit 2` — no `if` at all. The first cut
+        # anchored on `^if \[ "\$caps_`, so this shipped green, and it was
+        # live-verified to INVERT the polarity: the mutated hook exited 2 on a
+        # ledger with nothing else pending, which is the permanent block this
+        # pin exists to refuse.
+        self._edit("scripts/ops-stop-hook.sh",
+                   'if [ "$caps_scan_failed" = 0 ] && [ "$caps_tripped" -gt 0 ]; then',
+                   '[ "$caps_scan_failed" = 0 ] && [ "$caps_tripped" -gt 0 ] && exit 2\n'
+                   'if false; then')
+        self.assertTrue(any("reachable from a test of a caps_" in p
+                            for p in self._probs()), self._probs())
+
+    def test_exit_in_an_elif_branch_fires(self):
+        # Same bypass through the other door: `^if ` never matches an `elif`.
+        # This one ALSO survived the first rewrite — the exit-matching regex
+        # anchored on `^exit` and the block's body is indented — and was caught
+        # only by re-running the verifier's own escapes against the fix rather
+        # than trusting the rewrite covered them.
+        self._edit("scripts/ops-stop-hook.sh",
+                   'if [ "$caps_scan_failed" = 0 ] && [ "$caps_tripped" -gt 0 ]; then',
+                   'if false; then :\n'
+                   'elif [ "$caps_scan_failed" = 0 ] && [ "$caps_tripped" -gt 0 ]; then\n'
+                   '  exit 2')
+        self.assertTrue(any("reachable from a test of a caps_" in p
+                            for p in self._probs()), self._probs())
+
+    def test_exit_in_a_nested_if_inside_the_branch_fires(self):
+        # The window must be walked by DEPTH: a nested `if … fi` inside the
+        # caps branch would otherwise close the window at the INNER `fi` and
+        # hide everything after it.
+        self._edit("scripts/ops-stop-hook.sh",
+                   'if [ "$caps_scan_failed" = 0 ] && [ "$caps_tripped" -gt 0 ]; then',
+                   'if [ "$caps_scan_failed" = 0 ] && [ "$caps_tripped" -gt 0 ]; then\n'
+                   '  if [ 1 = 1 ]; then\n    :\n  fi\n  exit 2')
+        self.assertTrue(any("reachable from a test of a caps_" in p
+                            for p in self._probs()), self._probs())
+
+    def test_a_deleted_step_budget_fires(self):
+        # THE WORK BOUND. The three SIZE bounds do not bound the work — the
+        # ceiling is rows x keys — and at the shipped bounds that measured
+        # 10.2s for the scan and 11.1s for the Stop carrying it. A gate whose
+        # own cost grows with the ledger it audits is a gate that gets removed.
+        # Asserted by EFFECT (caps_truncated on an over-budget ledger), never
+        # by wall-clock: a timing threshold in a build gate is a flake on a
+        # loaded runner.
+        self._edit("scripts/lib/caps.sh",
+                   'if [ "$steps" -gt "$CAPS_MAX_STEPS" ]; then caps_truncated=1; break; fi',
+                   ':')
+        self.assertTrue(any("'budget' ledger" in p for p in self._probs()),
+                        self._probs())
 
     def test_a_comment_cannot_stand_in_for_the_source_line(self):
         # NEGATIVE CONTROL for the source pin: the token in a comment while

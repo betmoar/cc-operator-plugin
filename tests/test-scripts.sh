@@ -5445,6 +5445,36 @@ check "past the line bound the scan sets caps_truncated — a short scan never r
 check "past the KEY ceiling the scan also sets caps_truncated" \
   "$(printf '%s' "$(_caps_state "$CAPD/v10.md")" | grep -q 'truncated=1' && echo 0 || echo 1)"
 
+# --- the WORK bound, which the three SIZE bounds do not provide -------------
+# The ceiling on work is rows x keys, and at the shipped size bounds that measured 10.2s for the
+# scan and 11.1s for the Stop carrying it (2026-09-07, adversarial verification) — every Stop, on
+# an ordinary mature ledger, not a planted one. A gate whose own cost grows with the ledger it
+# audits is a gate that gets removed. CAPS_MAX_STEPS caps the lookup directly and degrades the
+# same honest way the other three bounds do.
+{ printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+  r=0; while [ "$r" -lt 60 ]; do
+    k=0; while [ "$k" -lt 60 ]; do printf '| T-%s | crit | ev @a%s | FAIL |\n' "$k" "$r"; k=$((k+1)); done
+    r=$((r+1)); done
+} > "$CAPD/v11.md"
+_c11="$(_caps_state "$CAPD/v11.md")"
+check "an over-BUDGET ledger stops and sets caps_truncated (the work bound, not a size bound)" \
+  "$(printf '%s' "$_c11" | grep -q 'truncated=1' && echo 0 || echo 1)"
+# It stops EARLY, not at the end: the whole point is that the work is bounded. Under the size
+# bounds alone this file is legal (3600 rows, 60 keys) and would run to completion.
+check "the over-budget ledger is UNDER every SIZE bound — the budget is what stopped it" \
+  "$([ "$(grep -c '^| T-' "$CAPD/v11.md")" -lt 20000 ] && [ "$(wc -c < "$CAPD/v11.md")" -lt 2097152 ] && echo 0 || echo 1)"
+# NEGATIVE CONTROL: a ledger comfortably inside the budget must NOT report truncated, or the
+# budget check above is satisfied by a scan that always truncates.
+check "CONTROL: a small ledger is not truncated — the budget does not fire on ordinary work" \
+  "$(printf '%s' "$(_caps_state "$CAPD/v1.md")" | grep -q 'truncated=0' && echo 0 || echo 1)"
+
+# --- ONE definition of scan_caps -------------------------------------------
+# Bash resolves the LAST definition and the validator's probe extractor reads the FIRST, so a
+# shadowing redefinition left the probe validating a function bash never runs while the live
+# detector reported nothing (measured 2026-09-07). The lib must carry exactly one.
+check "scan_caps is defined exactly ONCE — bash runs the last definition (#81's class)" \
+  "$([ "$(grep -c '^scan_caps() {' "$SCRIPTS/lib/caps.sh")" = 1 ] && echo 0 || echo 1)"
+
 # --- the gate WIRES it, on every path, and never blocks on it --------------
 # The report runs above every `exit`, because the session that stops CLEAN is exactly the one
 # that needs to hear it: attached to a blocking branch it would surface only when something else

@@ -3663,26 +3663,65 @@ def check_caps(root, problems):
                 "mention is not a source statement (audit F126), and an "
                 "unsourced detector reports nothing while every gate stays "
                 "green (#107)")
-        # (b) REPORT-ONLY. The detector's own variables must never reach an
-        # `exit`. Checked as a data-flow-ish proximity test rather than a
-        # string ban: `caps_tripped` legitimately appears in an `if`, and what
-        # must never appear is an exit inside that branch.
-        for m in re.finditer(r"^if \[ \"\$caps_[a-z_]+\".*$", hcode, re.M):
-            tail = hcode[m.start():]
-            # the branch runs to its own `^fi`
-            end = re.search(r"^fi$", tail, re.M)
-            branch = tail[:end.start()] if end else tail
-            if re.search(r"^\s*exit\b", branch, re.M):
+        # (b) REPORT-ONLY. No `exit` may be reachable from a test of a `caps_*`
+        # variable.
+        #
+        # THE SHAPE IS CLOSED, NOT ONE SPELLING — the base-gate floors lesson,
+        # applied here after an adversarial verifier walked past the first cut
+        # (2026-09-07, three bypasses, all shipping "all contracts hold"):
+        #
+        #   [ "$caps_tripped" -gt 0 ] && exit 2      no `if` at all
+        #   if false; then :; elif [ "$caps_…" ];…   anchored on `^if `
+        #   (an `exit` past the branch's own `fi`)   window ended too early
+        #
+        # The first two were live-verified to invert the polarity: the mutated
+        # hook exited 2 on a ledger with nothing else pending — the permanent
+        # block this pin exists to refuse. A regex describing ONE way to write
+        # the branch is a pin on a spelling, and shell has arbitrarily many.
+        #
+        # So the question is asked per LINE and shape-independently: a line
+        # that both TESTS a `caps_*` variable and reaches an `exit` — on the
+        # same line via `&&`/`||`/`;`, or anywhere in the `if`/`elif` block it
+        # opens. The block is walked by depth so a nested `if` inside it cannot
+        # end the window early.
+        _lines = hcode.splitlines()
+        _capstest = re.compile(r'\[\[?\s*"?\$\{?caps_[a-z_]+|\btest\s+"?\$\{?caps_')
+        # `^\s*` and not `^`: the block's own body is INDENTED, so a bare `^`
+        # anchor missed `  exit 2` — the elif bypass survived the first fix and
+        # was caught only by re-running the verifier's own three escapes rather
+        # than trusting that the rewrite covered them (2026-09-07).
+        _exit = re.compile(r"(?:^\s*|[;&|]\s*|\bthen\s+)exit\b")
+        _blocked = False
+        for _i, _ln in enumerate(_lines):
+            if _blocked or not _capstest.search(_ln):
+                continue
+            # the line itself (`… && exit 2`, `… ; exit 2`, `if …; then exit`)
+            _window = [_ln]
+            # plus the block it opens, if it opens one
+            if re.match(r"\s*(?:el)?if\b", _ln) and _ln.rstrip().endswith("then"):
+                _depth = 1
+                for _j in range(_i + 1, len(_lines)):
+                    _s = _lines[_j].strip()
+                    if re.match(r"(?:el)?if\b", _s):
+                        if _s.endswith("then"):
+                            _depth += 1
+                    elif _s == "fi" or _s.startswith("fi "):
+                        _depth -= 1
+                        if _depth == 0:
+                            break
+                    _window.append(_lines[_j])
+            if any(_exit.search(_w) for _w in _window):
                 problems.append(
-                    "scripts/ops-stop-hook.sh: a caps_* branch contains an "
-                    "`exit` — the cap report is REPORT-ONLY on purpose. "
-                    "VERDICTS.md is append-only with a single writer, so a "
-                    "tripped key can never be un-tripped by removing a row: a "
-                    "blocking cap detector over a permanent history is a "
-                    "PERMANENT block, and a session that cannot end is the "
-                    "failure a user resolves by deleting the plugin (#107, the "
-                    "polarity #123 C states for the same reason)")
-                break
+                    "scripts/ops-stop-hook.sh: an `exit` is reachable from a "
+                    "test of a caps_* variable — the cap report is REPORT-ONLY "
+                    "on purpose. VERDICTS.md is append-only with a single "
+                    "writer, so a tripped key can never be un-tripped by "
+                    "removing a row: a blocking cap detector over a permanent "
+                    "history is a PERMANENT block, and a session that cannot "
+                    "end is the failure a user resolves by deleting the plugin "
+                    "(#107, the polarity #123 C states for the same reason). "
+                    f"Offending line: {_ln.strip()[:80]!r}")
+                _blocked = True
 
     # (c) the honest-coverage note. The cap table has THREE caps and this
     # covers ONE; the other two are uncovered for stated reasons (no reviewer
@@ -3710,6 +3749,25 @@ def check_caps(root, problems):
     #   keyed  — two FAILs on DIFFERENT criteria of the same id do NOT trip.
     #            A detector keyed on the id alone fires on ordinary work, and
     #            a false halt costs a session.
+    # ONE DEFINITION, and this is checked BEFORE the probe rather than left to
+    # it — #81's class, and an adversarial verifier landed it here on
+    # 2026-09-07. Bash resolves the LAST definition; the extractor below is
+    # non-greedy and takes the FIRST. So appending a second
+    # `scan_caps() { caps_tripped=0; }` left the probe validating a function
+    # bash never runs: the live hook reported nothing on a ledger that trips
+    # under the real code, and `validate_plugin.py` printed "all contracts
+    # hold" (measured, then reverted byte-identically). The probe cannot catch
+    # this by construction — it is testing the wrong bytes — so the count is
+    # the guard.
+    _n_defs = len(re.findall(r'^scan_caps\(\)\s*\{', code, re.M))
+    if _n_defs != 1:
+        problems.append(
+            f"{rel}: scan_caps() is defined {_n_defs} times — bash runs the "
+            f"LAST definition and this check's extractor reads the FIRST, so a "
+            f"shadowing redefinition leaves the behaviour probe validating a "
+            f"function that never runs while the live detector reports nothing "
+            f"(#81's class; measured 2026-09-07)")
+        return
     _fn = re.search(r'^scan_caps\(\)\s*\{.*?^\}', code, re.M | re.S)
     if not _fn:
         problems.append(
@@ -3740,7 +3798,7 @@ def check_caps(root, problems):
                  "| T-1 | crit | ev @a3 | PASS |\n",
         "keyed": "| T-1 | crit-a | ev @a1 | FAIL |\n| T-1 | crit-b | ev @a2 | FAIL |\n",
     }
-    _expect = {"trip": "1", "reset": "0", "keyed": "0"}
+    _expect = {"trip": "1", "reset": "0", "keyed": "0", "budget": "1"}
     with tempfile.TemporaryDirectory() as _td:
         _script = ["\n".join(_consts), _fn.group(0)]
         for _k, _body in _rows.items():
@@ -3748,6 +3806,23 @@ def check_caps(root, problems):
             with open(_f, "w", encoding="utf-8") as _fh:
                 _fh.write(_hdr + _body)
             _script.append(f'scan_caps "{_f}"\necho "{_k}=$caps_tripped"')
+        # THE WORK BUDGET, asserted by EFFECT. The three size bounds do not
+        # bound the work: the ceiling is rows x keys, and at the shipped bounds
+        # that measured 10.2s for the scan and 11.1s for the Stop carrying it
+        # (2026-09-07, adversarial verification). A gate whose own cost grows
+        # with the ledger it audits is a gate that gets removed. `CAPS_MAX_STEPS`
+        # is the cap; this ledger costs more steps than it permits, so a scan
+        # that still runs to the end reports truncated=0 and fails here.
+        # Deliberately not a timing assertion — a wall-clock threshold in a
+        # build gate is a flake on a loaded runner. The step budget is the
+        # thing the code actually enforces, so it is the thing pinned.
+        _bud = os.path.join(_td, "budget.md")
+        with open(_bud, "w", encoding="utf-8") as _fh:
+            _fh.write(_hdr)
+            for _r_i in range(60):
+                for _k_i in range(60):
+                    _fh.write(f"| T-{_k_i} | crit | ev @a{_r_i} | FAIL |\n")
+        _script.append(f'scan_caps "{_bud}"\necho "budget=$caps_truncated"')
         _r = _run_probe(["bash", "-c", "\n".join(_script)], problems,
                         f"{rel}: scan_caps()")
         if _r is None:
@@ -3773,6 +3848,11 @@ def check_caps(root, problems):
             "keyed": "two FAILs on DIFFERENT criteria of one id must NOT "
                      "trip — the key is (id, criterion), and a detector keyed "
                      "on the id alone fires on ordinary multi-criterion work",
+            "budget": "a ledger costing more than CAPS_MAX_STEPS lookup steps "
+                      "must stop and set caps_truncated — the three SIZE "
+                      "bounds do not bound the WORK (the ceiling is rows x "
+                      "keys), which measured an 11.1s Stop at the shipped "
+                      "bounds before the budget existed",
         }
         for _k, _want in _expect.items():
             if _got.get(_k) != _want:

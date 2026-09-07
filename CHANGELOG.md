@@ -42,8 +42,30 @@ single source of truth; bump it in the same commit as the changelog entry.
   reports "no caps tripped", byte-identical to a clean ledger, forever.
   `check_caps` extracts the shipped `scan_caps` (with its `CAPS_*` constants —
   an unset one makes `[ n -ge "" ]` evaluate falsy and the detector silently
-  stops) and runs it against three synthetic ledgers: trip, reset, and a
-  same-id/different-criterion control.
+  stops) and runs it against four synthetic ledgers: trip, reset, a
+  same-id/different-criterion control, and an over-budget one.
+- **An adversarial round found four defects in the above, all in the same
+  commit's own gate.** Three were vacuities of one family — the pin described
+  ONE SPELLING of a thing shell writes many ways, the base-gate floors lesson
+  arriving a file later. A second `scan_caps()` appended to the lib shipped
+  green because bash runs the LAST definition while the probe's extractor
+  reads the FIRST, so the probe validated a function that never ran and the
+  live hook reported nothing; the report-only pin was anchored on
+  `^if [ "$caps_`, so `[ "$caps_tripped" -gt 0 ] && exit 2` and an `elif` form
+  both walked past it — and both were live-verified to INVERT the polarity,
+  exiting 2 on a ledger with nothing else pending. The pin now asks the
+  shape-independent question (an `exit` reachable from any test of a `caps_*`
+  variable, with the block walked by depth), and the lib's definition count is
+  its own guard.
+- **The fourth was a measured DoS in the detector itself.** The three size
+  bounds do not bound the WORK: the ceiling is rows × keys, and at exactly
+  those bounds a 20,000-row ledger across 100 failing targets cost **10.2s for
+  the scan and 11.1s for the Stop carrying it** — every Stop, on a ledger an
+  ordinary mature project reaches. `CAPS_MAX_STEPS` caps the lookup directly:
+  the same input now measures **1.09s** and reports `caps_truncated`, the same
+  honest degradation the other bounds use. An associative array would delete
+  the term and bash 3.2 has none; a string-keyed table was measured at 3m28s
+  on the same input, 20× worse.
 
 ## [0.11.11] - 2026-09-05
 

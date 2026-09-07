@@ -926,3 +926,63 @@ reports — `[ 2 -ge "" ]` complains to stderr and evaluates FALSY. Measured
 while writing the pin: extracting only the function returned 0 on the trip
 ledger against a WORKING lib, which is a false positive on a build gate and
 trains exactly the ignoring a vacuous pin does.
+
+### The cap detector's own adversarial round (0.11.12, #107)
+
+Four defects, all in the commit that introduced the detector, none found by a
+local gate run. Worth keeping because three of them are the SAME failure with
+three faces.
+
+**A pin that names one spelling is a pin on that spelling.** The report-only
+guard asked `^if \[ "\$caps_[a-z_]+` and then looked for an `exit` in the
+block. Shell writes that branch at least three other ways, and two of them
+shipped "all contracts hold" while inverting the polarity — live-verified to
+exit 2 on a ledger with nothing else pending, which is the permanent block the
+guard exists to refuse:
+
+```
+[ "$caps_scan_failed" = 0 ] && [ "$caps_tripped" -gt 0 ] && exit 2   # no `if`
+if false; then :; elif [ "$caps_tripped" -gt 0 ]; then exit 2; fi    # `elif`
+```
+
+This is the base-gate floors lesson (close the SHAPE, not the instances)
+arriving one file later, which is the point: it was written down and the next
+pin still enumerated instances. The fix asks the shape-independent question —
+is an `exit` reachable from any test of a `caps_*` variable — with the block
+walked by DEPTH so a nested `if … fi` cannot close the window early.
+
+A third face of the same error appeared inside the FIX: the rewritten
+exit-matcher anchored on `^exit`, and a block's body is indented, so the `elif`
+bypass survived. It was caught only by re-running the verifier's own three
+escapes against the fix instead of trusting that the rewrite covered them.
+**A fix to a vacuity is a hypothesis until the original escape runs red
+against it.**
+
+**An executable probe can test the wrong bytes.** Appending a second
+`scan_caps() { caps_tripped=0; }` to the lib shipped green: bash resolves the
+LAST definition, the probe's extractor is non-greedy and takes the FIRST. The
+probe cannot catch this by construction — it faithfully executed a function
+nothing runs — so the definition COUNT is the guard, checked before the probe.
+This repo has `_report_if_redefined` for exactly this (#81) and the new check
+did not use it; an executable pin does not make the older class go away.
+
+**Size bounds are not work bounds.** `scan_caps` carried three bounds (rows,
+bytes, keys) and its header claimed a measured worst case it never carried.
+The real ceiling is their PRODUCT — rows × keys, because bash 3.2 has no
+associative array and the key table is scanned linearly. Measured at exactly
+the shipped bounds, 20,000 rows across 100 failing targets:
+
+```
+scan_caps alone                10.2s
+the Stop hook carrying it      11.1s
+the same rows on ONE key        1.9s   (the row parse alone)
+after CAPS_MAX_STEPS            1.09s  (truncated=1, still reports 100)
+```
+
+Nine of those seconds were the lookup, paid on every Stop, on a ledger an
+ordinary mature project reaches. The portable alternative was measured rather
+than assumed: a string-keyed table is **20× worse** (3m28s on the same input),
+because each lookup rescans a growing string. So the linear array stands and
+the work is capped directly. **Before adding a bound, ask what it bounds** — a
+bound on the INPUT says nothing about the work, and the gate that audits a
+growing ledger is the one whose cost grows with it.

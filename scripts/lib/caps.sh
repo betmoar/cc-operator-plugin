@@ -88,17 +88,46 @@ CAPS_REWORK_MAX=2
 # The key table is scanned linearly per row (bash 3.2 has no associative
 # arrays and macOS ships 3.2), so the ceiling on work is rows x keys; a key is
 # only ever created by a FAIL, so a ledger of passes costs a zero-iteration
-# lookup per row. Measured worst case at these bounds: see tests.
+# lookup per row.
 CAPS_MAX_KEYS=100
 CAPS_MAX_LINES=20000
 CAPS_MAX_BYTES=2097152   # 2 MiB — orders above any honest verdict ledger
+
+# THE STEP BUDGET, and it exists because the three bounds above do not bound
+# the WORK. Their product does: rows x keys. Measured 2026-09-07 on this
+# machine, against a ledger at exactly those bounds (20,000 rows across 100
+# distinct failing targets — reachable by an ordinary mature project, not a
+# planted file):
+#
+#   scan_caps alone                       10.2s
+#   the Stop hook carrying it             11.1s
+#   the same 20,000 rows on ONE key        1.9s   (the row parse alone)
+#
+# So ~9s of it is the lookup, and every Stop paid it. A gate whose own cost
+# grows with the ledger it audits is a gate that gets removed — the same
+# reasoning CR5 applied to the statusline's 300ms render budget, one file over,
+# except this one had no budget at all and the header claimed a measurement it
+# never carried.
+#
+# An associative array would delete the term, and bash 3.2 does not have one
+# (macOS ships 3.2 and this repo tests against it). A string-keyed table was
+# measured as the portable alternative and is 20x WORSE: 3m28s on the same
+# input, because each lookup rescans a growing string. So the linear array
+# stands and the WORK is capped directly.
+#
+# 200,000 steps measured at 2.1s here, so this budget holds the lookup near
+# ~1s on this machine and degrades honestly rather than silently: hitting it
+# sets caps_truncated, exactly like the other three bounds, and the caller says
+# the report is a floor. A missed report costs a line of guidance; an
+# 11-second Stop costs the whole gate.
+CAPS_MAX_STEPS=100000
 
 # Sets: caps_tripped (count of targets at or over the cap), caps_rows (one
 # "<n> FAIL rounds: <id> | <criterion>" line each — the CALLER sanitizes and
 # truncates them; they are untrusted project data), caps_truncated (1 = a
 # bound stopped the scan early), caps_scan_failed (1 = no readable ledger).
 scan_caps() { # scan_caps <verdicts-path>
-  local f="$1" row body id crit ev verdict key r1 r2 i n=0 bytes=0 found
+  local f="$1" row body id crit ev verdict key r1 r2 i n=0 bytes=0 found steps=0
   # `local LC_ALL=C` so `read -n N` counts BYTES not characters (bash counts
   # CHARACTERS outside the C locale, so the cap would be up to 4x looser than
   # it reads) and so nothing leaks to the sourcing script — the idiom
@@ -154,6 +183,11 @@ scan_caps() { # scan_caps <verdicts-path>
       if [ "${_caps_k[i]}" = "$key" ]; then found="$i"; break; fi
       i=$((i + 1))
     done
+    # The step budget is charged HERE, where the work actually is, and it is
+    # charged whether the lookup hit or missed — a budget that only counts
+    # misses is not a budget. Checked AFTER this row is classified below, so
+    # the row that exhausts it is still counted rather than half-read.
+    steps=$((steps + i))
     if [ "$verdict" = PASS ]; then
       # A PASS RESETS. Only a key we are already tracking: a PASS on a target
       # that never failed creates nothing, which is what keeps the table small
@@ -172,6 +206,7 @@ scan_caps() { # scan_caps <verdicts-path>
       # letting the report read as complete.
       caps_truncated=1
     fi
+    if [ "$steps" -gt "$CAPS_MAX_STEPS" ]; then caps_truncated=1; break; fi
   done < "$f"
   # The report is built AFTER the whole pass, never during it: a key that hit
   # the cap and was then cleared by a PASS must not appear, and mid-pass
