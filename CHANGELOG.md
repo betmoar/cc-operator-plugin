@@ -84,6 +84,16 @@ single source of truth; bump it in the same commit as the changelog entry.
   undercounted whenever one criterion spanned several ids: **a control that
   counts the wrong thing is the failure it exists to prevent.** Both directions
   now have their own control. Thanks to Copilot's review on PR #126.
+- **And the byte-cap fix introduced a worse bug, caught by the second
+  executor.** Cutting at byte 110 lands mid-character whenever the width does
+  not divide 110 (a 3-byte `€` gives 36.67 characters), and an invalid-UTF-8
+  line is not *mangled* to a UTF-8 reader — it is **invisible**: `grep`
+  returned rc 1 on a line that was right there. Worse than the loose cap it
+  replaced. It shipped green on macOS and red on lokaal because the assertion
+  used a plain `grep` and was blinded by the defect it was testing for; the
+  fixture was 2-byte `é`, which divides 110 evenly. The cut now backs off to
+  the last lead byte, and the cases run all three widths asserting the
+  property directly (the stderr decodes) plus visibility to a UTF-8 reader.
 - **What the budget does NOT buy, recorded as issue #127 rather than implied.**
   The 11.1s figure is the WORST case, and a project does not live there. At a
   realistic shape (50 distinct keys, mostly PASS), a 3,000-row ledger still

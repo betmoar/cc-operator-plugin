@@ -380,11 +380,37 @@ shq() { # shq <string> → '<string>' with embedded quotes escaped
 #
 # `local`, never a global assignment: the C collation must not leak to the
 # rest of the hook — the idiom scripts/lib/partition.sh uses.
+#
+# AND THE CUT BACKS OFF A SPLIT CHARACTER, which the first cut of this fix did
+# not and which is why it is worth its own paragraph. Slicing at byte 110 lands
+# mid-character on any multibyte run whose width does not divide 110 — a 3-byte
+# `€` puts 36.67 characters in the budget — and the emitted line is then
+# INVALID UTF-8. A reader in a UTF-8 locale does not see a mangled tail; it
+# stops seeing the LINE (`grep 'FAIL rounds'` returned nothing, rc 1, on a line
+# that was right there — measured on lokaal task 515, where this shipped green
+# on macOS and failed in the container). That is strictly worse than the loose
+# cap it replaced: a cap that over-reports wastes context, a cap that emits
+# invalid UTF-8 loses the whole row for whoever reads it. So walk back at most
+# 3 bytes to the last lead byte (a UTF-8 continuation byte is 10xxxxxx = \x80
+# through \xBF) and cut there. Under C, `${_r:i:1}` is one BYTE, which is what
+# makes this test possible at all.
 report_row() { # report_row <row>
-  local LC_ALL=C _r
+  local LC_ALL=C _r _i _b
   _r="$(sanitize_row "$1")"
   if [ "${#_r}" -gt 110 ]; then
-    echo "operator:   ${_r:0:110}…" >&2
+    _i=110
+    # At most 3 steps: a UTF-8 sequence is 4 bytes at most, so a valid cut
+    # point is never further back than that. A run of continuation bytes
+    # longer than 3 is malformed input, and stopping after 3 keeps a hostile
+    # row from steering the loop.
+    _b=0
+    while [ "$_i" -gt 0 ] && [ "$_b" -lt 3 ]; do
+      case "${_r:$_i:1}" in
+        [$'\x80'-$'\xbf']) _i=$((_i - 1)); _b=$((_b + 1)) ;;
+        *) break ;;
+      esac
+    done
+    echo "operator:   ${_r:0:$_i}…" >&2
   else
     echo "operator:   $_r" >&2
   fi

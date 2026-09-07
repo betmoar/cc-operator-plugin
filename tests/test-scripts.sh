@@ -5624,15 +5624,54 @@ if command -v git >/dev/null 2>&1; then
   printf '{"session_id":"SESS-A","cwd":"%s","stop_hook_active":false}' "$CAPM" \
     | LC_ALL=en_US.UTF-8 "$BASH_ABS" "$HOOK" 2>"$_mberr" >/dev/null
   # The named row is the one that carries the criterion; measure ITS bytes.
-  _mbrow="$(grep 'FAIL rounds' "$_mberr" | head -1 | wc -c | tr -d ' ')"
+  # -a: the FIRST version of this fix cut at byte 110 flat, which lands mid-character on any
+  # width that does not divide 110 — and an invalid-UTF-8 line is not "mangled" to a UTF-8
+  # reader, it is INVISIBLE (grep returned rc 1 on a line that was right there). Measure with
+  # -a so the size check cannot be satisfied by a line the next check proves unreadable.
+  _mbrow="$(grep -a 'FAIL rounds' "$_mberr" | head -1 | wc -c | tr -d ' ')"
   check "the cap report's row is capped in BYTES under a UTF-8 locale (<=200b incl prefix), not characters" \
     "$([ "${_mbrow:-9999}" -le 200 ] && echo 0 || echo 1)"
   check "CONTROL: that row was actually emitted — an empty report would pass the cap trivially" \
     "$([ "${_mbrow:-0}" -gt 20 ] && echo 0 || echo 1)"
+  # THE CUT MUST NOT SPLIT A CHARACTER. Shipped green on macOS and failed on lokaal (task 515)
+  # precisely because the assertion used a plain grep, which in a UTF-8 locale silently stops
+  # matching a line that is no longer valid UTF-8. Assert the property directly instead: the
+  # whole stderr decodes. Three widths, because 110 % width is what decides it — 2-byte `é`
+  # divides evenly and would have passed on its own; 3-byte `€` (36.67 chars) is the one that
+  # splits, and a 4-byte emoji is the other side of the same arithmetic.
+  for _w in 'é' '€' '🙂'; do
+    python3 - "$CAPM/.operator/VERDICTS.md" "$_w" <<'MBPY'
+import sys
+c = sys.argv[2] * 200
+with open(sys.argv[1], "w", encoding="utf-8") as f:
+    f.write("| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n")
+    f.write(f"| T-1 | {c} | ev @abc | FAIL |\n| T-1 | {c} | ev @abc | FAIL |\n")
+MBPY
+    printf '{"session_id":"SESS-A","cwd":"%s","stop_hook_active":false}' "$CAPM" \
+      | LC_ALL=en_US.UTF-8 "$BASH_ABS" "$HOOK" 2>"$_mberr" >/dev/null
+    _mbok="$(python3 -c "
+import sys
+d = open(sys.argv[1], 'rb').read()
+try:
+    d.decode('utf-8'); print(0)
+except UnicodeDecodeError:
+    print(1)" "$_mberr")"
+    check "the byte cut backs off a split character — stderr stays valid UTF-8 with a ${_w} criterion" \
+      "${_mbok:-1}"
+    # And the row is still FINDABLE by an ordinary UTF-8 reader, which is what invalid bytes
+    # cost: not a garbled tail, the whole line.
+    _mbseen="$(LC_ALL=en_US.UTF-8 grep -c 'FAIL rounds' "$_mberr" 2>/dev/null || echo 0)"
+    check "and the row is still visible to a UTF-8 grep with a ${_w} criterion" \
+      "$([ "${_mbseen:-0}" -ge 1 ] && echo 0 || echo 1)"
+  done
   rm -f "$_mberr"
 else
   skip "the report's byte cap under a UTF-8 locale (#126 review): git unavailable"
   skip "the byte-cap control (#126 review): git unavailable"
+  for _w in 1 2 3; do
+    skip "the split-character back-off, width $_w (#126 review): git unavailable"
+    skip "the UTF-8 grep visibility, width $_w (#126 review): git unavailable"
+  done
 fi
 
 # --- the UNCOVERED caps stay NAMED -----------------------------------------

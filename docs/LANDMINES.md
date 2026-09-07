@@ -1017,6 +1017,25 @@ one `report_row` function owning the sanitize, the cap and `local LC_ALL=C`;
 its case runs the hook under a UTF-8 locale, because a C-locale-only test
 passes against the broken code, which is how it shipped.
 
+**And the fix for that introduced a worse one, caught only by the other
+executor.** Capping at byte 110 lands mid-character whenever the character
+width does not divide 110 — a 3-byte `€` puts 36.67 characters in the budget —
+and the emitted line is then invalid UTF-8. A reader in a UTF-8 locale does not
+see a mangled tail; it stops seeing the LINE. `grep 'FAIL rounds'` returned rc
+1 on a line that was right there (measured, lokaal task 515). That is strictly
+worse than the loose cap it replaced: an over-long row wastes context, an
+invalid row loses the whole entry for whoever reads it.
+
+Two things about how it was found are the reusable part. It shipped GREEN on
+macOS and red in the container, because the assertion itself used a plain
+`grep` — **the test was blinded by the very defect it was testing for**, and
+only the second executor exposed it. And the fixture was 2-byte `é`, which
+divides 110 evenly and passes on its own; the case now runs all three widths,
+because `110 % width` is the whole question. The cut backs off at most 3 bytes
+to the last non-continuation byte, and the assertion is now the property
+itself — the whole stderr decodes as UTF-8 — plus a visibility check, rather
+than a grep that cannot fail honestly.
+
 A measurement trap worth keeping, because it produced two wrong tables before
 the right one: the first "realistic" fixture used 30 task ids x 7 criteria =
 210 distinct keys, silently over the 100-key ceiling. Every scan truncated
