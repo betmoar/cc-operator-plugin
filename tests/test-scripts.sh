@@ -5492,6 +5492,43 @@ _caps_ledger "$CAPD/v13.md" "| T-1 | crit | ev @a1 | FAIL |" "| T-1 | crit | ev 
 check "a non-PASS verdict word does NOT reset a key — a MOOT row (#91) would read as a rework round" \
   "$([ "$(_caps_state "$CAPD/v13.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
 
+# --- the per-Stop COST, pinned as a property rather than a stopwatch (#127) --
+# The scan re-reads the whole ledger on EVERY Stop: measured 2026-09-07 at ~1.2s for 3000 rows
+# in a realistic shape, which is real and is tracked in #127 (the Stop hook has no stated
+# wall-clock budget to judge it against — writing one is that issue's step 1).
+#
+# What is pinned here is the SHAPE of the cost, not a duration. A timing assertion in a suite is
+# a flake on a loaded runner, and it fails for reasons that have nothing to do with this code.
+# The property that actually matters: work is bounded by CAPS_MAX_STEPS, so a ledger far past it
+# must report truncated rather than running proportionally longer. A change that makes the scan
+# 10x more expensive per row shows up as truncation arriving EARLIER, which this case sees.
+#
+# The measurement trap that produced two wrong tables before the right one, kept because it is
+# the reusable half: a fixture with more distinct keys than CAPS_MAX_KEYS truncates early, so its
+# timings describe PARTIAL work while reading like full scans. Assert the control FIRST — that a
+# realistic fixture stays UNDER the key ceiling — or the numbers are of something else.
+_caps_keys_in() { # _caps_keys_in <ledger> → count of distinct (id, criterion) pairs
+  grep '^| T-' "$1" | awk -F' \\| ' '{print $2 "|" $3}' | sort -u | wc -l | tr -d ' '
+}
+{ printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+  r=0; while [ "$r" -lt 3000 ]; do
+    printf '| T-%s | criterium %s | ev @abc123def456 | PASS |\n' "$((r % 25))" "$((r % 2))"
+    r=$((r+1)); done
+} > "$CAPD/v14.md"
+check "CONTROL: the realistic fixture stays UNDER the key ceiling — its timings describe a WHOLE scan" \
+  "$([ "$(_caps_keys_in "$CAPD/v14.md")" -le "$(grep -o 'CAPS_MAX_KEYS=[0-9]*' "$SCRIPTS/lib/caps.sh" | cut -d= -f2)" ] && echo 0 || echo 1)"
+check "a realistic 3000-row ledger is scanned WHOLE (not truncated) — the cost is real, and #127 owns it" \
+  "$([ "$(_caps_state "$CAPD/v14.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+# The bound is what keeps the cost from growing without limit. Ten times the rows, same keys:
+# the budget must bite, or the scan is proportional to a file nothing caps.
+{ printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+  r=0; while [ "$r" -lt 30000 ]; do
+    printf '| T-%s | criterium %s | ev @abc | FAIL |\n' "$((r % 25))" "$((r % 2))"
+    r=$((r+1)); done
+} > "$CAPD/v15.md"
+check "ten times the rows TRUNCATES — the per-Stop cost is bounded, not proportional to the ledger" \
+  "$(printf '%s' "$(_caps_state "$CAPD/v15.md")" | grep -q 'truncated=1' && echo 0 || echo 1)"
+
 # --- the gate WIRES it, on every path, and never blocks on it --------------
 # The report runs above every `exit`, because the session that stops CLEAN is exactly the one
 # that needs to hear it: attached to a blocking branch it would surface only when something else

@@ -68,6 +68,19 @@ single source of truth; bump it in the same commit as the changelog entry.
   know what the writer will emit next — so the coupling row for the row
   `printf` now names BOTH parsers, and two cases pin the blindness where the
   next schema change will read it.
+- **What the budget does NOT buy, recorded as issue #127 rather than implied.**
+  The 11.1s figure is the WORST case, and a project does not live there. At a
+  realistic shape (50 distinct keys, mostly PASS), a 3,000-row ledger still
+  costs **~1.2s on every Stop**, and 5,000 rows 1.9s. There is no agreed
+  wall-clock budget for the Stop hook — `statusline.sh` has CR5's ~300ms, this
+  hook has never had one — so "within budget" is a claim nobody can make here.
+  The two cheaper designs are named with their reasons: a tail window (what the
+  bar does) breaks the reset rule, since a clearing PASS can sit anywhere and a
+  false report costs more than a missed one; an mtime cache is the real fix and
+  has its own failure mode (a stale cache is a gate that silently stopped
+  running), so it is tracked, not half-built. Token cost is separately bounded
+  and is not the issue: the report is capped at 10 rows × 110 bytes, measured
+  at 1,618 bytes in the 100-target worst case and zero on a clean ledger.
 - **The fourth was a measured DoS in the detector itself.** The three size
   bounds do not bound the WORK: the ceiling is rows × keys, and at exactly
   those bounds a 20,000-row ledger across 100 failing targets cost **10.2s for

@@ -980,7 +980,25 @@ after CAPS_MAX_STEPS            1.09s  (truncated=1, still reports 100)
 ```
 
 Nine of those seconds were the lookup, paid on every Stop, on a ledger an
-ordinary mature project reaches. The portable alternative was measured rather
+ordinary mature project reaches.
+
+**And the worst case is not the case anyone lives in.** The budget fixed the
+tail; the ordinary shape still costs. Re-measured at 25 task ids x 2 criteria
+(50 keys, mostly PASS), whole scan, no truncation: 500 rows 0.12s, 1000 rows
+0.4s, 3000 rows **1.2s**, 5000 rows 1.9s. So a few thousand rows is ~1-2s on
+every Stop, forever. Whether that is acceptable cannot be answered here,
+because the Stop hook has no stated wall-clock budget the way statusline.sh
+has CR5's ~300ms — and **the number nobody can judge is the number nobody
+notices growing**. Tracked as #127, which makes writing that budget down step
+1, ahead of any caching.
+
+A measurement trap worth keeping, because it produced two wrong tables before
+the right one: the first "realistic" fixture used 30 task ids x 7 criteria =
+210 distinct keys, silently over the 100-key ceiling. Every scan truncated
+early, so the timings described PARTIAL work while reading like full scans --
+and the curve flattened in a way that looked like good news. `caps_truncated`
+was in the output the whole time and I did not read it. **Print the honesty
+flag beside the number, and then actually look at it.** The portable alternative was measured rather
 than assumed: a string-keyed table is **20× worse** (3m28s on the same input),
 because each lookup rescans a growing string. So the linear array stands and
 the work is capped directly. **Before adding a bound, ask what it bounds** — a

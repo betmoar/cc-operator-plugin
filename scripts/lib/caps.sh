@@ -140,6 +140,35 @@ CAPS_MAX_BYTES=2097152   # 2 MiB — orders above any honest verdict ledger
 # 11-second Stop costs the whole gate.
 CAPS_MAX_STEPS=100000
 
+# WHAT THE BUDGET DOES NOT BUY, stated because the numbers above are the
+# WORST case and the worst case is not the one a project lives in. Measured
+# 2026-09-07, a realistic shape (25 task ids x 2 criteria = 50 keys, mostly
+# PASS rows), five runs each, whole scan, no truncation until the last row:
+#
+#     500 rows   0.12s        3000 rows   1.2s
+#    1000 rows   0.4s         5000 rows   1.9s (truncated)
+#      48 rows   0.05s   <- this repo's own ledger after 40+ verdicts
+#
+# So a few thousand rows costs ~1-2s ON EVERY STOP, and that is real. There
+# is no stated wall-clock budget for this hook (the statusline has CR5's
+# 300ms; the Stop hook has never had one), so "within budget" is not a claim
+# available here — the honest statement is that the cost is bounded, paid
+# every time, and unmeasured against any agreed limit.
+#
+# Two cheaper designs, neither taken, both with a reason:
+#
+#   TAIL WINDOW (what statusline.sh does). Reading the last N rows conflicts
+#   with the reset rule: a PASS that clears a key can sit anywhere, so a tail
+#   scan reports caps that were resolved long ago. A false report is worse
+#   than a missed one here — this gate's whole credibility is that it does
+#   not cry wolf.
+#
+#   MTIME CACHE. The ledger is append-only with a single writer, so an
+#   unchanged mtime means an unchanged answer. This is the real fix and it is
+#   its own piece of work, with its own failure mode: a stale cache is a gate
+#   that silently stopped running, which is the exact class this file exists
+#   to end. Tracked as issue #127 rather than half-built here.
+
 # Sets: caps_tripped (count of targets at or over the cap), caps_rows (one
 # "<n> FAIL rounds: <id> | <criterion>" line each — the CALLER sanitizes and
 # truncates them; they are untrusted project data), caps_truncated (1 = a
