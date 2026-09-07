@@ -992,6 +992,31 @@ has CR5's ~300ms — and **the number nobody can judge is the number nobody
 notices growing**. Tracked as #127, which makes writing that budget down step
 1, ahead of any caching.
 
+**A control that counts the wrong thing is the failure it exists to prevent.**
+The case asserting "this fixture stays under CAPS_MAX_KEYS" — written
+specifically to stop the truncation trap below from recurring — split the row
+on `" | "` and printed fields `$2 "|" $3`, which is (criterion, evidence), not
+(id, criterion). Measured: 2 on a 3-key ledger. It undercounts exactly when
+one criterion appears under several task ids, which is the ordinary shape, so
+a future fixture could sail past the ceiling check while every scan truncated
+— the guard reporting green about the wrong bytes. Found by Copilot on PR
+#126, one round after the same class was closed at the level above. Both
+directions now have their own control: two ids sharing a criterion is 2 keys,
+one id with two criteria is 2 keys.
+
+**A comment that names a unit the code does not implement is a lie the build
+will not catch.** Both stderr row-printers wrote `[ "${#row}" -gt 110 ]` under
+a comment calling it a "110-byte cap". Bash counts CHARACTERS outside the C
+locale, and a desktop session runs UTF-8 — so the real cap was 220 bytes for
+`é`, 440 for an emoji. Measured: a 100-target report with 200-char criteria
+emitted 2591 bytes under `en_US.UTF-8` against 1731 under `C`. This is the
+same defect `check_reader_bounds` refuses in every file reader (it requires
+`LC_ALL=C` in scope wherever `read -r -n N` appears), one layer up, on the
+channel that carries this hook's own instruction back to the model. The fix is
+one `report_row` function owning the sanitize, the cap and `local LC_ALL=C`;
+its case runs the hook under a UTF-8 locale, because a C-locale-only test
+passes against the broken code, which is how it shipped.
+
 A measurement trap worth keeping, because it produced two wrong tables before
 the right one: the first "realistic" fixture used 30 task ids x 7 criteria =
 210 distinct keys, silently over the 100-key ceiling. Every scan truncated

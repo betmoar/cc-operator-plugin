@@ -362,6 +362,34 @@ shq() { # shq <string> → '<string>' with embedded quotes escaped
 # the thing acted on, so losing exotic bytes costs nothing. `tr` is not used —
 # a lost PATH must not disarm the sanitizer, and this hook is builtin-only
 # everywhere else for the same reason.
+# Print ONE untrusted ledger row to stderr, sanitized and capped at 110 BYTES.
+#
+# `local LC_ALL=C` is the whole point of this being a function (PR #126 review,
+# Copilot). Both call sites wrote `[ "${#row}" -gt 110 ]` and `${row:0:110}`
+# and called that a byte cap in their own comments — but bash counts
+# CHARACTERS outside the C locale, so under a UTF-8 locale (which is what a
+# desktop session runs) the cap was up to 4x looser than it read: 110 chars of
+# `é` is 220 bytes, of an emoji 440 (measured). The rows are hand-editable
+# project data going into the channel that carries this hook's own
+# instruction, so the cap is what keeps a 100-row ledger from burying the
+# guidance above it — a cap that silently quadruples is the same defect
+# check_reader_bounds refuses in every file reader, one layer up.
+#
+# Measured cost of the gap: a 100-target cap report with 200-char criteria
+# emitted 2591 bytes under en_US.UTF-8 against 1731 under C.
+#
+# `local`, never a global assignment: the C collation must not leak to the
+# rest of the hook — the idiom scripts/lib/partition.sh uses.
+report_row() { # report_row <row>
+  local LC_ALL=C _r
+  _r="$(sanitize_row "$1")"
+  if [ "${#_r}" -gt 110 ]; then
+    echo "operator:   ${_r:0:110}…" >&2
+  else
+    echo "operator:   $_r" >&2
+  fi
+}
+
 sanitize_row() { # sanitize_row <row> → row with control bytes replaced
   local _s="$1" _out="" _c _i=0
   while [ "$_i" -lt "${#_s}" ]; do
@@ -430,25 +458,18 @@ scan_caps "$opdir/VERDICTS.md"
 # shellcheck disable=SC2154  # assigned by the sourced lib/caps.sh
 if [ "$caps_scan_failed" = 0 ] && [ "$caps_tripped" -gt 0 ]; then
   echo "operator: $caps_tripped target(s) at the charter's same-target-rework cap ($CAPS_REWORK_MAX rework rounds on one target) — the cap table calls this a defined stop-and-report: stop reworking it, log the decision, move on or escalate. Not blocking; a later PASS on the same criterion clears it." >&2
-  # NAME the targets, sanitized and capped — the #93/#94 rule. A count whose
-  # rows the operator must go find is a count answered by not looking, and
-  # these rows are hand-editable project data printed into the channel that
-  # carries this hook's own instruction (sanitize BEFORE measuring, so the
-  # 110-byte cap stays honest on a row of escapes).
+  # NAME the targets — the #93/#94 rule. A count whose rows the operator must
+  # go find is a count answered by not looking. report_row does the sanitize,
+  # the byte cap and the C locale in one place (PR #126 review).
   _cn=0
   while IFS= read -r _crow; do
     [ -n "$_crow" ] || continue
-    _crow="$(sanitize_row "$_crow")"
     _cn=$((_cn + 1))
     if [ "$_cn" -gt 10 ]; then
       echo "operator:   … and $((caps_tripped - 10)) more — read $opdir/VERDICTS.md" >&2
       break
     fi
-    if [ "${#_crow}" -gt 110 ]; then
-      echo "operator:   ${_crow:0:110}…" >&2
-    else
-      echo "operator:   $_crow" >&2
-    fi
+    report_row "$_crow"
   done <<EOF
 $caps_rows
 EOF
@@ -544,30 +565,25 @@ if [ "$deviations_scan_failed" = 0 ] && [ "$deviations_unpresented" -gt 0 ]; the
   # was to mark without reading — the habit the gate exists to prevent. The
   # scanner already parsed them; it used to discard them.
   #
-  # Capped at 10 and truncated to ~110 chars: stderr is fed back to the model as
+  # Capped at 10 rows, each at 110 BYTES: stderr is fed back to the model as
   # guidance, and a 100-row ledger dumped into it buries the instruction above.
   # The full rows are in the file, which the line above now names absolutely.
   #
-  # SANITIZE BEFORE MEASURING. The rows are hand-editable project data printed
-  # into the channel that carries this hook's own instruction, so a control byte
-  # could repaint it. Sanitizing first also keeps the 110 cap honest: a row of
+  # Both halves live in report_row: it sanitizes BEFORE measuring (a row of
   # escapes is short on screen and long in bytes, and truncating mid-escape is
-  # its own hazard.
+  # its own hazard) and it measures in the C locale, which is what makes "110
+  # bytes" true rather than "110 characters, so up to 440 bytes" (PR #126
+  # review — the comment here claimed a byte cap the code did not implement).
   if [ -n "$deviations_rows" ]; then
     _dn=0
     while IFS= read -r _drow; do
       [ -n "$_drow" ] || continue
-      _drow="$(sanitize_row "$_drow")"
       _dn=$((_dn + 1))
       if [ "$_dn" -gt 10 ]; then
         echo "operator:   … and $((deviations_unpresented - 10)) more — read $opdir/DECISIONS.md" >&2
         break
       fi
-      if [ "${#_drow}" -gt 110 ]; then
-        echo "operator:   ${_drow:0:110}…" >&2
-      else
-        echo "operator:   $_drow" >&2
-      fi
+      report_row "$_drow"
     done <<EOF
 $deviations_rows
 EOF

@@ -68,6 +68,22 @@ single source of truth; bump it in the same commit as the changelog entry.
   know what the writer will emit next — so the coupling row for the row
   `printf` now names BOTH parsers, and two cases pin the blindness where the
   next schema change will read it.
+- **A review round found three more, two of them in the guards themselves.**
+  The stderr row-printers wrote `[ "${#row}" -gt 110 ]` under a comment calling
+  it a *byte* cap — but bash counts CHARACTERS outside the C locale, so on a
+  UTF-8 desktop session the real cap was 220 bytes for `é` and 440 for an
+  emoji (measured: a 100-target report emitted 2591 bytes under `en_US.UTF-8`
+  against 1731 under `C`). That is the defect `check_reader_bounds` already
+  refuses in every file reader, one layer up, on the channel carrying this
+  hook's instruction back to the model; both call sites now go through one
+  `report_row` owning the sanitize, the cap and `local LC_ALL=C`, and its case
+  runs the hook under UTF-8, since a C-only test passes against the broken
+  code. Separately, the test helper asserting "this fixture stays under
+  `CAPS_MAX_KEYS`" — written to stop the truncation trap recurring — split the
+  row into `(criterion, evidence)` rather than `(id, criterion)` and
+  undercounted whenever one criterion spanned several ids: **a control that
+  counts the wrong thing is the failure it exists to prevent.** Both directions
+  now have their own control. Thanks to Copilot's review on PR #126.
 - **What the budget does NOT buy, recorded as issue #127 rather than implied.**
   The 11.1s figure is the WORST case, and a project does not live there. At a
   realistic shape (50 distinct keys, mostly PASS), a 3,000-row ledger still

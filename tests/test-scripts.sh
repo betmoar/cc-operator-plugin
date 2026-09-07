@@ -5508,13 +5508,32 @@ check "a non-PASS verdict word does NOT reset a key — a MOOT row (#91) would r
 # timings describe PARTIAL work while reading like full scans. Assert the control FIRST — that a
 # realistic fixture stays UNDER the key ceiling — or the numbers are of something else.
 _caps_keys_in() { # _caps_keys_in <ledger> → count of distinct (id, criterion) pairs
-  grep '^| T-' "$1" | awk -F' \\| ' '{print $2 "|" $3}' | sort -u | wc -l | tr -d ' '
+  # Fields, after splitting a `| id | criterion | evidence | verdict |` row on
+  # " | ": $1 is "| id" (the leading pipe has no trailing space to split on),
+  # $2 the criterion, $3 the evidence. So the KEY is $1+$2, and the first cut
+  # printed $2+$3 — (criterion, evidence), which is not the key at all (PR #126
+  # review). It undercounted whenever one criterion appeared under several ids:
+  # measured 2 on a 3-key ledger. A control that counts the wrong thing is the
+  # exact failure it was written to prevent, one level up.
+  grep '^| T-' "$1" | awk -F' \\| ' '{sub(/^\\| /, "", $1); print $1 "|" $2}' \
+    | sort -u | wc -l | tr -d ' '
 }
 { printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
   r=0; while [ "$r" -lt 3000 ]; do
-    printf '| T-%s | criterium %s | ev @abc123def456 | PASS |\n' "$((r % 25))" "$((r % 2))"
+    printf '| T-%s | criterion %s | ev @abc123def456 | PASS |\n' "$((r % 25))" "$((r % 2))"
     r=$((r+1)); done
 } > "$CAPD/v14.md"
+# The counter itself needs a control, because a control that counts the WRONG THING is exactly
+# the failure it exists to prevent. Two ids sharing one criterion is 2 keys, and the first cut of
+# this helper read (criterion, evidence) instead of (id, criterion) and said 1 — so a fixture
+# could sail past the ceiling check while its scans truncated (PR #126 review).
+_caps_ledger "$CAPD/v16.md" "| T-1 | shared | ev @a | FAIL |" "| T-2 | shared | ev @a | FAIL |"
+check "CONTROL: the key counter counts (id, criterion) — two ids sharing a criterion is TWO keys" \
+  "$([ "$(_caps_keys_in "$CAPD/v16.md")" = 2 ] && echo 0 || echo 1)"
+# And the mirror, or the fix could have swung to counting ids alone.
+_caps_ledger "$CAPD/v17.md" "| T-1 | crit-a | ev @a | FAIL |" "| T-1 | crit-b | ev @a | FAIL |"
+check "CONTROL: one id with two criteria is also TWO keys — not collapsed by id" \
+  "$([ "$(_caps_keys_in "$CAPD/v17.md")" = 2 ] && echo 0 || echo 1)"
 check "CONTROL: the realistic fixture stays UNDER the key ceiling — its timings describe a WHOLE scan" \
   "$([ "$(_caps_keys_in "$CAPD/v14.md")" -le "$(grep -o 'CAPS_MAX_KEYS=[0-9]*' "$SCRIPTS/lib/caps.sh" | cut -d= -f2)" ] && echo 0 || echo 1)"
 check "a realistic 3000-row ledger is scanned WHOLE (not truncated) — the cost is real, and #127 owns it" \
@@ -5523,7 +5542,7 @@ check "a realistic 3000-row ledger is scanned WHOLE (not truncated) — the cost
 # the budget must bite, or the scan is proportional to a file nothing caps.
 { printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
   r=0; while [ "$r" -lt 30000 ]; do
-    printf '| T-%s | criterium %s | ev @abc | FAIL |\n' "$((r % 25))" "$((r % 2))"
+    printf '| T-%s | criterion %s | ev @abc | FAIL |\n' "$((r % 25))" "$((r % 2))"
     r=$((r+1)); done
 } > "$CAPD/v15.md"
 check "ten times the rows TRUNCATES — the per-Stop cost is bounded, not proportional to the ledger" \
@@ -5578,6 +5597,42 @@ else
   skip "the cap detector's blocking-path half (#107): git unavailable"
   skip "the cap detector's blocking-exit half (#107): git unavailable"
   skip "the cap detector's clean-ledger control (#107): git unavailable"
+fi
+
+# --- the report's 110 cap is BYTES, in every locale -------------------------
+# Both call sites called this a byte cap in their own comments and measured with `${#row}`,
+# which counts CHARACTERS outside the C locale — so under a UTF-8 locale (what a desktop
+# session runs) the cap was up to 4x looser than it read: 110 chars of `é` is 220 bytes, of an
+# emoji 440 (measured, PR #126 review). stderr is the channel carrying this hook's own
+# instruction, so a cap that silently quadruples is a ledger burying the guidance above it.
+# report_row now owns the sanitize, the cap and `local LC_ALL=C` in one place.
+if command -v git >/dev/null 2>&1; then
+  CAPM="$(newproj)"
+  git -C "$CAPM" init -q . 2>/dev/null
+  git -C "$CAPM" config user.email t@t 2>/dev/null; git -C "$CAPM" config user.name t 2>/dev/null
+  ( cd "$CAPM" && bash "$INIT" >/dev/null 2>&1 )
+  # A multibyte criterion far past the cap, through a ledger the reader accepts.
+  _mb=""; _i=0; while [ "$_i" -lt 200 ]; do _mb="${_mb}é"; _i=$((_i+1)); done
+  {
+    printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+    printf '| T-1 | %s | ev @abc | FAIL |\n' "$_mb"
+    printf '| T-1 | %s | ev @abc | FAIL |\n' "$_mb"
+  } > "$CAPM/.operator/VERDICTS.md"
+  # Run the hook under a UTF-8 locale — the locale that exposes the defect. A C-locale-only
+  # test would pass against the broken code, which is how the defect shipped.
+  _mberr="$(mktemp)"
+  printf '{"session_id":"SESS-A","cwd":"%s","stop_hook_active":false}' "$CAPM" \
+    | LC_ALL=en_US.UTF-8 "$BASH_ABS" "$HOOK" 2>"$_mberr" >/dev/null
+  # The named row is the one that carries the criterion; measure ITS bytes.
+  _mbrow="$(grep 'FAIL rounds' "$_mberr" | head -1 | wc -c | tr -d ' ')"
+  check "the cap report's row is capped in BYTES under a UTF-8 locale (<=200b incl prefix), not characters" \
+    "$([ "${_mbrow:-9999}" -le 200 ] && echo 0 || echo 1)"
+  check "CONTROL: that row was actually emitted — an empty report would pass the cap trivially" \
+    "$([ "${_mbrow:-0}" -gt 20 ] && echo 0 || echo 1)"
+  rm -f "$_mberr"
+else
+  skip "the report's byte cap under a UTF-8 locale (#126 review): git unavailable"
+  skip "the byte-cap control (#126 review): git unavailable"
 fi
 
 # --- the UNCOVERED caps stay NAMED -----------------------------------------
