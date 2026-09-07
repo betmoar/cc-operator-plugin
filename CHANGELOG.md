@@ -94,6 +94,13 @@ single source of truth; bump it in the same commit as the changelog entry.
   fixture was 2-byte `é`, which divides 110 evenly. The cut now backs off to
   the last lead byte, and the cases run all three widths asserting the
   property directly (the stderr decodes) plus visibility to a UTF-8 reader.
+- **And the budget under-billed the case it was written for.** The lookup
+  compares element `i` then breaks, so a hit at index `i` costs `i + 1`
+  comparisons — charging `i` billed a hit at index 0 as free. Measured on a
+  19,000-row ledger where every row hits the first key: **charged 0 against
+  18,999 real comparisons**, with `caps_truncated=0` claiming the scan had
+  stayed inside its bound. Not off by one; off by everything, on the shape a
+  mature ledger actually has. Found by Copilot on PR #126.
 - **What the budget does NOT buy, recorded as issue #127 rather than implied.**
   The 11.1s figure is the WORST case, and a project does not live there. At a
   realistic shape (50 distinct keys, mostly PASS), a 3,000-row ledger still

@@ -5475,6 +5475,45 @@ check "CONTROL: a small ledger is not truncated — the budget does not fire on 
 check "scan_caps is defined exactly ONCE — bash runs the last definition (#81's class)" \
   "$([ "$(grep -c '^scan_caps() {' "$SCRIPTS/lib/caps.sh")" = 1 ] && echo 0 || echo 1)"
 
+# --- the budget must CHARGE the comparisons it performs (PR #126 review) ----
+# The lookup COMPARES element i and then breaks, so a hit at index i costs i+1 comparisons.
+# Charging i billed a hit at index 0 as FREE: measured 0 charged against 18,999 real on a ledger
+# where every row hits the first key — not off by one, off by everything, with caps_truncated=0
+# claiming the scan had stayed inside its bound.
+#
+# THE FIXTURE HAD TO BE SOLVED FOR, and two earlier drafts could not see the defect at all.
+# The case must sit in the window where the OLD accounting stays UNDER the budget and the NEW one
+# crosses it — anywhere else both truncate (or neither does) and the case is vacuous while
+# looking like proof. With k keys and hits spread evenly, a row costs (k-1)/2 under the old
+# accounting and (k+1)/2 under the new, so the window needs rows*(k-1)/2 < CAPS_MAX_STEPS <=
+# rows*(k+1)/2 while rows stays under CAPS_MAX_LINES. Solved: k=10, rows=18500 -> 83,250 old
+# against 101,750 new, budget 100,000. Verified BOTH ways before being believed: truncated=1 on
+# the shipped code, truncated=0 on the pre-fix accounting.
+#
+# A hit-only ledger cannot express this (draft one): at 1 charge per row the step bound is
+# unreachable before the LINE bound stops the scan, so it truncates on the row count either way.
+# 100 keys x 3000 rows cannot either (draft two): 153,450 old vs 156,550 new, BOTH past the
+# budget, both truncating — arithmetically green, evidentially empty.
+_caps_disc="$CAPD/v18.md"
+{ printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+  k=0; while [ "$k" -lt 10 ]; do printf '| T-%s | crit | ev @abc | FAIL |\n' "$k"; k=$((k+1)); done
+  r=0; while [ "$r" -lt 18500 ]; do printf '| T-%s | crit | ev @abc | FAIL |\n' "$((r % 10))"; r=$((r+1)); done
+} > "$_caps_disc"
+check "a hit at index i costs i+1 — the charge crosses the step budget where charging i does not" \
+  "$(printf '%s' "$(_caps_state "$_caps_disc")" | grep -q 'truncated=1' && echo 0 || echo 1)"
+# CONTROL: the STEP bound must be what fired, not the row count. Without this the case is
+# satisfied by any ledger long enough to trip CAPS_MAX_LINES — the trap draft one fell into.
+check "CONTROL: that ledger is under CAPS_MAX_LINES — the STEP bound fired, not the row count" \
+  "$([ "$(grep -c '^| T-' "$_caps_disc")" -lt "$(grep -o 'CAPS_MAX_LINES=[0-9]*' "$SCRIPTS/lib/caps.sh" | cut -d= -f2)" ] && echo 0 || echo 1)"
+# CONTROL: the same shape well under the budget must NOT truncate, or the case above is satisfied
+# by a scan that always truncates.
+{ printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+  k=0; while [ "$k" -lt 10 ]; do printf '| T-%s | crit | ev @abc | FAIL |\n' "$k"; k=$((k+1)); done
+  r=0; while [ "$r" -lt 200 ]; do printf '| T-%s | crit | ev @abc | FAIL |\n' "$((r % 10))"; r=$((r+1)); done
+} > "$CAPD/v19.md"
+check "CONTROL: the same shape well under the step budget does NOT truncate" \
+  "$(printf '%s' "$(_caps_state "$CAPD/v19.md")" | grep -q 'truncated=0' && echo 0 || echo 1)"
+
 # --- the SCHEMA coupling, documented as a limitation rather than papered over -
 # caps.sh is now the SECOND reader of the 4-cell row (ops-reverify.sh is the first), and the
 # 4-cell test that correctly skips a hand-edit is WRONG for a schema change: widen the row and

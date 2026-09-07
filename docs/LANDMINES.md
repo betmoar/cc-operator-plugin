@@ -1036,6 +1036,42 @@ to the last non-continuation byte, and the assertion is now the property
 itself — the whole stderr decodes as UTF-8 — plus a visibility check, rather
 than a grep that cannot fail honestly.
 
+**The budget then under-billed the case it was written for.** The lookup
+COMPARES element `i` and then breaks, so a hit at index `i` costs `i + 1`
+comparisons — and the accounting charged `i`, billing a hit at index 0 as
+FREE. Measured on a 19,000-row ledger where every row hits the first key:
+**charged 0 against 18,999 real comparisons**, `caps_truncated=0`, the scan
+reporting it had stayed inside a bound it never touched. With 100 keys created
+first and 19,000 hits after: charged 4,950 against 23,950. Not off by one —
+off by everything, on the shape a mature ledger actually has (a handful of
+targets, reworked repeatedly). This is size-bounds-are-not-work-bounds one
+level further down: the bound was correct and its ACCOUNTING was not, which no
+test asking "does it truncate" can see.
+
+**Two drafts of the case for it were vacuous, and the mutation is what said
+so.** This is the part worth carrying: a bound has a WINDOW in which a fixture
+can discriminate, and outside it the case passes either way while reading like
+proof.
+
+- Draft one used a hit-only ledger. At one charge per row the STEP bound
+  (100,000) is unreachable before the LINE bound (20,000) stops the scan, so
+  it truncated on the row count under both accountings.
+- Draft two used 100 keys and 3,000 rows: 153,450 charged under the old
+  accounting against 156,550 under the new — **both far past the 100,000
+  budget**, so both truncated. Arithmetically green, evidentially empty. The
+  suite reported 963 passed with the defect restored.
+
+The fixture had to be SOLVED FOR. With `k` keys and hits spread evenly a row
+costs `(k-1)/2` under the old accounting and `(k+1)/2` under the new, so the
+case needs `rows*(k-1)/2 < CAPS_MAX_STEPS <= rows*(k+1)/2` with `rows` under
+`CAPS_MAX_LINES`: k=10, rows=18,500 gives 83,250 against 101,750. Verified
+both ways before being believed — `truncated=1` on the shipped code,
+`truncated=0` on the pre-fix accounting.
+
+**A pin is a hypothesis until the mutation runs red, and "the suite is green"
+is not the same claim as "the case fired".** Both drafts passed the suite; only
+running the defect back through them showed they were measuring nothing.
+
 A measurement trap worth keeping, because it produced two wrong tables before
 the right one: the first "realistic" fixture used 30 task ids x 7 criteria =
 210 distinct keys, silently over the 100-key ceiling. Every scan truncated

@@ -234,7 +234,19 @@ scan_caps() { # scan_caps <verdicts-path>
     # charged whether the lookup hit or missed — a budget that only counts
     # misses is not a budget. Checked AFTER this row is classified below, so
     # the row that exhausts it is still counted rather than half-read.
-    steps=$((steps + i))
+    #
+    # `i + 1`, NOT `i`, and the difference is not cosmetic (PR #126 review,
+    # Copilot). The loop COMPARES element `i` and then breaks, so a hit at
+    # index `i` costs `i + 1` comparisons; charging `i` bills a hit at index 0
+    # as FREE. Measured on a 19,000-row ledger where every row hits the first
+    # key: charged 0 against 18,999 real comparisons — the budget was not off
+    # by one, it was off by everything, and the scan ran 2.9s with
+    # `caps_truncated=0` claiming it had stayed inside its bound. With 100 keys
+    # created first and 19,000 hits after: charged 4,950 against 23,950 real.
+    # A bound that under-bills the common case is a bound in name only, which
+    # is the same class as the size-bounds-are-not-work-bounds defect this
+    # budget was added to fix — one level down, in the accounting itself.
+    steps=$((steps + i + 1))
     if [ "$verdict" = PASS ]; then
       # A PASS RESETS. Only a key we are already tracking: a PASS on a target
       # that never failed creates nothing, which is what keeps the table small
