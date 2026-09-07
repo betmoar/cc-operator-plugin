@@ -9,6 +9,42 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.12] - 2026-09-07
+
+- **The charter's cap table now has something behind it (#107).**
+  `templates/OPERATOR.md` declares three caps and calls a trip "a defined
+  stop-and-report, not a judgment call", and until now
+  `grep -rn 'Identical-rejection\|rework\|Neighbor-regress' scripts/ hooks/`
+  returned nothing: they were instructions to a model, which is the category
+  the charter exists to escape. `scripts/lib/caps.sh` is the detector, sourced
+  by the Stop hook beside `partition.sh` and `autobar.sh`. It scans
+  `VERDICTS.md` for **same-target-rework ×2** — two FAIL rounds on one
+  `(task-id, criterion)` — names the targets, and a later PASS on the same key
+  clears it.
+- **It is REPORT-ONLY, and that polarity is the design.** `VERDICTS.md` is
+  append-only with a single writer, so a tripped key can never be un-tripped by
+  removing a row: a blocking cap detector over a permanent history is a
+  permanent block. The charter also makes the trip the operator's
+  stop-and-report, not the gate's. The report is emitted above every `exit`, on
+  the allowing path and both blocking paths — the session that stops clean is
+  exactly the one that needs to hear it. `check_caps` pins that no `caps_*`
+  branch in the hook contains an `exit`.
+- **Two of the three caps stay UNCOVERED, and the file says so.**
+  Identical-rejection needs a schema decision first: the cap is about a
+  *reviewer*, and a row carries no reviewer identity — the 4-cell schema is
+  published, and a fifth column breaks every ledger in the field.
+  Neighbor-regressing is not a column problem: the cap is about *causation*,
+  and a PASS→FAIL flip is the nearest observable while not being the same
+  claim. A partial detector whose limits go unstated reads as a complete one,
+  so `check_caps` reads both names back out of the file.
+- **The pin EXECUTES the detector.** The regression this is written against is
+  not deletion — it is a scan that keeps its shape and stops tripping, which
+  reports "no caps tripped", byte-identical to a clean ledger, forever.
+  `check_caps` extracts the shipped `scan_caps` (with its `CAPS_*` constants —
+  an unset one makes `[ n -ge "" ]` evaluate falsy and the detector silently
+  stops) and runs it against three synthetic ledgers: trip, reset, and a
+  same-id/different-criterion control.
+
 ## [0.11.11] - 2026-09-05
 
 - **The validator no longer grades the pull request that edits it (#108).**

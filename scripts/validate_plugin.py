@@ -1015,6 +1015,9 @@ def check_reader_bounds(root, problems):
     readers = {
         "ops-verdict.sh": 1,     # the --reconcile fragment loop
         "lib/partition.sh": 1,   # the deviation scan (its NUL probe counts below)
+        # The cap scan reads VERDICTS.md (hand-editable, untrusted — the same
+        # file ops-reverify.sh reads, and for the same reason it is bounded).
+        "lib/caps.sh": 1,        # the row loop in scan_caps
         # The statusline segment renders on a ~300ms timer, the hottest reader
         # in the plugin (a 64MB newline-less sentinel: 0.014s bounded vs 6.20s
         # unbounded — a permanently wedged bar, not a slow one).
@@ -3617,6 +3620,168 @@ def check_suite_floors(root, problems):
                     f"pin EXECUTES it for that reason")
 
 
+def check_caps(root, problems):
+    """#107: the cap detector exists, is sourced by the gate, and still FIRES.
+
+    The failure this pin is written against is not deletion — it is a detector
+    that keeps its shape and stops detecting. A cap scan that never trips
+    reports "no caps tripped", which is byte-identical to a clean ledger, on
+    every project, forever. Nothing else in the build would notice.
+
+    So the load-bearing half is EXECUTED (the F140/F144 shape): the shipped
+    scan_caps is extracted and run against three synthetic ledgers, and its
+    answers are read. Substring pins alone were satisfied, in this repo, by a
+    literal sitting in a trailing comment while the flag was gone from the
+    command; presence is not effect.
+
+    Also pinned: the REPORT-ONLY polarity. The detector must never contribute
+    an exit code — VERDICTS.md is append-only, so a tripped key can never be
+    un-tripped and a blocking detector is a permanent block (#123 C's polarity,
+    for the same reason). A future edit that "upgrades" the report to a block
+    is the regression with no symptom until a session cannot end.
+    """
+    rel = "scripts/lib/caps.sh"
+    p = root / "scripts" / "lib" / "caps.sh"
+    if not p.is_file():
+        problems.append(
+            f"{rel} is missing — the charter's cap table goes back to being "
+            f"prose with nothing behind it (#107); ops-stop-hook.sh sources it "
+            f"and would fail to launch without it")
+        return
+    code = shell_code(p)
+
+    # (a) the gate SOURCES it. A source STATEMENT, not a mention: the F126
+    # lesson one file over — `"caps.sh" in text` is satisfied by an echo, and a
+    # lib nothing sources is a lib that never runs.
+    hook = root / "scripts" / "ops-stop-hook.sh"
+    if hook.is_file():
+        hcode = shell_code(hook)
+        if not re.search(r"^\s*(?:\.|source)\s+\"?\$\{?_libdir\}?\"?/caps\.sh",
+                         hcode, re.M):
+            problems.append(
+                "scripts/ops-stop-hook.sh: does not SOURCE lib/caps.sh — a "
+                "mention is not a source statement (audit F126), and an "
+                "unsourced detector reports nothing while every gate stays "
+                "green (#107)")
+        # (b) REPORT-ONLY. The detector's own variables must never reach an
+        # `exit`. Checked as a data-flow-ish proximity test rather than a
+        # string ban: `caps_tripped` legitimately appears in an `if`, and what
+        # must never appear is an exit inside that branch.
+        for m in re.finditer(r"^if \[ \"\$caps_[a-z_]+\".*$", hcode, re.M):
+            tail = hcode[m.start():]
+            # the branch runs to its own `^fi`
+            end = re.search(r"^fi$", tail, re.M)
+            branch = tail[:end.start()] if end else tail
+            if re.search(r"^\s*exit\b", branch, re.M):
+                problems.append(
+                    "scripts/ops-stop-hook.sh: a caps_* branch contains an "
+                    "`exit` — the cap report is REPORT-ONLY on purpose. "
+                    "VERDICTS.md is append-only with a single writer, so a "
+                    "tripped key can never be un-tripped by removing a row: a "
+                    "blocking cap detector over a permanent history is a "
+                    "PERMANENT block, and a session that cannot end is the "
+                    "failure a user resolves by deleting the plugin (#107, the "
+                    "polarity #123 C states for the same reason)")
+                break
+
+    # (c) the honest-coverage note. The cap table has THREE caps and this
+    # covers ONE; the other two are uncovered for stated reasons (no reviewer
+    # identity in a 4-cell row; a PASS->FAIL flip is not causation). An edit
+    # that drops those paragraphs turns a documented partial into an implied
+    # complete — the exact reading #85's uncovered clauses (2) and (3) exist
+    # to prevent. Searched in RAW text: this is prose, and it lives in
+    # comments by design.
+    raw = p.read_text(encoding="utf-8")
+    for token in ("identical-rejection", "neighbor-regressing"):
+        if token not in raw.lower():
+            problems.append(
+                f"{rel}: no longer names the UNCOVERED cap {token!r} — this "
+                f"file covers one of the charter's three caps, and a partial "
+                f"detector whose limits go unstated reads as a complete one "
+                f"(#107; the honesty #85 applies to its own uncovered clauses)")
+
+    # (d) THE EXECUTABLE PIN. Extract scan_caps and run it against synthetic
+    # ledgers. Three claims, each a different regression:
+    #   trip   — two FAILs on one (id, criterion) is a cap trip. A detector
+    #            that stopped detecting is the whole failure class here.
+    #   reset  — a later PASS clears the key. Without it the report fires on
+    #            every mature ledger from its first repeated failure onward,
+    #            and a line that is always there is a line nobody reads.
+    #   keyed  — two FAILs on DIFFERENT criteria of the same id do NOT trip.
+    #            A detector keyed on the id alone fires on ordinary work, and
+    #            a false halt costs a session.
+    _fn = re.search(r'^scan_caps\(\)\s*\{.*?^\}', code, re.M | re.S)
+    if not _fn:
+        problems.append(
+            f"{rel}: cannot extract scan_caps() for the behaviour probe — "
+            f"reshaping it must update this extractor, not silently skip the "
+            f"only pin that tests the detector's EFFECT (the F144 rule)")
+        return
+    # The CAPS_* constants go into the probe WITH the function, because the
+    # function reads them and an unset one is not an error bash reports —
+    # `[ 2 -ge "" ]` is a syntax complaint on stderr that evaluates falsy, so
+    # the detector would silently stop tripping. Extracting only the function
+    # reproduced exactly that (measured while writing this pin: the trip
+    # ledger came back 0 against a working lib). Which means the constants are
+    # part of the unit, and a rename that moves the threshold out of this
+    # shape is caught here rather than at some later Stop.
+    _consts = re.findall(r'^CAPS_[A-Z_]+=\S+', code, re.M)
+    if not _consts:
+        problems.append(
+            f"{rel}: no CAPS_* constants found — scan_caps() reads the "
+            f"threshold and its bounds from them, and an UNSET one makes "
+            f"`[ n -ge \"\" ]` evaluate falsy: the detector stops tripping "
+            f"with no error anyone sees (#107)")
+        return
+    _hdr = "| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n"
+    _rows = {
+        "trip":  "| T-1 | crit | ev @a1 | FAIL |\n| T-1 | crit | ev @a2 | FAIL |\n",
+        "reset": "| T-1 | crit | ev @a1 | FAIL |\n| T-1 | crit | ev @a2 | FAIL |\n"
+                 "| T-1 | crit | ev @a3 | PASS |\n",
+        "keyed": "| T-1 | crit-a | ev @a1 | FAIL |\n| T-1 | crit-b | ev @a2 | FAIL |\n",
+    }
+    _expect = {"trip": "1", "reset": "0", "keyed": "0"}
+    with tempfile.TemporaryDirectory() as _td:
+        _script = ["\n".join(_consts), _fn.group(0)]
+        for _k, _body in _rows.items():
+            _f = os.path.join(_td, f"{_k}.md")
+            with open(_f, "w", encoding="utf-8") as _fh:
+                _fh.write(_hdr + _body)
+            _script.append(f'scan_caps "{_f}"\necho "{_k}=$caps_tripped"')
+        _r = _run_probe(["bash", "-c", "\n".join(_script)], problems,
+                        f"{rel}: scan_caps()")
+        if _r is None:
+            return  # _run_probe already reported why
+        _got = dict(
+            ln.split("=", 1) for ln in (_r.stdout or "").split()
+            if "=" in ln)
+        if _r.returncode != 0 or len(_got) != len(_expect):
+            problems.append(
+                f"{rel}: scan_caps() could not be executed (rc "
+                f"{_r.returncode}: "
+                f"{(_r.stderr or _r.stdout or '').strip()[:160]!r}) — the "
+                f"behaviour probe cannot report, so treat it as a failure "
+                f"rather than a skip")
+            return
+        _why = {
+            "trip": "two FAIL rows on ONE (id, criterion) must trip the cap "
+                    "— a detector that stopped detecting reports 'no caps "
+                    "tripped', which is byte-identical to a clean ledger",
+            "reset": "a later PASS on the same key must CLEAR it — without "
+                     "the reset the report fires forever on any ledger with "
+                     "one repeated failure in its history",
+            "keyed": "two FAILs on DIFFERENT criteria of one id must NOT "
+                     "trip — the key is (id, criterion), and a detector keyed "
+                     "on the id alone fires on ordinary multi-criterion work",
+        }
+        for _k, _want in _expect.items():
+            if _got.get(_k) != _want:
+                problems.append(
+                    f"{rel}: scan_caps() reported caps_tripped="
+                    f"{_got.get(_k)!r} on the {_k!r} ledger, expected "
+                    f"{_want!r} — {_why[_k]} (#107)")
+
+
 def check_base_gate(root, problems):
     """#108: the trusted base-ref gate exists, is wired on both forges, and
     never checks out the PR head.
@@ -4017,6 +4182,7 @@ CHECKS = (
     check_reader_bounds,
     check_guard_parity,
     check_autobar,
+    check_caps,
     check_claims,
     check_install_set_parity,
     check_gitignore_parity,

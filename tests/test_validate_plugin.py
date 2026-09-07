@@ -80,6 +80,58 @@ GOOD_AUTOBAR_LIB = (
     "  autobar_already_armed \"$2\" \"$3\" && return 0\n"
     "  autobar_count_changed \"$1\"\n"
     "}\n")
+# #107: check_caps EXECUTES scan_caps against synthetic ledgers, so this stub
+# must honour the real contract rather than merely carry its name — key on
+# (id, criterion), reset on a PASS, trip at CAPS_REWORK_MAX. A name-only stub
+# is an under-built fixture, and the probe would correctly report it as a
+# detector that does not detect (the F144 lesson, one file over).
+GOOD_CAPS_LIB = (
+    "#!/usr/bin/env bash\n"
+    "# covers same-target-rework; identical-rejection and neighbor-regressing\n"
+    "# stay UNCOVERED (no reviewer identity in a 4-cell row; a flip is not\n"
+    "# causation) — the honesty pin reads these two names.\n"
+    "CAPS_REWORK_MAX=2\n"
+    "CAPS_MAX_KEYS=100\n"
+    "CAPS_MAX_LINES=20000\n"
+    "CAPS_MAX_BYTES=2097152\n"
+    "scan_caps() {\n"
+    "  local f=\"$1\" row body id crit ev verdict key r1 r2 i found n=0\n"
+    "  local LC_ALL=C\n"
+    "  caps_tripped=0; caps_rows=\"\"; caps_truncated=0; caps_scan_failed=0\n"
+    "  _caps_k=(); _caps_c=(); _caps_n=0\n"
+    "  [ -f \"$f\" ] || { caps_scan_failed=1; return 0; }\n"
+    "  [ ! -L \"$f\" ] || { caps_scan_failed=1; return 0; }\n"
+    "  while IFS= read -r -n 1048576 row || [ -n \"$row\" ]; do\n"
+    "    n=$((n+1)); [ \"$n\" -le \"$CAPS_MAX_LINES\" ] || { caps_truncated=1; break; }\n"
+    "    case \"$row\" in \"| \"*) ;; *) continue ;; esac\n"
+    "    case \"$row\" in \"| Gate | Criterion |\"* | \"|---\"*) continue ;; esac\n"
+    "    body=\"${row#| }\"; body=\"${body% |}\"\n"
+    "    id=\"${body%% | *}\"; r1=\"${body#* | }\"\n"
+    "    crit=\"${r1%% | *}\"; r2=\"${r1#* | }\"\n"
+    "    ev=\"${r2%% | *}\"; verdict=\"${r2#* | }\"\n"
+    "    [ \"$r1\" != \"$body\" ] || continue\n"
+    "    [ \"$r2\" != \"$r1\" ] || continue\n"
+    "    [ \"$verdict\" != \"$r2\" ] || continue\n"
+    "    case \"$verdict\" in PASS|FAIL) ;; *) continue ;; esac\n"
+    "    key=\"$id | $crit\"\n"
+    "    found=-1; i=0\n"
+    "    while [ \"$i\" -lt \"$_caps_n\" ]; do\n"
+    "      [ \"${_caps_k[$i]}\" = \"$key\" ] && { found=\"$i\"; break; }\n"
+    "      i=$((i+1))\n"
+    "    done\n"
+    "    if [ \"$verdict\" = PASS ]; then\n"
+    "      [ \"$found\" -ge 0 ] && _caps_c[found]=0\n"
+    "      continue\n"
+    "    fi\n"
+    "    if [ \"$found\" -ge 0 ]; then _caps_c[$found]=$(( ${_caps_c[$found]} + 1 ))\n"
+    "    else _caps_k[$_caps_n]=\"$key\"; _caps_c[$_caps_n]=1; _caps_n=$((_caps_n+1)); fi\n"
+    "  done < \"$f\"\n"
+    "  i=0\n"
+    "  while [ \"$i\" -lt \"$_caps_n\" ]; do\n"
+    "    [ \"${_caps_c[$i]}\" -ge \"$CAPS_REWORK_MAX\" ] && caps_tripped=$((caps_tripped+1))\n"
+    "    i=$((i+1))\n"
+    "  done\n"
+    "}\n")
 GOOD_STATUSLINE = (
     "#!/usr/bin/env bash\n"
     "_r() { local LC_ALL=C; :; }\n"
@@ -358,7 +410,7 @@ def make_good_tree(root):
           # stub mirrors the real file's permission-test count, which the
           # allowlist pins at 1 — a stub below it reads as a REMOVED guard.
           "#!/usr/bin/env bash\nstopguard_can_mark() { [ -d \"$d\" ] && [ -w \"$d\" ]; }\n"
-          ". lib/partition.sh\n. lib/autobar.sh\n" + JSON_GET)
+          ". lib/partition.sh\n. lib/autobar.sh\n. \"$_libdir/caps.sh\"\n" + JSON_GET)
     write(root / "scripts" / "ops-task.sh",
           "#!/usr/bin/env bash\n" + guards + nolink + lookup("sentinel_for") + duploop
           + GOOD_ROOT_BLOCK)
@@ -420,6 +472,7 @@ def make_good_tree(root):
     (root / "scripts" / "lib").mkdir(exist_ok=True)
     write(root / "scripts" / "lib" / "partition.sh", GOOD_PARTITION_LIB)
     write(root / "scripts" / "lib" / "autobar.sh", GOOD_AUTOBAR_LIB)
+    write(root / "scripts" / "lib" / "caps.sh", GOOD_CAPS_LIB)
     write(root / "scripts" / "statusline.sh", GOOD_STATUSLINE)
     # Every shipped slash command: frontmatter plus plugin-root script paths
     # (a bare scripts/ path resolves only inside this repo).
@@ -4502,6 +4555,164 @@ class CheckRegistryTest(unittest.TestCase):
         names = [f.__name__ for f in vp.CHECKS]
         self.assertEqual(set(names),
                          {f.__name__ for f in reversed(vp.CHECKS)})
+
+
+class CapsTest(unittest.TestCase):
+    """check_caps (#107): the charter's cap table, with something behind it.
+
+    Until this change, `grep -rn 'rework\\|Identical-rejection' scripts/ hooks/`
+    returned nothing while `templates/OPERATOR.md` called a cap trip "a defined
+    stop-and-report, not a judgment call" — the caps were instructions to a
+    model, which is the category the charter exists to escape.
+
+    The failure this pin is written against is not deletion. It is a detector
+    that keeps its shape and stops detecting: a cap scan that never trips
+    reports "no caps tripped", byte-identical to a clean ledger, on every
+    project, forever. So the load-bearing half of `check_caps` EXECUTES the
+    shipped `scan_caps` against synthetic ledgers rather than grepping it.
+
+    The tree copies the SHIPPED scripts/lib/caps.sh, not a stub — a probe
+    against a hand-written imitation proves nothing about what runs.
+
+    Every mutation below was run RED against the real tree on 2026-09-07
+    before the check was believed (#111 — the gate that went red is named per
+    case, and it is `check_caps` throughout).
+    """
+
+    HOOK = (
+        'case "${BASH_SOURCE[0]}" in\n'
+        '  */*) _libdir="${BASH_SOURCE[0]%/*}/lib" ;;\n'
+        '  *)   _libdir="lib" ;;\n'
+        'esac\n'
+        '. "$_libdir/partition.sh"\n'
+        '. "$_libdir/autobar.sh"\n'
+        '. "$_libdir/caps.sh"\n'
+        'scan_caps "$opdir/VERDICTS.md"\n'
+        'if [ "$caps_scan_failed" = 0 ] && [ "$caps_tripped" -gt 0 ]; then\n'
+        '  echo "operator: $caps_tripped target(s) at the cap" >&2\n'
+        'fi\n'
+    )
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        write(self.dir / "scripts" / "lib" / "caps.sh",
+              (ROOT / "scripts" / "lib" / "caps.sh").read_text(encoding="utf-8"))
+        write(self.dir / "scripts" / "ops-stop-hook.sh", self.HOOK)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _probs(self):
+        probs = []
+        vp.check_caps(self.dir, probs)
+        return probs
+
+    def _edit(self, rel, old, new):
+        p = self.dir / rel
+        s = p.read_text(encoding="utf-8")
+        self.assertIn(old, s, f"anchor missing in {rel}")
+        p.write_text(s.replace(old, new, 1), encoding="utf-8")
+
+    def test_good_tree_is_clean(self):
+        # THE CONTROL, first. Without it every rejection below is satisfied by
+        # a check that fires on everything.
+        self.assertEqual(self._probs(), [])
+
+    def test_missing_lib_fires(self):
+        (self.dir / "scripts" / "lib" / "caps.sh").unlink()
+        self.assertTrue(any("caps.sh is missing" in p for p in self._probs()),
+                        self._probs())
+
+    def test_threshold_out_of_reach_fires(self):
+        # THE CENTRAL CASE. `CAPS_REWORK_MAX=99` leaves the file's every
+        # substring pin satisfied — the constant is there, the function is
+        # there, the source line is there — and the detector never trips
+        # again, silently. Only the executable probe sees it.
+        self._edit("scripts/lib/caps.sh",
+                   "CAPS_REWORK_MAX=2", "CAPS_REWORK_MAX=99")
+        self.assertTrue(any("'trip' ledger" in p for p in self._probs()),
+                        self._probs())
+
+    def test_pass_that_stops_resetting_fires(self):
+        # Without the reset the report fires forever on any ledger carrying
+        # one repeated failure in its history — and a line that is always
+        # there is a line nobody reads.
+        self._edit("scripts/lib/caps.sh",
+                   '[ "$found" -ge 0 ] && _caps_c[found]=0', ":")
+        self.assertTrue(any("'reset' ledger" in p for p in self._probs()),
+                        self._probs())
+
+    def test_key_without_the_criterion_fires(self):
+        # Keyed on the id alone, the detector fires on ordinary work: a task
+        # with two failing criteria is not two rework rounds on one target.
+        # A false halt costs a session, which is the direction that gets a
+        # gate disabled.
+        self._edit("scripts/lib/caps.sh", 'key="$id | $crit"', 'key="$id"')
+        self.assertTrue(any("'keyed' ledger" in p for p in self._probs()),
+                        self._probs())
+
+    def test_hook_that_only_mentions_the_lib_fires(self):
+        # The F126 shape, one file over: `"caps.sh" in text` is satisfied by
+        # an echo, and a lib nothing sources is a lib that never runs.
+        self._edit("scripts/ops-stop-hook.sh",
+                   '. "$_libdir/caps.sh"', 'echo "caps.sh"')
+        self.assertTrue(any("does not SOURCE" in p for p in self._probs()),
+                        self._probs())
+
+    def test_report_upgraded_to_a_block_fires(self):
+        # THE POLARITY. VERDICTS.md is append-only with a single writer, so a
+        # tripped key can never be un-tripped by removing a row: a blocking
+        # cap detector over a permanent history is a PERMANENT block. The
+        # regression has no symptom until a session cannot end.
+        self._edit("scripts/ops-stop-hook.sh",
+                   '  echo "operator: $caps_tripped target(s) at the cap" >&2\n',
+                   '  echo "operator: at the cap" >&2\n  exit 2\n')
+        self.assertTrue(any("REPORT-ONLY" in p for p in self._probs()),
+                        self._probs())
+
+    def test_unnamed_uncovered_cap_fires(self):
+        # A partial detector whose limits go unstated reads as a complete one.
+        # Two of the charter's three caps are uncovered for stated reasons
+        # (no reviewer identity in a 4-cell row; a PASS->FAIL flip is not
+        # causation), and dropping the paragraph is how "one of three" quietly
+        # becomes "three of three" to the next reader.
+        # EVERY occurrence, case-insensitively — the check lowercases the file
+        # before searching, so a mutation that misses one spelling does not
+        # mutate at all. (Measured twice while writing this: a one-shot
+        # replace left three occurrences standing, and a case-sensitive one
+        # left the capitalised copy in the measured-grep header. Both times
+        # the case failed against a WORKING check, which is a vacuous pin seen
+        # from the other side.)
+        p = self.dir / "scripts" / "lib" / "caps.sh"
+        s = p.read_text(encoding="utf-8")
+        self.assertIn("identical-rejection", s.lower())
+        p.write_text(re.sub("identical-rejection", "xxx", s, flags=re.I),
+                     encoding="utf-8")
+        self.assertTrue(any("identical-rejection" in p for p in self._probs()),
+                        self._probs())
+
+    def test_constants_extracted_with_the_function(self):
+        # Not a mutation — the ANCHOR for the probe's own construction. The
+        # constants go into the probe WITH the function because scan_caps
+        # reads them, and an unset one is not an error bash reports:
+        # `[ 2 -ge "" ]` complains to stderr and evaluates FALSY, so the
+        # detector stops tripping with nothing to see. Measured while writing
+        # the check — extracting only the function returned 0 on the trip
+        # ledger against a working lib, a FALSE POSITIVE on a build gate,
+        # which trains exactly the ignoring a vacuous pin does.
+        self._edit("scripts/lib/caps.sh", "CAPS_REWORK_MAX=2", "REWORK_MAX=2")
+        self.assertTrue(self._probs(),
+                        "renaming the threshold out of the CAPS_* shape must "
+                        "not ship green")
+
+    def test_a_comment_cannot_stand_in_for_the_source_line(self):
+        # NEGATIVE CONTROL for the source pin: the token in a comment while
+        # the statement is gone is the raw-text vacuity this repo has shipped
+        # before (F1, F126).
+        self._edit("scripts/ops-stop-hook.sh",
+                   '. "$_libdir/caps.sh"', '# . "$_libdir/caps.sh"')
+        self.assertTrue(any("does not SOURCE" in p for p in self._probs()),
+                        self._probs())
 
 
 class BaseGateTest(unittest.TestCase):

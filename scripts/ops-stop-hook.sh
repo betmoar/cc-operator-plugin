@@ -284,6 +284,14 @@ esac
 # shellcheck source=/dev/null
 # shellcheck disable=SC2154  # autobar_* are assigned by the sourced lib
 . "$_libdir/autobar.sh"
+# caps.sh is sourced LAST and its position carries no ordering requirement —
+# it shares no symbol with either lib and reads only VERDICTS.md. Unlike the
+# two above it never changes what the hook RETURNS: the cap report is emitted
+# on every path, blocking or allowing, and the exit code is decided entirely
+# by the pending/deviation gates below (#107).
+# shellcheck source=/dev/null
+# shellcheck disable=SC2154  # caps_* are assigned by the sourced lib
+. "$_libdir/caps.sh"
 
 # --- auto-arm (#85): the charter's clause (1), enforced ----------------------
 # Runs BEFORE the pending scan on purpose: a sentinel armed here is an ORDINARY
@@ -404,6 +412,55 @@ if [ -n "$foreign" ]; then
   # longer does, so this is hygiene rather than a defect — but hygiene nobody
   # is told about is hygiene nobody performs.
   echo "operator: $FOREIGN_N pending verdict(s) owned by another session ($foreign) — not blocking. If an owner session is gone (crashed, killed, /clear'd mid-task) nothing reaps its sentinel: clear it with $(verdict_cmd_for) <id> --defer \"<reason>\" — no --owner needed, it warns and proceeds." >&2
+fi
+
+# --- cap report (#107): report-only, and it runs on EVERY path ----------------
+# Placed here, above every `exit`, on purpose: a session that stops CLEAN is
+# exactly the one that needs to hear it. Attaching the report to a blocking
+# branch would surface the caps only when something else already blocked —
+# which is the shape of a report nobody sees, and the caps are about a SEQUENCE
+# that is invisible in any single round.
+#
+# It NEVER changes the exit code. VERDICTS.md is append-only with a single
+# writer, so a tripped key cannot be un-tripped by removing a row: a blocking
+# cap detector over a permanent history is a permanent block. The charter also
+# makes the trip the OPERATOR's stop-and-report, not the gate's. Both point the
+# same way; see scripts/lib/caps.sh for the full polarity note.
+scan_caps "$opdir/VERDICTS.md"
+# shellcheck disable=SC2154  # assigned by the sourced lib/caps.sh
+if [ "$caps_scan_failed" = 0 ] && [ "$caps_tripped" -gt 0 ]; then
+  echo "operator: $caps_tripped target(s) at the charter's same-target-rework cap ($CAPS_REWORK_MAX rework rounds on one target) — the cap table calls this a defined stop-and-report: stop reworking it, log the decision, move on or escalate. Not blocking; a later PASS on the same criterion clears it." >&2
+  # NAME the targets, sanitized and capped — the #93/#94 rule. A count whose
+  # rows the operator must go find is a count answered by not looking, and
+  # these rows are hand-editable project data printed into the channel that
+  # carries this hook's own instruction (sanitize BEFORE measuring, so the
+  # 110-byte cap stays honest on a row of escapes).
+  _cn=0
+  while IFS= read -r _crow; do
+    [ -n "$_crow" ] || continue
+    _crow="$(sanitize_row "$_crow")"
+    _cn=$((_cn + 1))
+    if [ "$_cn" -gt 10 ]; then
+      echo "operator:   … and $((caps_tripped - 10)) more — read $opdir/VERDICTS.md" >&2
+      break
+    fi
+    if [ "${#_crow}" -gt 110 ]; then
+      echo "operator:   ${_crow:0:110}…" >&2
+    else
+      echo "operator:   $_crow" >&2
+    fi
+  done <<EOF
+$caps_rows
+EOF
+fi
+# The truncation notice is OUTSIDE the tripped branch, and that placement is
+# the whole of it: a scan that hit a bound with nothing tripped is exactly the
+# case where silence lies — "no caps tripped" and "I stopped reading" are the
+# same output, and the second is the one the bounds exist to survive. Inside
+# the branch it would only ever be seen when something already fired.
+# shellcheck disable=SC2154  # assigned by the sourced lib/caps.sh
+if [ "$caps_scan_failed" = 0 ] && [ "$caps_truncated" = 1 ]; then
+  echo "operator: the cap scan of $opdir/VERDICTS.md hit a bound (>$CAPS_MAX_LINES rows, >$CAPS_MAX_BYTES bytes, or >$CAPS_MAX_KEYS distinct failing targets) — the $caps_tripped target(s) reported are a FLOOR, not a total." >&2
 fi
 
 # --- deviation gate: unpresented decisions block Stop (stage 2) ---------------

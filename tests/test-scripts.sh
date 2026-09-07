@@ -5347,6 +5347,168 @@ else
 fi
 
 
+echo "-- Case: the cap detector (#107) — the charter's cap table, enforced and REPORT-ONLY"
+# INVARIANT: templates/OPERATOR.md calls a cap trip "a defined stop-and-report, not a judgment
+# call", and until this change nothing in scripts/ or hooks/ read, counted, or reported any of
+# the three caps. Measured 2026-09-07:
+#   $ grep -rn 'Identical-rejection\|rework\|Neighbor-regress' scripts/ hooks/   -> (no output)
+# One of the three is derivable from the ledger schema and is covered here; the other two are
+# not, and this case pins that the file still SAYS so — a partial detector whose limits go
+# unstated reads as a complete one.
+_caps_state() { # _caps_state <verdicts-path> → "tripped=N failed=N truncated=N"
+  ( # shellcheck source=/dev/null
+    . "$SCRIPTS/lib/caps.sh"
+    scan_caps "$1"
+    # shellcheck disable=SC2154  # all three are OUTPUTS of the sourced lib
+    printf 'tripped=%s failed=%s truncated=%s' "$caps_tripped" "$caps_scan_failed" "$caps_truncated" )
+}
+_caps_ledger() { # _caps_ledger <path> <rows…> — a well-formed 4-cell ledger
+  local _f="$1"; shift
+  printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n' > "$_f"
+  local _r; for _r in "$@"; do printf '%s\n' "$_r" >> "$_f"; done
+}
+CAPD="$(newproj)"
+
+# --- the cap itself: two FAIL rounds on ONE target --------------------------
+_caps_ledger "$CAPD/v1.md" "| T-1 | crit | ev @a1 | FAIL |" "| T-1 | crit | ev @a2 | FAIL |"
+check "two FAIL rows on one (id, criterion) TRIP the same-target-rework cap" \
+  "$([ "$(_caps_state "$CAPD/v1.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+
+_caps_ledger "$CAPD/v2.md" "| T-1 | crit | ev @a1 | FAIL |"
+check "ONE failing round is not a cap trip (the cap is two)" \
+  "$([ "$(_caps_state "$CAPD/v2.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+
+# --- the KEY is (id, criterion), and both halves matter ---------------------
+# Keyed on the id alone, the detector fires on ordinary work — a task with two failing criteria
+# is not two rework rounds on one target, and a false halt is what gets a gate disabled.
+_caps_ledger "$CAPD/v3.md" "| T-1 | crit-a | ev @a1 | FAIL |" "| T-1 | crit-b | ev @a2 | FAIL |"
+check "two FAILs on DIFFERENT criteria of one id do NOT trip (the key carries the criterion)" \
+  "$([ "$(_caps_state "$CAPD/v3.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+_caps_ledger "$CAPD/v4.md" "| T-1 | crit | ev @a1 | FAIL |" "| T-2 | crit | ev @a2 | FAIL |"
+check "two FAILs on the same criterion of DIFFERENT ids do NOT trip (the key carries the id)" \
+  "$([ "$(_caps_state "$CAPD/v4.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+
+# --- a later PASS RESETS the key -------------------------------------------
+# Without the reset the report fires on every mature ledger from its first repeated failure to
+# the end of the project, and a line that is always there is a line nobody reads.
+_caps_ledger "$CAPD/v5.md" "| T-1 | crit | ev @a1 | FAIL |" "| T-1 | crit | ev @a2 | FAIL |" \
+  "| T-1 | crit | ev @a3 | PASS |"
+check "a later PASS on the same key CLEARS it — a rework that worked is not a cap trip" \
+  "$([ "$(_caps_state "$CAPD/v5.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+# ORDER matters, and the report is built after the whole pass: F,P,F,F is two rounds SINCE the
+# pass. A detector that emitted mid-pass could not take the first trip back.
+_caps_ledger "$CAPD/v6.md" "| T-1 | crit | ev @a1 | FAIL |" "| T-1 | crit | ev @a2 | PASS |" \
+  "| T-1 | crit | ev @a3 | FAIL |" "| T-1 | crit | ev @a4 | FAIL |"
+check "FAIL,PASS,FAIL,FAIL trips — the count is rounds SINCE the last pass, not lifetime" \
+  "$([ "$(_caps_state "$CAPD/v6.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+
+# --- the report NAMES the target -------------------------------------------
+# A count whose rows the operator must go find is a count answered by not looking (#93/#94).
+# shellcheck disable=SC1091,SC2154  # caps_rows is an OUTPUT of the sourced lib
+_caps_rows_of() { ( . "$SCRIPTS/lib/caps.sh"; scan_caps "$1"; printf '%s' "$caps_rows" ); }
+check "the report names the tripped target, not just a count" \
+  "$(printf '%s' "$(_caps_rows_of "$CAPD/v1.md")" | grep -q 'T-1 | crit' && echo 0 || echo 1)"
+check "the report carries the ROUND COUNT beside the target" \
+  "$(printf '%s' "$(_caps_rows_of "$CAPD/v1.md")" | grep -q '2 FAIL rounds' && echo 0 || echo 1)"
+
+# --- malformed and non-ledger input is skipped, never guessed at ------------
+_caps_ledger "$CAPD/v7.md" "| T-1 | crit | ev @a1 | FAIL |" "not a row at all" \
+  "| T-1 | crit | ev | extra | FAIL |" "| T-1 | crit | ev @a2 | MAYBE |"
+check "prose, 5-cell rows and non-PASS/FAIL verdicts are skipped — one real FAIL does not trip" \
+  "$([ "$(_caps_state "$CAPD/v7.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+# An EMPTY evidence cell is not a row ops-verdict.sh can write (it refuses empty evidence), so
+# accepting one would count a hand-edit as a rework round.
+_caps_ledger "$CAPD/v8.md" "| T-1 | crit |  | FAIL |" "| T-1 | crit |  | FAIL |"
+check "a row with an EMPTY evidence cell is skipped — the single writer cannot produce one" \
+  "$([ "$(_caps_state "$CAPD/v8.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+
+# --- polarity: report-only, and an absent/symlinked ledger says so ----------
+check "an ABSENT ledger sets scan_failed — nothing to report, no claim made" \
+  "$([ "$(_caps_state "$CAPD/nope.md")" = "tripped=0 failed=1 truncated=0" ] && echo 0 || echo 1)"
+ln -s /dev/null "$CAPD/link.md"
+check "a SYMLINKED ledger is refused, never scanned through (the F65 class)" \
+  "$([ "$(_caps_state "$CAPD/link.md")" = "tripped=0 failed=1 truncated=0" ] && echo 0 || echo 1)"
+
+# --- the bounds ANNOUNCE themselves ----------------------------------------
+# A silently short scan reports "no caps tripped", which is byte-identical to a clean ledger —
+# the failure class the bounds exist to survive, reintroduced by the bounds themselves.
+{ printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+  i=0; while [ "$i" -lt 20005 ]; do printf '| T-%s | crit | ev @a | FAIL |\n' "$i"; i=$((i+1)); done
+} > "$CAPD/v9.md"
+_c9="$(_caps_state "$CAPD/v9.md")"
+check "past the line bound the scan sets caps_truncated — a short scan never reads as clean" \
+  "$(printf '%s' "$_c9" | grep -q 'truncated=1' && echo 0 || echo 1)"
+# Past the KEY ceiling too: an uncounted FAIL must not leave the report reading as complete.
+{ printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+  i=0; while [ "$i" -lt 150 ]; do printf '| T-%s | crit | ev @a | FAIL |\n' "$i"; i=$((i+1)); done
+} > "$CAPD/v10.md"
+check "past the KEY ceiling the scan also sets caps_truncated" \
+  "$(printf '%s' "$(_caps_state "$CAPD/v10.md")" | grep -q 'truncated=1' && echo 0 || echo 1)"
+
+# --- the gate WIRES it, on every path, and never blocks on it --------------
+# The report runs above every `exit`, because the session that stops CLEAN is exactly the one
+# that needs to hear it: attached to a blocking branch it would surface only when something else
+# already blocked, which is a report nobody sees.
+if command -v git >/dev/null 2>&1; then
+  CAPP="$(newproj)"
+  git -C "$CAPP" init -q . 2>/dev/null
+  git -C "$CAPP" config user.email t@t 2>/dev/null; git -C "$CAPP" config user.name t 2>/dev/null
+  ( cd "$CAPP" && bash "$INIT" >/dev/null 2>&1 )
+  git -C "$CAPP" add -A >/dev/null 2>&1; git -C "$CAPP" commit -qm scaffold >/dev/null 2>&1
+  # Two rework rounds through the SINGLE WRITER — not a hand-written ledger. The detector reads
+  # what ops-verdict.sh actually produces (source stamp and all), or it is pinned to a schema
+  # nothing writes.
+  for _i in 1 2; do
+    ( cd "$CAPP" && bash "$TASK" T-1 --owner SESS-A >/dev/null 2>&1
+      bash "$VERDICT" T-1 "the criterion" "ev$_i" FAIL --owner SESS-A >/dev/null 2>&1 )
+  done
+  run_hook stop-session-a.json "$CAPP"
+  _cw=1; case "$HERR" in *"same-target-rework cap"*) _cw=0 ;; esac
+  check "the Stop hook REPORTS the cap against rows the single writer produced" "$_cw"
+  _cn=1; case "$HERR" in *"T-1 | the criterion"*) _cn=0 ;; esac
+  check "the hook's report NAMES the target it is about" "$_cn"
+  check "the cap NEVER blocks — a tripped cap still exits 0 (append-only: it could never clear)" \
+    "$([ "$HRC" -eq 0 ] && echo 0 || echo 1)"
+  # The polarity, stated from the other side: a session with a real open task blocks for THAT
+  # reason, and the cap report rides along rather than replacing it.
+  ( cd "$CAPP" && bash "$TASK" T-9 --owner SESS-A >/dev/null 2>&1 )
+  run_hook stop-session-a.json "$CAPP"
+  _cb=1; case "$HERR" in *"same-target-rework cap"*) case "$HERR" in *"pending verdict"*) _cb=0 ;; esac ;; esac
+  check "on a BLOCKING stop the cap report is emitted beside the pending-verdict message" "$_cb"
+  check "and the exit code is still the pending gate's 2, not the cap's" \
+    "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+  # NEGATIVE CONTROL: a clean ledger must produce no cap line at all, or every check above is
+  # satisfied by a hook that always prints it.
+  CAPQ="$(newproj)"
+  git -C "$CAPQ" init -q . 2>/dev/null
+  git -C "$CAPQ" config user.email t@t 2>/dev/null; git -C "$CAPQ" config user.name t 2>/dev/null
+  ( cd "$CAPQ" && bash "$INIT" >/dev/null 2>&1 )
+  git -C "$CAPQ" add -A >/dev/null 2>&1; git -C "$CAPQ" commit -qm scaffold >/dev/null 2>&1
+  run_hook stop-session-a.json "$CAPQ"
+  _cc=0; case "$HERR" in *"same-target-rework cap"*) _cc=1 ;; esac
+  check "CONTROL: a ledger with no repeated failure prints NO cap line" "$_cc"
+else
+  skip "the cap detector's hook-wiring half (#107): git unavailable"
+  skip "the cap detector's hook-naming half (#107): git unavailable"
+  skip "the cap detector's non-blocking half (#107): git unavailable"
+  skip "the cap detector's blocking-path half (#107): git unavailable"
+  skip "the cap detector's blocking-exit half (#107): git unavailable"
+  skip "the cap detector's clean-ledger control (#107): git unavailable"
+fi
+
+# --- the UNCOVERED caps stay NAMED -----------------------------------------
+# Two of the charter's three caps are not covered, for stated reasons. Dropping the paragraph is
+# how "one of three" quietly becomes "three of three" to the next reader — the honesty #85
+# applies to its own uncovered clauses (2) and (3).
+check "caps.sh names identical-rejection as UNCOVERED (no reviewer identity in a 4-cell row)" \
+  "$(grep -qi 'identical-rejection' "$SCRIPTS/lib/caps.sh" && echo 0 || echo 1)"
+check "caps.sh names neighbor-regressing as UNCOVERED (a PASS→FAIL flip is not causation)" \
+  "$(grep -qi 'neighbor-regressing' "$SCRIPTS/lib/caps.sh" && echo 0 || echo 1)"
+check "scan_caps declares LC_ALL local — no collation leak to the sourcing script" \
+  "$(grep -q 'local LC_ALL=C' "$SCRIPTS/lib/caps.sh" && echo 0 || echo 1)"
+rm -rf "$CAPD"
+
+
 if [ "$FAIL" -ne 0 ]; then
   echo "== failed cases =="
   printf '%s\n' "$FAILED_NAMES" | sed '/^$/d'

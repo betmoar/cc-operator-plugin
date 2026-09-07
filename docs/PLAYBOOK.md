@@ -348,6 +348,51 @@ Two mechanical traps this cost time on, both worth knowing before the next one:
   as a FAILED CASE, not as a broken test. Assemble the verdict in a variable
   first, then pass it to `check`. (Shipped twice in one sitting.)
 
+### When a gate CANNOT block — and how that differs from choosing not to (#107)
+
+The rule above ("if a mechanism's correctness depends on an operator noticing a
+message, the message must ride the channel that stops the run") has one
+exception, and the cap detector is it. Read the two together or the next
+mechanism inherits the wrong half.
+
+The #85 rule is about a mechanism that COULD block and was given a non-blocking
+channel to spare the operator — advice on a channel the run does not depend on.
+The cap detector is a different case: it has **no blocking direction
+available**. `VERDICTS.md` is append-only with a single writer, so a tripped key
+can never be un-tripped by removing a row. A blocking cap detector is therefore
+a PERMANENT block, worse than `autobar`'s infinite-block failure because there
+the operator could at least clear the sentinel and here nothing could clear
+anything at all.
+
+**The test, before you pick a polarity: can the operator DO something that
+makes this stop firing?** If yes, blocking is available and the #85 rule
+applies. If no, blocking is not a stricter choice — it is a wedge, and a
+session that cannot end is what a user resolves by deleting the plugin.
+
+What a report-only gate then owes, since it cannot lean on the block:
+
+- **Emit above every `exit`.** The session that stops CLEAN is the one that
+  most needs to hear it. Attached to a blocking branch, the report surfaces
+  only when something else already blocked.
+- **Name the targets, not a count** (#93/#94): a count whose rows the operator
+  must go find is a count answered by not looking.
+- **Announce truncation OUTSIDE the fired branch.** A bounded scan that
+  stopped early with nothing tripped prints exactly what a clean ledger prints;
+  inside the branch the notice is only ever seen when something already fired.
+- **Pin the polarity in code, not prose.** `check_caps` refuses an `exit`
+  inside any `caps_*` branch of the hook, because "upgrading" a report to a
+  block is the regression with no symptom until a session cannot end.
+
+The second half is coverage honesty. A detector over a ledger can only see what
+the schema records, so before writing one, ask of each thing you mean to detect
+whether the ledger carries it. `caps.sh` covers one of the charter's three caps
+and states why the other two are out, for two DIFFERENT reasons — one is a
+schema gap (no reviewer identity in a published 4-cell row), the other is a
+causation gap (a PASS→FAIL flip is not "a fix regressed a neighbour"). Naming
+the nearest observable AS the cap would ship a detector precisely correct about
+the wrong question. `check_caps` reads both names back out of the file: a
+partial detector whose limits go unstated reads as a complete one.
+
 ### The tier coupling after the #76 lift (was: the F07 namespace coupling)
 
 Until 0.9.0 every workflow carried `KNOWN_TIERS`, a copy of the resolver's

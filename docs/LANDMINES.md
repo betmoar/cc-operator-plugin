@@ -841,3 +841,88 @@ way. None of it is loaded by the plugin at runtime; the validator reads only
   rail against forgetting, not a sandbox against a hostile agent — the threat
   model is drift, which is the observed failure, not evasion, which is not.
 
+
+## The cap detector's polarity is the opposite of every other gate (0.11.12, #107)
+
+**the cap detector in `scripts/lib/caps.sh` (#107)** — the full cell, and the
+reasoning the coupling row compresses.
+
+Until this shipped, `templates/OPERATOR.md`'s Cap table declared three caps and
+called a trip "a defined stop-and-report, not a judgment call" while nothing
+read, counted, or reported any of them. Measured 2026-09-07:
+
+```
+$ grep -rn 'Identical-rejection\|rework\|Neighbor-regress' scripts/ hooks/
+(no output)
+```
+
+That is the same shape as the evidence gate before #85 auto-armed it, and as
+the sibling project's watchdog incident: a dispatcher re-validated ONE rejected
+pull request 68 times in three and a half hours. Every individual tick was
+correct; the pathology lived entirely in the SEQUENCE, which nothing was
+looking at.
+
+**REPORT-ONLY, and unlike `partition.sh` this is not a fail-open/fail-closed
+choice — there is no blocking direction available at all.** `VERDICTS.md` is
+append-only with a single writer, so a tripped key can never be un-tripped by
+removing a row. A blocking cap detector over a permanent history is a permanent
+block: worse than `autobar`'s infinite-block failure one layer up, because
+there the operator could at least clear the sentinel and here nothing could
+clear anything. A session that cannot end is the failure a user resolves by
+deleting the plugin — the polarity #123 C states, for the same reason. The
+charter independently points the same way: the trip is the OPERATOR's
+stop-and-report, not the gate's.
+
+Two consequences the code carries:
+
+- The report is emitted **above every `exit`**, on the allowing path and both
+  blocking paths. Attached to a blocking branch it would surface only when
+  something else had already blocked — a report nobody sees, about a sequence
+  that is invisible in any single round.
+- The statusline does NOT read it, and this is not an omission of the
+  partition.sh kind. The bar renders whether a stop will BLOCK; a report-only
+  scan changes no blocking state, so there is nothing here for the bar to
+  disagree with.
+
+**A later PASS resets the key**, and that is what makes the signal usable
+rather than permanent noise. Two FAILs followed by a PASS is a rework that
+WORKED; reporting it forever would fire on every mature ledger from its first
+repeated failure to the end of the project, and a line that is always there is
+a line nobody reads. Forward pass, order matters — the asymmetry
+`scan_deviations` applies to HANDOFF-MARK. The report is also built AFTER the
+whole pass, never during it: a key that hit the cap and was then cleared must
+not appear, and mid-pass emission cannot take that back.
+
+**One of three caps is covered, and the file must keep saying which two are
+not.** A partial detector whose limits go unstated reads as a complete one —
+the honesty #85 applies to its own uncovered clauses (2) and (3). The two
+uncovered ones fail for DIFFERENT reasons, and conflating them is how a
+future session "just adds" the wrong one:
+
+- **identical-rejection ×2** needs a SCHEMA decision first. The cap is "the
+  same REVIEWER rejects the same target twice" and a row carries no reviewer
+  identity. The 4-cell schema is published: a fifth column breaks
+  `validate_plugin.VERDICTS_HEADER` and every ledger already in the field.
+  Encoding the reviewer inside the evidence cell would make the detector
+  depend on a convention nothing enforces — a detector that reports on prose.
+- **neighbor-regressing ×2** is NOT a column problem. The cap is "a fix round
+  REGRESSED a previously-passing check", and causation is the load-bearing
+  word: the ledger records that criterion Y failed, never that a fix to X
+  caused it. A PASS→FAIL flip is the nearest observable and is not the same
+  claim — a flip happens whenever the tree moves, which is most rounds.
+  Reporting a flip AS this cap would be a detector precisely correct about the
+  wrong question, and `caps.sh` would then read as though two of three were
+  covered.
+
+**The pin EXECUTES the detector, and it must carry the constants.** The
+regression this is written against is not deletion but a scan that keeps its
+shape and stops tripping: it reports "no caps tripped", byte-identical to a
+clean ledger, on every project, forever, with every other gate green.
+`CAPS_REWORK_MAX=99` leaves every substring pin satisfied. So `check_caps`
+extracts `scan_caps` and runs it against three synthetic ledgers (trip, reset,
+same-id/different-criterion). The `CAPS_*` constants go into the probe WITH the
+function because the function reads them and an unset one is not an error bash
+reports — `[ 2 -ge "" ]` complains to stderr and evaluates FALSY. Measured
+while writing the pin: extracting only the function returned 0 on the trip
+ledger against a WORKING lib, which is a false positive on a build gate and
+trains exactly the ignoring a vacuous pin does.
