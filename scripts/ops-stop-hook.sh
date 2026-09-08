@@ -286,9 +286,23 @@ esac
 . "$_libdir/autobar.sh"
 # caps.sh is sourced LAST and its position carries no ordering requirement —
 # it shares no symbol with either lib and reads only VERDICTS.md. Unlike the
-# two above it never changes what the hook RETURNS: the cap report is emitted
-# on every path, blocking or allowing, and the exit code is decided entirely
-# by the pending/deviation gates below (#107).
+# two above it never changes what the hook RETURNS: wherever the scan runs, the
+# exit code is decided entirely by the pending/deviation gates below (#107).
+#
+# It runs on BOTH gate outcomes — the allowing exit 0 and the blocking exit 2 —
+# which is the property that matters, because a report visible only when
+# something else already blocked is a report nobody reads on the stop that
+# needed it. That is a claim about the two ENDINGS, not about every line of the
+# hook (PR #126 review, Copilot). Five `exit 0`s sit above this point and none
+# of them reaches the scan: no JSON parser, an unparseable payload, no
+# `.operator/` in the walk-up, and the two #116/#123 stand-downs.
+#
+# Each of those is right to skip it. The first two are the fail-open polarity
+# (a broken hook must never brick a session, so it also says nothing); the
+# third has no ledger to read; the stand-downs are a continuation of a stop
+# ALREADY gated, where re-reporting would repeat a line the operator just saw.
+# A cap report is guidance for a stop being DECIDED, and none of the five is
+# deciding one.
 # shellcheck source=/dev/null
 # shellcheck disable=SC2154  # caps_* are assigned by the sourced lib
 . "$_libdir/caps.sh"
