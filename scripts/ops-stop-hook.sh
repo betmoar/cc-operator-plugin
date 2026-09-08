@@ -284,6 +284,28 @@ esac
 # shellcheck source=/dev/null
 # shellcheck disable=SC2154  # autobar_* are assigned by the sourced lib
 . "$_libdir/autobar.sh"
+# caps.sh is sourced LAST and its position carries no ordering requirement —
+# it shares no symbol with either lib and reads only VERDICTS.md. Unlike the
+# two above it never changes what the hook RETURNS: wherever the scan runs, the
+# exit code is decided entirely by the pending/deviation gates below (#107).
+#
+# It runs on BOTH gate outcomes — the allowing exit 0 and the blocking exit 2 —
+# which is the property that matters, because a report visible only when
+# something else already blocked is a report nobody reads on the stop that
+# needed it. That is a claim about the two ENDINGS, not about every line of the
+# hook (PR #126 review, Copilot). Five `exit 0`s sit above this point and none
+# of them reaches the scan: no JSON parser, an unparseable payload, no
+# `.operator/` in the walk-up, and the two #116/#123 stand-downs.
+#
+# Each of those is right to skip it. The first two are the fail-open polarity
+# (a broken hook must never brick a session, so it also says nothing); the
+# third has no ledger to read; the stand-downs are a continuation of a stop
+# ALREADY gated, where re-reporting would repeat a line the operator just saw.
+# A cap report is guidance for a stop being DECIDED, and none of the five is
+# deciding one.
+# shellcheck source=/dev/null
+# shellcheck disable=SC2154  # caps_* are assigned by the sourced lib
+. "$_libdir/caps.sh"
 
 # --- auto-arm (#85): the charter's clause (1), enforced ----------------------
 # Runs BEFORE the pending scan on purpose: a sentinel armed here is an ORDINARY
@@ -354,6 +376,97 @@ shq() { # shq <string> → '<string>' with embedded quotes escaped
 # the thing acted on, so losing exotic bytes costs nothing. `tr` is not used —
 # a lost PATH must not disarm the sanitizer, and this hook is builtin-only
 # everywhere else for the same reason.
+# Print ONE untrusted ledger row to stderr, sanitized, with the ROW PAYLOAD
+# capped at 110 bytes — not the emitted line, which also carries the
+# `operator:   ` prefix and may gain a trailing ellipsis (PR #126 review,
+# Copilot: the old wording claimed a bound on the whole line, so a future
+# edit sizing the budget against it would be reasoning from the wrong number).
+#
+# `local LC_ALL=C` is the whole point of this being a function (PR #126 review,
+# Copilot). Both call sites wrote `[ "${#row}" -gt 110 ]` and `${row:0:110}`
+# and called that a byte cap in their own comments — but bash counts
+# CHARACTERS outside the C locale, so under a UTF-8 locale (which is what a
+# desktop session runs) the cap was up to 4x looser than it read: 110 chars of
+# `é` is 220 bytes, of an emoji 440 (measured). The rows are hand-editable
+# project data going into the channel that carries this hook's own
+# instruction, so the cap is what keeps a 100-row ledger from burying the
+# guidance above it — a cap that silently quadruples is the same defect
+# check_reader_bounds refuses in every file reader, one layer up.
+#
+# Measured cost of the gap: a 100-target cap report with 200-char criteria
+# emitted 2591 bytes under en_US.UTF-8 against 1731 under C.
+#
+# `local`, never a global assignment: the C collation must not leak to the
+# rest of the hook — the idiom scripts/lib/partition.sh uses.
+#
+# AND THE CUT BACKS OFF A SPLIT CHARACTER, which the first cut of this fix did
+# not and which is why it is worth its own paragraph. Slicing at byte 110 lands
+# mid-character on any multibyte run whose width does not divide 110 — a 3-byte
+# `€` puts 36.67 characters in the budget — and the emitted line is then
+# INVALID UTF-8. A reader in a UTF-8 locale does not see a mangled tail; it
+# stops seeing the LINE (`grep 'FAIL rounds'` returned nothing, rc 1, on a line
+# that was right there — measured on lokaal task 515, where this shipped green
+# on macOS and failed in the container). That is strictly worse than the loose
+# cap it replaced: a cap that over-reports wastes context, a cap that emits
+# invalid UTF-8 loses the whole row for whoever reads it. So walk back at most
+# 3 bytes to the last lead byte (a UTF-8 continuation byte is 10xxxxxx = \x80
+# through \xBF) and cut there. Under C, `${_r:i:1}` is one BYTE, which is what
+# makes this test possible at all.
+# Every operator: line the cap report emits, accumulated for the JSON channel.
+# stderr alone is DEBUG-LOG ONLY on a hook that exits 0 (measured against the
+# documented contract, PR #126 adversarial review) — see the emit site below.
+CAPS_MSG=""
+caps_say() { # caps_say <line> — to stderr AND to the accumulator
+  echo "$1" >&2
+  CAPS_MSG="${CAPS_MSG}${CAPS_MSG:+
+}$1"
+}
+
+report_row() { # report_row <row> [--caps]
+  local LC_ALL=C _r _i _b _out
+  # SLICE BEFORE SANITIZING, and the order is the whole cost (PR #126
+  # adversarial review, Codex). sanitize_row walks the string ONE BYTE AT A
+  # TIME in bash, so its cost is linear in the input, and the input is a
+  # ledger cell with no length limit — ops-verdict.sh's check_cell refuses a
+  # pipe and a newline, nothing more. Measured through the real CLI: two FAIL
+  # rows carrying a 20 KB criterion (which the writer accepts, and which sits
+  # far inside every scan bound) made EVERY Stop take 5.81s; 10 KB alone cost
+  # 1.40s in the formatter.
+  #
+  # That work sat outside CAPS_MAX_STEPS and ahead of the pending/deviation
+  # gates, so it delayed the blocking decision itself — a bound on the SCAN
+  # that the REPORT walks straight past, which is the same shape as the size
+  # bounds that did not bound the work, one function over.
+  #
+  # 128 bytes, not 110: the cut needs a few bytes past the cap to see that
+  # truncation is needed at all and to find the UTF-8 boundary below it. A
+  # 4-byte sequence straddling byte 110 is the widest case, so any margin over
+  # 114 is enough; 128 is the round number above it. Sanitizing at most 128
+  # bytes makes this O(1) per row regardless of the cell.
+  _r="$(sanitize_row "${1:0:128}")"
+  if [ "${#_r}" -gt 110 ]; then
+    _i=110
+    # At most 3 steps: a UTF-8 sequence is 4 bytes at most, so a valid cut
+    # point is never further back than that. A run of continuation bytes
+    # longer than 3 is malformed input, and stopping after 3 keeps a hostile
+    # row from steering the loop.
+    _b=0
+    while [ "$_i" -gt 0 ] && [ "$_b" -lt 3 ]; do
+      case "${_r:$_i:1}" in
+        [$'\x80'-$'\xbf']) _i=$((_i - 1)); _b=$((_b + 1)) ;;
+        *) break ;;
+      esac
+    done
+    _out="operator:   ${_r:0:$_i}…"
+  else
+    _out="operator:   $_r"
+  fi
+  # The caller says whether this row belongs to the cap report (which needs the
+  # JSON channel) or the deviation gate (which exits 2, where stderr IS the
+  # channel the harness reads back).
+  if [ "${2:-}" = "--caps" ]; then caps_say "$_out"; else echo "$_out" >&2; fi
+}
+
 sanitize_row() { # sanitize_row <row> → row with control bytes replaced
   local _s="$1" _out="" _c _i=0
   while [ "$_i" -lt "${#_s}" ]; do
@@ -404,6 +517,54 @@ if [ -n "$foreign" ]; then
   # longer does, so this is hygiene rather than a defect — but hygiene nobody
   # is told about is hygiene nobody performs.
   echo "operator: $FOREIGN_N pending verdict(s) owned by another session ($foreign) — not blocking. If an owner session is gone (crashed, killed, /clear'd mid-task) nothing reaps its sentinel: clear it with $(verdict_cmd_for) <id> --defer \"<reason>\" — no --owner needed, it warns and proceeds." >&2
+fi
+
+# --- cap report (#107): report-only, and it runs on EVERY path ----------------
+# Placed here, above every `exit`, on purpose: a session that stops CLEAN is
+# exactly the one that needs to hear it. Attaching the report to a blocking
+# branch would surface the caps only when something else already blocked —
+# which is the shape of a report nobody sees, and the caps are about a SEQUENCE
+# that is invisible in any single round.
+#
+# It NEVER changes the exit code. VERDICTS.md is append-only with a single
+# writer, so a tripped key cannot be un-tripped by removing a row: a blocking
+# cap detector over a permanent history is a permanent block. The charter also
+# makes the trip the OPERATOR's stop-and-report, not the gate's. Both point the
+# same way; see scripts/lib/caps.sh for the full polarity note.
+scan_caps "$opdir/VERDICTS.md"
+# shellcheck disable=SC2154  # assigned by the sourced lib/caps.sh
+if [ "$caps_scan_failed" = 0 ] && [ "$caps_tripped" -gt 0 ]; then
+  caps_say "operator: $caps_tripped target(s) at the charter's same-target-rework cap ($CAPS_REWORK_MAX rework rounds on one target) — the cap table calls this a defined stop-and-report: stop reworking it, log the decision, move on or escalate. Not blocking; a later PASS on the same criterion clears it."
+  # NAME the targets — the #93/#94 rule. A count whose rows the operator must
+  # go find is a count answered by not looking. report_row does the sanitize,
+  # the byte cap and the C locale in one place (PR #126 review).
+  _cn=0
+  while IFS= read -r _crow; do
+    [ -n "$_crow" ] || continue
+    _cn=$((_cn + 1))
+    if [ "$_cn" -gt 10 ]; then
+      caps_say "operator:   … and $((caps_tripped - 10)) more — read $opdir/VERDICTS.md"
+      break
+    fi
+    report_row "$_crow" --caps
+  done <<EOF
+$caps_rows
+EOF
+fi
+# The truncation notice is OUTSIDE the tripped branch, and that placement is
+# the whole of it: a scan that hit a bound with nothing tripped is exactly the
+# case where silence lies — "no caps tripped" and "I stopped reading" are the
+# same output, and the second is the one the bounds exist to survive. Inside
+# the branch it would only ever be seen when something already fired.
+# shellcheck disable=SC2154  # assigned by the sourced lib/caps.sh
+if [ "$caps_scan_failed" = 0 ] && [ "$caps_truncated" = 1 ]; then
+  # NOT "a floor" (PR #126 adversarial review). A truncated scan read a PREFIX,
+  # and the unread tail may hold the PASS rows that clear every key it counted
+  # — measured at 60 targets reported where the true state was zero. A floor
+  # claims "at least this many"; a prefix cannot claim even that. So the lib
+  # reports nothing on a truncated scan and this line says the state is
+  # unknown, which is the one description that is true.
+  caps_say "operator: the cap scan of $opdir/VERDICTS.md hit a bound (>$CAPS_MAX_LINES rows, >$CAPS_MAX_BYTES bytes, >$CAPS_MAX_KEYS distinct failing targets, or >$CAPS_MAX_STEPS lookup steps) — it read only a PREFIX, so the cap state is UNKNOWN, not clean: a later PASS in the unread tail can clear a target the prefix counted. Read the ledger yourself if a rework cap matters here."
 fi
 
 # --- deviation gate: unpresented decisions block Stop (stage 2) ---------------
@@ -487,30 +648,27 @@ if [ "$deviations_scan_failed" = 0 ] && [ "$deviations_unpresented" -gt 0 ]; the
   # was to mark without reading — the habit the gate exists to prevent. The
   # scanner already parsed them; it used to discard them.
   #
-  # Capped at 10 and truncated to ~110 chars: stderr is fed back to the model as
-  # guidance, and a 100-row ledger dumped into it buries the instruction above.
+  # Capped at 10 rows, each row's PAYLOAD at 110 bytes (report_row adds the
+  # `operator:   ` prefix and an ellipsis on top — the cap is on the row, not
+  # the line): stderr is fed back to the model as guidance, and a 100-row
+  # ledger dumped into it buries the instruction above.
   # The full rows are in the file, which the line above now names absolutely.
   #
-  # SANITIZE BEFORE MEASURING. The rows are hand-editable project data printed
-  # into the channel that carries this hook's own instruction, so a control byte
-  # could repaint it. Sanitizing first also keeps the 110 cap honest: a row of
+  # Both halves live in report_row: it sanitizes BEFORE measuring (a row of
   # escapes is short on screen and long in bytes, and truncating mid-escape is
-  # its own hazard.
+  # its own hazard) and it measures in the C locale, which is what makes "110
+  # bytes" true rather than "110 characters, so up to 440 bytes" (PR #126
+  # review — the comment here claimed a byte cap the code did not implement).
   if [ -n "$deviations_rows" ]; then
     _dn=0
     while IFS= read -r _drow; do
       [ -n "$_drow" ] || continue
-      _drow="$(sanitize_row "$_drow")"
       _dn=$((_dn + 1))
       if [ "$_dn" -gt 10 ]; then
         echo "operator:   … and $((deviations_unpresented - 10)) more — read $opdir/DECISIONS.md" >&2
         break
       fi
-      if [ "${#_drow}" -gt 110 ]; then
-        echo "operator:   ${_drow:0:110}…" >&2
-      else
-        echo "operator:   $_drow" >&2
-      fi
+      report_row "$_drow"
     done <<EOF
 $deviations_rows
 EOF
@@ -531,4 +689,45 @@ fi
 # mark sites: a silent clear-failure leaves the stale marker the NEXT
 # foreign continuation misreads as ours.
 stopguard_clear || echo "operator: warning — could not clear the .stopguard marker; a later stop_hook_active continuation may misread the stale marker as ours (#123/#124)." >&2
+
+# --- deliver the cap report on the ALLOWING path (#126 adversarial review) ---
+# STDERR IS NOT A CHANNEL ON EXIT 0. The documented contract: stderr from a
+# hook that exits 0 goes to the DEBUG LOG only — never the transcript, and
+# Claude never sees it. Plain stdout is the same for Stop (only
+# UserPromptSubmit/SessionStart and friends read it as context).
+#
+# So the cap report — the one thing here that must be seen precisely when
+# NOTHING blocks — was written to the one channel that discards it. It became
+# visible only when an unrelated gate happened to block, which is the exact
+# dependency the placement above claims to avoid: "a report nobody sees".
+# Every test asserted captured stderr, so none of them could see the delivery
+# failure; the feature was 100% covered and 0% delivered.
+#
+# `systemMessage` on stdout is the supported way to reach the user without
+# blocking, and it is read on exit 0. The exit code is untouched: this is the
+# same report-only polarity, now on a channel that exists.
+#
+# Only on THIS path. The blocking branches above exit 2, where stderr IS the
+# channel the harness feeds back as guidance — emitting JSON there would fight
+# the mechanism that already works.
+if [ -n "$CAPS_MSG" ]; then
+  # The message is composed from UNTRUSTED ledger data, so it is JSON-encoded
+  # by a real encoder, never by string-pasting into a template. sanitize_row
+  # already stripped control bytes; this closes quoting and backslashes too.
+  # No parser (or an encoder failure) means no message — the report is
+  # advisory, and a malformed stdout object would be worse than a missing one:
+  # the harness parses stdout on every exit code, so garbage there could
+  # perturb a stop that is otherwise fine.
+  if [ "$PARSER" = "jq" ]; then
+    printf '%s' "$CAPS_MSG" | jq -Rs '{systemMessage: .}' 2>/dev/null || true
+  else
+    printf '%s' "$CAPS_MSG" | python3 -c '
+import sys, json
+try:
+    print(json.dumps({"systemMessage": sys.stdin.read()}))
+except Exception:
+    pass
+' 2>/dev/null || true
+  fi
+fi
 exit 0

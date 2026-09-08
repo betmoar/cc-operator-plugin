@@ -9,6 +9,219 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.12] - 2026-09-07
+
+- **The charter's cap table now has something behind it (#107).**
+  `templates/OPERATOR.md` declares three caps and calls a trip "a defined
+  stop-and-report, not a judgment call", and until now
+  `grep -rn 'Identical-rejection\|rework\|Neighbor-regress' scripts/ hooks/`
+  returned nothing: they were instructions to a model, which is the category
+  the charter exists to escape. `scripts/lib/caps.sh` is the detector, sourced
+  by the Stop hook beside `partition.sh` and `autobar.sh`. It scans
+  `VERDICTS.md` for **same-target-rework ×2** — two FAIL rounds on one
+  `(task-id, criterion)` — names the targets, and a later PASS on the same key
+  clears it.
+- **It is REPORT-ONLY, and that polarity is the design.** `VERDICTS.md` is
+  append-only with a single writer, so a tripped key can never be un-tripped by
+  removing a row: a blocking cap detector over a permanent history is a
+  permanent block. The charter also makes the trip the operator's
+  stop-and-report, not the gate's. The report is emitted above every `exit`, on
+  the allowing path and both blocking paths — the session that stops clean is
+  exactly the one that needs to hear it. `check_caps` pins that no `caps_*`
+  branch in the hook contains an `exit`.
+- **Two of the three caps stay UNCOVERED, and the file says so.**
+  Identical-rejection needs a schema decision first: the cap is about a
+  *reviewer*, and a row carries no reviewer identity — the 4-cell schema is
+  published, and a fifth column breaks every ledger in the field.
+  Neighbor-regressing is not a column problem: the cap is about *causation*,
+  and a PASS→FAIL flip is the nearest observable while not being the same
+  claim. A partial detector whose limits go unstated reads as a complete one,
+  so `check_caps` reads both names back out of the file.
+- **The pin EXECUTES the detector.** The regression this is written against is
+  not deletion — it is a scan that keeps its shape and stops tripping, which
+  reports "no caps tripped", byte-identical to a clean ledger, forever.
+  `check_caps` extracts the shipped `scan_caps` (with its `CAPS_*` constants —
+  an unset one makes `[ n -ge "" ]` evaluate falsy and the detector silently
+  stops) and runs it against four synthetic ledgers: trip, reset, a
+  same-id/different-criterion control, and an over-budget one.
+- **An adversarial round found four defects in the above, all in the same
+  commit's own gate.** Three were vacuities of one family — the pin described
+  ONE SPELLING of a thing shell writes many ways, the base-gate floors lesson
+  arriving a file later. A second `scan_caps()` appended to the lib shipped
+  green because bash runs the LAST definition while the probe's extractor
+  reads the FIRST, so the probe validated a function that never ran and the
+  live hook reported nothing; the report-only pin was anchored on
+  `^if [ "$caps_`, so `[ "$caps_tripped" -gt 0 ] && exit 2` and an `elif` form
+  both walked past it — and both were live-verified to INVERT the polarity,
+  exiting 2 on a ledger with nothing else pending. The pin now asks the
+  shape-independent question (an `exit` reachable from any test of a `caps_*`
+  variable, with the block walked by depth), and the lib's definition count is
+  its own guard.
+- **The schema coupling is named, not silently inherited.** `caps.sh` is the
+  SECOND reader of `ops-verdict.sh`'s 4-cell row, and its four-cell test —
+  correct for a hand-edit, since no writer of ours produces anything else — is
+  *wrong* for a schema change: a 5-cell row is silently uncounted, so widening
+  the row would turn the detector off with every gate green (measured:
+  `tripped=0` on two real rework rounds). A new verdict word is the mirror; the
+  reset tests `= PASS`, so a `MOOT` row (#91's proposal) reads as a rework
+  round rather than resolving one. Neither is fixable in `caps.sh` — it cannot
+  know what the writer will emit next — so the coupling row for the row
+  `printf` now names BOTH parsers, and two cases pin the blindness where the
+  next schema change will read it.
+- **A review round found three more, two of them in the guards themselves.**
+  The stderr row-printers wrote `[ "${#row}" -gt 110 ]` under a comment calling
+  it a *byte* cap — but bash counts CHARACTERS outside the C locale, so on a
+  UTF-8 desktop session the real cap was 220 bytes for `é` and 440 for an
+  emoji (measured: a 100-target report emitted 2591 bytes under `en_US.UTF-8`
+  against 1731 under `C`). That is the defect `check_reader_bounds` already
+  refuses in every file reader, one layer up, on the channel carrying this
+  hook's instruction back to the model; both call sites now go through one
+  `report_row` owning the sanitize, the cap and `local LC_ALL=C`, and its case
+  runs the hook under UTF-8, since a C-only test passes against the broken
+  code. Separately, the test helper asserting "this fixture stays under
+  `CAPS_MAX_KEYS`" — written to stop the truncation trap recurring — split the
+  row into `(criterion, evidence)` rather than `(id, criterion)` and
+  undercounted whenever one criterion spanned several ids: **a control that
+  counts the wrong thing is the failure it exists to prevent.** Both directions
+  now have their own control. Thanks to Copilot's review on PR #126.
+- **And the byte-cap fix introduced a worse bug, caught by the second
+  executor.** Cutting at byte 110 lands mid-character whenever the width does
+  not divide 110 (a 3-byte `€` gives 36.67 characters), and an invalid-UTF-8
+  line is not *mangled* to a UTF-8 reader — it is **invisible**: `grep`
+  returned rc 1 on a line that was right there. Worse than the loose cap it
+  replaced. It shipped green on macOS and red on lokaal because the assertion
+  used a plain `grep` and was blinded by the defect it was testing for; the
+  fixture was 2-byte `é`, which divides 110 evenly. The cut now backs off to
+  the last lead byte, and the cases run all three widths asserting the
+  property directly (the stderr decodes) plus visibility to a UTF-8 reader.
+- **And the budget under-billed the case it was written for.** The lookup
+  compares element `i` then breaks, so a hit at index `i` costs `i + 1`
+  comparisons — charging `i` billed a hit at index 0 as free. Measured on a
+  19,000-row ledger where every row hits the first key: **charged 0 against
+  18,999 real comparisons**, with `caps_truncated=0` claiming the scan had
+  stayed inside its bound. Not off by one; off by everything, on the shape a
+  mature ledger actually has. Found by Copilot on PR #126.
+- **The budget was then skipped entirely on the PASS path.** That branch
+  charged its lookup and `continue`d past the check at the loop's tail:
+  measured at **964,550 steps against a 100,000 budget — 9x over,
+  `caps_truncated=0`, 10.6 seconds** — the whole DoS restored through the one
+  branch that skipped the guard, while every existing case stayed green because
+  they were FAIL-heavy. A PASS is not cheaper than a FAIL (same linear lookup;
+  only what follows differs), so the branches are now one if/elif chain with a
+  single exit. The validator's test stub carried both this and the `i + 1`
+  defect — and `check_caps` *executes* that stub, so a fixture reproducing the
+  bug could not witness the fix. Found by Copilot on PR #126.
+- **An adversarial review then found two more, both about bounds that did not
+  bind.** `sanitize_row` walks its input byte by byte, and a ledger cell has no
+  length limit — two FAIL rows with a 20 KB criterion (accepted by the writer,
+  well inside every scan bound) made **every Stop take 5.81s**, outside
+  `CAPS_MAX_STEPS` and ahead of the blocking gates. Slicing to 128 bytes before
+  sanitizing: **0.53s**. And a truncated scan reported its prefix counts as
+  confirmed trips: 60 keys failed, then all 60 passed past the step budget,
+  reported as **60 active caps where the truth is zero**, recurring every Stop.
+  "A floor" was the wrong word — a floor claims *at least this many* and a
+  prefix cannot; a truncated scan now reports nothing and says UNKNOWN. Also
+  fixed: `scan_caps` clobbered any caller variable named `_caps_k`/`_caps_c`/
+  `_caps_n`, and two comments claimed the 110-byte cap covered the emitted line
+  rather than the row payload.
+- **The report was going to a channel that does not exist on exit 0.** A Stop
+  hook's stderr, when it exits 0, reaches the debug log only — not the
+  transcript, not Claude. So the cap report, the one thing that must be seen
+  when *nothing* blocks, was visible only when an unrelated gate happened to
+  block: the exact dependency its placement was designed to avoid. Every test
+  asserted captured stderr, so the feature was fully covered and never
+  delivered — **a test that the message was produced is not a test that it was
+  delivered.** It now emits `systemMessage` JSON on stdout on the allowing
+  path; blocking paths keep stderr, where exit 2 makes it the channel the
+  harness reads back. Also fixed: the ledger header was matched by *prefix*, so
+  a real task named `Gate` with criterion `Criterion` — an id `ops-task.sh`
+  permits — had its rows silently discarded (measured: `tripped=0` on two real
+  rework rounds). `ops-reverify.sh` carries the same prefix filter and is
+  tracked as #128 rather than fixed in passing.
+- **What the budget does NOT buy, recorded as issue #127 rather than implied.**
+  The 11.1s figure is the WORST case, and a project does not live there. At a
+  realistic shape (50 distinct keys, mostly PASS), a 3,000-row ledger still
+  costs **~1.2s on every Stop**, and 5,000 rows 1.9s. There is no agreed
+  wall-clock budget for the Stop hook — `statusline.sh` has CR5's ~300ms, this
+  hook has never had one — so "within budget" is a claim nobody can make here.
+  The two cheaper designs are named with their reasons: a tail window (what the
+  bar does) breaks the reset rule, since a clearing PASS can sit anywhere and a
+  false report costs more than a missed one; an mtime cache is the real fix and
+  has its own failure mode (a stale cache is a gate that silently stopped
+  running), so it is tracked, not half-built. Token cost is separately bounded
+  and is not the issue: the report is capped at 10 rows × 110 bytes, measured
+  at 1,618 bytes in the 100-target worst case and zero on a clean ledger.
+- **The fourth was a measured DoS in the detector itself.** The three size
+  bounds do not bound the WORK: the ceiling is rows × keys, and at exactly
+  those bounds a 20,000-row ledger across 100 failing targets cost **10.2s for
+  the scan and 11.1s for the Stop carrying it** — every Stop, on a ledger an
+  ordinary mature project reaches. `CAPS_MAX_STEPS` caps the lookup directly:
+  the same input now measures **1.09s** and reports `caps_truncated`, the same
+  honest degradation the other bounds use. An associative array would delete
+  the term and bash 3.2 has none; a string-keyed table was measured at 3m28s
+  on the same input, 20× worse.
+- **And a last one: the scan kept working after its answer was thrown away.**
+  Hitting `CAPS_MAX_KEYS` set `caps_truncated` and fell through, so the loop
+  went on walking a full 100-key table for every remaining row — feeding a
+  report the truncation rule had already abandoned (a truncated scan returns
+  before building one). Measured on a 20,000-row ledger of *distinct* failing
+  targets, which hits the ceiling at row 100 and is what a project with many
+  one-off task ids looks like: **0.97s → 0.14s, 7×**. Waste rather than a DoS —
+  the step budget did bound it — so the fix is one condition at the loop's
+  existing sole exit, not a second `break` upstream. The case asserts **rows
+  read**, not wall clock: the budget makes the durations converge, and this file
+  has already paid once for a timing assertion that flaked on a shared runner.
+  Its first draft anchored on an `xtrace` prefix that the suite does not set, so
+  it measured zero rows and *passed* — caught in the same run by its own
+  control, which demanded 3,000 rows and got the same zero. Found by Copilot on
+  PR #126.
+- **The report-only guard had one more door: `then` on its own line.**
+  `check_caps` opened its window only when the caps-test line *ended* with
+  `then`, so the two-line form bash treats identically — `if [ … ]`, newline,
+  `then`, `exit 2` — opened no window at all and shipped green (measured:
+  control clean, mutation clean). Same class as the `^if ` and `elif` escapes an
+  adversarial verifier found earlier on this branch, one spelling further in,
+  which is the argument for describing the *structure* instead: the window now
+  counts net `if`/`fi` depth per line and never looks for `then`. Counting a
+  bare `\b(if|fi)\b` went red on the shipped hook — the truncation message ends
+  "…if a rework cap matters here", and prose in a guarded string is the normal
+  case here (#93/#94 make these messages long on purpose) — so the tokens are
+  matched in *command position*. Three cases: the multi-line form, plus two
+  negative controls (a one-line `if …; fi` must not unbalance the window, and an
+  English `if` in a message must not be read as a keyword). Found by Copilot on
+  PR #126.
+- **Two stale notes corrected in the same round.** `caps.sh`'s `CAPS_MAX_STEPS`
+  comment still said the caller reports a floor, which the adversarial round had
+  already replaced with *unknown* — a comment describing the design a rewrite
+  replaced is the same defect as a stale pin. And `tests/floors.env` said
+  `FLOOR_shell 968 -> 974` above a binding of `977`: the previous bump amended
+  the earlier heading instead of appending, so the one line explaining why the
+  floor sits where it does stopped resolving. Each bump now gets its own entry.
+  Found by Copilot on PR #126.
+- **NUL bytes walked straight through the ledger byte budget.** `read` *discards*
+  NUL — a bash variable cannot hold one — so the row loop's `${#row}` measured
+  what survived the read rather than what it consumed: a megabyte of NUL arrived
+  as the empty string and charged the accumulator one byte. `CAPS_MAX_BYTES` was
+  therefore not a bound on any input containing NUL. Measured on the shipped
+  hook, macOS bash 3.2: an 8 MiB ledger — 4× over the 2 MiB cap — scanned to EOF
+  in **3.6s reporting `truncated=0`**, a confident clean answer over a file the
+  bound existed to refuse. The cost is the *delay*, not the report: this scan
+  runs before the pending and deviation gates, so a corrupt or planted ledger
+  buys seconds of latency on every Stop. A bounded NUL probe (512-byte chunks,
+  2 MiB ceiling, its own subshell) now degrades to **`truncated=1` in 0.044s**,
+  82×. Report-only leaves no fail-closed direction, so the state is *unknown*,
+  which the caller already says — not `scan_failed`, which means "no ledger" and
+  this ledger exists.
+- **And the pin that should have caught it was blind to its own idiom.**
+  `check_reader_bounds` counted `IFS= read -r -n N` and had no place for `-d ''`
+  *between* `-r` and `-n` — which is exactly how a NUL probe is written. All
+  three shipped probes (`caps.sh`, `partition.sh`, `statusline.sh`) were
+  invisible to it, so each file's floor was satisfied by its row loop alone and
+  any probe could be deleted with the build green. `partition.sh`'s entry even
+  claimed its probe "counts below". The probes are what make the row loops' byte
+  caps real, so this was the same defect one layer up. Regex widened, floors
+  raised to 2/2/4, each deletion verified red. Found by Codex on PR #126.
+
 ## [0.11.11] - 2026-09-05
 
 - **The validator no longer grades the pull request that edits it (#108).**

@@ -104,6 +104,50 @@ def shell_code(path):
         if not ln.lstrip().startswith("#"))
 
 
+# COMMAND POSITION, not the bare word. `if` and `fi` are bash KEYWORDS only
+# where a command may start: line start, or after `;`/`&`/`|`/`(`/`{`, or after
+# one of the keywords that open a body. Anywhere else they are ordinary text.
+#
+# A plain `\b(if|fi)\b` was the first cut and it fired on the SHIPPED hook
+# (measured — the validator went red on
+# `if [ "$caps_scan_failed" = 0 ] && [ "$caps_truncated" = 1 ]; then`): the
+# truncation message it guards ends "Read the ledger yourself if a rework cap
+# matters here", so an English `if` inside a double-quoted string left the
+# window unbalanced and ran it to EOF, where the deviation gate's exits live.
+# Prose in a message string is not a shell keyword, and the guard has to know
+# the difference — the messages here are long by design (#93/#94: name the
+# targets), so this is the normal case, not an exotic one.
+_IF_TOKEN = re.compile(
+    r"(?:^|(?<=[;&|(){}])|(?<=\bthen\s)|(?<=\belse\s)|(?<=\bdo\s))"
+    r"\s*\b(if|fi)\b")
+
+
+def _net_if_depth(line):
+    """`if` opened minus `fi` closed on ONE line of shell.
+
+    Written for check_caps' report-only window, whose first cut counted at most
+    one event per line and required `then` to sit on the opener. Both pinned a
+    SPELLING rather than the structure: bash treats `if x` followed by `then`
+    on the next line exactly as `if x; then`, and `if x; then :; fi` is an
+    entire block on one line. Net depth per line is the structure itself.
+
+    `\\b` excludes `elif` for free — the char before its `if` is `l`, so there
+    is no boundary — which is what the caller needs: `elif` opens no block.
+
+    THE REMAINING IMPRECISION, stated because a window is only as good as its
+    edges: this reads tokens in command position, not a parsed shell. A
+    here-doc or a multi-line string carrying a literal `; if` would still
+    miscount. The likelier direction is the loud one — a stray `if` EXTENDS the
+    window, which fails the build and prints the offending line — and whole-line
+    comments are already gone (shell_code), so a maintainer sees it rather than
+    inheriting a silent hole.
+    """
+    n = 0
+    for tok in _IF_TOKEN.findall(line):
+        n += 1 if tok == "if" else -1
+    return n
+
+
 class _RedefinedFunction(str):
     """A function name defined more than once. Truthy-empty so `"x" not in body`
     fires on every pinned literal, and carries the count for the message."""
@@ -1014,11 +1058,31 @@ def check_reader_bounds(root, problems):
     # tail-window variant (statusline); the counts below are per-file as shipped.
     readers = {
         "ops-verdict.sh": 1,     # the --reconcile fragment loop
-        "lib/partition.sh": 1,   # the deviation scan (its NUL probe counts below)
+        # TWO since #126: the deviation scan plus its NUL probe. The comment
+        # here used to say the probe "counts below" and it did not — the
+        # counter's regex had no place for `-d ''` between `-r` and `-n`, so
+        # every shipped probe was invisible to it and this floor was satisfied
+        # by the row loop alone. A probe that can be deleted with the build
+        # green is the bound it protects, deletable.
+        "lib/partition.sh": 2,   # the deviation scan + its NUL probe
+        # The cap scan reads VERDICTS.md (hand-editable, untrusted — the same
+        # file ops-reverify.sh reads, and for the same reason it is bounded).
+        # TWO reads, and the second is the one that makes the first's byte cap
+        # real (#126 adversarial review, Codex): the row loop, plus a bounded
+        # NUL probe. `read` DISCARDS NUL, so `${#row}` measures what survived
+        # the read and not what it consumed — a megabyte of NUL charged the
+        # accumulator 1 byte, and an 8 MiB ledger scanned to EOF in 3.6s
+        # reporting truncated=0. Same shape as partition.sh's probe, whose
+        # count is folded into its own entry above.
+        "lib/caps.sh": 2,        # the row loop in scan_caps + its NUL probe
         # The statusline segment renders on a ~300ms timer, the hottest reader
         # in the plugin (a 64MB newline-less sentinel: 0.014s bounded vs 6.20s
         # unbounded — a permanently wedged bar, not a slow one).
-        "statusline.sh": 3,      # dev[N] scan + NUL probe + payload field reads
+        # FOUR since #126: two payload field reads, the dev[N] scan, and the
+        # NUL probe the counter could not see (see partition.sh above). The
+        # bare `-d ''` payload slurp on line 19 is exempt and uncounted — it is
+        # bounded by the payload, not by a cap.
+        "statusline.sh": 4,      # dev[N] scan + NUL probe + 2 payload reads
         # The tier-config resolver reads a file under .operator/ (untrusted — a
         # merge or checkout can produce it): a newline-less multi-MB tiers.env
         # is one "line" to an unbounded read.
@@ -1070,7 +1134,16 @@ def check_reader_bounds(root, problems):
         # on bash 3.2.57 and 5.2.15 (512 chars of "é" = 1024 bytes). Reported
         # once per file: LC_ALL=C must be in scope somewhere, which is the
         # `local LC_ALL=C` idiom partition.sh already uses (Copilot, PR #87).
-        if any(re.search(r"\bIFS=\S*\s+read -r -n \d+", ln) for ln in code) \
+        # `-d ''` may sit BETWEEN `-r` and `-n` — that is the NUL-probe form
+        # (`read -r -d '' -n 512`), and the counter did not match it (#126
+        # adversarial review, Codex). Three shipped probes went uncounted, so
+        # deleting any of them left the file's floor satisfied by its row loop
+        # alone. The probes are what make the row loops' BYTE caps real: `read`
+        # discards NUL, so `${#line}` measures what survived rather than what
+        # was consumed, and an 8 MiB NUL ledger scanned to EOF claiming it had
+        # stayed inside a 2 MiB bound.
+        _bounded_read = r"\bIFS=\S*\s+read -r (?:-d '' )?-n (\d+)\b"
+        if any(re.search(_bounded_read, ln) for ln in code) \
            and not any("LC_ALL=C" in ln for ln in code):
             problems.append(
                 f"scripts/{name}: byte-bounded reads with no `LC_ALL=C` in the "
@@ -1079,7 +1152,7 @@ def check_reader_bounds(root, problems):
                 f"Declare `local LC_ALL=C` in the reading function (the idiom "
                 f"scripts/lib/partition.sh uses), never globally")
         for ln in code:
-            for m in re.finditer(r"\bIFS=\S*\s+read -r -n (\d+)\b", ln):
+            for m in re.finditer(_bounded_read, ln):
                 n = int(m.group(1))
                 if n > _MAX_READ_BOUND:
                     problems.append(
@@ -3617,6 +3690,269 @@ def check_suite_floors(root, problems):
                     f"pin EXECUTES it for that reason")
 
 
+def check_caps(root, problems):
+    """#107: the cap detector exists, is sourced by the gate, and still FIRES.
+
+    The failure this pin is written against is not deletion — it is a detector
+    that keeps its shape and stops detecting. A cap scan that never trips
+    reports "no caps tripped", which is byte-identical to a clean ledger, on
+    every project, forever. Nothing else in the build would notice.
+
+    So the load-bearing half is EXECUTED (the F140/F144 shape): the shipped
+    scan_caps is extracted and run against three synthetic ledgers, and its
+    answers are read. Substring pins alone were satisfied, in this repo, by a
+    literal sitting in a trailing comment while the flag was gone from the
+    command; presence is not effect.
+
+    Also pinned: the REPORT-ONLY polarity. The detector must never contribute
+    an exit code — VERDICTS.md is append-only, so a tripped key can never be
+    un-tripped and a blocking detector is a permanent block (#123 C's polarity,
+    for the same reason). A future edit that "upgrades" the report to a block
+    is the regression with no symptom until a session cannot end.
+    """
+    rel = "scripts/lib/caps.sh"
+    p = root / "scripts" / "lib" / "caps.sh"
+    if not p.is_file():
+        problems.append(
+            f"{rel} is missing — the charter's cap table goes back to being "
+            f"prose with nothing behind it (#107); ops-stop-hook.sh sources it "
+            f"and would fail to launch without it")
+        return
+    code = shell_code(p)
+
+    # (a) the gate SOURCES it. A source STATEMENT, not a mention: the F126
+    # lesson one file over — `"caps.sh" in text` is satisfied by an echo, and a
+    # lib nothing sources is a lib that never runs.
+    hook = root / "scripts" / "ops-stop-hook.sh"
+    if hook.is_file():
+        hcode = shell_code(hook)
+        if not re.search(r"^\s*(?:\.|source)\s+\"?\$\{?_libdir\}?\"?/caps\.sh",
+                         hcode, re.M):
+            problems.append(
+                "scripts/ops-stop-hook.sh: does not SOURCE lib/caps.sh — a "
+                "mention is not a source statement (audit F126), and an "
+                "unsourced detector reports nothing while every gate stays "
+                "green (#107)")
+        # (b) REPORT-ONLY. No `exit` may be reachable from a test of a `caps_*`
+        # variable.
+        #
+        # THE SHAPE IS CLOSED, NOT ONE SPELLING — the base-gate floors lesson,
+        # applied here after an adversarial verifier walked past the first cut
+        # (2026-09-07, three bypasses, all shipping "all contracts hold"):
+        #
+        #   [ "$caps_tripped" -gt 0 ] && exit 2      no `if` at all
+        #   if false; then :; elif [ "$caps_…" ];…   anchored on `^if `
+        #   (an `exit` past the branch's own `fi`)   window ended too early
+        #
+        # The first two were live-verified to invert the polarity: the mutated
+        # hook exited 2 on a ledger with nothing else pending — the permanent
+        # block this pin exists to refuse. A regex describing ONE way to write
+        # the branch is a pin on a spelling, and shell has arbitrarily many.
+        #
+        # So the question is asked per LINE and shape-independently: a line
+        # that both TESTS a `caps_*` variable and reaches an `exit` — on the
+        # same line via `&&`/`||`/`;`, or anywhere in the `if`/`elif` block it
+        # opens. The block is walked by depth so a nested `if` inside it cannot
+        # end the window early.
+        _lines = hcode.splitlines()
+        _capstest = re.compile(r'\[\[?\s*"?\$\{?caps_[a-z_]+|\btest\s+"?\$\{?caps_')
+        # `^\s*` and not `^`: the block's own body is INDENTED, so a bare `^`
+        # anchor missed `  exit 2` — the elif bypass survived the first fix and
+        # was caught only by re-running the verifier's own three escapes rather
+        # than trusting that the rewrite covered them (2026-09-07).
+        _exit = re.compile(r"(?:^\s*|[;&|]\s*|\bthen\s+)exit\b")
+        _blocked = False
+        for _i, _ln in enumerate(_lines):
+            if _blocked or not _capstest.search(_ln):
+                continue
+            # the line itself (`… && exit 2`, `… ; exit 2`, `if …; then exit`)
+            _window = [_ln]
+            # plus the block it opens, if it opens one.
+            #
+            # THE WINDOW OPENS ON `if`, NOT ON `then` (PR #126 review, Copilot).
+            # The first cut required the caps-test line to END with `then`, so
+            # the two-line form bash treats identically —
+            #
+            #     if [ "$caps_tripped" -gt 0 ]
+            #     then
+            #       exit 2
+            #     fi
+            #
+            # — opened no window at all and shipped green (measured: control
+            # CLEAN, mutation CLEAN). That was the same error as anchoring on
+            # `^if `, one spelling further in: `then` may sit on the condition's
+            # line or on any continuation of it, and neither placement changes
+            # what the block does. Depth is now counted off `if`/`fi` alone,
+            # which is the structure itself rather than a way of writing it —
+            # `elif` opens no block of its own and must not increment, or the
+            # chain's single `fi` never closes the window.
+            if re.match(r"\s*(?:el)?if\b", _ln):
+                # Per-LINE NET depth, not one event per line: `if x; then :; fi`
+                # opens and closes on one line, and counting only the opener
+                # would run the window to EOF and blame an `exit` nowhere near
+                # the caps branch. A pin that cries wolf is a pin someone
+                # deletes. `\bif\b` does not match inside `elif` (no word
+                # boundary between `l` and `i`), so an `elif` opener seeds the
+                # depth itself and the chain's single `fi` closes it.
+                _depth = (1 if re.match(r"\s*elif\b", _ln) else 0) \
+                    + _net_if_depth(_ln)
+                for _j in range(_i + 1, len(_lines)):
+                    _depth += _net_if_depth(_lines[_j])
+                    if _depth <= 0:
+                        break
+                    _window.append(_lines[_j])
+            if any(_exit.search(_w) for _w in _window):
+                problems.append(
+                    "scripts/ops-stop-hook.sh: an `exit` is reachable from a "
+                    "test of a caps_* variable — the cap report is REPORT-ONLY "
+                    "on purpose. VERDICTS.md is append-only with a single "
+                    "writer, so a tripped key can never be un-tripped by "
+                    "removing a row: a blocking cap detector over a permanent "
+                    "history is a PERMANENT block, and a session that cannot "
+                    "end is the failure a user resolves by deleting the plugin "
+                    "(#107, the polarity #123 C states for the same reason). "
+                    f"Offending line: {_ln.strip()[:80]!r}")
+                _blocked = True
+
+    # (c) the honest-coverage note. The cap table has THREE caps and this
+    # covers ONE; the other two are uncovered for stated reasons (no reviewer
+    # identity in a 4-cell row; a PASS->FAIL flip is not causation). An edit
+    # that drops those paragraphs turns a documented partial into an implied
+    # complete — the exact reading #85's uncovered clauses (2) and (3) exist
+    # to prevent. Searched in RAW text: this is prose, and it lives in
+    # comments by design.
+    raw = p.read_text(encoding="utf-8")
+    for token in ("identical-rejection", "neighbor-regressing"):
+        if token not in raw.lower():
+            problems.append(
+                f"{rel}: no longer names the UNCOVERED cap {token!r} — this "
+                f"file covers one of the charter's three caps, and a partial "
+                f"detector whose limits go unstated reads as a complete one "
+                f"(#107; the honesty #85 applies to its own uncovered clauses)")
+
+    # (d) THE EXECUTABLE PIN. Extract scan_caps and run it against synthetic
+    # ledgers. Three claims, each a different regression:
+    #   trip   — two FAILs on one (id, criterion) is a cap trip. A detector
+    #            that stopped detecting is the whole failure class here.
+    #   reset  — a later PASS clears the key. Without it the report fires on
+    #            every mature ledger from its first repeated failure onward,
+    #            and a line that is always there is a line nobody reads.
+    #   keyed  — two FAILs on DIFFERENT criteria of the same id do NOT trip.
+    #            A detector keyed on the id alone fires on ordinary work, and
+    #            a false halt costs a session.
+    # ONE DEFINITION, and this is checked BEFORE the probe rather than left to
+    # it — #81's class, and an adversarial verifier landed it here on
+    # 2026-09-07. Bash resolves the LAST definition; the extractor below is
+    # non-greedy and takes the FIRST. So appending a second
+    # `scan_caps() { caps_tripped=0; }` left the probe validating a function
+    # bash never runs: the live hook reported nothing on a ledger that trips
+    # under the real code, and `validate_plugin.py` printed "all contracts
+    # hold" (measured, then reverted byte-identically). The probe cannot catch
+    # this by construction — it is testing the wrong bytes — so the count is
+    # the guard.
+    _n_defs = len(re.findall(r'^scan_caps\(\)\s*\{', code, re.M))
+    if _n_defs != 1:
+        problems.append(
+            f"{rel}: scan_caps() is defined {_n_defs} times — bash runs the "
+            f"LAST definition and this check's extractor reads the FIRST, so a "
+            f"shadowing redefinition leaves the behaviour probe validating a "
+            f"function that never runs while the live detector reports nothing "
+            f"(#81's class; measured 2026-09-07)")
+        return
+    _fn = re.search(r'^scan_caps\(\)\s*\{.*?^\}', code, re.M | re.S)
+    if not _fn:
+        problems.append(
+            f"{rel}: cannot extract scan_caps() for the behaviour probe — "
+            f"reshaping it must update this extractor, not silently skip the "
+            f"only pin that tests the detector's EFFECT (the F144 rule)")
+        return
+    # The CAPS_* constants go into the probe WITH the function, because the
+    # function reads them and an unset one is not an error bash reports —
+    # `[ 2 -ge "" ]` is a syntax complaint on stderr that evaluates falsy, so
+    # the detector would silently stop tripping. Extracting only the function
+    # reproduced exactly that (measured while writing this pin: the trip
+    # ledger came back 0 against a working lib). Which means the constants are
+    # part of the unit, and a rename that moves the threshold out of this
+    # shape is caught here rather than at some later Stop.
+    _consts = re.findall(r'^CAPS_[A-Z_]+=\S+', code, re.M)
+    if not _consts:
+        problems.append(
+            f"{rel}: no CAPS_* constants found — scan_caps() reads the "
+            f"threshold and its bounds from them, and an UNSET one makes "
+            f"`[ n -ge \"\" ]` evaluate falsy: the detector stops tripping "
+            f"with no error anyone sees (#107)")
+        return
+    _hdr = "| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n"
+    _rows = {
+        "trip":  "| T-1 | crit | ev @a1 | FAIL |\n| T-1 | crit | ev @a2 | FAIL |\n",
+        "reset": "| T-1 | crit | ev @a1 | FAIL |\n| T-1 | crit | ev @a2 | FAIL |\n"
+                 "| T-1 | crit | ev @a3 | PASS |\n",
+        "keyed": "| T-1 | crit-a | ev @a1 | FAIL |\n| T-1 | crit-b | ev @a2 | FAIL |\n",
+    }
+    _expect = {"trip": "1", "reset": "0", "keyed": "0", "budget": "1"}
+    with tempfile.TemporaryDirectory() as _td:
+        _script = ["\n".join(_consts), _fn.group(0)]
+        for _k, _body in _rows.items():
+            _f = os.path.join(_td, f"{_k}.md")
+            with open(_f, "w", encoding="utf-8") as _fh:
+                _fh.write(_hdr + _body)
+            _script.append(f'scan_caps "{_f}"\necho "{_k}=$caps_tripped"')
+        # THE WORK BUDGET, asserted by EFFECT. The three size bounds do not
+        # bound the work: the ceiling is rows x keys, and at the shipped bounds
+        # that measured 10.2s for the scan and 11.1s for the Stop carrying it
+        # (2026-09-07, adversarial verification). A gate whose own cost grows
+        # with the ledger it audits is a gate that gets removed. `CAPS_MAX_STEPS`
+        # is the cap; this ledger costs more steps than it permits, so a scan
+        # that still runs to the end reports truncated=0 and fails here.
+        # Deliberately not a timing assertion — a wall-clock threshold in a
+        # build gate is a flake on a loaded runner. The step budget is the
+        # thing the code actually enforces, so it is the thing pinned.
+        _bud = os.path.join(_td, "budget.md")
+        with open(_bud, "w", encoding="utf-8") as _fh:
+            _fh.write(_hdr)
+            for _r_i in range(60):
+                for _k_i in range(60):
+                    _fh.write(f"| T-{_k_i} | crit | ev @a{_r_i} | FAIL |\n")
+        _script.append(f'scan_caps "{_bud}"\necho "budget=$caps_truncated"')
+        _r = _run_probe(["bash", "-c", "\n".join(_script)], problems,
+                        f"{rel}: scan_caps()")
+        if _r is None:
+            return  # _run_probe already reported why
+        _got = dict(
+            ln.split("=", 1) for ln in (_r.stdout or "").split()
+            if "=" in ln)
+        if _r.returncode != 0 or len(_got) != len(_expect):
+            problems.append(
+                f"{rel}: scan_caps() could not be executed (rc "
+                f"{_r.returncode}: "
+                f"{(_r.stderr or _r.stdout or '').strip()[:160]!r}) — the "
+                f"behaviour probe cannot report, so treat it as a failure "
+                f"rather than a skip")
+            return
+        _why = {
+            "trip": "two FAIL rows on ONE (id, criterion) must trip the cap "
+                    "— a detector that stopped detecting reports 'no caps "
+                    "tripped', which is byte-identical to a clean ledger",
+            "reset": "a later PASS on the same key must CLEAR it — without "
+                     "the reset the report fires forever on any ledger with "
+                     "one repeated failure in its history",
+            "keyed": "two FAILs on DIFFERENT criteria of one id must NOT "
+                     "trip — the key is (id, criterion), and a detector keyed "
+                     "on the id alone fires on ordinary multi-criterion work",
+            "budget": "a ledger costing more than CAPS_MAX_STEPS lookup steps "
+                      "must stop and set caps_truncated — the three SIZE "
+                      "bounds do not bound the WORK (the ceiling is rows x "
+                      "keys), which measured an 11.1s Stop at the shipped "
+                      "bounds before the budget existed",
+        }
+        for _k, _want in _expect.items():
+            if _got.get(_k) != _want:
+                problems.append(
+                    f"{rel}: scan_caps() reported caps_tripped="
+                    f"{_got.get(_k)!r} on the {_k!r} ledger, expected "
+                    f"{_want!r} — {_why[_k]} (#107)")
+
+
 def check_base_gate(root, problems):
     """#108: the trusted base-ref gate exists, is wired on both forges, and
     never checks out the PR head.
@@ -4017,6 +4353,7 @@ CHECKS = (
     check_reader_bounds,
     check_guard_parity,
     check_autobar,
+    check_caps,
     check_claims,
     check_install_set_parity,
     check_gitignore_parity,

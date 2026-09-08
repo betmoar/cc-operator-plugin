@@ -5347,6 +5347,673 @@ else
 fi
 
 
+echo "-- Case: the cap detector (#107) — the charter's cap table, enforced and REPORT-ONLY"
+# INVARIANT: templates/OPERATOR.md calls a cap trip "a defined stop-and-report, not a judgment
+# call", and until this change nothing in scripts/ or hooks/ read, counted, or reported any of
+# the three caps. Measured 2026-09-07:
+#   $ grep -rn 'Identical-rejection\|rework\|Neighbor-regress' scripts/ hooks/   -> (no output)
+# One of the three is derivable from the ledger schema and is covered here; the other two are
+# not, and this case pins that the file still SAYS so — a partial detector whose limits go
+# unstated reads as a complete one.
+_caps_state() { # _caps_state <verdicts-path> → "tripped=N failed=N truncated=N"
+  ( # shellcheck source=/dev/null
+    . "$SCRIPTS/lib/caps.sh"
+    scan_caps "$1"
+    # shellcheck disable=SC2154  # all three are OUTPUTS of the sourced lib
+    printf 'tripped=%s failed=%s truncated=%s' "$caps_tripped" "$caps_scan_failed" "$caps_truncated" )
+}
+_caps_ledger() { # _caps_ledger <path> <rows…> — a well-formed 4-cell ledger
+  local _f="$1"; shift
+  printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n' > "$_f"
+  local _r; for _r in "$@"; do printf '%s\n' "$_r" >> "$_f"; done
+}
+CAPD="$(newproj)"
+
+# --- the cap itself: two FAIL rounds on ONE target --------------------------
+_caps_ledger "$CAPD/v1.md" "| T-1 | crit | ev @a1 | FAIL |" "| T-1 | crit | ev @a2 | FAIL |"
+check "two FAIL rows on one (id, criterion) TRIP the same-target-rework cap" \
+  "$([ "$(_caps_state "$CAPD/v1.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+
+_caps_ledger "$CAPD/v2.md" "| T-1 | crit | ev @a1 | FAIL |"
+check "ONE failing round is not a cap trip (the cap is two)" \
+  "$([ "$(_caps_state "$CAPD/v2.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+
+# --- the KEY is (id, criterion), and both halves matter ---------------------
+# Keyed on the id alone, the detector fires on ordinary work — a task with two failing criteria
+# is not two rework rounds on one target, and a false halt is what gets a gate disabled.
+_caps_ledger "$CAPD/v3.md" "| T-1 | crit-a | ev @a1 | FAIL |" "| T-1 | crit-b | ev @a2 | FAIL |"
+check "two FAILs on DIFFERENT criteria of one id do NOT trip (the key carries the criterion)" \
+  "$([ "$(_caps_state "$CAPD/v3.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+_caps_ledger "$CAPD/v4.md" "| T-1 | crit | ev @a1 | FAIL |" "| T-2 | crit | ev @a2 | FAIL |"
+check "two FAILs on the same criterion of DIFFERENT ids do NOT trip (the key carries the id)" \
+  "$([ "$(_caps_state "$CAPD/v4.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+
+# --- a later PASS RESETS the key -------------------------------------------
+# Without the reset the report fires on every mature ledger from its first repeated failure to
+# the end of the project, and a line that is always there is a line nobody reads.
+_caps_ledger "$CAPD/v5.md" "| T-1 | crit | ev @a1 | FAIL |" "| T-1 | crit | ev @a2 | FAIL |" \
+  "| T-1 | crit | ev @a3 | PASS |"
+check "a later PASS on the same key CLEARS it — a rework that worked is not a cap trip" \
+  "$([ "$(_caps_state "$CAPD/v5.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+# ORDER matters, and the report is built after the whole pass: F,P,F,F is two rounds SINCE the
+# pass. A detector that emitted mid-pass could not take the first trip back.
+_caps_ledger "$CAPD/v6.md" "| T-1 | crit | ev @a1 | FAIL |" "| T-1 | crit | ev @a2 | PASS |" \
+  "| T-1 | crit | ev @a3 | FAIL |" "| T-1 | crit | ev @a4 | FAIL |"
+check "FAIL,PASS,FAIL,FAIL trips — the count is rounds SINCE the last pass, not lifetime" \
+  "$([ "$(_caps_state "$CAPD/v6.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+
+# --- the report NAMES the target -------------------------------------------
+# A count whose rows the operator must go find is a count answered by not looking (#93/#94).
+# shellcheck disable=SC1091,SC2154  # caps_rows is an OUTPUT of the sourced lib
+_caps_rows_of() { ( . "$SCRIPTS/lib/caps.sh"; scan_caps "$1"; printf '%s' "$caps_rows" ); }
+check "the report names the tripped target, not just a count" \
+  "$(printf '%s' "$(_caps_rows_of "$CAPD/v1.md")" | grep -q 'T-1 | crit' && echo 0 || echo 1)"
+check "the report carries the ROUND COUNT beside the target" \
+  "$(printf '%s' "$(_caps_rows_of "$CAPD/v1.md")" | grep -q '2 FAIL rounds' && echo 0 || echo 1)"
+
+# --- malformed and non-ledger input is skipped, never guessed at ------------
+_caps_ledger "$CAPD/v7.md" "| T-1 | crit | ev @a1 | FAIL |" "not a row at all" \
+  "| T-1 | crit | ev | extra | FAIL |" "| T-1 | crit | ev @a2 | MAYBE |"
+check "prose, 5-cell rows and non-PASS/FAIL verdicts are skipped — one real FAIL does not trip" \
+  "$([ "$(_caps_state "$CAPD/v7.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+# An EMPTY evidence cell is not a row ops-verdict.sh can write (it refuses empty evidence), so
+# accepting one would count a hand-edit as a rework round.
+_caps_ledger "$CAPD/v8.md" "| T-1 | crit |  | FAIL |" "| T-1 | crit |  | FAIL |"
+check "a row with an EMPTY evidence cell is skipped — the single writer cannot produce one" \
+  "$([ "$(_caps_state "$CAPD/v8.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+
+# --- polarity: report-only, and an absent/symlinked ledger says so ----------
+check "an ABSENT ledger sets scan_failed — nothing to report, no claim made" \
+  "$([ "$(_caps_state "$CAPD/nope.md")" = "tripped=0 failed=1 truncated=0" ] && echo 0 || echo 1)"
+ln -s /dev/null "$CAPD/link.md"
+check "a SYMLINKED ledger is refused, never scanned through (the F65 class)" \
+  "$([ "$(_caps_state "$CAPD/link.md")" = "tripped=0 failed=1 truncated=0" ] && echo 0 || echo 1)"
+
+# --- the bounds ANNOUNCE themselves ----------------------------------------
+# A silently short scan reports "no caps tripped", which is byte-identical to a clean ledger —
+# the failure class the bounds exist to survive, reintroduced by the bounds themselves.
+{ printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+  i=0; while [ "$i" -lt 20005 ]; do printf '| T-%s | crit | ev @a | FAIL |\n' "$i"; i=$((i+1)); done
+} > "$CAPD/v9.md"
+_c9="$(_caps_state "$CAPD/v9.md")"
+check "past the line bound the scan sets caps_truncated — a short scan never reads as clean" \
+  "$(printf '%s' "$_c9" | grep -q 'truncated=1' && echo 0 || echo 1)"
+# Past the KEY ceiling too: an uncounted FAIL must not leave the report reading as complete.
+{ printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+  i=0; while [ "$i" -lt 150 ]; do printf '| T-%s | crit | ev @a | FAIL |\n' "$i"; i=$((i+1)); done
+} > "$CAPD/v10.md"
+check "past the KEY ceiling the scan also sets caps_truncated" \
+  "$(printf '%s' "$(_caps_state "$CAPD/v10.md")" | grep -q 'truncated=1' && echo 0 || echo 1)"
+
+# --- the WORK bound, which the three SIZE bounds do not provide -------------
+# The ceiling on work is rows x keys, and at the shipped size bounds that measured 10.2s for the
+# scan and 11.1s for the Stop carrying it (2026-09-07, adversarial verification) — every Stop, on
+# an ordinary mature ledger, not a planted one. A gate whose own cost grows with the ledger it
+# audits is a gate that gets removed. CAPS_MAX_STEPS caps the lookup directly and degrades the
+# same honest way the other three bounds do.
+{ printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+  r=0; while [ "$r" -lt 60 ]; do
+    k=0; while [ "$k" -lt 60 ]; do printf '| T-%s | crit | ev @a%s | FAIL |\n' "$k" "$r"; k=$((k+1)); done
+    r=$((r+1)); done
+} > "$CAPD/v11.md"
+_c11="$(_caps_state "$CAPD/v11.md")"
+check "an over-BUDGET ledger stops and sets caps_truncated (the work bound, not a size bound)" \
+  "$(printf '%s' "$_c11" | grep -q 'truncated=1' && echo 0 || echo 1)"
+# It stops EARLY, not at the end: the whole point is that the work is bounded. Under the size
+# bounds alone this file is legal (3600 rows, 60 keys) and would run to completion.
+check "the over-budget ledger is UNDER every SIZE bound — the budget is what stopped it" \
+  "$([ "$(grep -c '^| T-' "$CAPD/v11.md")" -lt 20000 ] && [ "$(wc -c < "$CAPD/v11.md")" -lt 2097152 ] && echo 0 || echo 1)"
+# NEGATIVE CONTROL: a ledger comfortably inside the budget must NOT report truncated, or the
+# budget check above is satisfied by a scan that always truncates.
+check "CONTROL: a small ledger is not truncated — the budget does not fire on ordinary work" \
+  "$(printf '%s' "$(_caps_state "$CAPD/v1.md")" | grep -q 'truncated=0' && echo 0 || echo 1)"
+
+# --- ONE definition of scan_caps -------------------------------------------
+# Bash resolves the LAST definition and the validator's probe extractor reads the FIRST, so a
+# shadowing redefinition left the probe validating a function bash never runs while the live
+# detector reported nothing (measured 2026-09-07). The lib must carry exactly one.
+check "scan_caps is defined exactly ONCE — bash runs the last definition (#81's class)" \
+  "$([ "$(grep -c '^scan_caps() {' "$SCRIPTS/lib/caps.sh")" = 1 ] && echo 0 || echo 1)"
+
+# --- the budget must CHARGE the comparisons it performs (PR #126 review) ----
+# The lookup COMPARES element i and then breaks, so a hit at index i costs i+1 comparisons.
+# Charging i billed a hit at index 0 as FREE: measured 0 charged against 18,999 real on a ledger
+# where every row hits the first key — not off by one, off by everything, with caps_truncated=0
+# claiming the scan had stayed inside its bound.
+#
+# THE FIXTURE HAD TO BE SOLVED FOR, and two earlier drafts could not see the defect at all.
+# The case must sit in the window where the OLD accounting stays UNDER the budget and the NEW one
+# crosses it — anywhere else both truncate (or neither does) and the case is vacuous while
+# looking like proof. With k keys and hits spread evenly, a row costs (k-1)/2 under the old
+# accounting and (k+1)/2 under the new, so the window needs rows*(k-1)/2 < CAPS_MAX_STEPS <=
+# rows*(k+1)/2 while rows stays under CAPS_MAX_LINES. Solved: k=10, rows=18500 -> 83,250 old
+# against 101,750 new, budget 100,000. Verified BOTH ways before being believed: truncated=1 on
+# the shipped code, truncated=0 on the pre-fix accounting.
+#
+# A hit-only ledger cannot express this (draft one): at 1 charge per row the step bound is
+# unreachable before the LINE bound stops the scan, so it truncates on the row count either way.
+# 100 keys x 3000 rows cannot either (draft two): 153,450 old vs 156,550 new, BOTH past the
+# budget, both truncating — arithmetically green, evidentially empty.
+_caps_disc="$CAPD/v18.md"
+{ printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+  k=0; while [ "$k" -lt 10 ]; do printf '| T-%s | crit | ev @abc | FAIL |\n' "$k"; k=$((k+1)); done
+  r=0; while [ "$r" -lt 18500 ]; do printf '| T-%s | crit | ev @abc | FAIL |\n' "$((r % 10))"; r=$((r+1)); done
+} > "$_caps_disc"
+check "a hit at index i costs i+1 — the charge crosses the step budget where charging i does not" \
+  "$(printf '%s' "$(_caps_state "$_caps_disc")" | grep -q 'truncated=1' && echo 0 || echo 1)"
+# CONTROL: the STEP bound must be what fired, not the row count. Without this the case is
+# satisfied by any ledger long enough to trip CAPS_MAX_LINES — the trap draft one fell into.
+check "CONTROL: that ledger is under CAPS_MAX_LINES — the STEP bound fired, not the row count" \
+  "$([ "$(grep -c '^| T-' "$_caps_disc")" -lt "$(grep -o 'CAPS_MAX_LINES=[0-9]*' "$SCRIPTS/lib/caps.sh" | cut -d= -f2)" ] && echo 0 || echo 1)"
+# CONTROL: the same shape well under the budget must NOT truncate, or the case above is satisfied
+# by a scan that always truncates.
+{ printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+  k=0; while [ "$k" -lt 10 ]; do printf '| T-%s | crit | ev @abc | FAIL |\n' "$k"; k=$((k+1)); done
+  r=0; while [ "$r" -lt 200 ]; do printf '| T-%s | crit | ev @abc | FAIL |\n' "$((r % 10))"; r=$((r+1)); done
+} > "$CAPD/v19.md"
+check "CONTROL: the same shape well under the step budget does NOT truncate" \
+  "$(printf '%s' "$(_caps_state "$CAPD/v19.md")" | grep -q 'truncated=0' && echo 0 || echo 1)"
+
+# --- the budget check must cover EVERY path, not just the FAIL one ----------
+# The PASS branch charged its lookup and then `continue`d, straight past the budget test — so a
+# PASS-heavy ledger paid for the work and never enforced the bound. Measured on 100 keys plus
+# 19,000 PASS rows walking the table: 964,550 steps charged against a 100,000 budget (9x over),
+# caps_truncated=0, and 10.6 SECONDS — the entire DoS the budget exists to prevent, restored
+# through the one branch that skipped the check (PR #126 review, Copilot).
+#
+# A PASS is not cheaper than a FAIL: both do the same linear lookup, and only what happens AFTER
+# it differs. `continue` in a loop whose tail carries a guard is the shape to distrust — it reads
+# as "skip the rest of the work" and means "skip the rest of the guards".
+{ printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+  k=0; while [ "$k" -lt 100 ]; do printf '| T-%s | crit | ev @abc | FAIL |\n' "$k"; k=$((k+1)); done
+  r=0; while [ "$r" -lt 19000 ]; do printf '| T-%s | crit | ev @abc | PASS |\n' "$((r % 100))"; r=$((r+1)); done
+} > "$CAPD/v20.md"
+check "a PASS-heavy ledger hits the step budget — the PASS path enforces the bound it charges" \
+  "$(printf '%s' "$(_caps_state "$CAPD/v20.md")" | grep -q 'truncated=1' && echo 0 || echo 1)"
+check "CONTROL: that ledger is under CAPS_MAX_LINES — the STEP bound fired, not the row count" \
+  "$([ "$(grep -c '^| T-' "$CAPD/v20.md")" -lt "$(grep -o 'CAPS_MAX_LINES=[0-9]*' "$SCRIPTS/lib/caps.sh" | cut -d= -f2)" ] && echo 0 || echo 1)"
+# The reset must still WORK after the branch reshape — a budget fix that broke the semantics
+# would trade a slow gate for a wrong one.
+_caps_ledger "$CAPD/v21.md" "| T-1 | crit | ev @a1 | FAIL |" "| T-1 | crit | ev @a2 | FAIL |" \
+  "| T-1 | crit | ev @a3 | PASS |"
+check "CONTROL: the PASS reset still clears a tripped key after the branches were merged" \
+  "$([ "$(_caps_state "$CAPD/v21.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+
+# --- the SCHEMA coupling, documented as a limitation rather than papered over -
+# caps.sh is now the SECOND reader of the 4-cell row (ops-reverify.sh is the first), and the
+# 4-cell test that correctly skips a hand-edit is WRONG for a schema change: widen the row and
+# every rework round goes silently uncounted, which turns the detector off with every gate green.
+# The same hole from the other side: a new VERDICT WORD is not PASS, so it does not reset a key.
+# Neither is fixable HERE — the fix is at the writer, which is why the coupling row names both
+# parsers. What these two cases buy is that the blindness is MEASURED and named, so the next
+# schema change reads it in the suite instead of discovering it in the field.
+_caps_ledger "$CAPD/v12.md" "| T-1 | crit | ev @a1 | reviewer-x | FAIL |" \
+  "| T-1 | crit | ev @a2 | reviewer-x | FAIL |"
+check "a 5-CELL row is skipped, so a schema widening silently stops the detector (measured, NOT fixed here — the coupling row names both parsers)" \
+  "$([ "$(_caps_state "$CAPD/v12.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+_caps_ledger "$CAPD/v13.md" "| T-1 | crit | ev @a1 | FAIL |" "| T-1 | crit | ev @a2 | MOOT |" \
+  "| T-1 | crit | ev @a3 | FAIL |"
+check "a non-PASS verdict word does NOT reset a key — a MOOT row (#91) would read as a rework round" \
+  "$([ "$(_caps_state "$CAPD/v13.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+
+# --- the per-Stop COST, pinned as a property rather than a stopwatch (#127) --
+# The scan re-reads the whole ledger on EVERY Stop: measured 2026-09-07 at ~1.2s for 3000 rows
+# in a realistic shape, which is real and is tracked in #127 (the Stop hook has no stated
+# wall-clock budget to judge it against — writing one is that issue's step 1).
+#
+# What is pinned here is the SHAPE of the cost, not a duration. A timing assertion in a suite is
+# a flake on a loaded runner, and it fails for reasons that have nothing to do with this code.
+# The property that actually matters: work is bounded by CAPS_MAX_STEPS, so a ledger far past it
+# must report truncated rather than running proportionally longer. A change that makes the scan
+# 10x more expensive per row shows up as truncation arriving EARLIER, which this case sees.
+#
+# The measurement trap that produced two wrong tables before the right one, kept because it is
+# the reusable half: a fixture with more distinct keys than CAPS_MAX_KEYS truncates early, so its
+# timings describe PARTIAL work while reading like full scans. Assert the control FIRST — that a
+# realistic fixture stays UNDER the key ceiling — or the numbers are of something else.
+_caps_keys_in() { # _caps_keys_in <ledger> → count of distinct (id, criterion) pairs
+  # Fields, after splitting a `| id | criterion | evidence | verdict |` row on
+  # " | ": $1 is "| id" (the leading pipe has no trailing space to split on),
+  # $2 the criterion, $3 the evidence. So the KEY is $1+$2, and the first cut
+  # printed $2+$3 — (criterion, evidence), which is not the key at all (PR #126
+  # review). It undercounted whenever one criterion appeared under several ids:
+  # measured 2 on a 3-key ledger. A control that counts the wrong thing is the
+  # exact failure it was written to prevent, one level up.
+  grep '^| T-' "$1" | awk -F' \\| ' '{sub(/^\\| /, "", $1); print $1 "|" $2}' \
+    | sort -u | wc -l | tr -d ' '
+}
+{ printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+  r=0; while [ "$r" -lt 3000 ]; do
+    printf '| T-%s | criterion %s | ev @abc123def456 | PASS |\n' "$((r % 25))" "$((r % 2))"
+    r=$((r+1)); done
+} > "$CAPD/v14.md"
+# The counter itself needs a control, because a control that counts the WRONG THING is exactly
+# the failure it exists to prevent. Two ids sharing one criterion is 2 keys, and the first cut of
+# this helper read (criterion, evidence) instead of (id, criterion) and said 1 — so a fixture
+# could sail past the ceiling check while its scans truncated (PR #126 review).
+_caps_ledger "$CAPD/v16.md" "| T-1 | shared | ev @a | FAIL |" "| T-2 | shared | ev @a | FAIL |"
+check "CONTROL: the key counter counts (id, criterion) — two ids sharing a criterion is TWO keys" \
+  "$([ "$(_caps_keys_in "$CAPD/v16.md")" = 2 ] && echo 0 || echo 1)"
+# And the mirror, or the fix could have swung to counting ids alone.
+_caps_ledger "$CAPD/v17.md" "| T-1 | crit-a | ev @a | FAIL |" "| T-1 | crit-b | ev @a | FAIL |"
+check "CONTROL: one id with two criteria is also TWO keys — not collapsed by id" \
+  "$([ "$(_caps_keys_in "$CAPD/v17.md")" = 2 ] && echo 0 || echo 1)"
+check "CONTROL: the realistic fixture stays UNDER the key ceiling — its timings describe a WHOLE scan" \
+  "$([ "$(_caps_keys_in "$CAPD/v14.md")" -le "$(grep -o 'CAPS_MAX_KEYS=[0-9]*' "$SCRIPTS/lib/caps.sh" | cut -d= -f2)" ] && echo 0 || echo 1)"
+check "a realistic 3000-row ledger is scanned WHOLE (not truncated) — the cost is real, and #127 owns it" \
+  "$([ "$(_caps_state "$CAPD/v14.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+# The bound is what keeps the cost from growing without limit. Ten times the rows, same keys:
+# the budget must bite, or the scan is proportional to a file nothing caps.
+{ printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+  r=0; while [ "$r" -lt 30000 ]; do
+    printf '| T-%s | criterion %s | ev @abc | FAIL |\n' "$((r % 25))" "$((r % 2))"
+    r=$((r+1)); done
+} > "$CAPD/v15.md"
+check "ten times the rows TRUNCATES — the per-Stop cost is bounded, not proportional to the ledger" \
+  "$(printf '%s' "$(_caps_state "$CAPD/v15.md")" | grep -q 'truncated=1' && echo 0 || echo 1)"
+
+# --- a truncated scan STOPS: work after the answer is discarded is waste ----
+# The key ceiling set caps_truncated and fell through, so the scan kept walking a full 100-key
+# table for every remaining row while the report it was feeding had already been abandoned (a
+# truncated scan returns before building one). Measured on a 20,000-row ledger of DISTINCT
+# failing targets — the shape a project with many one-off task ids has, and the shape that hits
+# the ceiling at row 100: 0.97s before, 0.14s after. Found by Copilot on PR #126.
+#
+# THE ASSERTION IS ROWS READ, NOT WALL CLOCK. The suite already paid for a timing assertion here
+# once (it flaked on GitHub's runner while passing locally, two cases down), and a duration is
+# the wrong instrument twice over: it is machine-dependent AND the step budget bounds this input
+# either way, so the difference is waste rather than a blowup. Row count is exact and portable.
+# `xtrace` counts the loop's own `n=<digits>` assignment, which is unique to the read loop in
+# this file (`grep -n 'n='` shows the declaration and that one line).
+{ printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+  r=0; while [ "$r" -lt 3000 ]; do
+    printf '| T-%s | crit | ev @abc | FAIL |\n' "$r"; r=$((r+1)); done
+} > "$CAPD/v18.md"
+_caps_rows_read() { # _caps_rows_read <ledger> → rows the scan loop actually consumed
+  local _t="$CAPD/xtrace.log"
+  ( # shellcheck source=/dev/null
+    . "$SCRIPTS/lib/caps.sh"
+    # PS4 is SET here, not inherited. The default is `+ ` — plus SPACE — and the
+    # first draft of this probe anchored on `^+*n=`, written against a standalone
+    # run that had set PS4='+'. Under the suite it matched nothing, so BOTH
+    # checks read zero rows: the bound passed (0 < 200) and the control failed
+    # (0 >= 3000 is false), which is how a probe measuring nothing at all
+    # announced itself. The control is the whole reason that was visible in one
+    # run rather than shipping as a green vacuity.
+    PS4='+'
+    exec 2>"$_t"
+    set -x
+    scan_caps "$1" ) >/dev/null 2>/dev/null
+  # The `+` is repeated by nesting depth, so the anchor tolerates any depth.
+  grep -ac '^+*n=[0-9][0-9]*$' "$_t"
+}
+check "CONTROL: 3000 distinct failing targets DO exceed the key ceiling — the branch under test is reached" \
+  "$([ "$(_caps_keys_in "$CAPD/v18.md")" -gt "$(grep -o 'CAPS_MAX_KEYS=[0-9]*' "$SCRIPTS/lib/caps.sh" | cut -d= -f2)" ] && echo 0 || echo 1)"
+check "hitting the KEY CEILING stops the scan — it does not keep walking a table it has discarded" \
+  "$([ "$(_caps_rows_read "$CAPD/v18.md")" -lt 200 ] && echo 0 || echo 1)"
+# CONTROL: the stop is the CEILING's, not a scan that quit early on everything. A realistic
+# ledger (25 ids x 2 criteria, under the ceiling) must still be read to the last row, or the
+# bound above is satisfied by a detector that stopped detecting.
+check "CONTROL: a ledger UNDER the key ceiling is still read WHOLE — 3000 rows, all of them" \
+  "$([ "$(_caps_rows_read "$CAPD/v14.md")" -ge 3000 ] && echo 0 || echo 1)"
+
+# --- the gate WIRES it, on every path, and never blocks on it --------------
+# The report runs above every `exit`, because the session that stops CLEAN is exactly the one
+# that needs to hear it: attached to a blocking branch it would surface only when something else
+# already blocked, which is a report nobody sees.
+if command -v git >/dev/null 2>&1; then
+  CAPP="$(newproj)"
+  git -C "$CAPP" init -q . 2>/dev/null
+  git -C "$CAPP" config user.email t@t 2>/dev/null; git -C "$CAPP" config user.name t 2>/dev/null
+  ( cd "$CAPP" && bash "$INIT" >/dev/null 2>&1 )
+  git -C "$CAPP" add -A >/dev/null 2>&1; git -C "$CAPP" commit -qm scaffold >/dev/null 2>&1
+  # Two rework rounds through the SINGLE WRITER — not a hand-written ledger. The detector reads
+  # what ops-verdict.sh actually produces (source stamp and all), or it is pinned to a schema
+  # nothing writes.
+  for _i in 1 2; do
+    ( cd "$CAPP" && bash "$TASK" T-1 --owner SESS-A >/dev/null 2>&1
+      bash "$VERDICT" T-1 "the criterion" "ev$_i" FAIL --owner SESS-A >/dev/null 2>&1 )
+  done
+  run_hook stop-session-a.json "$CAPP"
+  _cw=1; case "$HERR" in *"same-target-rework cap"*) _cw=0 ;; esac
+  check "the Stop hook REPORTS the cap against rows the single writer produced" "$_cw"
+  _cn=1; case "$HERR" in *"T-1 | the criterion"*) _cn=0 ;; esac
+  check "the hook's report NAMES the target it is about" "$_cn"
+  check "the cap NEVER blocks — a tripped cap still exits 0 (append-only: it could never clear)" \
+    "$([ "$HRC" -eq 0 ] && echo 0 || echo 1)"
+  # The polarity, stated from the other side: a session with a real open task blocks for THAT
+  # reason, and the cap report rides along rather than replacing it.
+  ( cd "$CAPP" && bash "$TASK" T-9 --owner SESS-A >/dev/null 2>&1 )
+  run_hook stop-session-a.json "$CAPP"
+  _cb=1; case "$HERR" in *"same-target-rework cap"*) case "$HERR" in *"pending verdict"*) _cb=0 ;; esac ;; esac
+  check "on a BLOCKING stop the cap report is emitted beside the pending-verdict message" "$_cb"
+  check "and the exit code is still the pending gate's 2, not the cap's" \
+    "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+  # NEGATIVE CONTROL: a clean ledger must produce no cap line at all, or every check above is
+  # satisfied by a hook that always prints it.
+  CAPQ="$(newproj)"
+  git -C "$CAPQ" init -q . 2>/dev/null
+  git -C "$CAPQ" config user.email t@t 2>/dev/null; git -C "$CAPQ" config user.name t 2>/dev/null
+  ( cd "$CAPQ" && bash "$INIT" >/dev/null 2>&1 )
+  git -C "$CAPQ" add -A >/dev/null 2>&1; git -C "$CAPQ" commit -qm scaffold >/dev/null 2>&1
+  run_hook stop-session-a.json "$CAPQ"
+  _cc=0; case "$HERR" in *"same-target-rework cap"*) _cc=1 ;; esac
+  check "CONTROL: a ledger with no repeated failure prints NO cap line" "$_cc"
+else
+  skip "the cap detector's hook-wiring half (#107): git unavailable"
+  skip "the cap detector's hook-naming half (#107): git unavailable"
+  skip "the cap detector's non-blocking half (#107): git unavailable"
+  skip "the cap detector's blocking-path half (#107): git unavailable"
+  skip "the cap detector's blocking-exit half (#107): git unavailable"
+  skip "the cap detector's clean-ledger control (#107): git unavailable"
+fi
+
+# --- the report's 110 cap is BYTES, in every locale -------------------------
+# Both call sites called this a byte cap in their own comments and measured with `${#row}`,
+# which counts CHARACTERS outside the C locale — so under a UTF-8 locale (what a desktop
+# session runs) the cap was up to 4x looser than it read: 110 chars of `é` is 220 bytes, of an
+# emoji 440 (measured, PR #126 review). stderr is the channel carrying this hook's own
+# instruction, so a cap that silently quadruples is a ledger burying the guidance above it.
+# report_row now owns the sanitize, the cap and `local LC_ALL=C` in one place.
+if command -v git >/dev/null 2>&1; then
+  CAPM="$(newproj)"
+  git -C "$CAPM" init -q . 2>/dev/null
+  git -C "$CAPM" config user.email t@t 2>/dev/null; git -C "$CAPM" config user.name t 2>/dev/null
+  ( cd "$CAPM" && bash "$INIT" >/dev/null 2>&1 )
+  # A multibyte criterion far past the cap, through a ledger the reader accepts.
+  _mb=""; _i=0; while [ "$_i" -lt 200 ]; do _mb="${_mb}é"; _i=$((_i+1)); done
+  {
+    printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+    printf '| T-1 | %s | ev @abc | FAIL |\n' "$_mb"
+    printf '| T-1 | %s | ev @abc | FAIL |\n' "$_mb"
+  } > "$CAPM/.operator/VERDICTS.md"
+  # Run the hook under a UTF-8 locale — the locale that exposes the defect. A C-locale-only
+  # test would pass against the broken code, which is how the defect shipped.
+  _mberr="$(mktemp)"
+  printf '{"session_id":"SESS-A","cwd":"%s","stop_hook_active":false}' "$CAPM" \
+    | LC_ALL=en_US.UTF-8 "$BASH_ABS" "$HOOK" 2>"$_mberr" >/dev/null
+  # The named row is the one that carries the criterion; measure ITS bytes.
+  # -a: the FIRST version of this fix cut at byte 110 flat, which lands mid-character on any
+  # width that does not divide 110 — and an invalid-UTF-8 line is not "mangled" to a UTF-8
+  # reader, it is INVISIBLE (grep returned rc 1 on a line that was right there). Measure with
+  # -a so the size check cannot be satisfied by a line the next check proves unreadable.
+  _mbrow="$(grep -a 'FAIL rounds' "$_mberr" | head -1 | wc -c | tr -d ' ')"
+  check "the cap report's row is capped in BYTES under a UTF-8 locale (<=200b incl prefix), not characters" \
+    "$([ "${_mbrow:-9999}" -le 200 ] && echo 0 || echo 1)"
+  check "CONTROL: that row was actually emitted — an empty report would pass the cap trivially" \
+    "$([ "${_mbrow:-0}" -gt 20 ] && echo 0 || echo 1)"
+  # THE CUT MUST NOT SPLIT A CHARACTER. Shipped green on macOS and failed on lokaal (task 515)
+  # precisely because the assertion used a plain grep, which in a UTF-8 locale silently stops
+  # matching a line that is no longer valid UTF-8. Assert the property directly instead: the
+  # whole stderr decodes. Three widths, because 110 % width is what decides it — 2-byte `é`
+  # divides evenly and would have passed on its own; 3-byte `€` (36.67 chars) is the one that
+  # splits, and a 4-byte emoji is the other side of the same arithmetic.
+  for _w in 'é' '€' '🙂'; do
+    python3 - "$CAPM/.operator/VERDICTS.md" "$_w" <<'MBPY'
+import sys
+c = sys.argv[2] * 200
+with open(sys.argv[1], "w", encoding="utf-8") as f:
+    f.write("| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n")
+    f.write(f"| T-1 | {c} | ev @abc | FAIL |\n| T-1 | {c} | ev @abc | FAIL |\n")
+MBPY
+    printf '{"session_id":"SESS-A","cwd":"%s","stop_hook_active":false}' "$CAPM" \
+      | LC_ALL=en_US.UTF-8 "$BASH_ABS" "$HOOK" 2>"$_mberr" >/dev/null
+    _mbok="$(python3 -c "
+import sys
+d = open(sys.argv[1], 'rb').read()
+try:
+    d.decode('utf-8'); print(0)
+except UnicodeDecodeError:
+    print(1)" "$_mberr")"
+    check "the byte cut backs off a split character — stderr stays valid UTF-8 with a ${_w} criterion" \
+      "${_mbok:-1}"
+    # And the row is still FINDABLE by an ordinary UTF-8 reader, which is what invalid bytes
+    # cost: not a garbled tail, the whole line.
+    _mbseen="$(LC_ALL=en_US.UTF-8 grep -c 'FAIL rounds' "$_mberr" 2>/dev/null || echo 0)"
+    check "and the row is still visible to a UTF-8 grep with a ${_w} criterion" \
+      "$([ "${_mbseen:-0}" -ge 1 ] && echo 0 || echo 1)"
+  done
+  rm -f "$_mberr"
+else
+  skip "the report's byte cap under a UTF-8 locale (#126 review): git unavailable"
+  skip "the byte-cap control (#126 review): git unavailable"
+  for _w in 1 2 3; do
+    skip "the split-character back-off, width $_w (#126 review): git unavailable"
+    skip "the UTF-8 grep visibility, width $_w (#126 review): git unavailable"
+  done
+fi
+
+# --- a TRUNCATED scan reports UNKNOWN, never a floor (#126 adversarial) -----
+# A truncated scan read a PREFIX, and the unread tail can hold the very PASS rows that clear the
+# keys it counted. Measured by Codex on the shipped code: 60 keys failing repeatedly, then a PASS
+# for every one of them past the step budget -> tripped=60, where the true final state is ZERO.
+# The operator was told to stop reworking sixty targets they had already fixed, on every Stop,
+# because the same prefix is rescanned. "A floor" was the wrong word: a floor claims at least
+# this many, and a prefix cannot claim even that.
+{ printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+  k=0; while [ "$k" -lt 60 ]; do printf '| T-%s | crit | ev @abc | FAIL |\n' "$k"; k=$((k+1)); done
+  r=0; while [ "$r" -lt 3600 ]; do printf '| T-%s | crit | ev @abc | FAIL |\n' "$((r % 60))"; r=$((r+1)); done
+  k=0; while [ "$k" -lt 60 ]; do printf '| T-%s | crit | ev @abc | PASS |\n' "$k"; k=$((k+1)); done
+} > "$CAPD/v22.md"
+check "a TRUNCATED scan reports NOTHING — resolved targets in the unread tail are not stale trips" \
+  "$([ "$(_caps_state "$CAPD/v22.md")" = "tripped=0 failed=0 truncated=1" ] && echo 0 || echo 1)"
+# CONTROL: the same ledger UNDER the bounds must still trip, or the case above is satisfied by a
+# detector that stopped detecting — the failure this whole file exists to prevent.
+_caps_ledger "$CAPD/v23.md" "| T-0 | crit | ev @a1 | FAIL |" "| T-0 | crit | ev @a2 | FAIL |"
+check "CONTROL: the same shape inside the bounds still trips — silence is not the fix" \
+  "$([ "$(_caps_state "$CAPD/v23.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+# The hook must SAY unknown rather than clean: a truncated scan with nothing reported is
+# byte-identical to a clean ledger unless the notice fires.
+if command -v git >/dev/null 2>&1; then
+  CAPT="$(newproj)"
+  git -C "$CAPT" init -q . 2>/dev/null
+  git -C "$CAPT" config user.email t@t 2>/dev/null; git -C "$CAPT" config user.name t 2>/dev/null
+  ( cd "$CAPT" && bash "$INIT" >/dev/null 2>&1 )
+  cp "$CAPD/v22.md" "$CAPT/.operator/VERDICTS.md"
+  run_hook stop-session-a.json "$CAPT"
+  _ct=1; case "$HERR" in *"UNKNOWN, not clean"*) _ct=0 ;; esac
+  check "the hook calls a truncated scan UNKNOWN, not a floor — the count it cannot make" "$_ct"
+  _cf=0; case "$HERR" in *"are a FLOOR"*) _cf=1 ;; esac
+  check "and it no longer claims a FLOOR over a prefix" "$_cf"
+else
+  skip "the truncated-scan message (#126 adversarial): git unavailable"
+  skip "the no-FLOOR-claim half (#126 adversarial): git unavailable"
+fi
+
+# --- the report is BOUNDED WORK, not just a bounded result (#126 adversarial)
+# sanitize_row walks the string one byte at a time in bash, so its cost is linear in the input —
+# and the input is a ledger cell with NO length limit (check_cell refuses a pipe and a newline,
+# nothing more). Measured through the real CLI: two FAIL rows carrying a 20 KB criterion, which
+# the writer accepts and which sits far inside every scan bound, made every Stop take 5.81s;
+# 10 KB alone cost 1.40s in the formatter. That work sits OUTSIDE CAPS_MAX_STEPS and ahead of the
+# pending/deviation gates, so it delayed the blocking decision itself — a bound on the SCAN that
+# the REPORT walks straight past. Slicing before sanitizing makes it O(1) per row: 0.53s.
+if command -v git >/dev/null 2>&1; then
+  CAPB="$(newproj)"
+  git -C "$CAPB" init -q . 2>/dev/null
+  git -C "$CAPB" config user.email t@t 2>/dev/null; git -C "$CAPB" config user.name t 2>/dev/null
+  ( cd "$CAPB" && bash "$INIT" >/dev/null 2>&1 )
+  # Written through the SINGLE WRITER, not by hand: the point is that the writer permits this.
+  _bigcrit="$(awk 'BEGIN{s="";while(length(s)<20000)s=s "x";print s}')"
+  for _i in 1 2; do
+    ( cd "$CAPB" && bash "$TASK" T-1 --owner SESS-A >/dev/null 2>&1
+      bash "$VERDICT" T-1 "$_bigcrit" "ev$_i" FAIL --owner SESS-A >/dev/null 2>&1 )
+  done
+  check "CONTROL: the writer ACCEPTS a 20KB criterion — the hazard is reachable, not theoretical" \
+    "$([ "$(grep -c '| FAIL |' "$CAPB/.operator/VERDICTS.md")" = 2 ] && echo 0 || echo 1)"
+  run_hook stop-session-a.json "$CAPB"
+  _brow="$(printf '%s' "$HERR" | grep -a 'FAIL rounds' | head -1 | wc -c | tr -d ' ')"
+  check "CONTROL: the row IS emitted and bounded — an empty report passes any bound trivially" \
+    "$([ "${_brow:-0}" -gt 20 ] && [ "${_brow:-9999}" -le 200 ] && echo 0 || echo 1)"
+  # THE ASSERTION IS THE WORK, NOT THE OUTPUT -- and not a stopwatch either.
+  # The output was already bounded BEFORE this fix (the old code sanitized 20KB, then cut the
+  # RESULT to 110 bytes), so an output-size check passes on the defect and proves nothing:
+  # measured, the mutation left the suite fully green.
+  #
+  # The first fix for that was a wall-clock ratio, and it FLAKED on GitHub's runner while passing
+  # locally -- the exact failure this file warns about two cases up, built anyway. It could not
+  # work: the harness spends ~291ms per python3 shellout to read the clock, which dominates the
+  # ~0.5s being measured. A timing assertion whose instrument costs more than its signal is not a
+  # loose gate, it is noise with a threshold.
+  #
+  # So assert the property DIRECTLY and deterministically: how many bytes reach sanitize_row.
+  # That is the whole fix -- slice before sanitizing -- and it is exact, machine-independent, and
+  # has no clock in it. The probe extracts the shipped report_row and substitutes a sanitize_row
+  # that reports the length it was handed.
+  _probe="$CAPD/probe.sh"
+  {
+    # shellcheck disable=SC2016  # the probe's own body must NOT expand here
+    # THE PROBE MEASURES ONE THING: how many bytes sanitize_row is handed. Both
+    # of report_row's own OUTPUT paths must therefore be silenced, or their text
+    # lands in the same stderr capture and the number becomes "sanitizer input
+    # plus report line" -- measured at 212 for a 100-byte row while the probe
+    # claimed to be reading 100. caps_say is stubbed here; the `echo "$_out"`
+    # emit is neutered by the sed below. Anchor both on what report_row writes
+    # TODAY: reshaping its emit sites must update this probe, and the control
+    # (a short row arrives whole) is what makes a silently-broken probe visible.
+    printf 'caps_say() { :; }\n'
+    # shellcheck disable=SC2016  # probe source and sed script: neither expands here
+    printf 'sanitize_row() { printf "%%s" "$1" >&2; printf "%%s" "$1"; }\n'
+    # shellcheck disable=SC2016
+    sed -n '/^report_row() {/,/^}/p' "$HOOK" | sed 's/else echo "\$_out" >&2/else :/'
+    # shellcheck disable=SC2016  # same: this line is the probe's source, not ours
+    printf '_got=$(report_row "$1" 2>&1 >/dev/null); printf "%%s" "${#_got}"\n'
+  } > "$_probe"
+  _short_in="$("$BASH_ABS" "$_probe" "$(awk 'BEGIN{s="";while(length(s)<100)s=s "x";print s}')")"
+  _big_in="$("$BASH_ABS" "$_probe" "$_bigcrit")"
+  check "a 20KB criterion reaches the byte-walking sanitizer as <=128 bytes — the WORK is bounded, not just the output" \
+    "$([ "${_big_in:-99999}" -le 128 ] && echo 0 || echo 1)"
+  # CONTROL: a short row is NOT truncated on its way in, or the bound above is satisfied by a
+  # formatter that mangles every row it is given.
+  check "CONTROL: a 100-byte criterion arrives WHOLE — the slice bounds work, it does not censor" \
+    "$([ "${_short_in:-0}" = 100 ] && echo 0 || echo 1)"
+else
+  skip "the bounded-formatting control (#126 adversarial): git unavailable"
+  skip "the bounded-row half (#126 adversarial): git unavailable"
+  skip "the row-emitted control (#126 adversarial): git unavailable"
+fi
+
+# --- scan_caps keeps its internal state to itself ---------------------------
+# _caps_k/_caps_c/_caps_n are INTERNAL; only caps_* are outputs. They were plain assignments, so
+# sourcing the lib clobbered any caller variable of the same name — measured: a caller's
+# _caps_n=KEEP_ME came back 0 and its _caps_k array was emptied. A lib that overwrites its host's
+# namespace is the class `local LC_ALL=C` already exists to avoid, one variable over.
+_caps_leak="$( bash -c '_caps_n=KEEP_ME; _caps_k=(mine); . "'"$SCRIPTS"'/lib/caps.sh"; scan_caps /dev/null; printf "%s:%s" "$_caps_n" "${_caps_k[*]:-EMPTY}"' )"
+check "scan_caps does not clobber a caller's _caps_* — the key table is local" \
+  "$([ "$_caps_leak" = "KEEP_ME:mine" ] && echo 0 || echo 1)"
+
+# --- the report reaches a channel that EXISTS on exit 0 (#126 adversarial) --
+# STDERR IS NOT A CHANNEL ON EXIT 0. The documented contract: stderr from a hook that exits 0
+# goes to the DEBUG LOG only -- never the transcript, and Claude never sees it. So the cap
+# report, the one thing that must be seen precisely when NOTHING blocks, was written to the one
+# channel that discards it: visible only when an unrelated gate happened to block, which is the
+# exact dependency its placement claims to avoid.
+#
+# Every earlier case here asserted captured stderr ($HERR), so none of them could see this: the
+# feature was fully covered and never delivered. These assert the DELIVERY, not the text.
+if command -v git >/dev/null 2>&1; then
+  CAPJ="$(newproj)"
+  git -C "$CAPJ" init -q . 2>/dev/null
+  git -C "$CAPJ" config user.email t@t 2>/dev/null; git -C "$CAPJ" config user.name t 2>/dev/null
+  ( cd "$CAPJ" && bash "$INIT" >/dev/null 2>&1 )
+  for _i in 1 2; do
+    ( cd "$CAPJ" && bash "$TASK" T-1 --owner SESS-A >/dev/null 2>&1
+      bash "$VERDICT" T-1 "the criterion" "ev$_i" FAIL --owner SESS-A >/dev/null 2>&1 )
+  done
+  _jout="$(printf '{"session_id":"SESS-A","cwd":"%s","stop_hook_active":false}' "$CAPJ" \
+    | "$BASH_ABS" "$HOOK" 2>/dev/null)"
+  check "an ALLOWING stop delivers the cap report on stdout — stderr alone is debug-log only" \
+    "$(printf '%s' "$_jout" | grep -q 'systemMessage' && echo 0 || echo 1)"
+  # It must be PARSEABLE: the harness reads stdout as JSON on every exit code, so a malformed
+  # object is worse than none. The message carries untrusted ledger text, hence a real encoder.
+  check "and that stdout is valid JSON carrying systemMessage (untrusted text, real encoder)" \
+    "$(printf '%s' "$_jout" | python3 -c 'import sys,json
+try:
+    d=json.load(sys.stdin); sys.exit(0 if isinstance(d.get("systemMessage"),str) and d["systemMessage"] else 1)
+except Exception: sys.exit(1)' && echo 0 || echo 1)"
+  # CONTROL: a clean ledger emits NOTHING on stdout, or the channel is noise on every stop.
+  CAPK="$(newproj)"
+  git -C "$CAPK" init -q . 2>/dev/null
+  git -C "$CAPK" config user.email t@t 2>/dev/null; git -C "$CAPK" config user.name t 2>/dev/null
+  ( cd "$CAPK" && bash "$INIT" >/dev/null 2>&1 )
+  _kout="$(printf '{"session_id":"SESS-A","cwd":"%s","stop_hook_active":false}' "$CAPK" \
+    | "$BASH_ABS" "$HOOK" 2>/dev/null)"
+  check "CONTROL: a clean ledger emits NOTHING on stdout — the channel is not noise" \
+    "$([ -z "$_kout" ] && echo 0 || echo 1)"
+  # And the BLOCKING path keeps stderr as its channel: there exit 2 makes stderr the guidance the
+  # harness feeds back, so emitting JSON would fight the mechanism that already works.
+  ( cd "$CAPJ" && bash "$TASK" T-9 --owner SESS-A >/dev/null 2>&1 )
+  _bout="$(printf '{"session_id":"SESS-A","cwd":"%s","stop_hook_active":false}' "$CAPJ" \
+    | "$BASH_ABS" "$HOOK" 2>/dev/null)"
+  check "a BLOCKING stop emits no stdout JSON — there exit 2 makes stderr the channel" \
+    "$([ -z "$_bout" ] && echo 0 || echo 1)"
+else
+  skip "the exit-0 delivery channel (#126 adversarial): git unavailable"
+  skip "the JSON-validity half (#126 adversarial): git unavailable"
+  skip "the clean-ledger control (#126 adversarial): git unavailable"
+  skip "the blocking-path half (#126 adversarial): git unavailable"
+fi
+
+# --- a real task named `Gate` is not the header (#126 review, Copilot) ------
+# The header filter matched by PREFIX, so any row whose id is `Gate` and whose criterion is
+# `Criterion` was discarded -- and ops-task.sh permits that id, so it is a ledger a real project
+# can write. Measured: two FAIL rounds on task `Gate`, written through the CLI, reported
+# tripped=0. A false NEGATIVE in a detector whose whole job is not to miss a sequence.
+_caps_ledger "$CAPD/v24.md" "| Gate | Criterion | ev1 @abc | FAIL |" "| Gate | Criterion | ev2 @abc | FAIL |"
+check "a task literally named 'Gate' TRIPS — the header is matched whole, not by prefix" \
+  "$([ "$(_caps_state "$CAPD/v24.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+# CONTROL: the real header is still skipped, or the fix traded a false negative for a false one.
+check "CONTROL: the real header row is still skipped — the fix did not widen into the header" \
+  "$([ "$(_caps_state "$REPO/templates/VERDICTS-header.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+
+# --- NUL bypasses the byte budget (#126 adversarial review, Codex) ---------
+# `read` DISCARDS NUL -- bash variables cannot hold one -- so the row loop's `${#row}` measured
+# what SURVIVED the read, never what it CONSUMED. A megabyte of NUL arrived as the empty string
+# and charged the accumulator 1 byte. CAPS_MAX_BYTES was therefore not a bound on any input
+# containing NUL. Measured on the shipped hook before the probe: an 8 MiB ledger (4x the 2 MiB
+# cap) scanned to EOF in 3.6s reporting truncated=0 -- a confident clean answer over a file the
+# bound existed to refuse. The cost is the DELAY, not the report: this scan runs BEFORE the
+# pending and deviation gates, so a corrupt or planted ledger buys seconds on every Stop.
+#
+# 3 MiB of NUL, well past CAPS_MAX_BYTES. The row loop cannot see it; only a probe reading raw
+# bytes can.
+printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n' > "$CAPD/v25.md"
+printf '| T-a | c | e | FAIL |\n| T-a | c | e | FAIL |\n' >> "$CAPD/v25.md"
+dd if=/dev/zero bs=1024 count=3072 2>/dev/null >> "$CAPD/v25.md"
+check "a NUL-filled ledger over CAPS_MAX_BYTES reports TRUNCATED, not a clean scan" \
+  "$([ "$(_caps_state "$CAPD/v25.md")" = "tripped=0 failed=0 truncated=1" ] && echo 0 || echo 1)"
+# TRUNCATED and not scan_failed: scan_failed means "no ledger" and this ledger exists. The caller
+# already says "the cap state is UNKNOWN, not clean" for exactly this shape, and report-only
+# leaves no fail-closed direction to choose.
+#
+# CONTROL 1: an ordinary ledger of the SAME ORDER still scans. Without it the case above is
+# satisfied by a probe that refuses everything -- a detector that never reports.
+_caps_ledger "$CAPD/v26.md" "| T-a | c | e | FAIL |" "| T-a | c | e | FAIL |"
+check "CONTROL: an ordinary tripped ledger still TRIPS — the probe did not refuse everything" \
+  "$([ "$(_caps_state "$CAPD/v26.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+# CONTROL 2: MULTIBYTE text is not corruption. The probe reads BYTES (LC_ALL=C in its own
+# subshell), so a UTF-8 cell must scan normally -- if it read characters, every accented ledger
+# would report UNKNOWN forever, which is the false-positive direction that gets a gate ignored.
+# Multibyte carriers only: an accented letter and an em dash. NOT curly quotes -- shellcheck
+# reads those as mistyped shell quotes (SC1111) and CI runs shellcheck BEFORE the suites, so
+# this line failed the build on lokaal task 655 while every local rung was green.
+_caps_ledger "$CAPD/v27.md" "| T-é | crité — dash | ev | FAIL |" "| T-é | crité — dash | ev | FAIL |"
+check "CONTROL: a UTF-8 ledger is not read as corrupt — the probe counts bytes, not characters" \
+  "$([ "$(_caps_state "$CAPD/v27.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+
+# --- the UNCOVERED caps stay NAMED -----------------------------------------
+# Two of the charter's three caps are not covered, for stated reasons. Dropping the paragraph is
+# how "one of three" quietly becomes "three of three" to the next reader — the honesty #85
+# applies to its own uncovered clauses (2) and (3).
+check "caps.sh names identical-rejection as UNCOVERED (no reviewer identity in a 4-cell row)" \
+  "$(grep -qi 'identical-rejection' "$SCRIPTS/lib/caps.sh" && echo 0 || echo 1)"
+check "caps.sh names neighbor-regressing as UNCOVERED (a PASS→FAIL flip is not causation)" \
+  "$(grep -qi 'neighbor-regressing' "$SCRIPTS/lib/caps.sh" && echo 0 || echo 1)"
+check "scan_caps declares LC_ALL local — no collation leak to the sourcing script" \
+  "$(grep -q 'local LC_ALL=C' "$SCRIPTS/lib/caps.sh" && echo 0 || echo 1)"
+rm -rf "$CAPD"
+
+
 if [ "$FAIL" -ne 0 ]; then
   echo "== failed cases =="
   printf '%s\n' "$FAILED_NAMES" | sed '/^$/d'
