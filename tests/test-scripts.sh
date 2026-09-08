@@ -5994,7 +5994,10 @@ check "CONTROL: an ordinary tripped ledger still TRIPS — the probe did not ref
 # CONTROL 2: MULTIBYTE text is not corruption. The probe reads BYTES (LC_ALL=C in its own
 # subshell), so a UTF-8 cell must scan normally -- if it read characters, every accented ledger
 # would report UNKNOWN forever, which is the false-positive direction that gets a gate ignored.
-_caps_ledger "$CAPD/v27.md" "| T-é | crité — dash | “ev” | FAIL |" "| T-é | crité — dash | “ev” | FAIL |"
+# Multibyte carriers only: an accented letter and an em dash. NOT curly quotes -- shellcheck
+# reads those as mistyped shell quotes (SC1111) and CI runs shellcheck BEFORE the suites, so
+# this line failed the build on lokaal task 655 while every local rung was green.
+_caps_ledger "$CAPD/v27.md" "| T-é | crité — dash | ev | FAIL |" "| T-é | crité — dash | ev | FAIL |"
 check "CONTROL: a UTF-8 ledger is not read as corrupt — the probe counts bytes, not characters" \
   "$([ "$(_caps_state "$CAPD/v27.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
 
