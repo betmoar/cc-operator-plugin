@@ -111,6 +111,19 @@ single source of truth; bump it in the same commit as the changelog entry.
   single exit. The validator's test stub carried both this and the `i + 1`
   defect — and `check_caps` *executes* that stub, so a fixture reproducing the
   bug could not witness the fix. Found by Copilot on PR #126.
+- **An adversarial review then found two more, both about bounds that did not
+  bind.** `sanitize_row` walks its input byte by byte, and a ledger cell has no
+  length limit — two FAIL rows with a 20 KB criterion (accepted by the writer,
+  well inside every scan bound) made **every Stop take 5.81s**, outside
+  `CAPS_MAX_STEPS` and ahead of the blocking gates. Slicing to 128 bytes before
+  sanitizing: **0.53s**. And a truncated scan reported its prefix counts as
+  confirmed trips: 60 keys failed, then all 60 passed past the step budget,
+  reported as **60 active caps where the truth is zero**, recurring every Stop.
+  "A floor" was the wrong word — a floor claims *at least this many* and a
+  prefix cannot; a truncated scan now reports nothing and says UNKNOWN. Also
+  fixed: `scan_caps` clobbered any caller variable named `_caps_k`/`_caps_c`/
+  `_caps_n`, and two comments claimed the 110-byte cap covered the emitted line
+  rather than the row payload.
 - **What the budget does NOT buy, recorded as issue #127 rather than implied.**
   The 11.1s figure is the WORST case, and a project does not live there. At a
   realistic shape (50 distinct keys, mostly PASS), a 3,000-row ledger still

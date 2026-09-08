@@ -1093,6 +1093,37 @@ The test stub in `tests/test_validate_plugin.py` carried BOTH defects too —
 `check_caps` EXECUTES that stub: **a fixture that reproduces the bug cannot
 witness the fix.**
 
+**A bound on the SCAN is not a bound on the REPORT.** `sanitize_row` walks its
+input one byte at a time in bash, and the input is a ledger cell with no length
+limit — `check_cell` refuses a pipe and a newline, nothing more. Two FAIL rows
+carrying a 20 KB criterion, written through the real CLI and sitting far inside
+every scan bound, made **every Stop take 5.81s**; 10 KB alone cost 1.40s in the
+formatter. That work sat OUTSIDE `CAPS_MAX_STEPS` and ahead of the
+pending/deviation gates, so it delayed the blocking decision itself. Slicing to
+128 bytes before sanitizing makes it O(1) per row: 0.53s. The recurring shape —
+a limit that governs one stage while the next stage reads the same unbounded
+input — is the third variant of size-bounds-are-not-work-bounds in this one
+file.
+
+**A truncated scan must not report a count at all.** The report-building loop
+carried the right invariant in its own comment — "a key that hit the cap and was
+then cleared by a PASS must not appear" — and that invariant holds only when the
+scan reaches EOF. Break early on any bound and the unread tail may hold exactly
+those PASS rows. Measured: 60 keys failing repeatedly, then a PASS for every one
+of them past the step budget, reported **tripped=60 where the true state is
+zero**, recurring on every Stop because the same prefix is rescanned. The
+operator is told to stop reworking sixty targets they already fixed.
+
+The wrong word was "floor". A floor claims *at least this many*; a prefix cannot
+claim even that. So a truncated scan now reports nothing and says the state is
+UNKNOWN — which drops a real trip on a genuinely over-bounded ledger, and that
+is the right direction for a report-only gate: a missed report costs one line of
+guidance, a confidently wrong one costs trust in every line the gate prints.
+
+Both were found by an adversarial Codex review (PR #126) that read the code
+rather than running the suite — worth noting, because the suite was green and
+three prior review rounds had passed over both.
+
 A measurement trap worth keeping, because it produced two wrong tables before
 the right one: the first "realistic" fixture used 30 task ids x 7 criteria =
 210 distinct keys, silently over the 100-key ceiling. Every scan truncated

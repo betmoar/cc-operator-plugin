@@ -175,6 +175,15 @@ CAPS_MAX_STEPS=100000
 # bound stopped the scan early), caps_scan_failed (1 = no readable ledger).
 scan_caps() { # scan_caps <verdicts-path>
   local f="$1" row body id crit ev verdict key r1 r2 i n=0 bytes=0 found steps=0
+  # The key table is INTERNAL state, and it must be local (PR #126 review,
+  # Copilot). Only the caps_* globals are outputs; `_caps_k`/`_caps_c`/`_caps_n`
+  # were plain assignments, so sourcing this lib silently clobbered any caller
+  # variable of the same name — measured: a caller's `_caps_n=KEEP_ME` came
+  # back 0 and its `_caps_k` array was emptied. A lib that overwrites its
+  # host's namespace is the class `local LC_ALL=C` already exists to avoid,
+  # one variable over.
+  local -a _caps_k=() _caps_c=()
+  local _caps_n=0
   # `local LC_ALL=C` so `read -n N` counts BYTES not characters (bash counts
   # CHARACTERS outside the C locale, so the cap would be up to 4x looser than
   # it reads) and so nothing leaks to the sourcing script — the idiom
@@ -184,9 +193,6 @@ scan_caps() { # scan_caps <verdicts-path>
   caps_rows=""
   caps_truncated=0
   caps_scan_failed=0
-  _caps_k=()
-  _caps_c=()
-  _caps_n=0
   # Absent or symlinked ledger: nothing to report. Report-only, so there is no
   # fail-closed direction to choose here — a missing ledger is a scaffold
   # state, and `-f` follows a link, so the link is refused rather than scanned
@@ -282,6 +288,30 @@ scan_caps() { # scan_caps <verdicts-path>
   # The report is built AFTER the whole pass, never during it: a key that hit
   # the cap and was then cleared by a PASS must not appear, and mid-pass
   # emission cannot take that back.
+  #
+  # AND A TRUNCATED PASS IS NOT A WHOLE PASS. That invariant holds only when
+  # the scan reached EOF. Break early on any bound and the unread tail may
+  # carry the very PASS rows that clear these keys, so the counts describe a
+  # PREFIX, not the ledger. Measured (PR #126 adversarial review, Codex): 60
+  # keys failed repeatedly, then a PASS for every one of them past the step
+  # budget — reported tripped=60 where the true final state is ZERO, and it
+  # recurs on every Stop because the same prefix is rescanned. The operator is
+  # told to stop reworking sixty targets they already fixed.
+  #
+  # So a truncated scan reports the count as UNKNOWN rather than as a floor:
+  # caps_tripped stays 0 and caps_rows stays empty, and caps_truncated (already
+  # set) is what the caller speaks to. Calling it a FLOOR was the error — a
+  # floor claims "at least this many", and a prefix cannot claim even that.
+  #
+  # Polarity: this drops a real trip when a ledger is genuinely over the
+  # bounds, which is the RIGHT direction for a report-only gate. A missed
+  # report costs one line of guidance; a confidently wrong one costs the
+  # operator's trust in every line the gate prints, and it is the failure that
+  # gets a gate ignored. The truncation notice still fires, so the state is
+  # "I could not finish reading" — never silence.
+  if [ "$caps_truncated" = 1 ]; then
+    return 0
+  fi
   i=0
   while [ "$i" -lt "$_caps_n" ]; do
     if [ "${_caps_c[i]}" -ge "$CAPS_REWORK_MAX" ]; then

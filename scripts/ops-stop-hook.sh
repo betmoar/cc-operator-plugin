@@ -362,7 +362,11 @@ shq() { # shq <string> → '<string>' with embedded quotes escaped
 # the thing acted on, so losing exotic bytes costs nothing. `tr` is not used —
 # a lost PATH must not disarm the sanitizer, and this hook is builtin-only
 # everywhere else for the same reason.
-# Print ONE untrusted ledger row to stderr, sanitized and capped at 110 BYTES.
+# Print ONE untrusted ledger row to stderr, sanitized, with the ROW PAYLOAD
+# capped at 110 bytes — not the emitted line, which also carries the
+# `operator:   ` prefix and may gain a trailing ellipsis (PR #126 review,
+# Copilot: the old wording claimed a bound on the whole line, so a future
+# edit sizing the budget against it would be reasoning from the wrong number).
 #
 # `local LC_ALL=C` is the whole point of this being a function (PR #126 review,
 # Copilot). Both call sites wrote `[ "${#row}" -gt 110 ]` and `${row:0:110}`
@@ -396,7 +400,26 @@ shq() { # shq <string> → '<string>' with embedded quotes escaped
 # makes this test possible at all.
 report_row() { # report_row <row>
   local LC_ALL=C _r _i _b
-  _r="$(sanitize_row "$1")"
+  # SLICE BEFORE SANITIZING, and the order is the whole cost (PR #126
+  # adversarial review, Codex). sanitize_row walks the string ONE BYTE AT A
+  # TIME in bash, so its cost is linear in the input, and the input is a
+  # ledger cell with no length limit — ops-verdict.sh's check_cell refuses a
+  # pipe and a newline, nothing more. Measured through the real CLI: two FAIL
+  # rows carrying a 20 KB criterion (which the writer accepts, and which sits
+  # far inside every scan bound) made EVERY Stop take 5.81s; 10 KB alone cost
+  # 1.40s in the formatter.
+  #
+  # That work sat outside CAPS_MAX_STEPS and ahead of the pending/deviation
+  # gates, so it delayed the blocking decision itself — a bound on the SCAN
+  # that the REPORT walks straight past, which is the same shape as the size
+  # bounds that did not bound the work, one function over.
+  #
+  # 128 bytes, not 110: the cut needs a few bytes past the cap to see that
+  # truncation is needed at all and to find the UTF-8 boundary below it. A
+  # 4-byte sequence straddling byte 110 is the widest case, so any margin over
+  # 114 is enough; 128 is the round number above it. Sanitizing at most 128
+  # bytes makes this O(1) per row regardless of the cell.
+  _r="$(sanitize_row "${1:0:128}")"
   if [ "${#_r}" -gt 110 ]; then
     _i=110
     # At most 3 steps: a UTF-8 sequence is 4 bytes at most, so a valid cut
@@ -507,7 +530,13 @@ fi
 # the branch it would only ever be seen when something already fired.
 # shellcheck disable=SC2154  # assigned by the sourced lib/caps.sh
 if [ "$caps_scan_failed" = 0 ] && [ "$caps_truncated" = 1 ]; then
-  echo "operator: the cap scan of $opdir/VERDICTS.md hit a bound (>$CAPS_MAX_LINES rows, >$CAPS_MAX_BYTES bytes, or >$CAPS_MAX_KEYS distinct failing targets) — the $caps_tripped target(s) reported are a FLOOR, not a total." >&2
+  # NOT "a floor" (PR #126 adversarial review). A truncated scan read a PREFIX,
+  # and the unread tail may hold the PASS rows that clear every key it counted
+  # — measured at 60 targets reported where the true state was zero. A floor
+  # claims "at least this many"; a prefix cannot claim even that. So the lib
+  # reports nothing on a truncated scan and this line says the state is
+  # unknown, which is the one description that is true.
+  echo "operator: the cap scan of $opdir/VERDICTS.md hit a bound (>$CAPS_MAX_LINES rows, >$CAPS_MAX_BYTES bytes, >$CAPS_MAX_KEYS distinct failing targets, or >$CAPS_MAX_STEPS lookup steps) — it read only a PREFIX, so the cap state is UNKNOWN, not clean: a later PASS in the unread tail can clear a target the prefix counted. Read the ledger yourself if a rework cap matters here." >&2
 fi
 
 # --- deviation gate: unpresented decisions block Stop (stage 2) ---------------
@@ -591,8 +620,10 @@ if [ "$deviations_scan_failed" = 0 ] && [ "$deviations_unpresented" -gt 0 ]; the
   # was to mark without reading — the habit the gate exists to prevent. The
   # scanner already parsed them; it used to discard them.
   #
-  # Capped at 10 rows, each at 110 BYTES: stderr is fed back to the model as
-  # guidance, and a 100-row ledger dumped into it buries the instruction above.
+  # Capped at 10 rows, each row's PAYLOAD at 110 bytes (report_row adds the
+  # `operator:   ` prefix and an ellipsis on top — the cap is on the row, not
+  # the line): stderr is fed back to the model as guidance, and a 100-row
+  # ledger dumped into it buries the instruction above.
   # The full rows are in the file, which the line above now names absolutely.
   #
   # Both halves live in report_row: it sanitizes BEFORE measuring (a row of

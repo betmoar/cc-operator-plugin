@@ -5738,6 +5738,113 @@ else
   done
 fi
 
+# --- a TRUNCATED scan reports UNKNOWN, never a floor (#126 adversarial) -----
+# A truncated scan read a PREFIX, and the unread tail can hold the very PASS rows that clear the
+# keys it counted. Measured by Codex on the shipped code: 60 keys failing repeatedly, then a PASS
+# for every one of them past the step budget -> tripped=60, where the true final state is ZERO.
+# The operator was told to stop reworking sixty targets they had already fixed, on every Stop,
+# because the same prefix is rescanned. "A floor" was the wrong word: a floor claims at least
+# this many, and a prefix cannot claim even that.
+{ printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+  k=0; while [ "$k" -lt 60 ]; do printf '| T-%s | crit | ev @abc | FAIL |\n' "$k"; k=$((k+1)); done
+  r=0; while [ "$r" -lt 3600 ]; do printf '| T-%s | crit | ev @abc | FAIL |\n' "$((r % 60))"; r=$((r+1)); done
+  k=0; while [ "$k" -lt 60 ]; do printf '| T-%s | crit | ev @abc | PASS |\n' "$k"; k=$((k+1)); done
+} > "$CAPD/v22.md"
+check "a TRUNCATED scan reports NOTHING — resolved targets in the unread tail are not stale trips" \
+  "$([ "$(_caps_state "$CAPD/v22.md")" = "tripped=0 failed=0 truncated=1" ] && echo 0 || echo 1)"
+# CONTROL: the same ledger UNDER the bounds must still trip, or the case above is satisfied by a
+# detector that stopped detecting — the failure this whole file exists to prevent.
+_caps_ledger "$CAPD/v23.md" "| T-0 | crit | ev @a1 | FAIL |" "| T-0 | crit | ev @a2 | FAIL |"
+check "CONTROL: the same shape inside the bounds still trips — silence is not the fix" \
+  "$([ "$(_caps_state "$CAPD/v23.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+# The hook must SAY unknown rather than clean: a truncated scan with nothing reported is
+# byte-identical to a clean ledger unless the notice fires.
+if command -v git >/dev/null 2>&1; then
+  CAPT="$(newproj)"
+  git -C "$CAPT" init -q . 2>/dev/null
+  git -C "$CAPT" config user.email t@t 2>/dev/null; git -C "$CAPT" config user.name t 2>/dev/null
+  ( cd "$CAPT" && bash "$INIT" >/dev/null 2>&1 )
+  cp "$CAPD/v22.md" "$CAPT/.operator/VERDICTS.md"
+  run_hook stop-session-a.json "$CAPT"
+  _ct=1; case "$HERR" in *"UNKNOWN, not clean"*) _ct=0 ;; esac
+  check "the hook calls a truncated scan UNKNOWN, not a floor — the count it cannot make" "$_ct"
+  _cf=0; case "$HERR" in *"are a FLOOR"*) _cf=1 ;; esac
+  check "and it no longer claims a FLOOR over a prefix" "$_cf"
+else
+  skip "the truncated-scan message (#126 adversarial): git unavailable"
+  skip "the no-FLOOR-claim half (#126 adversarial): git unavailable"
+fi
+
+# --- the report is BOUNDED WORK, not just a bounded result (#126 adversarial)
+# sanitize_row walks the string one byte at a time in bash, so its cost is linear in the input —
+# and the input is a ledger cell with NO length limit (check_cell refuses a pipe and a newline,
+# nothing more). Measured through the real CLI: two FAIL rows carrying a 20 KB criterion, which
+# the writer accepts and which sits far inside every scan bound, made every Stop take 5.81s;
+# 10 KB alone cost 1.40s in the formatter. That work sits OUTSIDE CAPS_MAX_STEPS and ahead of the
+# pending/deviation gates, so it delayed the blocking decision itself — a bound on the SCAN that
+# the REPORT walks straight past. Slicing before sanitizing makes it O(1) per row: 0.53s.
+if command -v git >/dev/null 2>&1; then
+  CAPB="$(newproj)"
+  git -C "$CAPB" init -q . 2>/dev/null
+  git -C "$CAPB" config user.email t@t 2>/dev/null; git -C "$CAPB" config user.name t 2>/dev/null
+  ( cd "$CAPB" && bash "$INIT" >/dev/null 2>&1 )
+  # Written through the SINGLE WRITER, not by hand: the point is that the writer permits this.
+  _bigcrit="$(awk 'BEGIN{s="";while(length(s)<20000)s=s "x";print s}')"
+  for _i in 1 2; do
+    ( cd "$CAPB" && bash "$TASK" T-1 --owner SESS-A >/dev/null 2>&1
+      bash "$VERDICT" T-1 "$_bigcrit" "ev$_i" FAIL --owner SESS-A >/dev/null 2>&1 )
+  done
+  check "CONTROL: the writer ACCEPTS a 20KB criterion — the hazard is reachable, not theoretical" \
+    "$([ "$(grep -c '| FAIL |' "$CAPB/.operator/VERDICTS.md")" = 2 ] && echo 0 || echo 1)"
+  run_hook stop-session-a.json "$CAPB"
+  _brow="$(printf '%s' "$HERR" | grep -a 'FAIL rounds' | head -1 | wc -c | tr -d ' ')"
+  check "CONTROL: the row IS emitted and bounded — an empty report passes any bound trivially" \
+    "$([ "${_brow:-0}" -gt 20 ] && [ "${_brow:-9999}" -le 200 ] && echo 0 || echo 1)"
+  # THE ASSERTION IS THE WORK, NOT THE OUTPUT. The output was already bounded BEFORE this fix --
+  # the old code sanitized 20KB and then cut the result to 110 bytes, so an output-size check
+  # passes on the defect and proves nothing (measured: the mutation left the suite fully green).
+  # What changed is the WORK: sanitize_row is O(input), so the only observable is cost. A
+  # wall-clock threshold is a flake on a loaded runner, so this compares the SAME hook against
+  # two ledgers differing only in criterion size -- a ratio, not an absolute. Unbounded, the 20KB
+  # row costs ~40x the 128-byte one (5.81s vs 0.15s measured); bounded, they are within noise of
+  # each other. The gate is deliberately loose at 5x: it catches the O(n) regression by an order
+  # of magnitude while staying far from timing noise.
+  CAPB2="$(newproj)"
+  git -C "$CAPB2" init -q . 2>/dev/null
+  git -C "$CAPB2" config user.email t@t 2>/dev/null; git -C "$CAPB2" config user.name t 2>/dev/null
+  ( cd "$CAPB2" && bash "$INIT" >/dev/null 2>&1 )
+  for _i in 1 2; do
+    ( cd "$CAPB2" && bash "$TASK" T-1 --owner SESS-A >/dev/null 2>&1
+      bash "$VERDICT" T-1 "short criterion" "ev$_i" FAIL --owner SESS-A >/dev/null 2>&1 )
+  done
+  _ms() { # _ms <proj> -> elapsed ms for one hook run
+    local _s _e
+    _s=$(python3 -c 'import time; print(int(time.time()*1000))')
+    printf '{"session_id":"SESS-A","cwd":"%s","stop_hook_active":false}' "$1" \
+      | "$BASH_ABS" "$HOOK" >/dev/null 2>&1
+    _e=$(python3 -c 'import time; print(int(time.time()*1000))')
+    echo $((_e - _s))
+  }
+  _t_small="$(_ms "$CAPB2")"; _t_big="$(_ms "$CAPB")"
+  # Guard the divisor: a sub-millisecond baseline would make any ratio meaningless.
+  [ "${_t_small:-0}" -lt 1 ] && _t_small=1
+  check "a 20KB criterion costs no more than 5x a short one — the formatter is BOUNDED WORK, not just bounded output" \
+    "$([ "$(( _t_big * 100 / _t_small ))" -le 500 ] && echo 0 || echo 1)"
+else
+  skip "the bounded-formatting control (#126 adversarial): git unavailable"
+  skip "the bounded-row half (#126 adversarial): git unavailable"
+  skip "the row-emitted control (#126 adversarial): git unavailable"
+fi
+
+# --- scan_caps keeps its internal state to itself ---------------------------
+# _caps_k/_caps_c/_caps_n are INTERNAL; only caps_* are outputs. They were plain assignments, so
+# sourcing the lib clobbered any caller variable of the same name — measured: a caller's
+# _caps_n=KEEP_ME came back 0 and its _caps_k array was emptied. A lib that overwrites its host's
+# namespace is the class `local LC_ALL=C` already exists to avoid, one variable over.
+_caps_leak="$( bash -c '_caps_n=KEEP_ME; _caps_k=(mine); . "'"$SCRIPTS"'/lib/caps.sh"; scan_caps /dev/null; printf "%s:%s" "$_caps_n" "${_caps_k[*]:-EMPTY}"' )"
+check "scan_caps does not clobber a caller's _caps_* — the key table is local" \
+  "$([ "$_caps_leak" = "KEEP_ME:mine" ] && echo 0 || echo 1)"
+
 # --- the UNCOVERED caps stay NAMED -----------------------------------------
 # Two of the charter's three caps are not covered, for stated reasons. Dropping the paragraph is
 # how "one of three" quietly becomes "three of three" to the next reader — the honesty #85
