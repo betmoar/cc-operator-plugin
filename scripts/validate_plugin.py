@@ -104,6 +104,50 @@ def shell_code(path):
         if not ln.lstrip().startswith("#"))
 
 
+# COMMAND POSITION, not the bare word. `if` and `fi` are bash KEYWORDS only
+# where a command may start: line start, or after `;`/`&`/`|`/`(`/`{`, or after
+# one of the keywords that open a body. Anywhere else they are ordinary text.
+#
+# A plain `\b(if|fi)\b` was the first cut and it fired on the SHIPPED hook
+# (measured — the validator went red on
+# `if [ "$caps_scan_failed" = 0 ] && [ "$caps_truncated" = 1 ]; then`): the
+# truncation message it guards ends "Read the ledger yourself if a rework cap
+# matters here", so an English `if` inside a double-quoted string left the
+# window unbalanced and ran it to EOF, where the deviation gate's exits live.
+# Prose in a message string is not a shell keyword, and the guard has to know
+# the difference — the messages here are long by design (#93/#94: name the
+# targets), so this is the normal case, not an exotic one.
+_IF_TOKEN = re.compile(
+    r"(?:^|(?<=[;&|(){}])|(?<=\bthen\s)|(?<=\belse\s)|(?<=\bdo\s))"
+    r"\s*\b(if|fi)\b")
+
+
+def _net_if_depth(line):
+    """`if` opened minus `fi` closed on ONE line of shell.
+
+    Written for check_caps' report-only window, whose first cut counted at most
+    one event per line and required `then` to sit on the opener. Both pinned a
+    SPELLING rather than the structure: bash treats `if x` followed by `then`
+    on the next line exactly as `if x; then`, and `if x; then :; fi` is an
+    entire block on one line. Net depth per line is the structure itself.
+
+    `\\b` excludes `elif` for free — the char before its `if` is `l`, so there
+    is no boundary — which is what the caller needs: `elif` opens no block.
+
+    THE REMAINING IMPRECISION, stated because a window is only as good as its
+    edges: this reads tokens in command position, not a parsed shell. A
+    here-doc or a multi-line string carrying a literal `; if` would still
+    miscount. The likelier direction is the loud one — a stray `if` EXTENDS the
+    window, which fails the build and prints the offending line — and whole-line
+    comments are already gone (shell_code), so a maintainer sees it rather than
+    inheriting a silent hole.
+    """
+    n = 0
+    for tok in _IF_TOKEN.findall(line):
+        n += 1 if tok == "if" else -1
+    return n
+
+
 class _RedefinedFunction(str):
     """A function name defined more than once. Truthy-empty so `"x" not in body`
     fires on every pinned literal, and carries the count for the message."""
@@ -3697,18 +3741,39 @@ def check_caps(root, problems):
                 continue
             # the line itself (`… && exit 2`, `… ; exit 2`, `if …; then exit`)
             _window = [_ln]
-            # plus the block it opens, if it opens one
-            if re.match(r"\s*(?:el)?if\b", _ln) and _ln.rstrip().endswith("then"):
-                _depth = 1
+            # plus the block it opens, if it opens one.
+            #
+            # THE WINDOW OPENS ON `if`, NOT ON `then` (PR #126 review, Copilot).
+            # The first cut required the caps-test line to END with `then`, so
+            # the two-line form bash treats identically —
+            #
+            #     if [ "$caps_tripped" -gt 0 ]
+            #     then
+            #       exit 2
+            #     fi
+            #
+            # — opened no window at all and shipped green (measured: control
+            # CLEAN, mutation CLEAN). That was the same error as anchoring on
+            # `^if `, one spelling further in: `then` may sit on the condition's
+            # line or on any continuation of it, and neither placement changes
+            # what the block does. Depth is now counted off `if`/`fi` alone,
+            # which is the structure itself rather than a way of writing it —
+            # `elif` opens no block of its own and must not increment, or the
+            # chain's single `fi` never closes the window.
+            if re.match(r"\s*(?:el)?if\b", _ln):
+                # Per-LINE NET depth, not one event per line: `if x; then :; fi`
+                # opens and closes on one line, and counting only the opener
+                # would run the window to EOF and blame an `exit` nowhere near
+                # the caps branch. A pin that cries wolf is a pin someone
+                # deletes. `\bif\b` does not match inside `elif` (no word
+                # boundary between `l` and `i`), so an `elif` opener seeds the
+                # depth itself and the chain's single `fi` closes it.
+                _depth = (1 if re.match(r"\s*elif\b", _ln) else 0) \
+                    + _net_if_depth(_ln)
                 for _j in range(_i + 1, len(_lines)):
-                    _s = _lines[_j].strip()
-                    if re.match(r"(?:el)?if\b", _s):
-                        if _s.endswith("then"):
-                            _depth += 1
-                    elif _s == "fi" or _s.startswith("fi "):
-                        _depth -= 1
-                        if _depth == 0:
-                            break
+                    _depth += _net_if_depth(_lines[_j])
+                    if _depth <= 0:
+                        break
                     _window.append(_lines[_j])
             if any(_exit.search(_w) for _w in _window):
                 problems.append(

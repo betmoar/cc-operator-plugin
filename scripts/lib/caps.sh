@@ -135,9 +135,15 @@ CAPS_MAX_BYTES=2097152   # 2 MiB — orders above any honest verdict ledger
 #
 # 200,000 steps measured at 2.1s here, so this budget holds the lookup near
 # ~1s on this machine and degrades honestly rather than silently: hitting it
-# sets caps_truncated, exactly like the other three bounds, and the caller says
-# the report is a floor. A missed report costs a line of guidance; an
-# 11-second Stop costs the whole gate.
+# sets caps_truncated, exactly like the other three bounds, and the caller
+# reports the cap state as UNKNOWN — not as a floor. (This line SAID floor
+# until PR #126's Copilot round; the adversarial round below had already
+# changed the behaviour and left the reason at the top of the file
+# unamended. A comment describing the design a rewrite replaced is the same
+# defect as a stale pin, one layer up: the next reader trusts it and the
+# measured 60-targets-reported-where-zero-was-true finding reads as fixed
+# by a floor that no longer exists.) A missed report costs a line of
+# guidance; an 11-second Stop costs the whole gate.
 CAPS_MAX_STEPS=100000
 
 # WHAT THE BUDGET DOES NOT BUY, stated because the numbers above are the

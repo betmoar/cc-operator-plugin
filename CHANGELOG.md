@@ -175,6 +175,29 @@ single source of truth; bump it in the same commit as the changelog entry.
   it measured zero rows and *passed* — caught in the same run by its own
   control, which demanded 3,000 rows and got the same zero. Found by Copilot on
   PR #126.
+- **The report-only guard had one more door: `then` on its own line.**
+  `check_caps` opened its window only when the caps-test line *ended* with
+  `then`, so the two-line form bash treats identically — `if [ … ]`, newline,
+  `then`, `exit 2` — opened no window at all and shipped green (measured:
+  control clean, mutation clean). Same class as the `^if ` and `elif` escapes an
+  adversarial verifier found earlier on this branch, one spelling further in,
+  which is the argument for describing the *structure* instead: the window now
+  counts net `if`/`fi` depth per line and never looks for `then`. Counting a
+  bare `\b(if|fi)\b` went red on the shipped hook — the truncation message ends
+  "…if a rework cap matters here", and prose in a guarded string is the normal
+  case here (#93/#94 make these messages long on purpose) — so the tokens are
+  matched in *command position*. Three cases: the multi-line form, plus two
+  negative controls (a one-line `if …; fi` must not unbalance the window, and an
+  English `if` in a message must not be read as a keyword). Found by Copilot on
+  PR #126.
+- **Two stale notes corrected in the same round.** `caps.sh`'s `CAPS_MAX_STEPS`
+  comment still said the caller reports a floor, which the adversarial round had
+  already replaced with *unknown* — a comment describing the design a rewrite
+  replaced is the same defect as a stale pin. And `tests/floors.env` said
+  `FLOOR_shell 968 -> 974` above a binding of `977`: the previous bump amended
+  the earlier heading instead of appending, so the one line explaining why the
+  floor sits where it does stopped resolving. Each bump now gets its own entry.
+  Found by Copilot on PR #126.
 
 ## [0.11.11] - 2026-09-05
 

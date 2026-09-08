@@ -4776,6 +4776,71 @@ class CapsTest(unittest.TestCase):
         self.assertTrue(any("reachable from a test of a caps_" in p
                             for p in self._probs()), self._probs())
 
+    def test_exit_in_a_multiline_if_fires(self):
+        # `then` ON ITS OWN LINE (PR #126 review, Copilot). The first cut only
+        # opened the window when the caps-test line ENDED with `then`, so the
+        # form bash treats identically —
+        #
+        #     if [ "$caps_tripped" -gt 0 ]
+        #     then
+        #       exit 2
+        #     fi
+        #
+        # — opened no window and shipped green. Measured before the fix, with
+        # the shipped caps.sh in the tree: control CLEAN, mutation CLEAN. It is
+        # the same class as the `^if ` and `elif` bypasses two cases up, one
+        # spelling further in — which is why the window now counts NET `if`/`fi`
+        # depth per line and never looks for `then` at all.
+        self._edit("scripts/ops-stop-hook.sh",
+                   'if [ "$caps_scan_failed" = 0 ] && [ "$caps_tripped" -gt 0 ]; then',
+                   'if [ "$caps_scan_failed" = 0 ] && [ "$caps_tripped" -gt 0 ]\n'
+                   'then\n'
+                   '  exit 2')
+        self.assertTrue(any("reachable from a test of a caps_" in p
+                            for p in self._probs()), self._probs())
+
+    def test_a_oneline_if_does_not_run_the_window_to_eof(self):
+        # THE NEGATIVE CONTROL for counting NET depth rather than one event per
+        # line. `if …; then :; fi` opens and closes on ONE line; counting only
+        # its opener leaves the window unbalanced and runs it to EOF, so an
+        # `exit` anywhere later in the hook — the ordinary blocking gates, which
+        # are the hook's whole job — gets blamed on the caps branch. A pin that
+        # fires on correct code is a pin someone deletes, and this repo's
+        # report-only guard would take the cap detector with it.
+        self._edit("scripts/ops-stop-hook.sh",
+                   'if [ "$caps_scan_failed" = 0 ] && [ "$caps_tripped" -gt 0 ]; then\n',
+                   'if [ "$caps_scan_failed" = 0 ] && [ "$caps_tripped" -gt 0 ]; then\n'
+                   '  if [ 1 = 1 ]; then :; fi\n')
+        p = self.dir / "scripts" / "ops-stop-hook.sh"
+        p.write_text(p.read_text(encoding="utf-8")
+                     + '\nif [ -n "$something_else" ]; then exit 2; fi\n',
+                     encoding="utf-8")
+        self.assertEqual(self._probs(), [])
+
+    def test_english_if_in_a_message_string_is_not_a_keyword(self):
+        # THE SECOND NEGATIVE CONTROL, and it is not hypothetical: the first
+        # net-depth cut counted a bare `\b(if|fi)\b` and went RED ON THE SHIPPED
+        # HOOK (measured — the offending line it printed was the truncation
+        # guard). Its message ends "Read the ledger yourself if a rework cap
+        # matters here", so an English `if` inside a double-quoted string left
+        # the window unbalanced and ran it to EOF, where the deviation gate's
+        # own exits live.
+        #
+        # This repo's caps messages are long BY DESIGN (#93/#94: name the
+        # targets, never a count the operator must go look up), so prose in a
+        # guarded string is the normal case here. The shipped hook is the real
+        # control, but CapsTest builds a synthetic one — without this case the
+        # class is covered only by a file this class never reads.
+        self._edit("scripts/ops-stop-hook.sh",
+                   '  echo "operator: the cap scan hit a bound" >&2\n',
+                   '  echo "operator: the cap scan hit a bound — read the '
+                   'ledger yourself if a rework cap matters here" >&2\n')
+        p = self.dir / "scripts" / "ops-stop-hook.sh"
+        p.write_text(p.read_text(encoding="utf-8")
+                     + '\nif [ -n "$something_else" ]; then exit 2; fi\n',
+                     encoding="utf-8")
+        self.assertEqual(self._probs(), [])
+
     def test_a_deleted_step_budget_fires(self):
         # THE WORK BOUND. The three SIZE bounds do not bound the work — the
         # ceiling is rows x keys — and at the shipped bounds that measured
