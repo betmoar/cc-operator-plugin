@@ -160,6 +160,21 @@ single source of truth; bump it in the same commit as the changelog entry.
   honest degradation the other bounds use. An associative array would delete
   the term and bash 3.2 has none; a string-keyed table was measured at 3m28s
   on the same input, 20× worse.
+- **And a last one: the scan kept working after its answer was thrown away.**
+  Hitting `CAPS_MAX_KEYS` set `caps_truncated` and fell through, so the loop
+  went on walking a full 100-key table for every remaining row — feeding a
+  report the truncation rule had already abandoned (a truncated scan returns
+  before building one). Measured on a 20,000-row ledger of *distinct* failing
+  targets, which hits the ceiling at row 100 and is what a project with many
+  one-off task ids looks like: **0.97s → 0.14s, 7×**. Waste rather than a DoS —
+  the step budget did bound it — so the fix is one condition at the loop's
+  existing sole exit, not a second `break` upstream. The case asserts **rows
+  read**, not wall clock: the budget makes the durations converge, and this file
+  has already paid once for a timing assertion that flaked on a shared runner.
+  Its first draft anchored on an `xtrace` prefix that the suite does not set, so
+  it measured zero rows and *passed* — caught in the same run by its own
+  control, which demanded 3,000 rows and got the same zero. Found by Copilot on
+  PR #126.
 
 ## [0.11.11] - 2026-09-05
 

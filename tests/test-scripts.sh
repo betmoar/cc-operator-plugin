@@ -5612,6 +5612,51 @@ check "a realistic 3000-row ledger is scanned WHOLE (not truncated) — the cost
 check "ten times the rows TRUNCATES — the per-Stop cost is bounded, not proportional to the ledger" \
   "$(printf '%s' "$(_caps_state "$CAPD/v15.md")" | grep -q 'truncated=1' && echo 0 || echo 1)"
 
+# --- a truncated scan STOPS: work after the answer is discarded is waste ----
+# The key ceiling set caps_truncated and fell through, so the scan kept walking a full 100-key
+# table for every remaining row while the report it was feeding had already been abandoned (a
+# truncated scan returns before building one). Measured on a 20,000-row ledger of DISTINCT
+# failing targets — the shape a project with many one-off task ids has, and the shape that hits
+# the ceiling at row 100: 0.97s before, 0.14s after. Found by Copilot on PR #126.
+#
+# THE ASSERTION IS ROWS READ, NOT WALL CLOCK. The suite already paid for a timing assertion here
+# once (it flaked on GitHub's runner while passing locally, two cases down), and a duration is
+# the wrong instrument twice over: it is machine-dependent AND the step budget bounds this input
+# either way, so the difference is waste rather than a blowup. Row count is exact and portable.
+# `xtrace` counts the loop's own `n=<digits>` assignment, which is unique to the read loop in
+# this file (`grep -n 'n='` shows the declaration and that one line).
+{ printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+  r=0; while [ "$r" -lt 3000 ]; do
+    printf '| T-%s | crit | ev @abc | FAIL |\n' "$r"; r=$((r+1)); done
+} > "$CAPD/v18.md"
+_caps_rows_read() { # _caps_rows_read <ledger> → rows the scan loop actually consumed
+  local _t="$CAPD/xtrace.log"
+  ( # shellcheck source=/dev/null
+    . "$SCRIPTS/lib/caps.sh"
+    # PS4 is SET here, not inherited. The default is `+ ` — plus SPACE — and the
+    # first draft of this probe anchored on `^+*n=`, written against a standalone
+    # run that had set PS4='+'. Under the suite it matched nothing, so BOTH
+    # checks read zero rows: the bound passed (0 < 200) and the control failed
+    # (0 >= 3000 is false), which is how a probe measuring nothing at all
+    # announced itself. The control is the whole reason that was visible in one
+    # run rather than shipping as a green vacuity.
+    PS4='+'
+    exec 2>"$_t"
+    set -x
+    scan_caps "$1" ) >/dev/null 2>/dev/null
+  # The `+` is repeated by nesting depth, so the anchor tolerates any depth.
+  grep -ac '^+*n=[0-9][0-9]*$' "$_t"
+}
+check "CONTROL: 3000 distinct failing targets DO exceed the key ceiling — the branch under test is reached" \
+  "$([ "$(_caps_keys_in "$CAPD/v18.md")" -gt "$(grep -o 'CAPS_MAX_KEYS=[0-9]*' "$SCRIPTS/lib/caps.sh" | cut -d= -f2)" ] && echo 0 || echo 1)"
+check "hitting the KEY CEILING stops the scan — it does not keep walking a table it has discarded" \
+  "$([ "$(_caps_rows_read "$CAPD/v18.md")" -lt 200 ] && echo 0 || echo 1)"
+# CONTROL: the stop is the CEILING's, not a scan that quit early on everything. A realistic
+# ledger (25 ids x 2 criteria, under the ceiling) must still be read to the last row, or the
+# bound above is satisfied by a detector that stopped detecting.
+check "CONTROL: a ledger UNDER the key ceiling is still read WHOLE — 3000 rows, all of them" \
+  "$([ "$(_caps_rows_read "$CAPD/v14.md")" -ge 3000 ] && echo 0 || echo 1)"
+
 # --- the gate WIRES it, on every path, and never blocks on it --------------
 # The report runs above every `exit`, because the session that stops CLEAN is exactly the one
 # that needs to hear it: attached to a blocking branch it would surface only when something else

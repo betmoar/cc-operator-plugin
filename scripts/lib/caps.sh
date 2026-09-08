@@ -297,7 +297,23 @@ scan_caps() { # scan_caps <verdicts-path>
     # one check on the one path every row takes. `continue` in a loop whose
     # tail carries the guard is the shape to distrust: it reads as "skip the
     # rest of the work" and means "skip the rest of the guards".
-    if [ "$steps" -gt "$CAPS_MAX_STEPS" ]; then caps_truncated=1; break; fi
+    #
+    # THE KEY CEILING IS ALSO AN EXIT, and it was not (PR #126 review, Copilot).
+    # The `else` above sets caps_truncated and fell through, so the scan kept
+    # walking a FULL 100-key table for every remaining row — and the answer was
+    # already thrown away, because a truncated scan returns before it builds any
+    # report (the prefix-is-not-a-floor rule below). Every one of those lookups
+    # bought nothing. Measured on a 20,000-row ledger of distinct failing
+    # targets, which hits the ceiling at row 100: 0.97s before, 0.14s after —
+    # 7x, on the shape a project with many one-off task ids actually has. The
+    # step budget did bound it, so this was waste rather than a DoS; that is why
+    # it is one condition at the SAME sole exit and not a second `break`
+    # upstream. The condition, not the branch, is what generalises: any future
+    # writer of caps_truncated inside this loop stops here too.
+    if [ "$caps_truncated" = 1 ] || [ "$steps" -gt "$CAPS_MAX_STEPS" ]; then
+      caps_truncated=1
+      break
+    fi
   done < "$f"
   # The report is built AFTER the whole pass, never during it: a key that hit
   # the cap and was then cleared by a PASS must not appear, and mid-pass

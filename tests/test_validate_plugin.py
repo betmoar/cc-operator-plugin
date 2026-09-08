@@ -4784,9 +4784,15 @@ class CapsTest(unittest.TestCase):
         # Asserted by EFFECT (caps_truncated on an over-budget ledger), never
         # by wall-clock: a timing threshold in a build gate is a flake on a
         # loaded runner.
+        #
+        # The anchor is the BUDGET TEST ALONE, not the whole statement. The
+        # exit it lives on also carries the key-ceiling stop, and anchoring on
+        # the full line made this case break when that condition was added —
+        # loudly, which is right, but it pinned a SPELLING rather than the
+        # budget. Neutering just the comparison leaves the loop's structure
+        # intact and removes only the thing under test.
         self._edit("scripts/lib/caps.sh",
-                   'if [ "$steps" -gt "$CAPS_MAX_STEPS" ]; then caps_truncated=1; break; fi',
-                   ':')
+                   '[ "$steps" -gt "$CAPS_MAX_STEPS" ]', '[ 1 = 0 ]')
         self.assertTrue(any("'budget' ledger" in p for p in self._probs()),
                         self._probs())
 
