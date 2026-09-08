@@ -1120,6 +1120,19 @@ UNKNOWN — which drops a real trip on a genuinely over-bounded ledger, and that
 is the right direction for a report-only gate: a missed report costs one line of
 guidance, a confidently wrong one costs trust in every line the gate prints.
 
+**The case for that took three attempts, and the middle one flaked in CI.**
+Draft one asserted the OUTPUT size — which the old code also bounded, since it
+sanitized 20 KB and then cut the result to 110 bytes, so it passed on the
+defect. Draft two was a wall-clock ratio and went red on GitHub's runner while
+passing locally: reading the clock costs ~291ms per `python3` shellout,
+dominating the ~0.5s being measured. **An instrument more expensive than its
+signal is not a loose gate, it is noise with a threshold** — and this file
+already said so two cases earlier, which did not stop it being written. The
+shipped case asserts the property directly: how many bytes reach the
+byte-walking sanitizer (20 KB in → 128 out), deterministic and clock-free, with
+a control that a short row arrives whole so the bound cannot be satisfied by
+mangling every row.
+
 Both were found by an adversarial Codex review (PR #126) that read the code
 rather than running the suite — worth noting, because the suite was green and
 three prior review rounds had passed over both.

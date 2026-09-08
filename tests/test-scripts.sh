@@ -5800,36 +5800,37 @@ if command -v git >/dev/null 2>&1; then
   _brow="$(printf '%s' "$HERR" | grep -a 'FAIL rounds' | head -1 | wc -c | tr -d ' ')"
   check "CONTROL: the row IS emitted and bounded — an empty report passes any bound trivially" \
     "$([ "${_brow:-0}" -gt 20 ] && [ "${_brow:-9999}" -le 200 ] && echo 0 || echo 1)"
-  # THE ASSERTION IS THE WORK, NOT THE OUTPUT. The output was already bounded BEFORE this fix --
-  # the old code sanitized 20KB and then cut the result to 110 bytes, so an output-size check
-  # passes on the defect and proves nothing (measured: the mutation left the suite fully green).
-  # What changed is the WORK: sanitize_row is O(input), so the only observable is cost. A
-  # wall-clock threshold is a flake on a loaded runner, so this compares the SAME hook against
-  # two ledgers differing only in criterion size -- a ratio, not an absolute. Unbounded, the 20KB
-  # row costs ~40x the 128-byte one (5.81s vs 0.15s measured); bounded, they are within noise of
-  # each other. The gate is deliberately loose at 5x: it catches the O(n) regression by an order
-  # of magnitude while staying far from timing noise.
-  CAPB2="$(newproj)"
-  git -C "$CAPB2" init -q . 2>/dev/null
-  git -C "$CAPB2" config user.email t@t 2>/dev/null; git -C "$CAPB2" config user.name t 2>/dev/null
-  ( cd "$CAPB2" && bash "$INIT" >/dev/null 2>&1 )
-  for _i in 1 2; do
-    ( cd "$CAPB2" && bash "$TASK" T-1 --owner SESS-A >/dev/null 2>&1
-      bash "$VERDICT" T-1 "short criterion" "ev$_i" FAIL --owner SESS-A >/dev/null 2>&1 )
-  done
-  _ms() { # _ms <proj> -> elapsed ms for one hook run
-    local _s _e
-    _s=$(python3 -c 'import time; print(int(time.time()*1000))')
-    printf '{"session_id":"SESS-A","cwd":"%s","stop_hook_active":false}' "$1" \
-      | "$BASH_ABS" "$HOOK" >/dev/null 2>&1
-    _e=$(python3 -c 'import time; print(int(time.time()*1000))')
-    echo $((_e - _s))
-  }
-  _t_small="$(_ms "$CAPB2")"; _t_big="$(_ms "$CAPB")"
-  # Guard the divisor: a sub-millisecond baseline would make any ratio meaningless.
-  [ "${_t_small:-0}" -lt 1 ] && _t_small=1
-  check "a 20KB criterion costs no more than 5x a short one — the formatter is BOUNDED WORK, not just bounded output" \
-    "$([ "$(( _t_big * 100 / _t_small ))" -le 500 ] && echo 0 || echo 1)"
+  # THE ASSERTION IS THE WORK, NOT THE OUTPUT -- and not a stopwatch either.
+  # The output was already bounded BEFORE this fix (the old code sanitized 20KB, then cut the
+  # RESULT to 110 bytes), so an output-size check passes on the defect and proves nothing:
+  # measured, the mutation left the suite fully green.
+  #
+  # The first fix for that was a wall-clock ratio, and it FLAKED on GitHub's runner while passing
+  # locally -- the exact failure this file warns about two cases up, built anyway. It could not
+  # work: the harness spends ~291ms per python3 shellout to read the clock, which dominates the
+  # ~0.5s being measured. A timing assertion whose instrument costs more than its signal is not a
+  # loose gate, it is noise with a threshold.
+  #
+  # So assert the property DIRECTLY and deterministically: how many bytes reach sanitize_row.
+  # That is the whole fix -- slice before sanitizing -- and it is exact, machine-independent, and
+  # has no clock in it. The probe extracts the shipped report_row and substitutes a sanitize_row
+  # that reports the length it was handed.
+  _probe="$CAPD/probe.sh"
+  {
+    # shellcheck disable=SC2016  # the probe's own body must NOT expand here
+    printf 'sanitize_row() { printf "%%s" "$1" >&2; printf "%%s" "$1"; }\n'
+    sed -n '/^report_row() {/,/^}/p' "$HOOK" | sed 's/echo "operator:/true "operator:/'
+    # shellcheck disable=SC2016  # same: this line is the probe's source, not ours
+    printf '_got=$(report_row "$1" 2>&1 >/dev/null); printf "%%s" "${#_got}"\n'
+  } > "$_probe"
+  _short_in="$("$BASH_ABS" "$_probe" "$(awk 'BEGIN{s="";while(length(s)<100)s=s "x";print s}')")"
+  _big_in="$("$BASH_ABS" "$_probe" "$_bigcrit")"
+  check "a 20KB criterion reaches the byte-walking sanitizer as <=128 bytes — the WORK is bounded, not just the output" \
+    "$([ "${_big_in:-99999}" -le 128 ] && echo 0 || echo 1)"
+  # CONTROL: a short row is NOT truncated on its way in, or the bound above is satisfied by a
+  # formatter that mangles every row it is given.
+  check "CONTROL: a 100-byte criterion arrives WHOLE — the slice bounds work, it does not censor" \
+    "$([ "${_short_in:-0}" = 100 ] && echo 0 || echo 1)"
 else
   skip "the bounded-formatting control (#126 adversarial): git unavailable"
   skip "the bounded-row half (#126 adversarial): git unavailable"
