@@ -101,6 +101,16 @@ single source of truth; bump it in the same commit as the changelog entry.
   18,999 real comparisons**, with `caps_truncated=0` claiming the scan had
   stayed inside its bound. Not off by one; off by everything, on the shape a
   mature ledger actually has. Found by Copilot on PR #126.
+- **The budget was then skipped entirely on the PASS path.** That branch
+  charged its lookup and `continue`d past the check at the loop's tail:
+  measured at **964,550 steps against a 100,000 budget — 9x over,
+  `caps_truncated=0`, 10.6 seconds** — the whole DoS restored through the one
+  branch that skipped the guard, while every existing case stayed green because
+  they were FAIL-heavy. A PASS is not cheaper than a FAIL (same linear lookup;
+  only what follows differs), so the branches are now one if/elif chain with a
+  single exit. The validator's test stub carried both this and the `i + 1`
+  defect — and `check_caps` *executes* that stub, so a fixture reproducing the
+  bug could not witness the fix. Found by Copilot on PR #126.
 - **What the budget does NOT buy, recorded as issue #127 rather than implied.**
   The 11.1s figure is the WORST case, and a project does not live there. At a
   realistic shape (50 distinct keys, mostly PASS), a 3,000-row ledger still

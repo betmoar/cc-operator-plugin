@@ -5514,6 +5514,31 @@ check "CONTROL: that ledger is under CAPS_MAX_LINES — the STEP bound fired, no
 check "CONTROL: the same shape well under the step budget does NOT truncate" \
   "$(printf '%s' "$(_caps_state "$CAPD/v19.md")" | grep -q 'truncated=0' && echo 0 || echo 1)"
 
+# --- the budget check must cover EVERY path, not just the FAIL one ----------
+# The PASS branch charged its lookup and then `continue`d, straight past the budget test — so a
+# PASS-heavy ledger paid for the work and never enforced the bound. Measured on 100 keys plus
+# 19,000 PASS rows walking the table: 964,550 steps charged against a 100,000 budget (9x over),
+# caps_truncated=0, and 10.6 SECONDS — the entire DoS the budget exists to prevent, restored
+# through the one branch that skipped the check (PR #126 review, Copilot).
+#
+# A PASS is not cheaper than a FAIL: both do the same linear lookup, and only what happens AFTER
+# it differs. `continue` in a loop whose tail carries a guard is the shape to distrust — it reads
+# as "skip the rest of the work" and means "skip the rest of the guards".
+{ printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+  k=0; while [ "$k" -lt 100 ]; do printf '| T-%s | crit | ev @abc | FAIL |\n' "$k"; k=$((k+1)); done
+  r=0; while [ "$r" -lt 19000 ]; do printf '| T-%s | crit | ev @abc | PASS |\n' "$((r % 100))"; r=$((r+1)); done
+} > "$CAPD/v20.md"
+check "a PASS-heavy ledger hits the step budget — the PASS path enforces the bound it charges" \
+  "$(printf '%s' "$(_caps_state "$CAPD/v20.md")" | grep -q 'truncated=1' && echo 0 || echo 1)"
+check "CONTROL: that ledger is under CAPS_MAX_LINES — the STEP bound fired, not the row count" \
+  "$([ "$(grep -c '^| T-' "$CAPD/v20.md")" -lt "$(grep -o 'CAPS_MAX_LINES=[0-9]*' "$SCRIPTS/lib/caps.sh" | cut -d= -f2)" ] && echo 0 || echo 1)"
+# The reset must still WORK after the branch reshape — a budget fix that broke the semantics
+# would trade a slow gate for a wrong one.
+_caps_ledger "$CAPD/v21.md" "| T-1 | crit | ev @a1 | FAIL |" "| T-1 | crit | ev @a2 | FAIL |" \
+  "| T-1 | crit | ev @a3 | PASS |"
+check "CONTROL: the PASS reset still clears a tripped key after the branches were merged" \
+  "$([ "$(_caps_state "$CAPD/v21.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+
 # --- the SCHEMA coupling, documented as a limitation rather than papered over -
 # caps.sh is now the SECOND reader of the 4-cell row (ops-reverify.sh is the first), and the
 # 4-cell test that correctly skips a hand-edit is WRONG for a schema change: widen the row and

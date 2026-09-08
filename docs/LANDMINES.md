@@ -1072,6 +1072,27 @@ both ways before being believed — `truncated=1` on the shipped code,
 is not the same claim as "the case fired".** Both drafts passed the suite; only
 running the defect back through them showed they were measuring nothing.
 
+**And then the budget it fixed was skipped entirely on one branch.** The PASS
+path charged its lookup and `continue`d, straight past the budget test at the
+loop's tail. Measured on 100 keys plus 19,000 PASS rows walking the table:
+**964,550 steps charged against a 100,000 budget — 9x over, `caps_truncated=0`,
+10.6 seconds.** The entire DoS the budget exists to prevent, restored through
+the one branch that skipped the check, while every earlier case stayed green
+because they were all FAIL-heavy.
+
+Two things generalise. **A `continue` in a loop whose tail carries a guard is
+the shape to distrust** — it reads as "skip the rest of the work" and means
+"skip the rest of the guards"; the branches are now one if/elif chain with a
+single exit, so there is no path that charges without checking. And **the
+premise that made it look safe was wrong**: a PASS is not cheaper than a FAIL.
+Both do the same linear lookup; only what happens *after* it differs. The cheap
+branch was cheap in the wrong dimension.
+
+The test stub in `tests/test_validate_plugin.py` carried BOTH defects too —
+`steps + i` and the PASS `continue` — which is its own lesson, since
+`check_caps` EXECUTES that stub: **a fixture that reproduces the bug cannot
+witness the fix.**
+
 A measurement trap worth keeping, because it produced two wrong tables before
 the right one: the first "realistic" fixture used 30 task ids x 7 criteria =
 210 distinct keys, silently over the 100-key ceiling. Every scan truncated

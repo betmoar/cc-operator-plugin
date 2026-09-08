@@ -252,9 +252,7 @@ scan_caps() { # scan_caps <verdicts-path>
       # that never failed creates nothing, which is what keeps the table small
       # on an ordinary ledger.
       [ "$found" -ge 0 ] && _caps_c[found]=0
-      continue
-    fi
-    if [ "$found" -ge 0 ]; then
+    elif [ "$found" -ge 0 ]; then
       _caps_c[found]=$(( _caps_c[found] + 1 ))
     elif [ "$_caps_n" -lt "$CAPS_MAX_KEYS" ]; then
       _caps_k[_caps_n]="$key"
@@ -265,6 +263,20 @@ scan_caps() { # scan_caps <verdicts-path>
       # letting the report read as complete.
       caps_truncated=1
     fi
+    # THE BUDGET CHECK COVERS EVERY PATH, and it did not (PR #126 review,
+    # Copilot). The PASS branch charged its lookup and then `continue`d, right
+    # past this test — so a PASS-heavy ledger paid for the work and never
+    # enforced the bound. Measured on 100 keys plus 19,000 PASS rows that walk
+    # the table: 964,550 steps charged against a 100,000 budget — 9x over,
+    # `caps_truncated=0`, 10.6 SECONDS. That is the entire DoS the budget was
+    # added to fix, restored through the one branch that skipped the check.
+    #
+    # A PASS is not cheaper than a FAIL: both do the same linear lookup, and
+    # only what happens AFTER the lookup differs. So the branches are now a
+    # single if/elif chain with no `continue`, and this line is the sole exit —
+    # one check on the one path every row takes. `continue` in a loop whose
+    # tail carries the guard is the shape to distrust: it reads as "skip the
+    # rest of the work" and means "skip the rest of the guards".
     if [ "$steps" -gt "$CAPS_MAX_STEPS" ]; then caps_truncated=1; break; fi
   done < "$f"
   # The report is built AFTER the whole pass, never during it: a key that hit

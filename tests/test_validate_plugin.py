@@ -120,12 +120,16 @@ GOOD_CAPS_LIB = (
     "      [ \"${_caps_k[$i]}\" = \"$key\" ] && { found=\"$i\"; break; }\n"
     "      i=$((i+1))\n"
     "    done\n"
-    "    steps=$((steps + i))\n"
+    # i+1 and ONE if/elif chain, no `continue` before the budget check: the
+    # stub mirrors the shipped accounting because check_caps EXECUTES it, and
+    # BOTH defects the shipped code carried were in this stub too (PR #126
+    # review) — charging `i` where the loop compares element i THEN breaks,
+    # and letting the PASS branch skip the budget test. A fixture that
+    # reproduces the bug cannot witness the fix.
+    "    steps=$((steps + i + 1))\n"
     "    if [ \"$verdict\" = PASS ]; then\n"
     "      [ \"$found\" -ge 0 ] && _caps_c[found]=0\n"
-    "      continue\n"
-    "    fi\n"
-    "    if [ \"$found\" -ge 0 ]; then _caps_c[$found]=$(( ${_caps_c[$found]} + 1 ))\n"
+    "    elif [ \"$found\" -ge 0 ]; then _caps_c[$found]=$(( ${_caps_c[$found]} + 1 ))\n"
     "    else _caps_k[$_caps_n]=\"$key\"; _caps_c[$_caps_n]=1; _caps_n=$((_caps_n+1)); fi\n"
     "    if [ \"$steps\" -gt \"$CAPS_MAX_STEPS\" ]; then caps_truncated=1; break; fi\n"
     "  done < \"$f\"\n"
