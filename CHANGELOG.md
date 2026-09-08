@@ -124,6 +124,20 @@ single source of truth; bump it in the same commit as the changelog entry.
   fixed: `scan_caps` clobbered any caller variable named `_caps_k`/`_caps_c`/
   `_caps_n`, and two comments claimed the 110-byte cap covered the emitted line
   rather than the row payload.
+- **The report was going to a channel that does not exist on exit 0.** A Stop
+  hook's stderr, when it exits 0, reaches the debug log only — not the
+  transcript, not Claude. So the cap report, the one thing that must be seen
+  when *nothing* blocks, was visible only when an unrelated gate happened to
+  block: the exact dependency its placement was designed to avoid. Every test
+  asserted captured stderr, so the feature was fully covered and never
+  delivered — **a test that the message was produced is not a test that it was
+  delivered.** It now emits `systemMessage` JSON on stdout on the allowing
+  path; blocking paths keep stderr, where exit 2 makes it the channel the
+  harness reads back. Also fixed: the ledger header was matched by *prefix*, so
+  a real task named `Gate` with criterion `Criterion` — an id `ops-task.sh`
+  permits — had its rows silently discarded (measured: `tripped=0` on two real
+  rework rounds). `ops-reverify.sh` carries the same prefix filter and is
+  tracked as #128 rather than fixed in passing.
 - **What the budget does NOT buy, recorded as issue #127 rather than implied.**
   The 11.1s figure is the WORST case, and a project does not live there. At a
   realistic shape (50 distinct keys, mostly PASS), a 3,000-row ledger still

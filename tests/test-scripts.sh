@@ -5818,8 +5818,19 @@ if command -v git >/dev/null 2>&1; then
   _probe="$CAPD/probe.sh"
   {
     # shellcheck disable=SC2016  # the probe's own body must NOT expand here
+    # THE PROBE MEASURES ONE THING: how many bytes sanitize_row is handed. Both
+    # of report_row's own OUTPUT paths must therefore be silenced, or their text
+    # lands in the same stderr capture and the number becomes "sanitizer input
+    # plus report line" -- measured at 212 for a 100-byte row while the probe
+    # claimed to be reading 100. caps_say is stubbed here; the `echo "$_out"`
+    # emit is neutered by the sed below. Anchor both on what report_row writes
+    # TODAY: reshaping its emit sites must update this probe, and the control
+    # (a short row arrives whole) is what makes a silently-broken probe visible.
+    printf 'caps_say() { :; }\n'
+    # shellcheck disable=SC2016  # probe source and sed script: neither expands here
     printf 'sanitize_row() { printf "%%s" "$1" >&2; printf "%%s" "$1"; }\n'
-    sed -n '/^report_row() {/,/^}/p' "$HOOK" | sed 's/echo "operator:/true "operator:/'
+    # shellcheck disable=SC2016
+    sed -n '/^report_row() {/,/^}/p' "$HOOK" | sed 's/else echo "\$_out" >&2/else :/'
     # shellcheck disable=SC2016  # same: this line is the probe's source, not ours
     printf '_got=$(report_row "$1" 2>&1 >/dev/null); printf "%%s" "${#_got}"\n'
   } > "$_probe"
@@ -5845,6 +5856,70 @@ fi
 _caps_leak="$( bash -c '_caps_n=KEEP_ME; _caps_k=(mine); . "'"$SCRIPTS"'/lib/caps.sh"; scan_caps /dev/null; printf "%s:%s" "$_caps_n" "${_caps_k[*]:-EMPTY}"' )"
 check "scan_caps does not clobber a caller's _caps_* — the key table is local" \
   "$([ "$_caps_leak" = "KEEP_ME:mine" ] && echo 0 || echo 1)"
+
+# --- the report reaches a channel that EXISTS on exit 0 (#126 adversarial) --
+# STDERR IS NOT A CHANNEL ON EXIT 0. The documented contract: stderr from a hook that exits 0
+# goes to the DEBUG LOG only -- never the transcript, and Claude never sees it. So the cap
+# report, the one thing that must be seen precisely when NOTHING blocks, was written to the one
+# channel that discards it: visible only when an unrelated gate happened to block, which is the
+# exact dependency its placement claims to avoid.
+#
+# Every earlier case here asserted captured stderr ($HERR), so none of them could see this: the
+# feature was fully covered and never delivered. These assert the DELIVERY, not the text.
+if command -v git >/dev/null 2>&1; then
+  CAPJ="$(newproj)"
+  git -C "$CAPJ" init -q . 2>/dev/null
+  git -C "$CAPJ" config user.email t@t 2>/dev/null; git -C "$CAPJ" config user.name t 2>/dev/null
+  ( cd "$CAPJ" && bash "$INIT" >/dev/null 2>&1 )
+  for _i in 1 2; do
+    ( cd "$CAPJ" && bash "$TASK" T-1 --owner SESS-A >/dev/null 2>&1
+      bash "$VERDICT" T-1 "the criterion" "ev$_i" FAIL --owner SESS-A >/dev/null 2>&1 )
+  done
+  _jout="$(printf '{"session_id":"SESS-A","cwd":"%s","stop_hook_active":false}' "$CAPJ" \
+    | "$BASH_ABS" "$HOOK" 2>/dev/null)"
+  check "an ALLOWING stop delivers the cap report on stdout — stderr alone is debug-log only" \
+    "$(printf '%s' "$_jout" | grep -q 'systemMessage' && echo 0 || echo 1)"
+  # It must be PARSEABLE: the harness reads stdout as JSON on every exit code, so a malformed
+  # object is worse than none. The message carries untrusted ledger text, hence a real encoder.
+  check "and that stdout is valid JSON carrying systemMessage (untrusted text, real encoder)" \
+    "$(printf '%s' "$_jout" | python3 -c 'import sys,json
+try:
+    d=json.load(sys.stdin); sys.exit(0 if isinstance(d.get("systemMessage"),str) and d["systemMessage"] else 1)
+except Exception: sys.exit(1)' && echo 0 || echo 1)"
+  # CONTROL: a clean ledger emits NOTHING on stdout, or the channel is noise on every stop.
+  CAPK="$(newproj)"
+  git -C "$CAPK" init -q . 2>/dev/null
+  git -C "$CAPK" config user.email t@t 2>/dev/null; git -C "$CAPK" config user.name t 2>/dev/null
+  ( cd "$CAPK" && bash "$INIT" >/dev/null 2>&1 )
+  _kout="$(printf '{"session_id":"SESS-A","cwd":"%s","stop_hook_active":false}' "$CAPK" \
+    | "$BASH_ABS" "$HOOK" 2>/dev/null)"
+  check "CONTROL: a clean ledger emits NOTHING on stdout — the channel is not noise" \
+    "$([ -z "$_kout" ] && echo 0 || echo 1)"
+  # And the BLOCKING path keeps stderr as its channel: there exit 2 makes stderr the guidance the
+  # harness feeds back, so emitting JSON would fight the mechanism that already works.
+  ( cd "$CAPJ" && bash "$TASK" T-9 --owner SESS-A >/dev/null 2>&1 )
+  _bout="$(printf '{"session_id":"SESS-A","cwd":"%s","stop_hook_active":false}' "$CAPJ" \
+    | "$BASH_ABS" "$HOOK" 2>/dev/null)"
+  check "a BLOCKING stop emits no stdout JSON — there exit 2 makes stderr the channel" \
+    "$([ -z "$_bout" ] && echo 0 || echo 1)"
+else
+  skip "the exit-0 delivery channel (#126 adversarial): git unavailable"
+  skip "the JSON-validity half (#126 adversarial): git unavailable"
+  skip "the clean-ledger control (#126 adversarial): git unavailable"
+  skip "the blocking-path half (#126 adversarial): git unavailable"
+fi
+
+# --- a real task named `Gate` is not the header (#126 review, Copilot) ------
+# The header filter matched by PREFIX, so any row whose id is `Gate` and whose criterion is
+# `Criterion` was discarded -- and ops-task.sh permits that id, so it is a ledger a real project
+# can write. Measured: two FAIL rounds on task `Gate`, written through the CLI, reported
+# tripped=0. A false NEGATIVE in a detector whose whole job is not to miss a sequence.
+_caps_ledger "$CAPD/v24.md" "| Gate | Criterion | ev1 @abc | FAIL |" "| Gate | Criterion | ev2 @abc | FAIL |"
+check "a task literally named 'Gate' TRIPS — the header is matched whole, not by prefix" \
+  "$([ "$(_caps_state "$CAPD/v24.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+# CONTROL: the real header is still skipped, or the fix traded a false negative for a false one.
+check "CONTROL: the real header row is still skipped — the fix did not widen into the header" \
+  "$([ "$(_caps_state "$REPO/templates/VERDICTS-header.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
 
 # --- the UNCOVERED caps stay NAMED -----------------------------------------
 # Two of the charter's three caps are not covered, for stated reasons. Dropping the paragraph is

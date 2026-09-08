@@ -212,7 +212,21 @@ scan_caps() { # scan_caps <verdicts-path>
     if [ "$bytes" -gt "$CAPS_MAX_BYTES" ]; then caps_truncated=1; break; fi
     # A ledger ROW starts "| " and is not the header or its rule.
     case "$row" in "| "*) ;; *) continue ;; esac
-    case "$row" in "| Gate | Criterion |"* | "|---"*) continue ;; esac
+    # The header is matched WHOLE, not by prefix (PR #126 review, Copilot).
+    # `"| Gate | Criterion |"*` discards any row whose id is `Gate` and whose
+    # criterion is `Criterion` — and ops-task.sh permits that id, so it is a
+    # real ledger a real project can write. Measured: two FAIL rounds on task
+    # `Gate` / criterion `Criterion`, written through the CLI, reported
+    # tripped=0. A false NEGATIVE in a detector whose whole job is not to miss
+    # a sequence.
+    #
+    # The full header line cannot collide: its fourth cell is `PASS/FAIL`,
+    # which the verdict enum below refuses (a row's verdict is exactly `PASS`
+    # or `FAIL`), so even an exact-match escape would be caught one test
+    # later. Prefix-matching was the only thing making the collision reachable.
+    case "$row" in
+      "| Gate | Criterion | Evidence | PASS/FAIL |" | "|---"*) continue ;;
+    esac
     # EXACTLY four cells — `| id | criterion | evidence @stamp | verdict |`,
     # the schema ops-verdict.sh --reconcile enforces. Split on " | "; anything
     # else is skipped, never guessed at.

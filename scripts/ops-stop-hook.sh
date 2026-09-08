@@ -398,8 +398,18 @@ shq() { # shq <string> → '<string>' with embedded quotes escaped
 # 3 bytes to the last lead byte (a UTF-8 continuation byte is 10xxxxxx = \x80
 # through \xBF) and cut there. Under C, `${_r:i:1}` is one BYTE, which is what
 # makes this test possible at all.
-report_row() { # report_row <row>
-  local LC_ALL=C _r _i _b
+# Every operator: line the cap report emits, accumulated for the JSON channel.
+# stderr alone is DEBUG-LOG ONLY on a hook that exits 0 (measured against the
+# documented contract, PR #126 adversarial review) — see the emit site below.
+CAPS_MSG=""
+caps_say() { # caps_say <line> — to stderr AND to the accumulator
+  echo "$1" >&2
+  CAPS_MSG="${CAPS_MSG}${CAPS_MSG:+
+}$1"
+}
+
+report_row() { # report_row <row> [--caps]
+  local LC_ALL=C _r _i _b _out
   # SLICE BEFORE SANITIZING, and the order is the whole cost (PR #126
   # adversarial review, Codex). sanitize_row walks the string ONE BYTE AT A
   # TIME in bash, so its cost is linear in the input, and the input is a
@@ -433,10 +443,14 @@ report_row() { # report_row <row>
         *) break ;;
       esac
     done
-    echo "operator:   ${_r:0:$_i}…" >&2
+    _out="operator:   ${_r:0:$_i}…"
   else
-    echo "operator:   $_r" >&2
+    _out="operator:   $_r"
   fi
+  # The caller says whether this row belongs to the cap report (which needs the
+  # JSON channel) or the deviation gate (which exits 2, where stderr IS the
+  # channel the harness reads back).
+  if [ "${2:-}" = "--caps" ]; then caps_say "$_out"; else echo "$_out" >&2; fi
 }
 
 sanitize_row() { # sanitize_row <row> → row with control bytes replaced
@@ -506,7 +520,7 @@ fi
 scan_caps "$opdir/VERDICTS.md"
 # shellcheck disable=SC2154  # assigned by the sourced lib/caps.sh
 if [ "$caps_scan_failed" = 0 ] && [ "$caps_tripped" -gt 0 ]; then
-  echo "operator: $caps_tripped target(s) at the charter's same-target-rework cap ($CAPS_REWORK_MAX rework rounds on one target) — the cap table calls this a defined stop-and-report: stop reworking it, log the decision, move on or escalate. Not blocking; a later PASS on the same criterion clears it." >&2
+  caps_say "operator: $caps_tripped target(s) at the charter's same-target-rework cap ($CAPS_REWORK_MAX rework rounds on one target) — the cap table calls this a defined stop-and-report: stop reworking it, log the decision, move on or escalate. Not blocking; a later PASS on the same criterion clears it."
   # NAME the targets — the #93/#94 rule. A count whose rows the operator must
   # go find is a count answered by not looking. report_row does the sanitize,
   # the byte cap and the C locale in one place (PR #126 review).
@@ -515,10 +529,10 @@ if [ "$caps_scan_failed" = 0 ] && [ "$caps_tripped" -gt 0 ]; then
     [ -n "$_crow" ] || continue
     _cn=$((_cn + 1))
     if [ "$_cn" -gt 10 ]; then
-      echo "operator:   … and $((caps_tripped - 10)) more — read $opdir/VERDICTS.md" >&2
+      caps_say "operator:   … and $((caps_tripped - 10)) more — read $opdir/VERDICTS.md"
       break
     fi
-    report_row "$_crow"
+    report_row "$_crow" --caps
   done <<EOF
 $caps_rows
 EOF
@@ -536,7 +550,7 @@ if [ "$caps_scan_failed" = 0 ] && [ "$caps_truncated" = 1 ]; then
   # claims "at least this many"; a prefix cannot claim even that. So the lib
   # reports nothing on a truncated scan and this line says the state is
   # unknown, which is the one description that is true.
-  echo "operator: the cap scan of $opdir/VERDICTS.md hit a bound (>$CAPS_MAX_LINES rows, >$CAPS_MAX_BYTES bytes, >$CAPS_MAX_KEYS distinct failing targets, or >$CAPS_MAX_STEPS lookup steps) — it read only a PREFIX, so the cap state is UNKNOWN, not clean: a later PASS in the unread tail can clear a target the prefix counted. Read the ledger yourself if a rework cap matters here." >&2
+  caps_say "operator: the cap scan of $opdir/VERDICTS.md hit a bound (>$CAPS_MAX_LINES rows, >$CAPS_MAX_BYTES bytes, >$CAPS_MAX_KEYS distinct failing targets, or >$CAPS_MAX_STEPS lookup steps) — it read only a PREFIX, so the cap state is UNKNOWN, not clean: a later PASS in the unread tail can clear a target the prefix counted. Read the ledger yourself if a rework cap matters here."
 fi
 
 # --- deviation gate: unpresented decisions block Stop (stage 2) ---------------
@@ -661,4 +675,45 @@ fi
 # mark sites: a silent clear-failure leaves the stale marker the NEXT
 # foreign continuation misreads as ours.
 stopguard_clear || echo "operator: warning — could not clear the .stopguard marker; a later stop_hook_active continuation may misread the stale marker as ours (#123/#124)." >&2
+
+# --- deliver the cap report on the ALLOWING path (#126 adversarial review) ---
+# STDERR IS NOT A CHANNEL ON EXIT 0. The documented contract: stderr from a
+# hook that exits 0 goes to the DEBUG LOG only — never the transcript, and
+# Claude never sees it. Plain stdout is the same for Stop (only
+# UserPromptSubmit/SessionStart and friends read it as context).
+#
+# So the cap report — the one thing here that must be seen precisely when
+# NOTHING blocks — was written to the one channel that discards it. It became
+# visible only when an unrelated gate happened to block, which is the exact
+# dependency the placement above claims to avoid: "a report nobody sees".
+# Every test asserted captured stderr, so none of them could see the delivery
+# failure; the feature was 100% covered and 0% delivered.
+#
+# `systemMessage` on stdout is the supported way to reach the user without
+# blocking, and it is read on exit 0. The exit code is untouched: this is the
+# same report-only polarity, now on a channel that exists.
+#
+# Only on THIS path. The blocking branches above exit 2, where stderr IS the
+# channel the harness feeds back as guidance — emitting JSON there would fight
+# the mechanism that already works.
+if [ -n "$CAPS_MSG" ]; then
+  # The message is composed from UNTRUSTED ledger data, so it is JSON-encoded
+  # by a real encoder, never by string-pasting into a template. sanitize_row
+  # already stripped control bytes; this closes quoting and backslashes too.
+  # No parser (or an encoder failure) means no message — the report is
+  # advisory, and a malformed stdout object would be worse than a missing one:
+  # the harness parses stdout on every exit code, so garbage there could
+  # perturb a stop that is otherwise fine.
+  if [ "$PARSER" = "jq" ]; then
+    printf '%s' "$CAPS_MSG" | jq -Rs '{systemMessage: .}' 2>/dev/null || true
+  else
+    printf '%s' "$CAPS_MSG" | python3 -c '
+import sys, json
+try:
+    print(json.dumps({"systemMessage": sys.stdin.read()}))
+except Exception:
+    pass
+' 2>/dev/null || true
+  fi
+fi
 exit 0

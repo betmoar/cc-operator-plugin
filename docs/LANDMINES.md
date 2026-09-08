@@ -1133,6 +1133,24 @@ byte-walking sanitizer (20 KB in → 128 out), deterministic and clock-free, wit
 a control that a short row arrives whole so the bound cannot be satisfied by
 mangling every row.
 
+**STDERR IS NOT A CHANNEL ON EXIT 0, and that made the whole feature
+undelivered.** The documented Stop-hook contract: stderr from a hook that exits
+0 goes to the DEBUG LOG only — never the transcript, and Claude never sees it.
+Plain stdout is the same for `Stop`. So the cap report — the one thing that must
+be seen precisely when NOTHING blocks — was written to the one channel that
+discards it. It became visible only when an unrelated gate happened to block,
+which is the exact dependency its own placement comment claims to avoid: *"a
+report nobody sees"*.
+
+The reason no test caught it is the transferable part. Every case asserted
+captured **stderr** (`$HERR`), because that is where the blocking messages
+correctly go — so they all passed while the feature delivered nothing on the
+path it exists for. **A test that asserts the message was PRODUCED is not a
+test that it was DELIVERED**, and when the channel differs per exit code, the
+tests must differ per exit code too. The fix emits `systemMessage` JSON on
+stdout on the allowing path only; the blocking paths keep stderr, where exit 2
+makes it the guidance the harness feeds back.
+
 Both were found by an adversarial Codex review (PR #126) that read the code
 rather than running the suite — worth noting, because the suite was green and
 three prior review rounds had passed over both.
