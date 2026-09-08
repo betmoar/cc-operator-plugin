@@ -1058,14 +1058,31 @@ def check_reader_bounds(root, problems):
     # tail-window variant (statusline); the counts below are per-file as shipped.
     readers = {
         "ops-verdict.sh": 1,     # the --reconcile fragment loop
-        "lib/partition.sh": 1,   # the deviation scan (its NUL probe counts below)
+        # TWO since #126: the deviation scan plus its NUL probe. The comment
+        # here used to say the probe "counts below" and it did not — the
+        # counter's regex had no place for `-d ''` between `-r` and `-n`, so
+        # every shipped probe was invisible to it and this floor was satisfied
+        # by the row loop alone. A probe that can be deleted with the build
+        # green is the bound it protects, deletable.
+        "lib/partition.sh": 2,   # the deviation scan + its NUL probe
         # The cap scan reads VERDICTS.md (hand-editable, untrusted — the same
         # file ops-reverify.sh reads, and for the same reason it is bounded).
-        "lib/caps.sh": 1,        # the row loop in scan_caps
+        # TWO reads, and the second is the one that makes the first's byte cap
+        # real (#126 adversarial review, Codex): the row loop, plus a bounded
+        # NUL probe. `read` DISCARDS NUL, so `${#row}` measures what survived
+        # the read and not what it consumed — a megabyte of NUL charged the
+        # accumulator 1 byte, and an 8 MiB ledger scanned to EOF in 3.6s
+        # reporting truncated=0. Same shape as partition.sh's probe, whose
+        # count is folded into its own entry above.
+        "lib/caps.sh": 2,        # the row loop in scan_caps + its NUL probe
         # The statusline segment renders on a ~300ms timer, the hottest reader
         # in the plugin (a 64MB newline-less sentinel: 0.014s bounded vs 6.20s
         # unbounded — a permanently wedged bar, not a slow one).
-        "statusline.sh": 3,      # dev[N] scan + NUL probe + payload field reads
+        # FOUR since #126: two payload field reads, the dev[N] scan, and the
+        # NUL probe the counter could not see (see partition.sh above). The
+        # bare `-d ''` payload slurp on line 19 is exempt and uncounted — it is
+        # bounded by the payload, not by a cap.
+        "statusline.sh": 4,      # dev[N] scan + NUL probe + 2 payload reads
         # The tier-config resolver reads a file under .operator/ (untrusted — a
         # merge or checkout can produce it): a newline-less multi-MB tiers.env
         # is one "line" to an unbounded read.
@@ -1117,7 +1134,16 @@ def check_reader_bounds(root, problems):
         # on bash 3.2.57 and 5.2.15 (512 chars of "é" = 1024 bytes). Reported
         # once per file: LC_ALL=C must be in scope somewhere, which is the
         # `local LC_ALL=C` idiom partition.sh already uses (Copilot, PR #87).
-        if any(re.search(r"\bIFS=\S*\s+read -r -n \d+", ln) for ln in code) \
+        # `-d ''` may sit BETWEEN `-r` and `-n` — that is the NUL-probe form
+        # (`read -r -d '' -n 512`), and the counter did not match it (#126
+        # adversarial review, Codex). Three shipped probes went uncounted, so
+        # deleting any of them left the file's floor satisfied by its row loop
+        # alone. The probes are what make the row loops' BYTE caps real: `read`
+        # discards NUL, so `${#line}` measures what survived rather than what
+        # was consumed, and an 8 MiB NUL ledger scanned to EOF claiming it had
+        # stayed inside a 2 MiB bound.
+        _bounded_read = r"\bIFS=\S*\s+read -r (?:-d '' )?-n (\d+)\b"
+        if any(re.search(_bounded_read, ln) for ln in code) \
            and not any("LC_ALL=C" in ln for ln in code):
             problems.append(
                 f"scripts/{name}: byte-bounded reads with no `LC_ALL=C` in the "
@@ -1126,7 +1152,7 @@ def check_reader_bounds(root, problems):
                 f"Declare `local LC_ALL=C` in the reading function (the idiom "
                 f"scripts/lib/partition.sh uses), never globally")
         for ln in code:
-            for m in re.finditer(r"\bIFS=\S*\s+read -r -n (\d+)\b", ln):
+            for m in re.finditer(_bounded_read, ln):
                 n = int(m.group(1))
                 if n > _MAX_READ_BOUND:
                     problems.append(

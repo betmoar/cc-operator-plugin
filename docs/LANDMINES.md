@@ -1167,3 +1167,44 @@ because each lookup rescans a growing string. So the linear array stands and
 the work is capped directly. **Before adding a bound, ask what it bounds** — a
 bound on the INPUT says nothing about the work, and the gate that audits a
 growing ledger is the one whose cost grows with it.
+
+### `read` discards NUL, so a byte counter counts the wrong bytes (0.11.12, #126)
+
+`CAPS_MAX_BYTES` was not a bound. The row loop charged its accumulator
+`${#row} + 1`, and `${#row}` measures what SURVIVED the read — but bash
+variables cannot hold NUL, so `read` discards every one. A megabyte chunk of
+NUL arrives as the empty string and costs the budget one byte.
+
+Measured on the shipped hook, macOS bash 3.2: an 8 MiB ledger, four times over
+the 2 MiB cap, scanned to EOF in **3.6 seconds reporting `caps_truncated=0`** —
+a clean, confident answer about a file the bound existed to refuse. The control
+behaves: 3 MiB of ordinary rows truncates correctly, which is exactly why no
+existing case saw it. Every fixture was made of text.
+
+**The cost is the delay, not the wrong report.** The cap scan runs BEFORE the
+pending and deviation gates, so a corrupt or planted ledger buys seconds of
+latency on every single Stop, repeatedly, while the size bound that was
+supposed to cap it reads as satisfied. A bounded NUL probe (512-byte chunks,
+4096 of them, its own subshell) takes it to 0.044s and `truncated=1` — 82×.
+
+The polarity differs from `scan_deviations`' probe on purpose, and the
+difference is instructive. That one fails CLOSED: a not-ours DECISIONS.md may
+hide a real unpresented decision, so it blocks. This one is report-only and
+nothing here can block, so the only honest degradation is TRUNCATED — the
+caller already says "the cap state is UNKNOWN, not clean" for exactly this
+shape. Not `scan_failed`, which means "no ledger"; this ledger exists.
+
+**And the pin that should have caught it was blind to its own idiom.**
+`check_reader_bounds` counted `IFS= read -r -n N` and had no place for `-d ''`
+sitting BETWEEN `-r` and `-n` — which is how every NUL probe in this plugin is
+written. All three shipped probes were invisible to it, so each file's floor
+was satisfied by its row loop alone and any probe could be deleted with the
+build green. `lib/partition.sh`'s entry even said its probe "counts below". It
+did not.
+
+That is the transferable half: **a guard and the pin that protects it can share
+an author, a session, and a blind spot.** The probes exist to make the row
+loops' byte caps real, so a counter that cannot see the probes is the same
+defect one layer up — and it stayed invisible because the number it produced
+(1, 1, 3) was correct for the reads it COULD see. A floor satisfied by the
+wrong subset reads identically to a floor satisfied.

@@ -5966,6 +5966,38 @@ check "a task literally named 'Gate' TRIPS — the header is matched whole, not 
 check "CONTROL: the real header row is still skipped — the fix did not widen into the header" \
   "$([ "$(_caps_state "$REPO/templates/VERDICTS-header.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
 
+# --- NUL bypasses the byte budget (#126 adversarial review, Codex) ---------
+# `read` DISCARDS NUL -- bash variables cannot hold one -- so the row loop's `${#row}` measured
+# what SURVIVED the read, never what it CONSUMED. A megabyte of NUL arrived as the empty string
+# and charged the accumulator 1 byte. CAPS_MAX_BYTES was therefore not a bound on any input
+# containing NUL. Measured on the shipped hook before the probe: an 8 MiB ledger (4x the 2 MiB
+# cap) scanned to EOF in 3.6s reporting truncated=0 -- a confident clean answer over a file the
+# bound existed to refuse. The cost is the DELAY, not the report: this scan runs BEFORE the
+# pending and deviation gates, so a corrupt or planted ledger buys seconds on every Stop.
+#
+# 3 MiB of NUL, well past CAPS_MAX_BYTES. The row loop cannot see it; only a probe reading raw
+# bytes can.
+printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n' > "$CAPD/v25.md"
+printf '| T-a | c | e | FAIL |\n| T-a | c | e | FAIL |\n' >> "$CAPD/v25.md"
+dd if=/dev/zero bs=1024 count=3072 2>/dev/null >> "$CAPD/v25.md"
+check "a NUL-filled ledger over CAPS_MAX_BYTES reports TRUNCATED, not a clean scan" \
+  "$([ "$(_caps_state "$CAPD/v25.md")" = "tripped=0 failed=0 truncated=1" ] && echo 0 || echo 1)"
+# TRUNCATED and not scan_failed: scan_failed means "no ledger" and this ledger exists. The caller
+# already says "the cap state is UNKNOWN, not clean" for exactly this shape, and report-only
+# leaves no fail-closed direction to choose.
+#
+# CONTROL 1: an ordinary ledger of the SAME ORDER still scans. Without it the case above is
+# satisfied by a probe that refuses everything -- a detector that never reports.
+_caps_ledger "$CAPD/v26.md" "| T-a | c | e | FAIL |" "| T-a | c | e | FAIL |"
+check "CONTROL: an ordinary tripped ledger still TRIPS — the probe did not refuse everything" \
+  "$([ "$(_caps_state "$CAPD/v26.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+# CONTROL 2: MULTIBYTE text is not corruption. The probe reads BYTES (LC_ALL=C in its own
+# subshell), so a UTF-8 cell must scan normally -- if it read characters, every accented ledger
+# would report UNKNOWN forever, which is the false-positive direction that gets a gate ignored.
+_caps_ledger "$CAPD/v27.md" "| T-é | crité — dash | “ev” | FAIL |" "| T-é | crité — dash | “ev” | FAIL |"
+check "CONTROL: a UTF-8 ledger is not read as corrupt — the probe counts bytes, not characters" \
+  "$([ "$(_caps_state "$CAPD/v27.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+
 # --- the UNCOVERED caps stay NAMED -----------------------------------------
 # Two of the charter's three caps are not covered, for stated reasons. Dropping the paragraph is
 # how "one of three" quietly becomes "three of three" to the next reader — the honesty #85

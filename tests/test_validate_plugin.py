@@ -55,6 +55,16 @@ GOOD_PARTITION_LIB = (
     # comment-stripped view since audit F127, so a comment naming the enum no
     # longer satisfies it.
     "case \"$dkind\" in DEVIATION|ESCALATION|GATE-EXCEPTION) :;; HANDOFF-MARK) :;; esac\n"
+    # The bounded NUL probe, WITH the row loop: `read` discards NUL, so the
+    # loop's `${#dline}` counts what survived rather than what was consumed and
+    # the byte cap is not a cap without it (#126). A fixture missing it models a
+    # tree that would ship the 8 MiB-scanned-as-2 MiB defect, so check_reader_bounds
+    # would have to accept one — the fixture is the shape the pin describes.
+    # The chunk cap is part of the form: an uncapped `read -d ''` loop walks a
+    # multi-MB file end-to-end, which is the stall the probe exists to avoid.
+    "_dp=0\n"
+    "while IFS= read -r -d '' -n 512 _dprobe; do _dp=$((_dp+1)); "
+    "[ \"$_dp\" -le 4096 ] || break; done < \"$decisions\"\n"
     "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
     "[ ! -L \"$decisions\" ] || exit 0\n")
 # #85: the auto-arm rule. Every literal here is one check_autobar pins, and each pin
@@ -102,6 +112,18 @@ GOOD_CAPS_LIB = (
     "  _caps_k=(); _caps_c=(); _caps_n=0\n"
     "  [ -f \"$f\" ] || { caps_scan_failed=1; return 0; }\n"
     "  [ ! -L \"$f\" ] || { caps_scan_failed=1; return 0; }\n"
+    # The bounded NUL probe (#126), degrading to TRUNCATED — report-only has no
+    # fail-closed direction, and scan_failed means "no ledger". This stub is
+    # EXECUTED by check_caps, so the probe must behave, not merely be present:
+    # without it the byte cap is not a cap (`read` discards NUL, so the loop
+    # below counts what survived rather than what it consumed).
+    "  if ! (LC_ALL=C _cp=0\n"
+    "        while IFS= read -r -d '' -n 512 _cprobe; do\n"
+    "          _cp=$((_cp + 1)); [ \"$_cp\" -le 4096 ] || exit 1\n"
+    "          [ \"${#_cprobe}\" -eq 512 ] || exit 1\n"
+    "        done < \"$f\") 2>/dev/null; then\n"
+    "    caps_truncated=1; return 0\n"
+    "  fi\n"
     "  while IFS= read -r -n 1048576 row || [ -n \"$row\" ]; do\n"
     "    n=$((n+1)); [ \"$n\" -le \"$CAPS_MAX_LINES\" ] || { caps_truncated=1; break; }\n"
     "    case \"$row\" in \"| \"*) ;; *) continue ;; esac\n"
@@ -144,6 +166,11 @@ GOOD_STATUSLINE = (
     "_r() { local LC_ALL=C; :; }\n"
     '. lib/partition.sh\n'
     "[ ! -L \"$decisions\" ] || exit 0\n"
+    # Four bounded reads, matching the shipped file: two payload field reads,
+    # the dev[N] scan, and the NUL probe (#126 — see GOOD_PARTITION_LIB).
+    "_dp=0\n"
+    "while IFS= read -r -d '' -n 512 _dprobe; do _dp=$((_dp+1)); "
+    "[ \"$_dp\" -le 4096 ] || break; done < \"$decisions\"\n"
     "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
     "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n"
     "while IFS= read -r -n 512 dline; do :; done < \"$decisions\"\n")

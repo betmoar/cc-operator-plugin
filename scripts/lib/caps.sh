@@ -205,6 +205,46 @@ scan_caps() { # scan_caps <verdicts-path>
   # through (the F65 class).
   [ -f "$f" ] || { caps_scan_failed=1; return 0; }
   [ ! -L "$f" ] || { caps_scan_failed=1; return 0; }
+  # BOUNDED NUL PROBE, and it is what makes CAPS_MAX_BYTES a real bound
+  # (PR #126 adversarial review, Codex).
+  #
+  # `read` DISCARDS NUL bytes — bash variables cannot hold one — so the row
+  # loop's `${#row}` measures what SURVIVED the read, never what the read
+  # consumed. A megabyte chunk of NUL arrives as the empty string and charges
+  # the accumulator 1 byte for 1,048,576 read. The byte budget was therefore
+  # not a budget on any input containing NUL.
+  #
+  # MEASURED on the shipped hook, macOS bash 3.2, before this probe: an 8 MiB
+  # ledger (4x over the 2 MiB cap) with two real FAIL rounds scanned to EOF in
+  # 3.6s and reported caps_truncated=0 — a clean, confident answer over a file
+  # the bound existed to refuse, with every gate green. The control behaves:
+  # 3 MiB of ORDINARY rows truncates correctly.
+  #
+  # The cost is not the report; it is the DELAY. This scan runs before the
+  # pending and deviation gates, so a corrupt or planted ledger buys seconds
+  # of latency on every single Stop, repeatedly, and the size bound that was
+  # supposed to cap it reads as satisfied.
+  #
+  # POLARITY, and it differs from scan_deviations' probe on purpose. That one
+  # fails CLOSED (a not-ours DECISIONS.md may hide a real unpresented decision,
+  # so it blocks). This one is REPORT-ONLY and nothing here can block, so the
+  # only honest degradation is TRUNCATED: the caller already says "the cap
+  # state is UNKNOWN, not clean" for exactly this shape, and a NUL-bearing
+  # ledger is a file we could not read rather than a file with nothing in it.
+  # Not scan_failed — that means "no ledger", and this ledger exists.
+  #
+  # The probe is BOUNDED itself: 512-byte chunks, 4096 of them (2 MiB, the same
+  # ceiling as CAPS_MAX_BYTES), so it cannot become the cost it prevents.
+  # `-d ''` reads NUL-delimited, so a short chunk means a NUL was hit OR the
+  # file ended; the subshell keeps LC_ALL and the counter out of the caller.
+  if ! (LC_ALL=C _cp=0
+        while IFS= read -r -d '' -n 512 _cprobe; do
+          _cp=$((_cp + 1)); [ "$_cp" -le 4096 ] || exit 1
+          [ "${#_cprobe}" -eq 512 ] || exit 1
+        done < "$f") 2>/dev/null; then
+    caps_truncated=1
+    return 0
+  fi
   # The max legal bound (validate_plugin._MAX_READ_BOUND), read the way
   # ops-reverify.sh reads the same file: no continuation accumulation. A row
   # longer than 1 MiB is split, and the tail does not start with "| " so it is

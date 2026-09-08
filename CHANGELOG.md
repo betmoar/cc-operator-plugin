@@ -198,6 +198,29 @@ single source of truth; bump it in the same commit as the changelog entry.
   the earlier heading instead of appending, so the one line explaining why the
   floor sits where it does stopped resolving. Each bump now gets its own entry.
   Found by Copilot on PR #126.
+- **NUL bytes walked straight through the ledger byte budget.** `read` *discards*
+  NUL — a bash variable cannot hold one — so the row loop's `${#row}` measured
+  what survived the read rather than what it consumed: a megabyte of NUL arrived
+  as the empty string and charged the accumulator one byte. `CAPS_MAX_BYTES` was
+  therefore not a bound on any input containing NUL. Measured on the shipped
+  hook, macOS bash 3.2: an 8 MiB ledger — 4× over the 2 MiB cap — scanned to EOF
+  in **3.6s reporting `truncated=0`**, a confident clean answer over a file the
+  bound existed to refuse. The cost is the *delay*, not the report: this scan
+  runs before the pending and deviation gates, so a corrupt or planted ledger
+  buys seconds of latency on every Stop. A bounded NUL probe (512-byte chunks,
+  2 MiB ceiling, its own subshell) now degrades to **`truncated=1` in 0.044s**,
+  82×. Report-only leaves no fail-closed direction, so the state is *unknown*,
+  which the caller already says — not `scan_failed`, which means "no ledger" and
+  this ledger exists.
+- **And the pin that should have caught it was blind to its own idiom.**
+  `check_reader_bounds` counted `IFS= read -r -n N` and had no place for `-d ''`
+  *between* `-r` and `-n` — which is exactly how a NUL probe is written. All
+  three shipped probes (`caps.sh`, `partition.sh`, `statusline.sh`) were
+  invisible to it, so each file's floor was satisfied by its row loop alone and
+  any probe could be deleted with the build green. `partition.sh`'s entry even
+  claimed its probe "counts below". The probes are what make the row loops' byte
+  caps real, so this was the same defect one layer up. Regex widened, floors
+  raised to 2/2/4, each deletion verified red. Found by Codex on PR #126.
 
 ## [0.11.11] - 2026-09-05
 
