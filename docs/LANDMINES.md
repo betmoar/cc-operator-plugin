@@ -1208,3 +1208,78 @@ loops' byte caps real, so a counter that cannot see the probes is the same
 defect one layer up — and it stayed invisible because the number it produced
 (1, 1, 3) was correct for the reads it COULD see. A floor satisfied by the
 wrong subset reads identically to a floor satisfied.
+
+## A gate that compares two commits answers a different question than the merge (0.11.13)
+
+`base-gate.sh` compared `BASE_SHA` against `PR_SHA` as commits. The question it is
+meant to ask is "does the RESULT of merging this PR weaken the base enforcer", and in
+this repo those diverge in the ordinary case: nearly every PR raises a floor and adds a
+`tests/` file, so any branch that has not rebased since reads as LOWERING that floor and
+DELETING that file. Measured 2026-09-16 against `d9ed4cd`: a PR whose only change was
+one README line produced two `BASE_GATE_FAILED` lines and rc 1, while the merge result
+contained neither weakening. The subject is now `git merge-tree --write-tree`'s tree —
+no checkout, no worktree, so PR bytes are still never on disk.
+
+**`rc` alone cannot classify what came back.** The first cut had four outcomes and folded
+two of them wrong. The reachable set is six, and the discriminator is rc PLUS whether
+stdout line 1 is a sha PLUS whether the tree has any entries:
+
+- rc 0 + sha + non-empty → the subject.
+- rc 0 + sha + EMPTY → the PR's root tree object is absent. The base always carries
+  files, so a clean merge whose result is empty cannot be a legitimate PR. Without this
+  guard every arm reads every enforcer file as GONE — a confident weakening verdict with
+  an infrastructure cause.
+- rc 0 + no sha → an output shape this gate does not understand.
+- rc 1 + sha → a real conflict. The message says the gate CANNOT JUDGE it, never that
+  the PR weakens anything: GitHub refuses to merge a conflicted PR anyway, so the only
+  honest claim is that no result tree exists to read.
+- rc 1 + no sha → an unreadable object. Retained though no construction reaches it
+  (#133).
+- rc 128 → a FATAL git error: the repository is incomplete. This is the REACHABLE
+  truncated-fetch shape that bit the #125 marker arm, and the first cut reported it as
+  `--write-tree` being unavailable — blaming the runner's git version for a corrupt
+  repository, which is the same two-causes-one-message defect the classifier exists to
+  remove.
+
+Every one is rc 2. Fail closed, as the file's header claims everywhere else.
+
+**Arm 4 keeps the three-dot diff and that is not an oversight.** It names what *this PR*
+authored, which a human reads as authorship; two dots there attributes the base's own
+commits to the PR — the same false-authorship defect, one level up, in the only
+human-facing half. Arm 5 went the other way, to `diff BASE_SHA PR_TREE`: a hard-fail arm
+must ask what the merged tree carries, not what the PR's diff happens to show. Measured
+honestly: the escape that motivated moving arm 5 does NOT reproduce — when the PR does
+not touch the hunk, the base's deletion wins the merge and the marker is absent from the
+tree under either form; when it does, merge-tree reports a conflict and the script
+refuses before arm 5 runs. The change closes a FALSE POSITIVE (a marker the base's own
+tip already carries, restated by the PR) and unifies the subject. Two cases pin the
+form together — three-dot reddens one, two-dot reddens the other, only base-vs-tree
+passes both; neither alone would have.
+
+## A fixture that needs root does not run on CI's uid (0.11.13)
+
+Two cases added with the classifier were RED on CI from the commit that introduced them
+and passed locally every time. Git writes loose objects `0444`; **root bypasses that bit
+and an ordinary user does not.** The corrupt-object fixture did
+`printf 'garbage' > "$OBJ"`, which silently failed as uid 1000 — the object stayed
+intact at 47 bytes, `merge-tree` succeeded, and the rc-128 branch never fired.
+
+They stayed invisible for three more commits because `validate.yml` runs the `python`
+rung BEFORE `shell`, and python was red for an unrelated known reason, so the job
+aborted before the shell rung ever ran. **A known red on one rung hides every later
+rung**; that is the part worth remembering, not the chmod.
+
+The empty-merge-tree fixture had a second, subtler version of the same fault: it deleted
+the PR commit's root tree object and relied on git ANSWERING that with rc 0 + the empty
+tree. That is not contractual — it held on git 2.43.0 and failed on the runner's 2.55.0,
+and the cause on 2.55 was never verified because that build was not available. The fix
+does not bet on a diagnosis: the fixture now builds the empty result from ordinary
+plumbing (`commit-tree $(hash-object -t tree /dev/null) -p <base>`), which is what the
+guard actually claims and behaves identically under both uids. It also made the guard
+genuinely load-bearing for the first time — remove it now and arm 1 emits
+`BASE_GATE_FAILED: … the ratchet is deleted`, where the deletion-based fixture had only
+an argument that a downstream `die` would catch it.
+
+The structural gap — a rootful dev container cannot execute ten of these cases at all,
+and the suite says `slack 0` while they are skipped — is #134, deliberately not closed
+here.

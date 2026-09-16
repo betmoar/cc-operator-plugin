@@ -9,6 +9,59 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.13] - 2026-09-16
+
+### Fixed
+
+- **The base-gate judges the MERGE RESULT, not the PR head (#130).** `base-gate.sh`
+  computes `git merge-tree --write-tree` and uses that tree as the subject for arms 1,
+  2, 3 and 3b. Measured against `d9ed4cd`: a PR whose only change was one README line
+  produced two `BASE_GATE_FAILED` lines and rc 1, because this repo raises a floor and
+  adds a `tests/` file in nearly every PR and an unrebased branch read as lowering and
+  deleting them. The merge result contained neither weakening. Arm 4 keeps the
+  three-dot diff on purpose — it names what *this PR* authored, which a human reads.
+- **Six merge-tree outcomes, five distinct refusals (#130).** `rc` alone does not
+  separate them; the discriminator is rc, whether stdout line 1 is a sha, and whether
+  the tree has entries. A real conflict, an unreadable object, a corrupt repository
+  (rc 128), an empty merge result, an unrecognised output shape, and an unavailable
+  `merge-tree` are now six branches with their own messages. Every one is rc 2 — the
+  gate says it cannot judge, never that the PR weakens anything. The first cut folded
+  rc 128 into "your git is too old", blaming the runner's version for a corrupt
+  repository.
+- **Arm 5 diffs the base against the merged tree (#130).** The anti-wormhole arm no
+  longer blames a PR for a marker line the base's own tip already carries. Measured:
+  the shape that motivated the change — a marker at the merge base, removed later by
+  the base, retained untouched by the PR — does *not* reach the merge result under any
+  diff form, so three-dot's silence there was already correct; the change closes a
+  false positive and unifies the subject with every other hard-fail arm.
+- **The base-gate job runs from its own trusted-event workflow (#131).**
+  `.github/workflows/base-gate.yml` and the Forgejo mirror subscribe to
+  `pull_request_target` and nothing else, so the `on:` block *is* the guard — a
+  workflow that never receives the untrusted event cannot run under it, which replaces
+  an `if:` string a reviewer had to read. Both `validate.yml` files lose the job and
+  the trigger. This also removes a measured duplicate: with both triggers on
+  `validate.yml`, every push ran the full ~4.5 minute suite twice (runs 35081274929
+  and 35081274847, both green, both complete). The checkout gains `fetch-depth: 0` and
+  the head fetch drops `--depth=1`: `merge-tree` needs a merge base, and a truncated
+  fetch leaves objects it cannot read.
+- **`check_base_gate` follows the job (#131).** It reads a new `_BASE_GATE_FILES`
+  tuple, requires `pull_request_target:` *and* refuses a `pull_request:` subscription,
+  and refuses a leftover `base-gate:` job in either `validate.yml` — moving a job is
+  two edits and a reviewer sees one diff. Claim 4's token list gains `merge-tree` and
+  `PR_TREE`, so deleting the classifier is caught here and not only in the bash suite.
+- **`ops-reverify.sh` matches the ledger header WHOLE, not by prefix (#128).** A task
+  id of `Gate` with criterion `Criterion` is a ledger `ops-task.sh` permits, and the
+  prefix filter dropped that row from the re-verification sweep while counting it as
+  "not a 4-cell row" — the wrong reason for the wrong row. `scripts/lib/caps.sh`
+  already carried the whole-line form; this is the same fix in the sibling parser.
+- **Two rc-classifier fixtures stop depending on root (#130).** Git writes loose
+  objects `0444`; root bypasses that bit and an ordinary user does not, so the
+  corrupt-object fixture silently did nothing on every non-root runner and the branch
+  it tests never fired. It now chmods first and asserts its own precondition. The
+  empty-merged-tree fixture no longer deletes an object at all — it builds the empty
+  result from ordinary plumbing, which is version-stable and makes the guard genuinely
+  load-bearing. See #134 for the structural gap that let both ship green.
+
 ## [0.11.12] - 2026-09-07
 
 - **The charter's cap table now has something behind it (#107).**
