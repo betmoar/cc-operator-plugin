@@ -460,7 +460,15 @@ Implements R5.
 - Produces: `_BASE_GATE_FILES` — the two workflow paths `check_base_gate` reads.
 - Consumes: nothing from Tasks 1–2 beyond the files they created.
 
-**ALSO IN THIS TASK (amendment, 2026-09-16).** Task 1 turned two existing `BaseGateTest`
+**ALSO IN THIS TASK, 2 of 2 (amendment, 2026-09-16 — from the Task 1/1a review).**
+`check_base_gate`'s claim-4 token list (`FLOOR_`, `extract_checks`, `CORE_FILES`,
+`is_core_path`, `BASE_GATE_FAILED`, `die `) contains nothing from the merge-tree
+classifier, so deleting that whole block — the subject the four arms now read — would be
+caught only by the bash suite. The claim's own docstring says it exists "to catch deletion
+of the arm". Add `merge-tree` and `PR_TREE` to that list, and mutation-check by deleting
+the classifier block: it must go red **in `check_base_gate`**, not only in the bash suite.
+
+**ALSO IN THIS TASK, 1 of 2 (amendment, 2026-09-16).** Task 1 turned two existing `BaseGateTest`
 cases red and could not fix them under its own hard constraints: their mutation harness
 hardcodes the literal `extract_checks "$PR_SHA"`, which Task 1 changed to `$PR_TREE`.
 Measured after `5cb8a20`: `test_a_comment_does_not_satisfy_an_arm_pin` and
