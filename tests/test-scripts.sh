@@ -4881,11 +4881,14 @@ check "reverify: a clean ledger (header only) exits 0" \
   "$( if ( cd "$RVC" && bash "$INIT" >/dev/null 2>&1 && bash "$RV" >/dev/null 2>&1 ); then echo 0; else echo 1; fi )"
 
 # A task id of `Gate` with criterion `Criterion` is a ledger ops-task.sh permits, and the
-# prefix filter dropped it from the sweep while counting it as "not a 4-cell row" — the
-# wrong reason for the wrong row. caps.sh was fixed in #126; this is its sibling parser.
+# prefix filter dropped it from the sweep ENTIRELY. Measured 2026-09-16: the row is
+# `continue`d at the header filter, which sits BEFORE the cell count, so it is not even
+# counted as "not a 4-cell row" — that tally reads 0. Invisible, not merely miscounted.
+# (The row is UNDATABLE here, not dated: the fixture stamps @no-commit. This case pins
+# that the sweep SEES it.) caps.sh was fixed in #126; this is its sibling parser.
 printf '| Gate | Criterion | ev @no-commit | FAIL |\n' >> "$RVP/.operator/VERDICTS.md"
 RV_OUT="$(bash "$RV" --ledger "$RVP/.operator/VERDICTS.md" 2>&1)"
-check "#128 a row whose task id is Gate is DATED, not dropped by the header filter" \
+check "#128 a row whose task id is Gate is SWEPT, not dropped by the header filter" \
   "$(printf '%s' "$RV_OUT" | grep -q '| Gate | ' && echo 0 || echo 1)"
 check "#128 CONTROL: the real header line is still skipped" \
   "$(printf '%s' "$RV_OUT" | grep -q 'Criterion | Evidence | PASS/FAIL' && echo 1 || echo 0)"
@@ -5184,7 +5187,7 @@ git -C "$BGD" checkout -q -b m5-del-base "$BG_M5_DEL_COMMON"
 : > "$BGD/NOTES-m5del.md"
 git -C "$BGD" commit -qam m5-del-base-removes
 BG_OUT="$(bash "$BG" --base m5-del-base --pr m5-del-pr --repo "$BGD" 2>&1)"; BG_RC=$?
-check "base-gate: CONTROL — a marker the base deletes and the PR never touches never reaches the merged tree (not a live escape)" \
+check "base-gate: a marker the base DELETES is not re-blamed on a PR that merely kept it (refutes the two-dot form; the brief's escape shape is not live)" \
   "$([ "$BG_RC" = 0 ] && echo 0 || echo 1)"
 
 # The REAL, reachable differentiator: content the trusted BASE already

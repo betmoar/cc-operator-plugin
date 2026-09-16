@@ -200,6 +200,12 @@ echo "== base-gate: trusted base ${BASE_SHA:0:12} vs pr ${PR_SHA:0:12} (merged t
 Lines 148 (change list), 390 (marker diff), 409 (final marker) keep `PR_SHA` — arms 4 and
 5 ask what *this PR* did, not what the result is.
 
+> **SUPERSEDED 2026-09-16, after the Task 1 re-review.** Arm 5 does NOT keep `PR_SHA`.
+> It became `git diff "${BASE_SHA}" "${PR_TREE}"`: a hard-fail arm must ask what the
+> merged tree carries, not what the PR's own diff happens to show. Arm 4 alone keeps the
+> three-dot form, because authorship is exactly the question it asks. See the AMENDED R1
+> table in the spec.
+
 3d. Header CATCHES list gains one line above the floors bullet:
 
 ```

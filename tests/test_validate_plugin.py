@@ -5053,6 +5053,54 @@ class BaseGateTest(unittest.TestCase):
         self.assertTrue(any("ALSO subscribes to `pull_request:`" in p
                             for p in self._probs()), self._probs())
 
+    def test_a_base_gate_workflow_missing_while_validate_exists_fires(self):
+        # #131 moved the job out of validate.yml and out of the reach of the
+        # old "every validate.yml carries a live base-gate: job" claim. For one
+        # commit, deleting BOTH base-gate workflows left the validator
+        # reporting "all contracts hold" — measured 2026-09-16 on the real
+        # tree, and red in check_base_gate only after claim 1b.
+        for rel in vp._BASE_GATE_FILES:
+            (self.dir / rel).unlink()
+        self.assertTrue(any("missing while" in p_ and "no trusted base-gate" in p_
+                            for p_ in self._probs()), self._probs())
+
+    def test_a_forge_with_neither_file_is_not_a_finding(self):
+        # NEGATIVE CONTROL for claim 1b. A forge nobody configured claims
+        # nothing — demanding the workflow everywhere would be the false
+        # positive that trains people to ignore the alarm.
+        for rel in list(vp._CI_FILES) + list(vp._BASE_GATE_FILES):
+            f = self.dir / rel
+            if f.is_file():
+                f.unlink()
+        self.assertEqual(self._probs(), [])
+
+    def test_a_job_level_if_on_the_base_gate_job_fires(self):
+        # `if: false` is a ONE-LINE retirement of the enforcer. Since #131 the
+        # `on:` block is the guard, so any job-level `if:` can only subtract.
+        # Measured 2026-09-16: adding this to the real workflow left the
+        # validator green, where the same edit on origin/main fired twice.
+        self._edit(".github/workflows/base-gate.yml",
+                   "  base-gate:\n", "  base-gate:\n    if: false\n")
+        self.assertTrue(any("job-level `if:`" in p_ for p_ in self._probs()),
+                        self._probs())
+
+    def test_a_step_level_if_does_not_stand_in_for_the_job_guard(self):
+        # THE ANCHOR CASE, restored. #131 deleted its ancestor along with the
+        # locator it guarded; the property survived the locator. A step-level
+        # `if:` is LEGITIMATE (a conditional cleanup step) and can sit
+        # textually BEFORE any job-level one, so a loose `^\s*if:` would read
+        # that step's condition as the job's. Two properties make this
+        # discriminate, both deliberate: the decoy comes FIRST, and it is a
+        # step PROPERTY `if:` at 8 spaces (a `- if:` list item would not match
+        # `^\s*if:` either, and would prove nothing about the anchor).
+        self._edit(".github/workflows/base-gate.yml",
+                   "    steps:\n",
+                   "    steps:\n"
+                   "      - name: a conditional cleanup step\n"
+                   "        if: github.event_name == 'pull_request_target'\n"
+                   "        run: echo decoy\n")
+        self.assertEqual(self._probs(), [])
+
     def test_a_leftover_base_gate_job_in_validate_yml_is_refused(self):
         # Claim 5: the job must not ALSO remain where the untrusted event
         # reaches it. Moving a job is two edits, and only one of them is

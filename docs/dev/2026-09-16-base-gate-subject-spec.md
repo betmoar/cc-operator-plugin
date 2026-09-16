@@ -26,11 +26,19 @@ as the PR-side subject for the four arms that ask "does the result weaken the ba
 | 3 enforcer-file + `tests/` presence | `PR_SHA` | `MERGED_TREE` |
 | 3b CI rung set | `PR_SHA` | `MERGED_TREE` |
 | 4 delta report | `BASE..PR` | **unchanged** |
-| 5 forged marker | `BASE..PR` | **unchanged** |
+| 5 forged marker | `BASE..PR` | **`diff BASE_SHA PR_TREE`** (AMENDED) |
 
-Arms 4 and 5 keep the diff subject on purpose: the delta report names what *this PR*
-touched (a human reads it as authorship), and a forged marker is something the PR's own
-diff *adds*. Neither asks about the resulting tree.
+**AMENDED 2026-09-16 after the Task 1 re-review.** Arm 4 keeps the diff subject on
+purpose: the delta report names what *this PR* touched, and a human reads it as
+authorship. **Arm 5 does not, and the table above originally said it did.** A hard-fail
+arm must ask what the tree a merge would actually produce carries. Measured: the escape
+that motivated the move does NOT reproduce — when the PR never touches the hunk the
+base's deletion wins the merge and the marker is absent under either form, and when it
+does touch it `merge-tree` reports a conflict and the script refuses before arm 5 runs.
+What the move actually buys is a closed FALSE POSITIVE (a marker the base's own tip
+already carries, restated by the PR) plus one subject across every hard-fail arm. Two
+cases pin the form together: three-dot reddens one, two-dot reddens the other, only
+base-vs-tree passes both.
 
 **Measured basis** (git 2.43.0 local, 2.55.0 on the GitHub runner per the #126 job log):
 

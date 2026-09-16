@@ -51,8 +51,9 @@ single source of truth; bump it in the same commit as the changelog entry.
   `PR_TREE`, so deleting the classifier is caught here and not only in the bash suite.
 - **`ops-reverify.sh` matches the ledger header WHOLE, not by prefix (#128).** A task
   id of `Gate` with criterion `Criterion` is a ledger `ops-task.sh` permits, and the
-  prefix filter dropped that row from the re-verification sweep while counting it as
-  "not a 4-cell row" — the wrong reason for the wrong row. `scripts/lib/caps.sh`
+  prefix filter dropped that row from the re-verification sweep ENTIRELY: the header
+  filter sits before the cell count, so the row was not even tallied as "not a 4-cell
+  row" (measured: that counter reads 0). Invisible, not miscounted. `scripts/lib/caps.sh`
   already carried the whole-line form; this is the same fix in the sibling parser.
 - **Two rc-classifier fixtures stop depending on root (#130).** Git writes loose
   objects `0444`; root bypasses that bit and an ordinary user does not, so the

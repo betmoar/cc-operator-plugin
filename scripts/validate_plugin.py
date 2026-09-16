@@ -4023,6 +4023,23 @@ def check_base_gate(root, problems):
                 f"(comments stripped) — an arm deleted from the trusted gate "
                 f"leaves its CI step green and meaningless")
 
+    # claim 1b: the workflow must EXIST wherever that forge is configured.
+    # #131 moved the job OUT of validate.yml, and with it out of the reach of
+    # the old "every validate.yml carries a live base-gate: job" claim — so
+    # for one commit, DELETING both base-gate workflows left the validator
+    # reporting "all contracts hold" (measured 2026-09-16). A forge is
+    # "configured" iff it has a validate.yml; then its base-gate.yml is
+    # required. A checkout with neither is a forge nobody set up, and claims
+    # nothing. base-gate.sh's own CI_FILES arm catches the deletion too, but
+    # only from the BASE — i.e. only after this lands. This is the PR-side
+    # half, and losing it silently is how the gate stops being wired at all.
+    for _vrel, _brel in zip(_CI_FILES, _BASE_GATE_FILES):
+        if (root / _vrel).is_file() and not (root / _brel).is_file():
+            problems.append(
+                f"{_brel}: missing while {_vrel} exists — this forge runs the "
+                f"rungs but has no trusted base-gate workflow, so every rung "
+                f"is graded by the branch under test again (#108/#131)")
+
     # claims 2+3: the wiring, per forge
     for rel in _BASE_GATE_FILES:
         f = root / rel
@@ -4071,6 +4088,29 @@ def check_base_gate(root, problems):
                 f"this file and base-gate.sh both come from the PR head "
                 f"(measured on Forgejo, task 483). Subscribing to one event is "
                 f"the guard; an `if:` string is one a reviewer has to read")
+        # claim 2c: the job carries NO job-level `if:` AT ALL. The `on:` block
+        # is the guard now, so any `if:` here can only SUBTRACT from it, and
+        # `if: false` is one line that silently retires the enforcer. Measured
+        # 2026-09-16: adding it to this file left the validator green, where
+        # the same edit on origin/main fired twice (the release-gate `if:
+        # false` scan, which reads only validate.yml/release.yml, and the old
+        # claim 2b). Refusing the KEY rather than judging its VALUE is the
+        # whole point: a value test has to decide which expressions are
+        # benign, and that is the reviewer-reads-a-string problem #131 removed.
+        #
+        # ANCHORED AT EXACTLY 4 SPACES — the job-property indent. This is the
+        # property `test_a_step_level_if_does_not_stand_in_for_the_job_guard`
+        # stood on before #131 deleted it with its locator: a step-level `if:`
+        # is LEGITIMATE (a conditional cleanup step) and can sit textually
+        # first, so `^\s*if:` would read that step's condition as the job's.
+        _if_m = re.search(r"^ {4}if:\s*(.+)$", block, re.M)
+        if _if_m:
+            problems.append(
+                f"{rel}: the base-gate job carries a job-level `if:` "
+                f"({_if_m.group(1).strip()!r}) — since #131 the workflow's "
+                f"`on:` block IS the guard, so an `if:` here can only turn the "
+                f"trusted gate OFF; `if: false` is a one-line retirement of "
+                f"the enforcer that nothing else in this repo reports as red")
         # The INVOCATION, not merely the name. `bash scripts/base-gate.sh` —
         # a bare mention is satisfied by the bootstrap branch's own `[ -f
         # scripts/base-gate.sh ]` test, which is how a job that only checks
