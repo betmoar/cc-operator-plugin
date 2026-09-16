@@ -5280,6 +5280,26 @@ check "base-gate: a rung ADDED to a CI file passes (control)" \
 check "base-gate: a CI file absent at BOTH refs is not a finding (control)" \
   "$(printf '%s' "$BG_OUT" | grep -q 'forgejo' && echo 1 || echo 0)"
 
+# A base-gate WORKFLOW file deleted by the PR is the gate removed, and the
+# base's own copy is what runs, so it can and must catch that (R6).
+mkdir -p "$BGD/.github/workflows"
+printf 'name: base-gate\non:\n  pull_request_target:\n' > "$BGD/.github/workflows/base-gate.yml"
+git -C "$BGD" add -A >/dev/null 2>&1 && git -C "$BGD" commit -qm "add the base-gate workflow"
+BG_BASE2="$(git -C "$BGD" rev-parse HEAD)"
+git -C "$BGD" checkout -q -b delgate "$BG_BASE2"
+git -C "$BGD" rm -q .github/workflows/base-gate.yml && git -C "$BGD" commit -qm delgate
+BG_OUT="$(bash "$BG" --base "$BG_BASE2" --pr delgate --repo "$BGD" 2>&1)"; BG_RC=$?
+check "base-gate: a DELETED base-gate workflow is refused by name (R6)" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'GONE: .github/workflows/base-gate.yml' && echo 0 || echo 1)"
+# Control: the same fixture WITHOUT the deletion must not emit the GONE line
+# — otherwise the case above could pass for the wrong reason (some other
+# GONE:, or the fixture failing to commit).
+git -C "$BGD" checkout -q -b keepgate "$BG_BASE2"
+git -C "$BGD" commit -q --allow-empty -m keepgate
+BG_OUT="$(bash "$BG" --base "$BG_BASE2" --pr keepgate --repo "$BGD" 2>&1)"; BG_RC=$?
+check "base-gate: a base-gate workflow NOT deleted does not emit GONE (control)" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'GONE: .github/workflows/base-gate.yml' && echo 1 || echo 0)"
+
 # --- the SUBJECT is the MERGE RESULT, not the PR head (#130) ----------------
 # Re-measured 2026-09-16: a PR that touches nothing the gate guards went RED
 # the moment the base raised a floor and added a tests/ file underneath it,

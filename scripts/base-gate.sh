@@ -93,7 +93,7 @@ CORE_GLOBS="tests/ .github/workflows/ .forgejo/workflows/"
 # rung arm below asks each one by name at both refs. A forge whose file is
 # absent at the BASE is not configured and makes no claim; absent at the PR
 # ref while present at the base is the file deleted.
-CI_FILES=".github/workflows/validate.yml .forgejo/workflows/validate.yml"
+CI_FILES=".github/workflows/validate.yml .forgejo/workflows/validate.yml .github/workflows/base-gate.yml .forgejo/workflows/base-gate.yml"
 
 is_core_path() {  # is_core_path <path> → 0 when the path is enforcer core
   local p="$1" f g
