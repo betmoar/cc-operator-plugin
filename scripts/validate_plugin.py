@@ -3542,6 +3542,13 @@ _CI_FILES = (
     ".forgejo/workflows/release.yml",
 )
 
+# The trusted-gate workflows. NOT part of _CI_FILES: check_suite_floors
+# demands every rung in every file that tuple lists, and these run no rungs.
+_BASE_GATE_FILES = (
+    ".github/workflows/base-gate.yml",
+    ".forgejo/workflows/base-gate.yml",
+)
+
 
 def check_suite_floors(root, problems):
     """The ratchet: every suite has a floor, and every CI path runs through it.
@@ -3966,23 +3973,24 @@ def check_base_gate(root, problems):
 
     Five claims, each failing independently:
       1. the script exists and declares its contract (exit codes, fail-closed);
-      2. every CI file that has a validate.yml carries a LIVE base-gate job,
-         and the workflow declares `pull_request_target:` as a trigger;
-      2b. THE JOB'S OWN `if:` gates on pull_request_target. NOT a restatement
-         of (2): a workflow can declare the trigger in `on:` and still guard
-         the job with `if: github.event_name == 'pull_request'`, which runs it
-         in the UNTRUSTED event — the workflow file AND base-gate.sh both
-         from the PR head. That is what the first draft shipped, and a real
-         Forgejo run measured it (task 483, 2026-09-05: the job ran under
-         `pull_request` and would have been skipped under the trusted event);
+      2. every base-gate workflow declares `pull_request_target:` as a
+         trigger AND does NOT also declare `pull_request:` (#131: the job
+         moved into its own workflow so the untrusted event can never reach
+         it AT ALL — a structural guard, replacing the job-level `if:` string
+         a reviewer used to have to read. That `if:` inversion is what the
+         first draft shipped, and a real Forgejo run measured it running
+         under the untrusted event, task 483, 2026-09-05);
       3. the job's steps reach base-gate.sh and NEVER checkout the head — a
          `uses: actions/checkout` without a base-pinned `ref:` in a
          pull_request_target job is the classic pwn-request shape, and here it
          would put PR bytes on the disk this gate exists to keep them off;
       4. the script's own arms are present — the floor compare, the registry
-         compare, and the fail-closed refusals (presence pins; the bash suite
-         mutation-checks each arm RED, so these exist to catch deletion of the
-         arm, not to prove it works).
+         compare, the merge-tree classifier, and the fail-closed refusals
+         (presence pins; the bash suite mutation-checks each arm RED, so
+         these exist to catch deletion of the arm, not to prove it works);
+      5. the job does NOT also remain in validate.yml, where `pull_request`
+         reaches it — moving a job is two edits, and only one of them is
+         visible in claim 2.
     """
     bg_rel = "scripts/base-gate.sh"
     bg = root / bg_rel
@@ -4008,7 +4016,7 @@ def check_base_gate(root, problems):
     # (a hardcoded second copy beside them is how the two drift and the gate
     # stops covering a file it still names).
     for token in ("FLOOR_", "extract_checks", "CORE_FILES", "is_core_path",
-                  "BASE_GATE_FAILED", "die "):
+                  "BASE_GATE_FAILED", "die ", "merge-tree", "PR_TREE"):
         if token not in code:
             problems.append(
                 f"{bg_rel}: the arm keyed on {token!r} is absent from code "
@@ -4016,10 +4024,10 @@ def check_base_gate(root, problems):
                 f"leaves its CI step green and meaningless")
 
     # claims 2+3: the wiring, per forge
-    for rel in _CI_FILES:
+    for rel in _BASE_GATE_FILES:
         f = root / rel
-        if not f.is_file() or f.name != "validate.yml":
-            continue  # release.yml has no PR context; a forge not configured
+        if not f.is_file():
+            continue  # a forge this checkout does not configure
         text = f.read_text(encoding="utf-8")
         # live view: comments cannot satisfy the pin
         # The trailing newline is RE-ADDED: `"\n".join(splitlines())` drops
@@ -4036,8 +4044,8 @@ def check_base_gate(root, problems):
         # separated by top-level `  <job-name>:` blocks at 2-space indent.
         #
         # THE INDENT IS LOAD-BEARING, and deliberately so. A reindent of
-        # validate.yml makes this locator miss — and it then fires "no live
-        # base-gate: job" rather than passing quietly, which is the safe
+        # this workflow file makes this locator miss — and it then fires "no
+        # live base-gate: job" rather than passing quietly, which is the safe
         # direction (#114: the empty answer must not read as a negative
         # answer). Do NOT "fix" that false alarm by loosening this to
         # arbitrary indentation: the 4-space step indent is what keeps the
@@ -4056,6 +4064,13 @@ def check_base_gate(root, problems):
                 f"{rel}: the workflow lacks `pull_request_target:` — without "
                 f"it the workflow file and the gate script both come from the "
                 f"PR head, which is the self-judging loop #108 exists to break")
+        if re.search(r"^\s*pull_request:", live, re.M):
+            problems.append(
+                f"{rel}: the workflow ALSO subscribes to `pull_request:` — the "
+                f"trusted job would then run under the untrusted event, where "
+                f"this file and base-gate.sh both come from the PR head "
+                f"(measured on Forgejo, task 483). Subscribing to one event is "
+                f"the guard; an `if:` string is one a reviewer has to read")
         # The INVOCATION, not merely the name. `bash scripts/base-gate.sh` —
         # a bare mention is satisfied by the bootstrap branch's own `[ -f
         # scripts/base-gate.sh ]` test, which is how a job that only checks
@@ -4086,32 +4101,6 @@ def check_base_gate(root, problems):
                 f"`exit 0` in its place is worse: it is indistinguishable "
                 f"from a clean run")
 
-        # The job's own `if:` must gate on pull_request_TARGET. Measured on
-        # Forgejo (task 483, 2026-09-05): with `== 'pull_request'` the job
-        # ran under the UNTRUSTED event — which reads this file and every
-        # script it calls from the PR HEAD, the exact loop the job exists to
-        # break — and would have been skipped under the trusted one. The
-        # inversion is invisible in review (both spellings look deliberate)
-        # and produces a job that appears to run correctly, which is why it
-        # is pinned rather than left to care.
-        # The JOB-level `if:` — anchored at exactly 4 spaces, the job-property
-        # indent. A bare `^\s*if:` takes the FIRST if: in the block, which a
-        # step-level one (legitimate for a conditional cleanup step) can
-        # precede — and then the pin checks a line that was never the guard.
-        if_m = re.search(r"^ {4}if:\s*(.+)$", block, re.M)
-        if not if_m:
-            problems.append(
-                f"{rel}: the base-gate job has no `if:` guard — it would run "
-                f"on push too, where there is no PR to judge and the head sha "
-                f"is empty")
-        elif "pull_request_target" not in if_m.group(1):
-            problems.append(
-                f"{rel}: the base-gate job's guard is `{if_m.group(1).strip()}` "
-                f"— it must gate on `pull_request_target`. Under "
-                f"`pull_request` the workflow AND base-gate.sh come from the "
-                f"PR head, so the job judges the PR with the PR's own code "
-                f"(measured on Forgejo, task 483)")
-
         # claim 3: no checkout of the head inside the target job. The
         # checkout in this job must pin the BASE sha; a bare `uses:
         # .../checkout` step in a pull_request_target workflow checks out the
@@ -4130,6 +4119,22 @@ def check_base_gate(root, problems):
                     f"base ref — in a pull_request_target workflow a bare "
                     f"checkout is the PR HEAD on disk, the exact bytes this "
                     f"gate exists to judge, not trust")
+
+    # claim 5: the job must not ALSO remain in validate.yml, where
+    # `pull_request` reaches it. Moving a job is two edits and a reviewer
+    # sees one diff.
+    for rel in (".github/workflows/validate.yml",
+                ".forgejo/workflows/validate.yml"):
+        f = root / rel
+        if not f.is_file():
+            continue
+        live = "".join(ln + "\n" for ln in f.read_text(encoding="utf-8").splitlines()
+                       if not ln.strip().startswith("#"))
+        if re.search(r"^  base-gate:", live, re.M):
+            problems.append(
+                f"{rel}: still carries a `base-gate:` job. It moved to its own "
+                f"pull_request_target-only workflow (#131); a copy left here "
+                f"runs the trusted gate under the untrusted event")
 
 
 def check_claude_md_size(root, problems):
