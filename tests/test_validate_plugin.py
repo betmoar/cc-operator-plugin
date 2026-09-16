@@ -5069,7 +5069,8 @@ class BaseGateTest(unittest.TestCase):
         # its own answer — the vacuity shape this repo has shipped six times.
         for rel in vp._BASE_GATE_FILES:
             with self.subTest(workflow=rel):
-                self.setUp()  # a clean tree per forge; only ONE file goes
+                self.tearDown()   # the previous iteration's tree, or it leaks
+                self.setUp()      # a clean tree per forge; only ONE file goes
                 (self.dir / rel).unlink()
                 probs = self._probs()
                 self.assertTrue(
@@ -5112,6 +5113,57 @@ class BaseGateTest(unittest.TestCase):
                    "        if: github.event_name == 'pull_request_target'\n"
                    "        run: echo decoy\n")
         self.assertEqual(self._probs(), [])
+
+    def test_a_nested_pull_request_target_key_does_not_satisfy_the_trigger(self):
+        # THE ANCHOR CASE for claim 2. `^\\s*pull_request_target:` over the
+        # whole comment-stripped file accepted that key at ANY indentation, so
+        # a nested mapping inside a job satisfied the positive claim while the
+        # real trigger map said something else (PR #132 review). The key must
+        # be read from the TOP-LEVEL `on:` map or the pin is decorative.
+        self._edit(".github/workflows/base-gate.yml",
+                   "on:\n  pull_request_target:\njobs:\n",
+                   "on:\n  push:\njobs:\n  decoy:\n    with:\n"
+                   "      pull_request_target: true\n")
+        self.assertTrue(any("top-level `on:` map" in p_ for p_ in self._probs()),
+                        self._probs())
+
+    def test_a_workflow_triggered_only_on_push_fires(self):
+        # The same gap from the other side: swapping the trusted event for an
+        # unrelated one must not pass merely because `pull_request:` is absent.
+        self._edit(".github/workflows/base-gate.yml",
+                   "on:\n  pull_request_target:\n", "on:\n  push:\n")
+        self.assertTrue(any("pull_request_target" in p_ for p_ in self._probs()),
+                        self._probs())
+
+    def test_an_aliased_leftover_base_gate_job_is_refused(self):
+        # Claim 5b. `base_gate:` with `name: base-gate` and the same call is a
+        # second gate under the UNTRUSTED event, identical in the checks UI,
+        # and the id-keyed locator never sees it (PR #132 review).
+        self._edit(".github/workflows/validate.yml",
+                   "      - run: true\n",
+                   "      - run: true\n  base_gate:\n"
+                   "    name: base-gate\n    steps:\n"
+                   "      - run: bash scripts/base-gate.sh --base b --pr p\n")
+        self.assertTrue(any("still INVOKES" in p_ for p_ in self._probs()),
+                        self._probs())
+
+    def test_a_shallow_base_gate_checkout_fires(self):
+        # R3 was prose with no pin. A depth-1 checkout has no ancestors for
+        # merge-tree to find a merge base in, so every PR becomes a refusal —
+        # which reads as the gate being broken rather than the fetch (#130).
+        self._edit(".github/workflows/base-gate.yml",
+                   "          fetch-depth: 0\n", "")
+        self.assertTrue(any("fetch-depth: 0" in p_ for p_ in self._probs()),
+                        self._probs())
+
+    def test_a_truncated_head_fetch_fires(self):
+        # The other half of R3: a truncated fetch leaves objects merge-tree
+        # cannot read, and that returns rc 128 — not a conflict (#130).
+        self._edit(".github/workflows/base-gate.yml",
+                   "git fetch --no-tags origin",
+                   "git fetch --no-tags --depth=1 origin")
+        self.assertTrue(any("--depth=1" in p_ for p_ in self._probs()),
+                        self._probs())
 
     def test_a_leftover_base_gate_job_in_validate_yml_is_refused(self):
         # Claim 5: the job must not ALSO remain where the untrusted event

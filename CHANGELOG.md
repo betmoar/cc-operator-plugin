@@ -20,7 +20,7 @@ single source of truth; bump it in the same commit as the changelog entry.
   adds a `tests/` file in nearly every PR and an unrebased branch read as lowering and
   deleting them. The merge result contained neither weakening. Arm 4 keeps the
   three-dot diff on purpose — it names what *this PR* authored, which a human reads.
-- **Six merge-tree outcomes, five distinct refusals (#130).** `rc` alone does not
+- **Seven merge-tree outcomes, six distinct refusals (#130).** `rc` alone does not
   separate them; the discriminator is rc, whether stdout line 1 is a sha, and whether
   the tree has entries. A real conflict, an unreadable object, a corrupt repository
   (rc 128), an empty merge result, an unrecognised output shape, and an unavailable

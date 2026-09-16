@@ -4087,18 +4087,52 @@ def check_base_gate(root, problems):
                 f"is unwired on this forge and every rung is self-graded")
             continue
         block = job_block.group(1)
-        if not re.search(r"^\s*pull_request_target:", live, re.M):
+        # THE TOP-LEVEL `on:` MAP, not the whole file. `^\s*pull_request_target:`
+        # over `live` accepted that key at ANY indentation — a nested mapping
+        # somewhere in a job satisfied the positive claim while the real
+        # trigger map said something else entirely (PR #132 review). The
+        # indentation discipline the job_block locator already follows applies
+        # here too: top-level keys sit at exactly two spaces under a column-0
+        # `on:`. Read the key SET, because R4's claim is not "declares the
+        # trusted event" but "declares the trusted event AND NOTHING ELSE" —
+        # one extra key is the untrusted event back, which is the whole
+        # mechanism (#131).
+        _on_m = re.search(r"^on:[ \t]*\n((?:[ ]{2}[^\n]*\n|[ \t]*\n)*)",
+                          live, re.M)
+        _on_keys = re.findall(r"^  ([A-Za-z_][A-Za-z0-9_.-]*):",
+                              _on_m.group(1), re.M) if _on_m else []
+        if "pull_request_target" not in _on_keys:
             problems.append(
-                f"{rel}: the workflow lacks `pull_request_target:` — without "
-                f"it the workflow file and the gate script both come from the "
-                f"PR head, which is the self-judging loop #108 exists to break")
-        if re.search(r"^\s*pull_request:", live, re.M):
+                f"{rel}: the top-level `on:` map does not declare "
+                f"`pull_request_target:` (it declares "
+                f"{_on_keys or 'nothing this pin can read'}) — without it the "
+                f"workflow file and the gate script both come from the PR "
+                f"head, which is the self-judging loop #108 exists to break")
+        _extra = [k for k in _on_keys if k != "pull_request_target"]
+        if _extra:
             problems.append(
-                f"{rel}: the workflow ALSO subscribes to `pull_request:` — the "
+                f"{rel}: the workflow ALSO subscribes to `{_extra[0]}:` — the "
                 f"trusted job would then run under the untrusted event, where "
                 f"this file and base-gate.sh both come from the PR head "
                 f"(measured on Forgejo, task 483). Subscribing to one event is "
                 f"the guard; an `if:` string is one a reviewer has to read")
+        # claim 2d: R3's history requirements, which nothing pinned. A
+        # depth-1 checkout has no ancestors for `merge-tree` to find a merge
+        # base in, and a truncated head fetch leaves objects it cannot read —
+        # the rc-128 shape this release exists to name. Either regression
+        # turns every PR into a refusal, which reads as the gate being broken
+        # rather than the fetch being wrong.
+        if not re.search(r"^\s*fetch-depth:[ \t]*0[ \t]*$", block, re.M):
+            problems.append(
+                f"{rel}: the base-gate checkout does not pin `fetch-depth: 0` "
+                f"— `git merge-tree` needs a merge base, and a shallow "
+                f"checkout has no ancestors to find one in (#130)")
+        if "--depth=1" in block:
+            problems.append(
+                f"{rel}: the base-gate job fetches the PR head with "
+                f"`--depth=1` — a truncated fetch leaves objects merge-tree "
+                f"cannot read, and that failure returns rc 128, not a "
+                f"conflict (#130)")
         # claim 2c: the job carries NO job-level `if:` AT ALL. The `on:` block
         # is the guard now, so any `if:` here can only SUBTRACT from it, and
         # `if: false` is one line that silently retires the enforcer. Measured
@@ -4186,6 +4220,19 @@ def check_base_gate(root, problems):
                 f"{rel}: still carries a `base-gate:` job. It moved to its own "
                 f"pull_request_target-only workflow (#131); a copy left here "
                 f"runs the trusted gate under the untrusted event")
+        # claim 5b: THE INVOCATION, not the job ID. Keying only on `base-gate:`
+        # let an aliased leftover through — `base_gate:` with `name: base-gate`
+        # and the same `bash scripts/base-gate.sh` step is a second gate under
+        # the untrusted event, named identically in the checks UI, and the id
+        # locator never sees it (PR #132 review). What must not appear in
+        # validate.yml is the CALL.
+        if re.search(r"bash[ \t]+scripts/base-gate\.sh", live):
+            problems.append(
+                f"{rel}: still INVOKES `scripts/base-gate.sh`, whatever the "
+                f"job is called. The trusted gate runs from its own "
+                f"pull_request_target-only workflow (#131); a call left here "
+                f"runs it under the untrusted event, where this file and the "
+                f"script both come from the PR head")
 
 
 def check_claude_md_size(root, problems):

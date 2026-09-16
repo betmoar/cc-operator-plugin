@@ -4890,8 +4890,15 @@ printf '| Gate | Criterion | ev @no-commit | FAIL |\n' >> "$RVP/.operator/VERDIC
 RV_OUT="$(bash "$RV" --ledger "$RVP/.operator/VERDICTS.md" 2>&1)"
 check "#128 a row whose task id is Gate is SWEPT, not dropped by the header filter" \
   "$(printf '%s' "$RV_OUT" | grep -q '| Gate | ' && echo 0 || echo 1)"
+# The control greps the EMITTED shape, not the input's cell order. Measured
+# 2026-09-16 with the filter removed: the header is swept and printed as
+# `| 2 | Gate | PASS/FAIL | (none) | — | UNDATABLE | Criterion |` — scan_ledger
+# REORDERS the cells, so `Criterion | Evidence | PASS/FAIL` never appears in
+# the output under either behaviour and the first version of this control
+# passed both ways (PR #132 review). The header's tell after formatting is the
+# VERDICT cell reading `PASS/FAIL`, which no real row can carry.
 check "#128 CONTROL: the real header line is still skipped" \
-  "$(printf '%s' "$RV_OUT" | grep -q 'Criterion | Evidence | PASS/FAIL' && echo 1 || echo 0)"
+  "$(printf '%s' "$RV_OUT" | grep -q '| Gate | PASS/FAIL |' && echo 1 || echo 0)"
 
 echo "-- Case: gate-suite.sh holds a rung to its MARKER and its FLOOR (0.11.7)"
 # Two claims that fail independently. The FLOOR catches deletion; the MARKER
@@ -5389,7 +5396,7 @@ BG_OUT="$(bash "$BG" --base "$BG_ELSEWHERE" --pr weakens-realmerge --repo "$BGD"
 check "base-gate: a floor LOWERED survives a genuine (non-fast-forward) three-way merge" \
   "$([ "$BG_RC" = 1 ] && printf '%s' "$BG_OUT" | grep -q 'BASE_GATE_FAILED: FLOOR:' && echo 0 || echo 1)"
 
-# --- the six merge-tree outcomes, five of them refusals (R2, AMENDED) -------
+# --- the seven merge-tree outcomes, six of them refusals (R2, AMENDED) -----
 # rc alone cannot classify: a real conflict and an UNREADABLE OBJECT both
 # return 1, and only a tree sha on stdout line 1 separates them. A truncated
 # shallow fetch takes the second shape, and this job fetches the PR head.

@@ -146,7 +146,10 @@ BASE_SHA="$(git -C "$REPO" rev-parse --quiet --verify "${BASE_REF}^{commit}")"
 # tree with NO checkout and NO worktree, so the trusted-subject property is
 # untouched: PR bytes are still never on disk and never executed.
 #
-# SIX OUTCOMES, and rc alone does not separate them (measured 2026-09-16,
+# SEVEN OUTCOMES — ONE accept and SIX refusals — and rc alone does not
+# separate them (measured 2026-09-16; the count was written as six/five
+# until PR #132's review counted the branches: the rc-0 arm SPLITS into
+# accept and empty-tree-refuse, which the first tally folded into one,
 # AMENDED after the first cut folded two of these wrong — R2 in
 # docs/dev/2026-09-16-base-gate-subject-spec.md):
 #   rc 0 + a sha + a NON-EMPTY tree -> clean merge, this is the subject
@@ -199,8 +202,16 @@ elif [ "$_MT_RC" -eq 1 ]; then
   die "merge-tree could not read an object for ${BASE_SHA:0:12}..${PR_SHA:0:12} — the repository is incomplete (a truncated or shallow fetch takes exactly this shape). This is NOT a conflict and must not be read as one; fetch both sides in full"
 elif [ "$_MT_RC" -eq 128 ]; then
   die "git reported a fatal error (128) merging ${BASE_SHA:0:12} and ${PR_SHA:0:12} — the repository is incomplete or an object is unreadable, which is what a truncated or shallow fetch leaves behind. This is NOT an old git and NOT a conflict; fetch both sides in full"
+elif [ "$_MT_RC" -eq 129 ]; then
+  die "git merge-tree --write-tree exited 129 — the option is unavailable on this runner (it needs git >= 2.38). Refusing: falling back to comparing the PR head is the defect this subject exists to remove"
 else
-  die "git merge-tree --write-tree exited ${_MT_RC} — the option is unavailable on this runner (it needs git >= 2.38). Refusing: falling back to comparing the PR head is the defect this subject exists to remove"
+  # ANY OTHER STATUS IS NOT AN OLD GIT. The catch-all used to say "needs git
+  # >= 2.38" for every rc it did not recognise — a killed process (130, 137),
+  # a future git's new failure code, anything — which is the same
+  # two-causes-one-message defect the rc-128 branch above was split out to
+  # remove (PR #132 review). 129 is the documented old-option status and it
+  # keeps that message; everything else says only what is known.
+  die "git merge-tree --write-tree exited ${_MT_RC} — an exit status this gate does not recognise (129 is the old-git case; 1 and 128 are handled above). Refusing rather than guessing at a cause: falling back to comparing the PR head is the defect this subject exists to remove"
 fi
 
 echo "== base-gate: trusted base ${BASE_SHA:0:12} vs pr ${PR_SHA:0:12} (merged tree ${PR_TREE:0:12}) =="
@@ -270,13 +281,13 @@ if git -C "$REPO" show "${PR_TREE}:tests/floors.env" > "$_PR_FLOORS_RAW" 2>/dev/
   _bad_line="$(grep -vE '^[[:space:]]*(#|$)' "$_PR_FLOORS_RAW" \
                | grep -vE '^FLOOR_[A-Za-z0-9_]+=[0-9]+$' | head -1)"
   if [ -n "$_bad_line" ]; then
-    fail "FLOOR: tests/floors.env at the PR ref carries a line that is not blank, a comment, or exactly FLOOR_<name>=<digits> — gate-suite.sh sources every line, so a line this gate cannot read is a value it cannot compare (first offender: ${_bad_line})"
+    fail "FLOOR: tests/floors.env in the MERGED TREE carries a line that is not blank, a comment, or exactly FLOOR_<name>=<digits> — gate-suite.sh sources every line, so a line this gate cannot read is a value it cannot compare (first offender: ${_bad_line})"
   fi
 fi
 rm -f "$_PR_FLOORS_RAW"
 # a missing PR floors.env is a deleted ratchet — RED, named
 if [ ! -s "$PR_FLOORS" ] && [ -s "$BASE_FLOORS" ]; then
-  fail "tests/floors.env is gone or empty at the PR ref — the ratchet is deleted"
+  fail "tests/floors.env is gone or empty in the MERGED TREE — the ratchet is deleted"
 elif ! diff -q "$BASE_FLOORS" "$PR_FLOORS" >/dev/null; then
   # some floor line changed: any DECREASE or REMOVAL is red.
   #
@@ -296,11 +307,11 @@ elif ! diff -q "$BASE_FLOORS" "$PR_FLOORS" >/dev/null; then
     _n_decl="$(grep -cE "^${k}=" "$PR_FLOORS")"
     PRV="$(grep -E "^${k}=" "$PR_FLOORS" | tail -1 | grep -oE '[0-9]+$')"
     if [ -z "$PRV" ]; then
-      fail "FLOOR: ${k} removed at the PR ref (base ${v})"
+      fail "FLOOR: ${k} removed in the MERGED TREE (base ${v})"
       continue
     fi
     if [ "$_n_decl" -gt 1 ]; then
-      fail "FLOOR: ${k} is declared ${_n_decl} times at the PR ref — the LAST assignment is the one gate-suite.sh sources, so a restated key hides the value it enforces (effective: ${PRV})"
+      fail "FLOOR: ${k} is declared ${_n_decl} times in the MERGED TREE — the LAST assignment is the one gate-suite.sh sources, so a restated key hides the value it enforces (effective: ${PRV})"
     fi
     if [ "$PRV" -lt "$v" ]; then
       fail "FLOOR: ${k} lowered ${v} -> ${PRV} — deleting cases requires lowering the floor; the trusted copy catches it here"
@@ -338,10 +349,10 @@ extract_checks "$PR_TREE" > "$PR_CHECKS"
 _n_checks_bind="$(git -C "$REPO" show "${PR_TREE}:scripts/validate_plugin.py" 2>/dev/null \
                   | grep -vE '^[[:space:]]*#' | grep -cE '^CHECKS[[:space:]]*=')"
 if [ "${_n_checks_bind:-0}" -gt 1 ]; then
-  fail "CHECKS: the registry is bound ${_n_checks_bind} times at the PR ref — this gate reads the tuple block, python runs the LAST binding, so a rebinding after the tuple hides the registry that actually runs"
+  fail "CHECKS: the registry is bound ${_n_checks_bind} times in the MERGED TREE — this gate reads the tuple block, python runs the LAST binding, so a rebinding after the tuple hides the registry that actually runs"
 fi
 if [ ! -s "$PR_CHECKS" ]; then
-  fail "the CHECKS registry is gone or empty at the PR ref — a validator that runs nothing reports nothing"
+  fail "the CHECKS registry is gone or empty in the MERGED TREE — a validator that runs nothing reports nothing"
 else
   while IFS= read -r c; do
     [ -n "$c" ] || continue
@@ -492,7 +503,7 @@ fi
 # and three-dot's silence on it is correct, not a gap. When the PR's own
 # edit instead collides with the same hunk, `git merge-tree` reports a
 # CONFLICT and this script already refuses the run before arm 5 runs at all
-# (see the six merge-tree outcomes above) — so that path never reaches this
+# (see the seven merge-tree outcomes above) — so that path never reaches this
 # arm either, on any diff form.
 #
 # The form is kept anyway, for a property that IS real and IS reachable: the
