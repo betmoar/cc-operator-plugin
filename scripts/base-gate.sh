@@ -18,8 +18,9 @@
 #     - THE SUBJECT is the tree a MERGE would produce, not the PR head — so a
 #       PR that is merely BEHIND the base is not reported as deleting what
 #       the base added (#130). Conflict, unreadable object, corrupt
-#       repository, empty merge result, and an unavailable merge-tree are
-#       five distinct rc-2 refusals; none of them is a weakening.
+#       repository, empty merge result, an unrecognised merge-tree output
+#       shape (rc 0 with no tree sha), and an unavailable merge-tree are six
+#       distinct rc-2 refusals; none of them is a weakening.
 #     - a floor LOWERED, REMOVED, or hidden behind a DUPLICATE key (the file
 #       is sourced, so the last assignment is the effective one), or a
 #       floors.env line of ANY shape other than `FLOOR_<name>=<digits>` (the
@@ -215,12 +216,23 @@ git -C "$REPO" show "${BASE_SHA}:scripts/validate_plugin.py" 2>/dev/null | grep 
   || die "no CHECKS registry at the base ref — the trusted copy is not a shape this gate understands (fail closed)"
 
 # --- change list (the PR's own view of what it touched) -----------------------
-# Changed = diff base..pr. This includes files the PR DELETED (state D) — a
+# Changed = diff base...pr (THREE dots — merge-base..pr, the PR's own commits
+# since it branched). This includes files the PR DELETED (state D) — a
 # deleted enforcer file is the loudest possible delta and must be reported.
+# TWO dots would compare the two TREES, which attributes the BASE's own work
+# to the PR: this repo raises a floor and adds a tests/ file in nearly every
+# PR, so a two-dot diff against an unrebased branch reports the base's raise
+# as the PR LOWERING it and the base's new file as the PR DELETING it — the
+# same false-authorship defect arms 1-3b were just fixed for (#130), one
+# level up, in the only human-facing half, and now the ONLY signal on such a
+# PR because the arms correctly stay silent. Measured 2026-09-16 on the
+# `innocent`/`moved` fixture: two-dot named `M tests/floors.env` and
+# `D tests/test-two.sh` (both the base's own commits); three-dot named
+# neither.
 CHANGED_TMP="$(mktemp "${_TMPDIR_T}/basegate.changed.XXXXXX")"
 DIFFSTAT_TMP="$(mktemp "${_TMPDIR_T}/basegate.diffstat.XXXXXX")"
 trap 'rm -f "$CHANGED_TMP" "$DIFFSTAT_TMP"' EXIT
-if ! git -C "$REPO" diff --name-status "${BASE_SHA}" "${PR_SHA}" -- > "$DIFFSTAT_TMP" 2>/dev/null; then
+if ! git -C "$REPO" diff --name-status "${BASE_SHA}...${PR_SHA}" -- > "$DIFFSTAT_TMP" 2>/dev/null; then
   die "git diff base..pr failed — refusing (a diff failure must not read as 'no changes')"
 fi
 # name-status: one "<status>\t<path>" per line. Strip the rename/copy dest
@@ -461,8 +473,12 @@ fi
 # Measured: the first version went red on the very PR that added these
 # cases. The exclusion is narrow on purpose — a marker planted anywhere a
 # human reads CI output as evidence (source, docs, workflows) is still red.
+# THREE dots, same reason as the change list above: a marker line that
+# existed on an older base and was later removed BY THE BASE still shows as
+# `+` under a two-dot (tree-to-tree) diff — "the PR added it" — when the PR
+# never touched it. `merge-base..pr` reports only what the PR itself added.
 _MARKER_DIFF="$(mktemp "${_TMPDIR_T}/basegate.marker.XXXXXX")"
-if ! git -C "$REPO" diff "${BASE_SHA}" "${PR_SHA}" \
+if ! git -C "$REPO" diff "${BASE_SHA}...${PR_SHA}" \
        -- . ':(exclude)tests/' ':(exclude)scripts/base-gate.sh' \
        > "$_MARKER_DIFF" 2>/dev/null; then
   rm -f "$_MARKER_DIFF"

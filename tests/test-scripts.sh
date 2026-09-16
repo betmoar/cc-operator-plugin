@@ -5254,6 +5254,21 @@ check "base-gate: a PR that is BEHIND the base passes — the merge result is th
   "$([ "$BG_RC" = 0 ] && echo 0 || echo 1)"
 check "base-gate: and it says which tree it judged" \
   "$(printf '%s' "$BG_OUT" | grep -q 'merged tree' && echo 0 || echo 1)"
+# THE DELTA REPORT NAMES WHAT THE PR TOUCHED, NOT WHAT THE BASE TOUCHED (the
+# same false-authorship defect the arms were fixed for, one level up, in the
+# only human-facing half). Measured 2026-09-16 on this exact fixture:
+#   two-dot  (what shipped pre-fix)  A NOTES-innocent.md  M tests/floors.env  D tests/test-two.sh
+#   three-dot (merge-base..pr)       A NOTES-innocent.md
+# NOTES-innocent.md is never itself a CORE path (is_core_path only matches
+# CORE_FILES/CORE_GLOBS), so it never surfaces in the delta report either way
+# — the observable signal is the two files the BASE moved (both under
+# CORE_GLOBS' `tests/`): a two-dot diff misreports them as this PR's own
+# M/D, and a three-dot diff, seeing this PR touched no core file at all,
+# correctly reports "untouched" instead.
+check "base-gate: the delta report names what the PR touched, not what the BASE touched" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'enforcer core untouched by this PR' \
+     && ! printf '%s' "$BG_OUT" | grep -q 'tests/floors.env' \
+     && ! printf '%s' "$BG_OUT" | grep -q 'tests/test-two.sh' && echo 0 || echo 1)"
 # CONTROL: a real weakening ON TOP of a moved base is still caught, or the
 # case above would be satisfied by a gate that stopped looking. Branched from
 # $BG_MOVED, not $BG_BASE: branching from $BG_BASE edits the same floors.env
@@ -5265,8 +5280,35 @@ git -C "$BGD" checkout -q -b weakens "$BG_MOVED"
 bg_floors 10 1
 git -C "$BGD" commit -qam weakens
 BG_OUT="$(bash "$BG" --base "$BG_MOVED" --pr weakens --repo "$BGD" 2>&1)"; BG_RC=$?
-check "base-gate: a floor LOWERED is still refused when the base has moved (control)" \
+check "base-gate: a floor LOWERED is still refused when the base has moved (control, FAST-FORWARD merge)" \
   "$([ "$BG_RC" = 1 ] && echo 0 || echo 1)"
+# THE ABOVE IS A FAST-FORWARD, not a real merge: `weakens` branches from
+# $BG_MOVED, so merge-base(moved, weakens) == moved, and the merged tree IS
+# weakens' own tree — the arms see exactly what pre-#130 code saw. Nothing
+# above proves a weakening survives a genuine THREE-WAY merge, which is what
+# every arm now depends on. So: a SECOND base branch that moves ELSEWHERE
+# ONLY (a tests/ file, never floors.env) x a weakening branched from
+# $BG_BASE (never touching that same tests/ file) — the two diverge on
+# disjoint paths, so `merge-tree` produces a genuine non-fast-forward clean
+# merge whose tree carries BOTH the base's added file AND the PR's lowered
+# floor, and arm 1 must fire on that merge RESULT.
+git -C "$BGD" checkout -q -b elsewhere-only "$BG_BASE"
+printf 'an unrelated suite file\n' > "$BGD/tests/test-elsewhere.sh"
+git -C "$BGD" add -A >/dev/null 2>&1 && git -C "$BGD" commit -qm elsewhere-only
+BG_ELSEWHERE="$(git -C "$BGD" rev-parse elsewhere-only)"
+git -C "$BGD" checkout -q -b weakens-realmerge "$BG_BASE"
+bg_floors 10 1
+git -C "$BGD" commit -qam weakens-realmerge
+BG_WEAKENS_RM="$(git -C "$BGD" rev-parse weakens-realmerge)"
+# CONTROL: this fixture is a genuine three-way merge, not a fast-forward in
+# disguise — the merge base must be $BG_BASE itself, distinct from both tips.
+_bg_mb="$(git -C "$BGD" merge-base "$BG_ELSEWHERE" "$BG_WEAKENS_RM")"
+check "base-gate: the real-merge weakening fixture is NOT a fast-forward (control)" \
+  "$([ "$_bg_mb" = "$BG_BASE" ] && [ "$_bg_mb" != "$BG_ELSEWHERE" ] \
+     && [ "$_bg_mb" != "$BG_WEAKENS_RM" ] && echo 0 || echo 1)"
+BG_OUT="$(bash "$BG" --base "$BG_ELSEWHERE" --pr weakens-realmerge --repo "$BGD" 2>&1)"; BG_RC=$?
+check "base-gate: a floor LOWERED survives a genuine (non-fast-forward) three-way merge" \
+  "$([ "$BG_RC" = 1 ] && printf '%s' "$BG_OUT" | grep -q 'BASE_GATE_FAILED: FLOOR:' && echo 0 || echo 1)"
 
 # --- the six merge-tree outcomes, five of them refusals (R2, AMENDED) -------
 # rc alone cannot classify: a real conflict and an UNREADABLE OBJECT both
@@ -5306,8 +5348,12 @@ git -C "$BGC_D" add -A >/dev/null 2>&1 && git -C "$BGC_D" commit -qm corrupttree
 _ct="$(git -C "$BGC_D" rev-parse 'corrupttree^{tree}')"
 printf 'garbage' > "$BGC_D/.git/objects/${_ct%"${_ct#??}"}/${_ct#??}"
 BG_OUT="$(bash "$BG" --base "$BGC_BASE" --pr corrupttree --repo "$BGC_D" 2>&1)"; BG_RC=$?
+# 'repository is incomplete' alone cannot tell rc 128 from rc 1 (both die
+# messages carry it) — folding rc 128 into the rc-1 branch, the same class
+# of mistake as the #130 AMENDMENT defect this fixture exists to catch,
+# would stay green. 'fatal error (128)' is only in the rc-128 message.
 check "base-gate: an UNREADABLE object is rc 2 and names the repository, not the git version" \
-  "$([ "$BG_RC" = 2 ] && printf '%s' "$BG_OUT" | grep -q 'repository is incomplete' \
+  "$([ "$BG_RC" = 2 ] && printf '%s' "$BG_OUT" | grep -q 'fatal error (128)' \
      && ! printf '%s' "$BG_OUT" | grep -q 'git >= 2.38' && echo 0 || echo 1)"
 rm -rf "$BGC_D"
 
@@ -5317,10 +5363,23 @@ rm -rf "$BGC_D"
 # reusing $BGD. Measured 2026-09-16: deleting the PR commit's root tree
 # object yields rc 0 and stdout 4b825dc642cb… (git's canonical empty tree);
 # every arm downstream then reads every enforcer file as GONE.
+# THE FIXTURE CARRIES THE SAME CORE FILES $BGD DOES (not just tests/floors.env):
+# a thin fixture with no scripts/validate_plugin.py dies at the base-readable
+# check BEFORE the classifier's own guard is ever reached, so removing that
+# guard entirely is invisible here — the `! grep BASE_GATE_FAILED` half of
+# the assertion below would be satisfied by the fixture, not by the guard.
+# Measured: with the guard removed against this richer fixture, the run
+# still refuses (never reads as GONE, never a BASE_GATE_FAILED line) — it
+# dies computing the change list, because the SAME missing root tree object
+# that would make the classifier's subject empty also makes any ordinary
+# `git diff` against that ref fail outright, one step later than the guard.
 BGE_D="$(mktemp -d "${TMPDIR:-/tmp}/basegate-empty.XXXXXX")"
 ( cd "$BGE_D" && git init -q . && git config user.email t@example.com && git config user.name t ) >/dev/null 2>&1
-mkdir -p "$BGE_D/tests"
+mkdir -p "$BGE_D/scripts" "$BGE_D/tests" "$BGE_D/.github/workflows"
+printf 'CHECKS = (\n    check_hook,\n    check_floors,\n)\n' > "$BGE_D/scripts/validate_plugin.py"
 printf 'FLOOR_python=10\nFLOOR_shell=20\n' > "$BGE_D/tests/floors.env"
+printf '#!/usr/bin/env bash\n: the wrapper\n' > "$BGE_D/scripts/gate-suite.sh"
+printf '# ci\nsteps:\n  - run: bash scripts/gate-suite.sh shell\n  - run: bash scripts/gate-suite.sh python\n' > "$BGE_D/.github/workflows/validate.yml"
 git -C "$BGE_D" add -A >/dev/null 2>&1 && git -C "$BGE_D" commit -qm base
 BGE_BASE="$(git -C "$BGE_D" rev-parse HEAD)"
 git -C "$BGE_D" checkout -q -b emptypr "$BGE_BASE"
