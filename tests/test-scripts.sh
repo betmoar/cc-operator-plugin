@@ -5154,6 +5154,52 @@ bg_run m-forge-intests
 check "base-gate: the same marker INSIDE tests/ is not a forgery (control)" \
   "$([ "$BG_RC" = 0 ] && echo 0 || echo 1)"
 
+# --- arm 5's SUBJECT: base vs the MERGED TREE, not base vs the raw pr head,
+# and not three dots (PR #130 re-review, task 1-1a fix brief). The brief's
+# own motivating shape: a marker present at the merge base, removed by a
+# LATER base commit, retained untouched by a PR that forked before the
+# removal. MEASURED against real `git merge-tree`, though: when the PR does
+# not otherwise touch that hunk, the base's deletion wins the merge outright
+# and the marker is simply ABSENT from the merged tree — so this shape is
+# NOT a live escape under EITHER diff form (asserted below as a documented
+# CONTROL, not a red case: three-dot's silence on it was already correct).
+git -C "$BGD" checkout -q -b m5-del-common "$BG_BASE"
+printf 'BASE_GATE_PASSED: forged\n' > "$BGD/NOTES-m5del.md"
+git -C "$BGD" add -A >/dev/null 2>&1 && git -C "$BGD" commit -qm m5-del-common
+BG_M5_DEL_COMMON="$(git -C "$BGD" rev-parse HEAD)"
+git -C "$BGD" checkout -q -b m5-del-pr "$BG_M5_DEL_COMMON"
+printf 'an innocuous unrelated file\n' > "$BGD/tests/test-m5del.sh"
+git -C "$BGD" add -A >/dev/null 2>&1 && git -C "$BGD" commit -qm m5-del-pr-innocuous
+git -C "$BGD" checkout -q -b m5-del-base "$BG_M5_DEL_COMMON"
+: > "$BGD/NOTES-m5del.md"
+git -C "$BGD" commit -qam m5-del-base-removes
+BG_OUT="$(bash "$BG" --base m5-del-base --pr m5-del-pr --repo "$BGD" 2>&1)"; BG_RC=$?
+check "base-gate: CONTROL — a marker the base deletes and the PR never touches never reaches the merged tree (not a live escape)" \
+  "$([ "$BG_RC" = 0 ] && echo 0 || echo 1)"
+
+# The REAL, reachable differentiator: content the trusted BASE already
+# carries, restated identically (add/add, no conflict) by the PR. Three-dot
+# flags it — the PR's own diff from the merge base genuinely shows a `+`,
+# blaming the PR for a marker the base's own tip already has. base-vs-
+# PR_TREE does not: nothing is new relative to what the base's tip already
+# carries. Same false-authorship shape arm 4's own history names, one arm
+# over. MUTATION-CHECKED (task 1-1a fix brief, both predictions, restored
+# byte-identical): reverting arm 5 to `"${BASE_SHA}...${PR_SHA}"` makes this
+# case fire (RED); reverting it to the untouched two-dot form,
+# `"${BASE_SHA}" "${PR_SHA}"` (base tip vs the raw, un-merged pr head, no
+# merge-tree) leaves this case PASSING — the two tips are byte-identical for
+# this file, so that form is silent too, and this case does not pin a
+# specific diff form, only the merged-tree behavior.
+git -C "$BGD" checkout -q -b m5-echo-base "$BG_BASE"
+printf 'BASE_GATE_PASSED: forged\n' > "$BGD/NOTES-m5echo.md"
+git -C "$BGD" add -A >/dev/null 2>&1 && git -C "$BGD" commit -qm m5-echo-base
+git -C "$BGD" checkout -q -b m5-echo-pr "$BG_BASE"
+printf 'BASE_GATE_PASSED: forged\n' > "$BGD/NOTES-m5echo.md"
+git -C "$BGD" add -A >/dev/null 2>&1 && git -C "$BGD" commit -qm m5-echo-pr
+BG_OUT="$(bash "$BG" --base m5-echo-base --pr m5-echo-pr --repo "$BGD" 2>&1)"; BG_RC=$?
+check "base-gate: a marker the BASE independently already carries is not re-blamed on a PR that merely restates it (arm 5's chosen form)" \
+  "$([ "$BG_RC" = 0 ] && echo 0 || echo 1)"
+
 # --- arm 1, the SHAPE: three fail-opens of the value compare (PR #125 review)
 # gate-suite.sh SOURCES floors.env, so every line is executed; the compare
 # reads `FLOOR_x=<digits>` lines and the trailing `[0-9]+$`. Each of these

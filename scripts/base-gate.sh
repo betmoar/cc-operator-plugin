@@ -473,16 +473,45 @@ fi
 # Measured: the first version went red on the very PR that added these
 # cases. The exclusion is narrow on purpose — a marker planted anywhere a
 # human reads CI output as evidence (source, docs, workflows) is still red.
-# THREE dots, same reason as the change list above: a marker line that
-# existed on an older base and was later removed BY THE BASE still shows as
-# `+` under a two-dot (tree-to-tree) diff — "the PR added it" — when the PR
-# never touched it. `merge-base..pr` reports only what the PR itself added.
+# NOT three dots, unlike the change list above — this arm's subject is the
+# MERGED TREE, same as arm 1 (which already reads BASE_SHA and PR_TREE
+# directly, never a diff of PR_SHA). `merge-base..pr` (three-dot) answers
+# "what did the PR's own commits add since it forked", which is right for
+# arm 4's human-facing authorship report but is the wrong question for a
+# hard-fail arm, which must ask what the tree a merge would actually produce
+# carries — not what the PR's own diff happens to show.
+#
+# The re-review's motivating shape: a line present at the merge base,
+# removed by a LATER base commit, retained unmodified by a PR that forked
+# before the removal — reaches the merge result without ever being an
+# addition on the PR's own side, so three-dot cannot show it as `+`.
+# MEASURED against real `git merge-tree` (fixture in tests/test-scripts.sh),
+# though: when the PR does not otherwise touch that hunk, the base's
+# deletion wins the merge outright and the line is simply ABSENT from
+# PR_TREE — so this exact shape is not a live escape under EITHER diff form,
+# and three-dot's silence on it is correct, not a gap. When the PR's own
+# edit instead collides with the same hunk, `git merge-tree` reports a
+# CONFLICT and this script already refuses the run before arm 5 runs at all
+# (see the six merge-tree outcomes above) — so that path never reaches this
+# arm either, on any diff form.
+#
+# The form is kept anyway, for a property that IS real and IS reachable: the
+# ORIGINAL two-dot form this arm never used — `git diff "$BASE_SHA"
+# "$PR_SHA"`, base tip against the raw PR head, no merge-tree involved — is
+# the false-authorship shape from the paragraph above, LIVE: on the same
+# fixture (base removes the line, PR never touches it), that raw comparison
+# reports `+BASE_GATE_PASSED: forged` even though PR_TREE never carries it
+# (measured on the same fixture: three-dot and base-vs-PR_TREE both stay
+# silent; base-vs-raw-PR_SHA alone fires). Diffing the base tip against
+# PR_TREE — the merge result, not the unmerged PR head — keeps that
+# false-positive closed while staying literally two dots against the same
+# subject every other arm reads.
 _MARKER_DIFF="$(mktemp "${_TMPDIR_T}/basegate.marker.XXXXXX")"
-if ! git -C "$REPO" diff "${BASE_SHA}...${PR_SHA}" \
+if ! git -C "$REPO" diff "${BASE_SHA}" "${PR_TREE}" \
        -- . ':(exclude)tests/' ':(exclude)scripts/base-gate.sh' \
        > "$_MARKER_DIFF" 2>/dev/null; then
   rm -f "$_MARKER_DIFF"
-  die "git diff base...pr (full content) failed — refusing (a diff failure must not read as 'no forged marker')"
+  die "git diff base vs merged tree (full content) failed — refusing (a diff failure must not read as 'no forged marker')"
 fi
 # The EMITTED SHAPE, not the bare token: a marker line is
 # `BASE_GATE_PASSED: <text>` at the start of an output line. Matching the
