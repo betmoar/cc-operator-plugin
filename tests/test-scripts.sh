@@ -5422,7 +5422,20 @@ git -C "$BGC_D" checkout -q -b corrupttree "$BGC_BASE"
 printf 'x\n' > "$BGC_D/tests/t-corrupt.sh"
 git -C "$BGC_D" add -A >/dev/null 2>&1 && git -C "$BGC_D" commit -qm corrupttree
 _ct="$(git -C "$BGC_D" rev-parse 'corrupttree^{tree}')"
-printf 'garbage' > "$BGC_D/.git/objects/${_ct%"${_ct#??}"}/${_ct#??}"
+# chmod FIRST: git writes loose objects 0444, and root BYPASSES that bit while
+# an ordinary user does not. Without the chmod the redirect below fails with
+# "Permission denied" for every non-root runner, the object stays INTACT,
+# merge-tree succeeds, and the rc-128 branch this case exists for never fires —
+# so the case passed on a rootful dev container and failed on CI. Measured
+# 2026-09-16 as uid 1000 against the real block: object unchanged at 47 bytes
+# (not 7), no 'fatal error (128)' anywhere in the output.
+_co="$BGC_D/.git/objects/${_ct%"${_ct#??}"}/${_ct#??}"
+chmod u+w "$_co" && printf 'garbage' > "$_co"
+# The fixture asserts its OWN precondition. A corruption that did not take is a
+# broken fixture, not a passing gate, and it must say so in its own words
+# rather than surfacing as the assertion below quietly going red.
+[ "$(wc -c < "$_co")" -eq 7 ] \
+  || echo "  !! fixture: the corruption did not take (object is $(wc -c < "$_co") bytes)" >&2
 BG_OUT="$(bash "$BG" --base "$BGC_BASE" --pr corrupttree --repo "$BGC_D" 2>&1)"; BG_RC=$?
 # 'repository is incomplete' alone cannot tell rc 128 from rc 1 (both die
 # messages carry it) — folding rc 128 into the rc-1 branch, the same class
@@ -5433,22 +5446,21 @@ check "base-gate: an UNREADABLE object is rc 2 and names the repository, not the
      && ! printf '%s' "$BG_OUT" | grep -q 'git >= 2.38' && echo 0 || echo 1)"
 rm -rf "$BGC_D"
 
-# --- rc 0 + git's EMPTY tree is a DELETED root, never a legitimate subject ---
-# Deleting a root tree object leaves the repo it happened in unusable for any
-# later case in this block, so this gets its OWN scratch repo rather than
-# reusing $BGD. Measured 2026-09-16: deleting the PR commit's root tree
-# object yields rc 0 and stdout 4b825dc642cb… (git's canonical empty tree);
-# every arm downstream then reads every enforcer file as GONE.
+# --- rc 0 + git's EMPTY tree is never a legitimate subject ---
+# Its OWN scratch repo rather than $BGD: the case commits an orphan-shaped
+# root onto the base and leaves a ref no later case should have to reason
+# about.
 # THE FIXTURE CARRIES THE SAME CORE FILES $BGD DOES (not just tests/floors.env):
 # a thin fixture with no scripts/validate_plugin.py dies at the base-readable
 # check BEFORE the classifier's own guard is ever reached, so removing that
-# guard entirely is invisible here — the `! grep BASE_GATE_FAILED` half of
+# guard entirely would be invisible — the `! grep BASE_GATE_FAILED` half of
 # the assertion below would be satisfied by the fixture, not by the guard.
-# Measured: with the guard removed against this richer fixture, the run
-# still refuses (never reads as GONE, never a BASE_GATE_FAILED line) — it
-# dies computing the change list, because the SAME missing root tree object
-# that would make the classifier's subject empty also makes any ordinary
-# `git diff` against that ref fail outright, one step later than the guard.
+# With the richer fixture AND the version-stable construction below, the guard
+# is genuinely load-bearing: remove it and PR_TREE is the empty tree, so arm 1
+# reads tests/floors.env as gone and emits `BASE_GATE_FAILED: … the ratchet is
+# deleted` — which is exactly the confident weakening verdict on an
+# infrastructure cause that the guard exists to refuse. Mutation-checked: red
+# in this case in the bash suite (2026-09-16).
 BGE_D="$(mktemp -d "${TMPDIR:-/tmp}/basegate-empty.XXXXXX")"
 ( cd "$BGE_D" && git init -q . && git config user.email t@example.com && git config user.name t ) >/dev/null 2>&1
 mkdir -p "$BGE_D/scripts" "$BGE_D/tests" "$BGE_D/.github/workflows"
@@ -5458,12 +5470,20 @@ printf '#!/usr/bin/env bash\n: the wrapper\n' > "$BGE_D/scripts/gate-suite.sh"
 printf '# ci\nsteps:\n  - run: bash scripts/gate-suite.sh shell\n  - run: bash scripts/gate-suite.sh python\n' > "$BGE_D/.github/workflows/validate.yml"
 git -C "$BGE_D" add -A >/dev/null 2>&1 && git -C "$BGE_D" commit -qm base
 BGE_BASE="$(git -C "$BGE_D" rev-parse HEAD)"
-git -C "$BGE_D" checkout -q -b emptypr "$BGE_BASE"
-printf 'FLOOR_python=10\nFLOOR_shell=30\n' > "$BGE_D/tests/floors.env"
-git -C "$BGE_D" commit -qam emptypr
-_et="$(git -C "$BGE_D" rev-parse 'emptypr^{tree}')"
-rm -f "$BGE_D/.git/objects/${_et%"${_et#??}"}/${_et#??}"
-BG_OUT="$(bash "$BG" --base "$BGE_BASE" --pr emptypr --repo "$BGE_D" 2>&1)"; BG_RC=$?
+# NO OBJECT SURGERY. The first cut deleted the PR commit's root tree object,
+# which relies on git ANSWERING a missing tree with rc 0 + the empty tree —
+# behaviour that is not contractual and differs by version (this case passed on
+# git 2.43.0 and failed on the runner's 2.55.0; measured 2026-09-16, the cause
+# on 2.55 unverified because that build is not available here). What the guard
+# actually claims is narrower and version-stable: a CLEAN merge whose RESULT is
+# the empty tree is never a legitimate subject. So the fixture builds exactly
+# that with ordinary plumbing — a commit whose tree IS git's empty tree,
+# parented on the base — and merge-tree returns rc 0 + 4b825dc6… by plain
+# semantics rather than by tolerating a broken repository. Measured identical
+# as root and as uid 1000.
+_empty_tree="$(git -C "$BGE_D" hash-object -t tree /dev/null)"
+_empty_pr="$(git -C "$BGE_D" commit-tree "$_empty_tree" -p "$BGE_BASE" -m 'a pr whose root tree is empty')"
+BG_OUT="$(bash "$BG" --base "$BGE_BASE" --pr "$_empty_pr" --repo "$BGE_D" 2>&1)"; BG_RC=$?
 check "base-gate: an EMPTY merged tree is refused as a subject, never judged" \
   "$([ "$BG_RC" = 2 ] && printf '%s' "$BG_OUT" | grep -q 'empty' \
      && ! printf '%s' "$BG_OUT" | grep -q 'BASE_GATE_FAILED' && echo 0 || echo 1)"
