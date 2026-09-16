@@ -17,9 +17,9 @@
 #   CATCHES (hard red):
 #     - THE SUBJECT is the tree a MERGE would produce, not the PR head — so a
 #       PR that is merely BEHIND the base is not reported as deleting what
-#       the base added (#130). Conflict, unreadable object, and an
-#       unavailable merge-tree are three distinct rc-2 refusals; none of them
-#       is a weakening.
+#       the base added (#130). Conflict, unreadable object, corrupt
+#       repository, empty merge result, and an unavailable merge-tree are
+#       five distinct rc-2 refusals; none of them is a weakening.
 #     - a floor LOWERED, REMOVED, or hidden behind a DUPLICATE key (the file
 #       is sourced, so the last assignment is the effective one), or a
 #       floors.env line of ANY shape other than `FLOOR_<name>=<digits>` (the
@@ -145,16 +145,31 @@ BASE_SHA="$(git -C "$REPO" rev-parse --quiet --verify "${BASE_REF}^{commit}")"
 # tree with NO checkout and NO worktree, so the trusted-subject property is
 # untouched: PR bytes are still never on disk and never executed.
 #
-# FOUR OUTCOMES, and rc alone does not separate them (measured 2026-09-16):
-#   rc 0 + a tree sha  -> clean merge, this is the subject
-#   rc 0 + no sha      -> an output shape this gate does not understand
-#   rc 1 + a tree sha  -> a real CONFLICT (the stages follow the tree)
-#   rc 1 + no sha      -> an object could not be READ, which is what a
-#                         truncated shallow fetch looks like — the same shape
-#                         that silently disarmed the marker arm in #125. It
-#                         must never read as a conflict.
-#   any other rc       -> --write-tree unavailable (129 on an older git)
-# All four non-clean cases are rc 2 refusals: the gate says it cannot judge,
+# SIX OUTCOMES, and rc alone does not separate them (measured 2026-09-16,
+# AMENDED after the first cut folded two of these wrong — R2 in
+# docs/dev/2026-09-16-base-gate-subject-spec.md):
+#   rc 0 + a sha + a NON-EMPTY tree -> clean merge, this is the subject
+#   rc 0 + a sha + an EMPTY tree    -> the PR's root tree object is ABSENT;
+#                                      the base always carries files, so a
+#                                      clean merge whose result is empty
+#                                      cannot be a legitimate PR
+#   rc 0 + no sha                   -> an output shape this gate does not
+#                                      understand
+#   rc 1 + a sha                    -> a real CONFLICT (the stages follow
+#                                      the tree)
+#   rc 1 + no sha                   -> an object could not be READ, which is
+#                                      what a truncated shallow fetch looks
+#                                      like — the same shape that silently
+#                                      disarmed the marker arm in #125. It
+#                                      must never read as a conflict. Kept
+#                                      though no construction here reaches it.
+#   rc 128                          -> a FATAL git error: the repository is
+#                                      incomplete or an object is unreadable
+#                                      (a truncated or shallow fetch). This is
+#                                      NOT an old git and NOT a conflict — the
+#                                      shape that bit the #125 marker arm.
+#   any other rc (129, ...)         -> --write-tree unavailable (old git)
+# Every non-clean case is a rc 2 refusal: the gate says it cannot judge,
 # never that the PR weakens anything. A conflicted PR cannot be merged by
 # GitHub either way, so refusing to judge it costs nothing and claims nothing.
 _is_sha() {  # _is_sha <string> → 0 when it is 40 or 64 lowercase hex chars
@@ -167,13 +182,22 @@ _MT_RC=$?
 PR_TREE="$(head -1 "$_MT_OUT" 2>/dev/null)"
 rm -f "$_MT_OUT"
 if [ "$_MT_RC" -eq 0 ] && _is_sha "$PR_TREE"; then
-  :
+  # A CLEAN merge whose result is EMPTY is not a clean merge — the base
+  # always carries files, so an empty result means an input was incomplete.
+  # Measured 2026-09-16: deleting the PR commit's root tree object yields
+  # rc 0 and git's empty tree, which every arm then reads as "every
+  # enforcer file is gone".
+  if [ -z "$(git -C "$REPO" ls-tree "$PR_TREE" 2>/dev/null | head -1)" ]; then
+    die "the merge of ${BASE_SHA:0:12} and ${PR_SHA:0:12} produced an empty tree — the base carries files, so this means the repository is incomplete (a missing tree object takes exactly this shape), not that the PR deleted everything. Refusing rather than reporting every enforcer file as GONE"
+  fi
 elif [ "$_MT_RC" -eq 0 ]; then
   die "merge-tree reported success but printed no tree object — an output shape this gate does not understand; refusing rather than guessing at a subject"
 elif [ "$_MT_RC" -eq 1 ] && _is_sha "$PR_TREE"; then
   die "the pr ref '${PR_REF}' conflicts with the base ref '${BASE_REF}' — there is no merge result to judge, so this gate refuses rather than reporting a weakening it cannot see. Rebase or merge the base into the PR and re-run"
 elif [ "$_MT_RC" -eq 1 ]; then
   die "merge-tree could not read an object for ${BASE_SHA:0:12}..${PR_SHA:0:12} — the repository is incomplete (a truncated or shallow fetch takes exactly this shape). This is NOT a conflict and must not be read as one; fetch both sides in full"
+elif [ "$_MT_RC" -eq 128 ]; then
+  die "git reported a fatal error (128) merging ${BASE_SHA:0:12} and ${PR_SHA:0:12} — the repository is incomplete or an object is unreadable, which is what a truncated or shallow fetch leaves behind. This is NOT an old git and NOT a conflict; fetch both sides in full"
 else
   die "git merge-tree --write-tree exited ${_MT_RC} — the option is unavailable on this runner (it needs git >= 2.38). Refusing: falling back to comparing the PR head is the defect this subject exists to remove"
 fi

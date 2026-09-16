@@ -5268,7 +5268,7 @@ BG_OUT="$(bash "$BG" --base "$BG_MOVED" --pr weakens --repo "$BGD" 2>&1)"; BG_RC
 check "base-gate: a floor LOWERED is still refused when the base has moved (control)" \
   "$([ "$BG_RC" = 1 ] && echo 0 || echo 1)"
 
-# --- the four merge-tree outcomes, three of them refusals (R2) --------------
+# --- the six merge-tree outcomes, five of them refusals (R2, AMENDED) -------
 # rc alone cannot classify: a real conflict and an UNREADABLE OBJECT both
 # return 1, and only a tree sha on stdout line 1 separates them. A truncated
 # shallow fetch takes the second shape, and this job fetches the PR head.
@@ -5281,6 +5281,58 @@ check "base-gate: a CONFLICTING pr is rc 2 (cannot judge), never rc 1 (weakens)"
 check "base-gate: the conflict refusal says CONFLICT, and does not claim a weakening" \
   "$(printf '%s' "$BG_OUT" | grep -q 'conflicts with the base' \
      && ! printf '%s' "$BG_OUT" | grep -q 'BASE_GATE_FAILED' && echo 0 || echo 1)"
+
+# --- rc 128 is a CORRUPT REPOSITORY, not an unavailable git option (#130 AMENDMENT) ---
+# Task 1's classifier folded rc 128 into the catch-all "--write-tree
+# unavailable (needs git >= 2.38)" branch and blamed the runner's git version
+# for a corrupt repository. Measured 2026-09-16: corrupting the PR commit's
+# root tree object yields rc 128 with empty stdout — the REACHABLE
+# unreadable-object shape (rc 1 with no sha is retained but unconstructed).
+# Its OWN scratch repo, same reason as the empty-tree case below: corrupting
+# the CHECKED-OUT branch's root tree also breaks `git checkout` away from
+# it — measured: a "checkout back to $BG_BASE" afterward fails silently
+# (its stderr was going to /dev/null) and leaves the repo stuck on the
+# corrupted branch, so every later case sharing that repo starts failing on
+# unrelated "object corrupt" errors instead of its own assertion.
+BGC_D="$(mktemp -d "${TMPDIR:-/tmp}/basegate-corrupt.XXXXXX")"
+( cd "$BGC_D" && git init -q . && git config user.email t@example.com && git config user.name t ) >/dev/null 2>&1
+mkdir -p "$BGC_D/tests"
+printf 'FLOOR_python=10\nFLOOR_shell=20\n' > "$BGC_D/tests/floors.env"
+git -C "$BGC_D" add -A >/dev/null 2>&1 && git -C "$BGC_D" commit -qm base
+BGC_BASE="$(git -C "$BGC_D" rev-parse HEAD)"
+git -C "$BGC_D" checkout -q -b corrupttree "$BGC_BASE"
+printf 'x\n' > "$BGC_D/tests/t-corrupt.sh"
+git -C "$BGC_D" add -A >/dev/null 2>&1 && git -C "$BGC_D" commit -qm corrupttree
+_ct="$(git -C "$BGC_D" rev-parse 'corrupttree^{tree}')"
+printf 'garbage' > "$BGC_D/.git/objects/${_ct%"${_ct#??}"}/${_ct#??}"
+BG_OUT="$(bash "$BG" --base "$BGC_BASE" --pr corrupttree --repo "$BGC_D" 2>&1)"; BG_RC=$?
+check "base-gate: an UNREADABLE object is rc 2 and names the repository, not the git version" \
+  "$([ "$BG_RC" = 2 ] && printf '%s' "$BG_OUT" | grep -q 'repository is incomplete' \
+     && ! printf '%s' "$BG_OUT" | grep -q 'git >= 2.38' && echo 0 || echo 1)"
+rm -rf "$BGC_D"
+
+# --- rc 0 + git's EMPTY tree is a DELETED root, never a legitimate subject ---
+# Deleting a root tree object leaves the repo it happened in unusable for any
+# later case in this block, so this gets its OWN scratch repo rather than
+# reusing $BGD. Measured 2026-09-16: deleting the PR commit's root tree
+# object yields rc 0 and stdout 4b825dc642cb… (git's canonical empty tree);
+# every arm downstream then reads every enforcer file as GONE.
+BGE_D="$(mktemp -d "${TMPDIR:-/tmp}/basegate-empty.XXXXXX")"
+( cd "$BGE_D" && git init -q . && git config user.email t@example.com && git config user.name t ) >/dev/null 2>&1
+mkdir -p "$BGE_D/tests"
+printf 'FLOOR_python=10\nFLOOR_shell=20\n' > "$BGE_D/tests/floors.env"
+git -C "$BGE_D" add -A >/dev/null 2>&1 && git -C "$BGE_D" commit -qm base
+BGE_BASE="$(git -C "$BGE_D" rev-parse HEAD)"
+git -C "$BGE_D" checkout -q -b emptypr "$BGE_BASE"
+printf 'FLOOR_python=10\nFLOOR_shell=30\n' > "$BGE_D/tests/floors.env"
+git -C "$BGE_D" commit -qam emptypr
+_et="$(git -C "$BGE_D" rev-parse 'emptypr^{tree}')"
+rm -f "$BGE_D/.git/objects/${_et%"${_et#??}"}/${_et#??}"
+BG_OUT="$(bash "$BG" --base "$BGE_BASE" --pr emptypr --repo "$BGE_D" 2>&1)"; BG_RC=$?
+check "base-gate: an EMPTY merged tree is refused as a subject, never judged" \
+  "$([ "$BG_RC" = 2 ] && printf '%s' "$BG_OUT" | grep -q 'empty' \
+     && ! printf '%s' "$BG_OUT" | grep -q 'BASE_GATE_FAILED' && echo 0 || echo 1)"
+rm -rf "$BGE_D"
 
 # --- fail-closed: unreadable base -----------------------------------------
 # The MESSAGE is asserted, not only the code. rc 2 alone is vacuous here:
