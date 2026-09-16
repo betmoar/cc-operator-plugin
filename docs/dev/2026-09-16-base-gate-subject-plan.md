@@ -233,6 +233,15 @@ git commit -m "fix(#130): the base-gate judges the merge result, not the PR head
 
 #### Task 1a (AMENDMENT, 2026-09-16 — after Task 1 shipped as `5cb8a20`)
 
+> **SUPERSEDED IN PLACES, 2026-09-16.** Tasks 1 and 1a shipped and were reviewed; the fix
+> for that review's findings is `23e0e03`. Two prescriptions below were corrected by that
+> work and are left here only for the record: the `repository is incomplete` grep was
+> VACUOUS (the string appears in three `die` messages, so folding rc 128 into the rc-1
+> branch stayed green — `fatal error (128)` is the discriminator, and this file now says
+> so), and the delta-report case's suggested `grep -q 'NOTES-innocent'` could never match,
+> because a repo-root file is not an enforcer-core path. Do not re-implement from the
+> uncorrected text.
+
 Task 1's classifier is built and green, and the controller's own verification found two
 branches of it wrong. Both measured against the built script, not argued:
 
@@ -263,7 +272,7 @@ _ct="$(git -C "$BGD" rev-parse 'corrupttree^{tree}')"
 printf 'garbage' > "$BGD/.git/objects/${_ct%"${_ct#??}"}/${_ct#??}"
 BG_OUT="$(bash "$BG" --base "$BG_BASE" --pr corrupttree --repo "$BGD" 2>&1)"; BG_RC=$?
 check "base-gate: an UNREADABLE object is rc 2 and names the repository, not the git version" \
-  "$([ "$BG_RC" = 2 ] && printf '%s' "$BG_OUT" | grep -q 'repository is incomplete' \
+  "$([ "$BG_RC" = 2 ] && printf '%s' "$BG_OUT" | grep -q 'fatal error (128)' \
      && ! printf '%s' "$BG_OUT" | grep -q 'git >= 2.38' && echo 0 || echo 1)"
 git -C "$BGD" checkout -q "$BG_BASE" 2>/dev/null
 ```

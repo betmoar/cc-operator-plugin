@@ -233,7 +233,7 @@ CHANGED_TMP="$(mktemp "${_TMPDIR_T}/basegate.changed.XXXXXX")"
 DIFFSTAT_TMP="$(mktemp "${_TMPDIR_T}/basegate.diffstat.XXXXXX")"
 trap 'rm -f "$CHANGED_TMP" "$DIFFSTAT_TMP"' EXIT
 if ! git -C "$REPO" diff --name-status "${BASE_SHA}...${PR_SHA}" -- > "$DIFFSTAT_TMP" 2>/dev/null; then
-  die "git diff base..pr failed — refusing (a diff failure must not read as 'no changes')"
+  die "git diff base...pr failed — refusing (a diff failure must not read as 'no changes')"
 fi
 # name-status: one "<status>\t<path>" per line. Strip the rename/copy dest
 # (second tab field) — the DEST is the path that exists on the PR side.
@@ -482,7 +482,7 @@ if ! git -C "$REPO" diff "${BASE_SHA}...${PR_SHA}" \
        -- . ':(exclude)tests/' ':(exclude)scripts/base-gate.sh' \
        > "$_MARKER_DIFF" 2>/dev/null; then
   rm -f "$_MARKER_DIFF"
-  die "git diff base..pr (full content) failed — refusing (a diff failure must not read as 'no forged marker')"
+  die "git diff base...pr (full content) failed — refusing (a diff failure must not read as 'no forged marker')"
 fi
 # The EMITTED SHAPE, not the bare token: a marker line is
 # `BASE_GATE_PASSED: <text>` at the start of an output line. Matching the
