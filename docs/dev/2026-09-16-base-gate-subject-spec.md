@@ -44,27 +44,47 @@ $ git ls-tree -r --name-only <tree> -- tests/test-new.sh ->  tests/test-new.sh
 Both accessor forms the arms use (`git show <tree>:<path>`, `ls-tree -r <tree>`) work
 against a tree sha unchanged.
 
-### R2 — three merge-tree outcomes, three distinct refusals
+### R2 — six merge-tree outcomes, five distinct refusals
 
-`rc` alone does not separate them. Measured 2026-09-16:
+`rc` alone does not separate them.
+
+**AMENDED 2026-09-16 after Task 1** — the first table was measured from a construction
+that `base-gate.sh` cannot actually reach (an unresolvable sha, which `rev-parse` refuses
+several lines earlier). Re-measured against the built script, two rows were wrong and one
+was missing:
 
 | situation | rc | stdout line 1 |
 |---|---|---|
 | clean merge | 0 | the merged tree sha |
 | real conflict | 1 | the tree sha, followed by conflict stages |
-| unreadable/absent object | 1 | *nothing* |
+| the PR's ROOT TREE object is absent | **0** | **git's EMPTY tree** (`4b825dc6…`) |
+| an object is unreadable (corrupt) | **128** | nothing |
 | `--write-tree` unsupported (old git) | 129 | nothing |
+| unreadable/absent object | 1 | *nothing* — kept, but no construction reaches it |
 
-So the discriminator is **rc plus whether stdout line 1 is 40 hex characters**:
+So the discriminator is **rc, plus whether stdout line 1 is a sha, plus whether the tree
+has any entries**:
 
-- rc 0 and a sha → use it.
+- rc 0, a sha, and a NON-EMPTY tree → use it.
+- rc 0, a sha, and an EMPTY tree → `die`. Measured: deleting the PR commit's root tree
+  makes `merge-tree` return rc 0 and the empty tree, and the gate accepted it as the
+  subject. Every arm then reads every enforcer file as absent, so an incomplete
+  repository renders as "the ratchet is deleted" and "GONE:" for each core file — a
+  confident weakening verdict with an infrastructure cause. The base always has files, so
+  a clean merge whose result is empty cannot be a legitimate PR.
 - rc 0 and no sha → `die`, "unexpected merge-tree output".
 - rc 1 and a sha → `die`, the PR **conflicts** with the base. Message says the gate
   *cannot judge* it, never that the PR weakens anything: GitHub already refuses to merge
   a conflicted PR, so the only honest claim here is that no result tree exists to read.
-- rc 1 and no sha → `die`, an object could not be read. This is the truncated-shallow-fetch
-  shape the #125 marker arm was already bitten by, and it must not read as a conflict.
-- any other rc → `die`, `merge-tree --write-tree` unavailable on this runner.
+- rc 1 and no sha → `die`, an object could not be read. Retained because it costs one
+  branch, though neither Task 1's implementer nor the controller could construct it.
+- **rc 128 → `die`, a FATAL git error: the repository is incomplete or an object is
+  unreadable.** This is the reachable form of the truncated-fetch shape that bit the #125
+  marker arm. Measured: corrupting the PR's root tree object produces exactly this, and
+  the first implementation reported it as `--write-tree` being unavailable — blaming the
+  runner's git version for a corrupt repository, which is the same two-causes-one-message
+  defect this requirement exists to remove.
+- rc 129 or anything else → `die`, `merge-tree --write-tree` unavailable on this runner.
 
 Every one of these is rc 2 from `base-gate.sh` (refusal), never rc 1 (violation) and
 never rc 0. Fail closed, as the file's header already claims everywhere else.

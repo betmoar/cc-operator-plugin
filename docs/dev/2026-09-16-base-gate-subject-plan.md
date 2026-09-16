@@ -18,7 +18,7 @@ Actions + Forgejo Actions YAML, python 3 (validator), shellcheck 0.10.0 pinned.
 ```
 validator  all contracts hold
 python     375 cases (floor 375, slack 0)
-shell      980 cases (floor 980, slack 0)     980 passed, 0 failed, 12 skipped
+shell      980 cases (floor 980, slack 0)     968 passed, 0 failed, 12 skipped
 workflows  384 cases (floor 384, slack 0)
 compress   161 cases (floor 161, slack 0)
 shellcheck 0.10.0  rc 0
@@ -231,6 +231,89 @@ git add scripts/base-gate.sh tests/test-scripts.sh tests/floors.env
 git commit -m "fix(#130): the base-gate judges the merge result, not the PR head"
 ```
 
+#### Task 1a (AMENDMENT, 2026-09-16 — after Task 1 shipped as `5cb8a20`)
+
+Task 1's classifier is built and green, and the controller's own verification found two
+branches of it wrong. Both measured against the built script, not argued:
+
+```
+PR root tree CORRUPTED -> merge-tree rc 128, no stdout
+   base-gate says: "the option is unavailable on this runner (it needs git >= 2.38)"
+   — it blames the git version for a corrupt repository.
+PR root tree DELETED   -> merge-tree rc 0, stdout = 4b825dc642cb (git's EMPTY tree)
+   base-gate says: "== … (merged tree 4b825dc642cb) ==" and accepts it as the subject.
+   Every arm then reads every enforcer file as absent. It exited 2 here only because an
+   unrelated downstream guard (the change-list diff) failed — passing for the wrong reason.
+```
+
+**Files:** Modify `scripts/base-gate.sh` (the classifier block only), `tests/test-scripts.sh`,
+`tests/floors.env`.
+
+- [ ] **Step 1: two failing checks**, appended to the merge-tree outcome block added by
+  Task 1:
+
+```bash
+# rc 128 is the REACHABLE unreadable-object shape, and the first cut reported it as an
+# unavailable git option — a corrupt repository blamed on the runner's version.
+git -C "$BGD" checkout -q -b corrupttree "$BG_BASE"
+printf 'x
+' > "$BGD/tests/t-corrupt.sh"
+git -C "$BGD" add -A >/dev/null 2>&1 && git -C "$BGD" commit -qm corrupttree
+_ct="$(git -C "$BGD" rev-parse 'corrupttree^{tree}')"
+printf 'garbage' > "$BGD/.git/objects/${_ct%"${_ct#??}"}/${_ct#??}"
+BG_OUT="$(bash "$BG" --base "$BG_BASE" --pr corrupttree --repo "$BGD" 2>&1)"; BG_RC=$?
+check "base-gate: an UNREADABLE object is rc 2 and names the repository, not the git version" \
+  "$([ "$BG_RC" = 2 ] && printf '%s' "$BG_OUT" | grep -q 'repository is incomplete' \
+     && ! printf '%s' "$BG_OUT" | grep -q 'git >= 2.38' && echo 0 || echo 1)"
+git -C "$BGD" checkout -q "$BG_BASE" 2>/dev/null
+```
+
+The empty-tree half needs its own scratch repo because deleting a root tree leaves `$BGD`
+unusable for later cases; create one, delete the PR commit's root tree, and assert:
+
+```bash
+check "base-gate: an EMPTY merged tree is refused as a subject, never judged" \
+  "$([ "$BG_RC" = 2 ] && printf '%s' "$BG_OUT" | grep -q 'empty' \
+     && ! printf '%s' "$BG_OUT" | grep -q 'BASE_GATE_FAILED' && echo 0 || echo 1)"
+```
+
+- [ ] **Step 2:** run; both FAIL — the first with the `git >= 2.38` wording, the second
+  with the gate proceeding past an empty tree.
+
+- [ ] **Step 3:** replace the classifier's tail branches:
+
+```bash
+if [ "$_MT_RC" -eq 0 ] && _is_sha "$PR_TREE"; then
+  # A CLEAN merge whose result is EMPTY is not a clean merge — the base always
+  # carries files, so an empty result means an input was incomplete. Measured
+  # 2026-09-16: deleting the PR commit's root tree yields rc 0 and git's empty
+  # tree, which every arm then reads as "every enforcer file is gone".
+  if [ -z "$(git -C "$REPO" ls-tree "$PR_TREE" 2>/dev/null | head -1)" ]; then
+    die "the merge of ${BASE_SHA:0:12} and ${PR_SHA:0:12} produced an EMPTY tree — the base carries files, so this means the repository is incomplete (a missing tree object takes exactly this shape), not that the PR deleted everything. Refusing rather than reporting every enforcer file as GONE"
+  fi
+elif [ "$_MT_RC" -eq 0 ]; then
+  die "merge-tree reported success but printed no tree object — an output shape this gate does not understand; refusing rather than guessing at a subject"
+elif [ "$_MT_RC" -eq 1 ] && _is_sha "$PR_TREE"; then
+  die "the pr ref '${PR_REF}' conflicts with the base ref '${BASE_REF}' — there is no merge result to judge, so this gate refuses rather than reporting a weakening it cannot see. Rebase or merge the base into the PR and re-run"
+elif [ "$_MT_RC" -eq 1 ]; then
+  die "merge-tree could not read an object for ${BASE_SHA:0:12}..${PR_SHA:0:12} — this is NOT a conflict and must not be read as one; fetch both sides in full"
+elif [ "$_MT_RC" -eq 128 ]; then
+  die "git reported a FATAL error (128) merging ${BASE_SHA:0:12} and ${PR_SHA:0:12} — the repository is incomplete or an object is unreadable, which is what a truncated or shallow fetch leaves behind. This is NOT an old git and NOT a conflict; fetch both sides in full"
+else
+  die "git merge-tree --write-tree exited ${_MT_RC} — the option is unavailable on this runner (it needs git >= 2.38). Refusing: falling back to comparing the PR head is the defect this subject exists to remove"
+fi
+```
+
+Also correct the FOUR OUTCOMES comment above it to the six the spec now records.
+
+- [ ] **Step 4:** full shell rung + shellcheck; raise `FLOOR_shell`. Mutations: drop the
+  rc-128 branch → the unreadable-object case red in the bash suite's `base-gate` cases;
+  drop the empty-tree guard → the empty-tree case red there.
+
+- [ ] **Step 5:** commit `fix(#130): rc 128 is a corrupt repository, and an empty merged tree is not a verdict`
+
+---
+
 ---
 
 ### Task 2: the job moves to its own trusted-event workflow
@@ -376,6 +459,16 @@ Implements R5.
 **Interfaces:**
 - Produces: `_BASE_GATE_FILES` — the two workflow paths `check_base_gate` reads.
 - Consumes: nothing from Tasks 1–2 beyond the files they created.
+
+**ALSO IN THIS TASK (amendment, 2026-09-16).** Task 1 turned two existing `BaseGateTest`
+cases red and could not fix them under its own hard constraints: their mutation harness
+hardcodes the literal `extract_checks "$PR_SHA"`, which Task 1 changed to `$PR_TREE`.
+Measured after `5cb8a20`: `test_a_comment_does_not_satisfy_an_arm_pin` and
+`test_an_arm_deleted_from_the_script_fires` both fail, and the python rung is red from
+Task 1 until this task lands. Repair them here by keying the harness on a literal that is
+present in the current file, and prefer an anchor that is not a subject name — the whole
+point of Task 1 is that the subject moves, so a harness pinned to it breaks again next
+time. This is a mechanical correction; the plan is amended rather than re-gated.
 
 - [ ] **Step 1: Write the failing tests**
 
