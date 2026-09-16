@@ -93,8 +93,12 @@ scan_ledger() {
     case "$row" in "| "*) ;; *) continue ;; esac
     # The header is matched WHOLE, not by prefix (#128). `"| Gate | Criterion |"*`
     # discards any row whose id is `Gate` and whose criterion is `Criterion`, and
-    # ops-task.sh permits that id. The full header cannot collide: its fourth cell
-    # is `PASS/FAIL`, which the verdict enum below refuses. Same fix as caps.sh.
+    # ops-task.sh permits that id. THIS FILTER IS THE ONLY THING THAT SKIPS THE
+    # HEADER — there is no verdict enum below to catch it as a fallback (the
+    # loop rejects a FIFTH cell, not an unknown verdict word, and deliberately
+    # so: a new word like MOOT must not vanish, #91). So if
+    # templates/VERDICTS-header.md ever changes, THIS LITERAL CHANGES WITH IT
+    # or an older ledger's header is swept as a data row. Same fix as caps.sh.
     case "$row" in
       "| Gate | Criterion | Evidence | PASS/FAIL |" | "|---"*) continue ;;
     esac

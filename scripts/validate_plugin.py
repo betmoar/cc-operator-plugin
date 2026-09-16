@@ -4033,7 +4033,18 @@ def check_base_gate(root, problems):
     # nothing. base-gate.sh's own CI_FILES arm catches the deletion too, but
     # only from the BASE — i.e. only after this lands. This is the PR-side
     # half, and losing it silently is how the gate stops being wired at all.
-    for _vrel, _brel in zip(_CI_FILES, _BASE_GATE_FILES):
+    # PAIRED BY DIRECTORY, never by position. `zip(_CI_FILES,
+    # _BASE_GATE_FILES)` was the first cut and it mispaired a 4-tuple with a
+    # 2-tuple: `.github/workflows/release.yml` became the key for the FORGEJO
+    # base-gate, and `.forgejo/workflows/validate.yml` was never consulted at
+    # all. Measured: on a checkout with the Forgejo validate.yml present and no
+    # GitHub release.yml, deleting only `.forgejo/workflows/base-gate.yml`
+    # returned [] — the exact regression this claim exists to close, still live
+    # on that forge. The case missed it because it deleted BOTH files at once,
+    # so the GitHub pair alone satisfied the assertion: a fixture that
+    # guarantees its own answer. There is now one case per forge.
+    for _brel in _BASE_GATE_FILES:
+        _vrel = _brel.rsplit("/", 1)[0] + "/validate.yml"
         if (root / _vrel).is_file() and not (root / _brel).is_file():
             problems.append(
                 f"{_brel}: missing while {_vrel} exists — this forge runs the "

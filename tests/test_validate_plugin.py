@@ -5059,10 +5059,22 @@ class BaseGateTest(unittest.TestCase):
         # commit, deleting BOTH base-gate workflows left the validator
         # reporting "all contracts hold" — measured 2026-09-16 on the real
         # tree, and red in check_base_gate only after claim 1b.
+        #
+        # ONE FORGE AT A TIME, and that is the whole point of the loop. The
+        # first version of this case deleted both files together and passed
+        # while the FORGEJO half was dead: claim 1b paired the tuples by
+        # POSITION, so `.forgejo/workflows/base-gate.yml` was keyed off
+        # `.github/workflows/release.yml` (absent here, so skipped) and the
+        # GitHub pair alone satisfied the assertion. A fixture that guarantees
+        # its own answer — the vacuity shape this repo has shipped six times.
         for rel in vp._BASE_GATE_FILES:
-            (self.dir / rel).unlink()
-        self.assertTrue(any("missing while" in p_ and "no trusted base-gate" in p_
-                            for p_ in self._probs()), self._probs())
+            with self.subTest(workflow=rel):
+                self.setUp()  # a clean tree per forge; only ONE file goes
+                (self.dir / rel).unlink()
+                probs = self._probs()
+                self.assertTrue(
+                    any(rel in p_ and "missing while" in p_ for p_ in probs),
+                    f"{rel} deleted alone did not fire: {probs}")
 
     def test_a_forge_with_neither_file_is_not_a_finding(self):
         # NEGATIVE CONTROL for claim 1b. A forge nobody configured claims
