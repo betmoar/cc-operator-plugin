@@ -15,6 +15,11 @@
 #
 # What it can and cannot catch — known boundaries, on purpose:
 #   CATCHES (hard red):
+#     - THE SUBJECT is the tree a MERGE would produce, not the PR head — so a
+#       PR that is merely BEHIND the base is not reported as deleting what
+#       the base added (#130). Conflict, unreadable object, and an
+#       unavailable merge-tree are three distinct rc-2 refusals; none of them
+#       is a weakening.
 #     - a floor LOWERED, REMOVED, or hidden behind a DUPLICATE key (the file
 #       is sourced, so the last assignment is the effective one), or a
 #       floors.env line of ANY shape other than `FLOOR_<name>=<digits>` (the
@@ -127,7 +132,53 @@ PR_SHA="$(git -C "$REPO" rev-parse --verify --quiet "${PR_REF}^{commit}" 2>/dev/
   || die "pr ref '${PR_REF}' does not resolve in '$REPO' — nothing to gate"
 BASE_SHA="$(git -C "$REPO" rev-parse --quiet --verify "${BASE_REF}^{commit}")"
 
-echo "== base-gate: trusted base ${BASE_SHA:0:12} vs pr ${PR_SHA:0:12} =="
+# --- the SUBJECT: the tree a MERGE would produce (#130) -----------------------
+# Arms 1, 2, 3 and 3b ask "does the RESULT weaken the base". Comparing the two
+# sides as commits answers a different question, and answers it wrongly in the
+# ordinary case: this repo raises a floor and adds a tests/ file in nearly
+# every PR, so any branch that has not rebased since is reported as LOWERING
+# that floor and DELETING that file. Measured 2026-09-16 against d9ed4cd: a PR
+# whose only change was one line of README produced two BASE_GATE_FAILED lines
+# and rc 1, while the merge result contained neither weakening.
+#
+# `merge-tree --write-tree` (git >= 2.38; the runner has 2.55) produces that
+# tree with NO checkout and NO worktree, so the trusted-subject property is
+# untouched: PR bytes are still never on disk and never executed.
+#
+# FOUR OUTCOMES, and rc alone does not separate them (measured 2026-09-16):
+#   rc 0 + a tree sha  -> clean merge, this is the subject
+#   rc 0 + no sha      -> an output shape this gate does not understand
+#   rc 1 + a tree sha  -> a real CONFLICT (the stages follow the tree)
+#   rc 1 + no sha      -> an object could not be READ, which is what a
+#                         truncated shallow fetch looks like — the same shape
+#                         that silently disarmed the marker arm in #125. It
+#                         must never read as a conflict.
+#   any other rc       -> --write-tree unavailable (129 on an older git)
+# All four non-clean cases are rc 2 refusals: the gate says it cannot judge,
+# never that the PR weakens anything. A conflicted PR cannot be merged by
+# GitHub either way, so refusing to judge it costs nothing and claims nothing.
+_is_sha() {  # _is_sha <string> → 0 when it is 40 or 64 lowercase hex chars
+  case "${1:-}" in "" | *[!0-9a-f]*) return 1 ;; esac
+  [ "${#1}" -eq 40 ] || [ "${#1}" -eq 64 ]
+}
+_MT_OUT="$(mktemp "${_TMPDIR_T}/basegate.mt.XXXXXX")"
+git -C "$REPO" merge-tree --write-tree "$BASE_SHA" "$PR_SHA" > "$_MT_OUT" 2>/dev/null
+_MT_RC=$?
+PR_TREE="$(head -1 "$_MT_OUT" 2>/dev/null)"
+rm -f "$_MT_OUT"
+if [ "$_MT_RC" -eq 0 ] && _is_sha "$PR_TREE"; then
+  :
+elif [ "$_MT_RC" -eq 0 ]; then
+  die "merge-tree reported success but printed no tree object — an output shape this gate does not understand; refusing rather than guessing at a subject"
+elif [ "$_MT_RC" -eq 1 ] && _is_sha "$PR_TREE"; then
+  die "the pr ref '${PR_REF}' conflicts with the base ref '${BASE_REF}' — there is no merge result to judge, so this gate refuses rather than reporting a weakening it cannot see. Rebase or merge the base into the PR and re-run"
+elif [ "$_MT_RC" -eq 1 ]; then
+  die "merge-tree could not read an object for ${BASE_SHA:0:12}..${PR_SHA:0:12} — the repository is incomplete (a truncated or shallow fetch takes exactly this shape). This is NOT a conflict and must not be read as one; fetch both sides in full"
+else
+  die "git merge-tree --write-tree exited ${_MT_RC} — the option is unavailable on this runner (it needs git >= 2.38). Refusing: falling back to comparing the PR head is the defect this subject exists to remove"
+fi
+
+echo "== base-gate: trusted base ${BASE_SHA:0:12} vs pr ${PR_SHA:0:12} (merged tree ${PR_TREE:0:12}) =="
 
 # --- base copy readable (fail closed BEFORE anything compares) ----------------
 # The half the sibling incident turned green: if the trusted copy cannot be
@@ -164,7 +215,7 @@ extract_floors() {  # extract_floors <sha> <out-file>
 BASE_FLOORS="$(mktemp "${_TMPDIR_T}/basegate.bf.XXXXXX")"
 PR_FLOORS="$(mktemp "${_TMPDIR_T}/basegate.pf.XXXXXX")"
 extract_floors "$BASE_SHA" "$BASE_FLOORS"
-extract_floors "$PR_SHA" "$PR_FLOORS"
+extract_floors "$PR_TREE" "$PR_FLOORS"
 # THE SHAPE IS CLOSED, NOT THE INSTANCES. gate-suite.sh SOURCES this file, so
 # every line it carries is executed, and a line the value-compare below cannot
 # parse is a line the runtime still obeys. Three bypasses of that compare, all
@@ -179,7 +230,7 @@ extract_floors "$PR_SHA" "$PR_FLOORS"
 # refused too, and the fix is to write it in the one shape (floors.env is
 # four lines of that shape under a comment header, by design).
 _PR_FLOORS_RAW="$(mktemp "${_TMPDIR_T}/basegate.praw.XXXXXX")"
-if git -C "$REPO" show "${PR_SHA}:tests/floors.env" > "$_PR_FLOORS_RAW" 2>/dev/null; then
+if git -C "$REPO" show "${PR_TREE}:tests/floors.env" > "$_PR_FLOORS_RAW" 2>/dev/null; then
   _bad_line="$(grep -vE '^[[:space:]]*(#|$)' "$_PR_FLOORS_RAW" \
                | grep -vE '^FLOOR_[A-Za-z0-9_]+=[0-9]+$' | head -1)"
   if [ -n "$_bad_line" ]; then
@@ -240,7 +291,7 @@ extract_checks() {  # extract_checks <sha> → stdout
 BASE_CHECKS="$(mktemp "${_TMPDIR_T}/basegate.bc.XXXXXX")"
 PR_CHECKS="$(mktemp "${_TMPDIR_T}/basegate.pc.XXXXXX")"
 extract_checks "$BASE_SHA" > "$BASE_CHECKS"
-extract_checks "$PR_SHA" > "$PR_CHECKS"
+extract_checks "$PR_TREE" > "$PR_CHECKS"
 # ONE BINDING. The extractor reads the tuple BLOCK; python runs the LAST
 # assignment. A `CHECKS = (check_x,)` rebound after the full tuple leaves the
 # block intact for the extractor and shrinks the registry that actually runs —
@@ -248,7 +299,7 @@ extract_checks "$PR_SHA" > "$PR_CHECKS"
 # one file over). Counted on the comment-stripped view at column 0, which is
 # where a module-level binding lives; an indented `CHECKS =` inside a function
 # would be a rewrite of the runner, and that is #112's gap, not this arm's.
-_n_checks_bind="$(git -C "$REPO" show "${PR_SHA}:scripts/validate_plugin.py" 2>/dev/null \
+_n_checks_bind="$(git -C "$REPO" show "${PR_TREE}:scripts/validate_plugin.py" 2>/dev/null \
                   | grep -vE '^[[:space:]]*#' | grep -cE '^CHECKS[[:space:]]*=')"
 if [ "${_n_checks_bind:-0}" -gt 1 ]; then
   fail "CHECKS: the registry is bound ${_n_checks_bind} times at the PR ref — this gate reads the tuple block, python runs the LAST binding, so a rebinding after the tuple hides the registry that actually runs"
@@ -296,7 +347,7 @@ done < "$CHANGED_TMP"
 # finding here, not a skip.
 for _f in $CORE_FILES; do
   if [ -n "$(git -C "$REPO" ls-tree -r --name-only "${BASE_SHA}" -- "$_f")" ] \
-     && [ -z "$(git -C "$REPO" ls-tree -r --name-only "${PR_SHA}" -- "$_f")" ]; then
+     && [ -z "$(git -C "$REPO" ls-tree -r --name-only "${PR_TREE}" -- "$_f")" ]; then
     fail "GONE: ${_f} exists at the base and NOT at the pr ref — the gate itself removed (deleted, renamed, or moved: the path is what CI runs)"
   fi
 done
@@ -307,7 +358,7 @@ done
 _TESTS_BASE="$(mktemp "${_TMPDIR_T}/basegate.tb.XXXXXX")"
 _TESTS_PR="$(mktemp "${_TMPDIR_T}/basegate.tp.XXXXXX")"
 git -C "$REPO" ls-tree -r --name-only "${BASE_SHA}" -- tests/ > "$_TESTS_BASE"
-git -C "$REPO" ls-tree -r --name-only "${PR_SHA}"  -- tests/ > "$_TESTS_PR"
+git -C "$REPO" ls-tree -r --name-only "${PR_TREE}"  -- tests/ > "$_TESTS_PR"
 while IFS= read -r _t; do
   [ -n "$_t" ] || continue
   grep -qxF "$_t" "$_TESTS_PR" \
@@ -333,12 +384,12 @@ _ci_rungs() {  # _ci_rungs <sha> <file> → the rung tokens run, one per line
 }
 for _ci in $CI_FILES; do
   [ -n "$(git -C "$REPO" ls-tree -r --name-only "${BASE_SHA}" -- "$_ci")" ] || continue
-  if [ -z "$(git -C "$REPO" ls-tree -r --name-only "${PR_SHA}" -- "$_ci")" ]; then
+  if [ -z "$(git -C "$REPO" ls-tree -r --name-only "${PR_TREE}" -- "$_ci")" ]; then
     fail "GONE: ${_ci} exists at the base and NOT at the pr ref — the CI file is what runs the rungs"
     continue
   fi
   _RUNGS_PR="$(mktemp "${_TMPDIR_T}/basegate.rungs.XXXXXX")"
-  _ci_rungs "$PR_SHA" "$_ci" > "$_RUNGS_PR"
+  _ci_rungs "$PR_TREE" "$_ci" > "$_RUNGS_PR"
   while IFS= read -r _r; do
     [ -n "$_r" ] || continue
     grep -qxF "$_r" "$_RUNGS_PR" \

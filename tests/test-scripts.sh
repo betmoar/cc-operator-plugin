@@ -5234,6 +5234,54 @@ check "base-gate: a rung ADDED to a CI file passes (control)" \
 check "base-gate: a CI file absent at BOTH refs is not a finding (control)" \
   "$(printf '%s' "$BG_OUT" | grep -q 'forgejo' && echo 1 || echo 0)"
 
+# --- the SUBJECT is the MERGE RESULT, not the PR head (#130) ----------------
+# Re-measured 2026-09-16: a PR that touches nothing the gate guards went RED
+# the moment the base raised a floor and added a tests/ file underneath it,
+# because both sides were compared as COMMITS. Merging that branch leaves the
+# raised floor and the added file in place, so the gate asserted a weakening
+# the result does not contain. The subject is now `git merge-tree`'s tree.
+git -C "$BGD" checkout -q -b innocent "$BG_BASE"
+printf 'a docs line\n' >> "$BGD/NOTES-innocent.md"
+git -C "$BGD" add -A >/dev/null 2>&1 && git -C "$BGD" commit -qm innocent
+# the base moves the way every PR in this repo moves it
+git -C "$BGD" checkout -q -b moved "$BG_BASE"
+bg_floors 10 25
+printf 'another suite file\n' > "$BGD/tests/test-two.sh"
+git -C "$BGD" add -A >/dev/null 2>&1 && git -C "$BGD" commit -qm moved
+BG_MOVED="$(git -C "$BGD" rev-parse moved)"
+BG_OUT="$(bash "$BG" --base "$BG_MOVED" --pr innocent --repo "$BGD" 2>&1)"; BG_RC=$?
+check "base-gate: a PR that is BEHIND the base passes — the merge result is the subject (#130)" \
+  "$([ "$BG_RC" = 0 ] && echo 0 || echo 1)"
+check "base-gate: and it says which tree it judged" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'merged tree' && echo 0 || echo 1)"
+# CONTROL: a real weakening ON TOP of a moved base is still caught, or the
+# case above would be satisfied by a gate that stopped looking. Branched from
+# $BG_MOVED, not $BG_BASE: branching from $BG_BASE edits the same floors.env
+# line "moved" already touched, which is a genuine git merge CONFLICT (both
+# sides differ from the shared base on one line) — that is arm 3's shape, not
+# this control's. "on top of" means a descendant of the moved base, so the
+# merge is clean and the lowered value is what the arms actually compare.
+git -C "$BGD" checkout -q -b weakens "$BG_MOVED"
+bg_floors 10 1
+git -C "$BGD" commit -qam weakens
+BG_OUT="$(bash "$BG" --base "$BG_MOVED" --pr weakens --repo "$BGD" 2>&1)"; BG_RC=$?
+check "base-gate: a floor LOWERED is still refused when the base has moved (control)" \
+  "$([ "$BG_RC" = 1 ] && echo 0 || echo 1)"
+
+# --- the four merge-tree outcomes, three of them refusals (R2) --------------
+# rc alone cannot classify: a real conflict and an UNREADABLE OBJECT both
+# return 1, and only a tree sha on stdout line 1 separates them. A truncated
+# shallow fetch takes the second shape, and this job fetches the PR head.
+git -C "$BGD" checkout -q -b conflicts "$BG_BASE"
+bg_floors 10 30
+git -C "$BGD" commit -qam conflicts
+BG_OUT="$(bash "$BG" --base "$BG_MOVED" --pr conflicts --repo "$BGD" 2>&1)"; BG_RC=$?
+check "base-gate: a CONFLICTING pr is rc 2 (cannot judge), never rc 1 (weakens)" \
+  "$([ "$BG_RC" = 2 ] && echo 0 || echo 1)"
+check "base-gate: the conflict refusal says CONFLICT, and does not claim a weakening" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'conflicts with the base' \
+     && ! printf '%s' "$BG_OUT" | grep -q 'BASE_GATE_FAILED' && echo 0 || echo 1)"
+
 # --- fail-closed: unreadable base -----------------------------------------
 # The MESSAGE is asserted, not only the code. rc 2 alone is vacuous here:
 # deleting the base-ref guard still yields rc 2, from the `git diff` failure
