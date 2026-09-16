@@ -91,7 +91,13 @@ scan_ledger() {
   while IFS= read -r -n 1048576 row || [ -n "$row" ]; do
     n=$((n+1)); [ "$n" -le 200000 ] || { echo "ops-reverify: ledger exceeds 200000 lines — stopping" >&2; break; }
     case "$row" in "| "*) ;; *) continue ;; esac
-    case "$row" in "| Gate | Criterion |"* | "|---"*) continue ;; esac
+    # The header is matched WHOLE, not by prefix (#128). `"| Gate | Criterion |"*`
+    # discards any row whose id is `Gate` and whose criterion is `Criterion`, and
+    # ops-task.sh permits that id. The full header cannot collide: its fourth cell
+    # is `PASS/FAIL`, which the verdict enum below refuses. Same fix as caps.sh.
+    case "$row" in
+      "| Gate | Criterion | Evidence | PASS/FAIL |" | "|---"*) continue ;;
+    esac
     # EXACTLY four cells — `| gate | criterion | evidence @stamp | verdict |` —
     # the same schema ops-verdict.sh --reconcile enforces; anything else is
     # counted as skipped, never silently dropped (a row you cannot see is a row

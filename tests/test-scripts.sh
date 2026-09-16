@@ -4880,6 +4880,16 @@ RVC="$(newproj)"
 check "reverify: a clean ledger (header only) exits 0" \
   "$( if ( cd "$RVC" && bash "$INIT" >/dev/null 2>&1 && bash "$RV" >/dev/null 2>&1 ); then echo 0; else echo 1; fi )"
 
+# A task id of `Gate` with criterion `Criterion` is a ledger ops-task.sh permits, and the
+# prefix filter dropped it from the sweep while counting it as "not a 4-cell row" — the
+# wrong reason for the wrong row. caps.sh was fixed in #126; this is its sibling parser.
+printf '| Gate | Criterion | ev @no-commit | FAIL |\n' >> "$RVP/.operator/VERDICTS.md"
+RV_OUT="$(bash "$RV" --ledger "$RVP/.operator/VERDICTS.md" 2>&1)"
+check "#128 a row whose task id is Gate is DATED, not dropped by the header filter" \
+  "$(printf '%s' "$RV_OUT" | grep -q '| Gate | ' && echo 0 || echo 1)"
+check "#128 CONTROL: the real header line is still skipped" \
+  "$(printf '%s' "$RV_OUT" | grep -q 'Criterion | Evidence | PASS/FAIL' && echo 1 || echo 0)"
+
 echo "-- Case: gate-suite.sh holds a rung to its MARKER and its FLOOR (0.11.7)"
 # Two claims that fail independently. The FLOOR catches deletion; the MARKER
 # catches a rung that exited 0 without running — which is what a step whose
