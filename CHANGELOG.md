@@ -69,6 +69,24 @@ single source of truth; bump it in the same commit as the changelog entry.
   earlier check passes while the listing fails: measured 3/3 deterministic as rc 0 and
   `BASE_GATE_PASSED`, with `D tests/zzz.sh` printed by the delta report one line above the
   pass. A fail-open in a hard-fail arm.
+- **The controls those two fixes needed, and the mutations that prove them (#136/#137).**
+  A rejection probe with no accepts-the-ordinary-case half is satisfied by a guard that
+  refuses everything, and a fixture that silently does nothing reports green while
+  testing nothing — so seven more cases, each mutation-checked against the shape it
+  guards. Two are worth naming because the fix created them. Stripping the CR makes a
+  CRLF header reach `caps.sh`'s whole-line literal for the **first** time, so #126's
+  collision fix became newly reachable and needed its own control (revert that literal to
+  the prefix glob → red). And the reconcile strip's PLACEMENT is now pinned, not merely
+  stated: moving it into `row_is_conformant` leaves the restore assertion green while the
+  row carries its `\r` through into `VERDICTS.md`, where it re-breaks every reader that
+  does not strip — including the two just fixed.
+- **The merge-tree tally said SEVEN/SIX; the classifier has EIGHT/SEVEN.** `397d6d3`
+  split rc 129 out of the catch-all — adding a branch — and updated the prose two lines
+  above the table but not the table row, the file header, or the arm-5 back-reference.
+  Counted at HEAD: 7 `if/elif/else`, 7 `die`, plus the accept. Corrected in all five
+  places, and the superseded plan doc now says to count the arms rather than trust a
+  number. No pin: the drift cost is a wrong comment, not a wrong gate, and the arms are
+  the enumeration.
 - **`base-gate.sh` names an unwritable `TMPDIR` instead of blaming the fetch (#135).**
   All 13 `mktemp` calls were unchecked, so a failure left the variable empty, the
   redirection failed, and the classifier read `$?` as 1 with no tree sha — the

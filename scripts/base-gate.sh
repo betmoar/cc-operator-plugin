@@ -19,8 +19,9 @@
 #       PR that is merely BEHIND the base is not reported as deleting what
 #       the base added (#130). Conflict, unreadable object, corrupt
 #       repository, empty merge result, an unrecognised merge-tree output
-#       shape (rc 0 with no tree sha), and an unavailable merge-tree are six
-#       distinct rc-2 refusals; none of them is a weakening.
+#       shape (rc 0 with no tree sha), an old git with no --write-tree, and any
+#       exit status this gate does not recognise are SEVEN distinct rc-2
+#       refusals; none of them is a weakening.
 #     - a floor LOWERED, REMOVED, or hidden behind a DUPLICATE key (the file
 #       is sourced, so the last assignment is the effective one), or a
 #       floors.env line of ANY shape other than `FLOOR_<name>=<digits>` (the
@@ -546,7 +547,7 @@ fi
 # and three-dot's silence on it is correct, not a gap. When the PR's own
 # edit instead collides with the same hunk, `git merge-tree` reports a
 # CONFLICT and this script already refuses the run before arm 5 runs at all
-# (see the seven merge-tree outcomes above) — so that path never reaches this
+# (see the eight merge-tree outcomes above) — so that path never reaches this
 # arm either, on any diff form.
 #
 # The form is kept anyway, for a property that IS real and IS reachable: the

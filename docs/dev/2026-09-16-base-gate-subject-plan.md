@@ -319,7 +319,12 @@ else
 fi
 ```
 
-Also correct the FOUR OUTCOMES comment above it to the six the spec now records.
+Also correct the FOUR OUTCOMES comment above it to the count the spec records.
+> **SUPERSEDED (0.11.13, #136 review):** this said "six", the spec then said
+> seven, and the shipped classifier has EIGHT — one accept and seven refusals.
+> The tally drifted three times in one release because it was prose beside the
+> arms rather than the arms themselves. Count `if/elif/else` in base-gate.sh's
+> classifier block; do not trust a number in this file.
 
 - [ ] **Step 4:** full shell rung + shellcheck; raise `FLOOR_shell`. Mutations: drop the
   rc-128 branch → the unreadable-object case red in the bash suite's `base-gate` cases;
