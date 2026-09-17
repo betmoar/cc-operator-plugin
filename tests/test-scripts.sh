@@ -4902,6 +4902,42 @@ check "#128 a row whose task id is Gate is SWEPT, not dropped by the header filt
 check "#128 CONTROL: the real header line is still skipped" \
   "$(printf '%s' "$RV_OUT" | grep -q '| Gate | PASS/FAIL |' && echo 1 || echo 0)"
 
+# --- #136: --reconcile must not DROP a CRLF fragment row -------------------
+# Not a miscount — data loss. --reconcile is the recovery path, and a trailing
+# `\r` made row_is_conformant reject an otherwise honest fragment. Measured
+# 2026-09-17 at f306cee: "skipping non-conformant line", 1 of 2 restored, and
+# the CRLF row absent from the rebuilt ledger entirely (#136).
+_rcd="$(newproj)"; ( cd "$_rcd" && git init -q . && git config user.email t@t && git config user.name t && bash "$INIT" >/dev/null 2>&1 )
+mkdir -p "$_rcd/.operator/verdicts.d"
+printf '| T-lf | c | ev @no-commit | PASS |\n'     > "$_rcd/.operator/verdicts.d/001.md"
+printf '| T-crlf | c | ev @no-commit | PASS |\r\n' > "$_rcd/.operator/verdicts.d/002.md"
+( cd "$_rcd" && bash "$VERDICT" --reconcile >/dev/null 2>&1 )
+check "#136 --reconcile restores a CRLF fragment row instead of dropping it" \
+  "$([ "$(grep -c 'T-crlf' "$_rcd/.operator/VERDICTS.md")" = 1 ] && echo 0 || echo 1)"
+check "#136 CONTROL: the LF sibling was restored too — the probe ran the real path" \
+  "$([ "$(grep -c 'T-lf' "$_rcd/.operator/VERDICTS.md")" = 1 ] && echo 0 || echo 1)"
+rm -rf "$_rcd"
+
+# --- #136: a CRLF ledger parses IDENTICALLY to an LF one --------------------
+# The #128 fix regressed this and the suite did not notice: swapping the prefix
+# glob `"| Gate | Criterion |"*` for exact equality removed the `*` that had
+# been absorbing a trailing `\r`. Measured at f306cee: CRLF gave
+# `undatable: 2` plus the header swept as a phantom data row, where the
+# pre-#128 code gave `undatable: 1`. A correctness fix that broke an input it
+# never mentioned — which is why the assertion below is EQUALITY between the
+# two encodings, not a fixed number.
+_crlfd="$(newproj)"; mkdir -p "$_crlfd/.operator"
+printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n| T-a | c | ev @no-commit | FAIL |\n' > "$_crlfd/lf.md"
+sed 's/$/\r/' "$_crlfd/lf.md" > "$_crlfd/crlf.md"
+_rv_lf="$(bash "$RV" --ledger "$_crlfd/lf.md" 2>&1 | grep -oE 'undatable: [0-9]+')"
+_rv_crlf="$(bash "$RV" --ledger "$_crlfd/crlf.md" 2>&1 | grep -oE 'undatable: [0-9]+')"
+check "#136 ops-reverify reads a CRLF ledger exactly as it reads LF" \
+  "$([ "$_rv_lf" = "$_rv_crlf" ] && echo 0 || echo 1)"
+# The tell the regression left behind: the header itself swept as a data row.
+check "#136 CONTROL: the CRLF header is not swept as a phantom row" \
+  "$(bash "$RV" --ledger "$_crlfd/crlf.md" 2>&1 | grep -qE '^\| [0-9]+ \| Gate \|' && echo 1 || echo 0)"
+rm -rf "$_crlfd"
+
 echo "-- Case: gate-suite.sh holds a rung to its MARKER and its FLOOR (0.11.7)"
 # Two claims that fail independently. The FLOOR catches deletion; the MARKER
 # catches a rung that exited 0 without running — which is what a step whose
@@ -5176,6 +5212,42 @@ bg_run m-forge-intests
 check "base-gate: the same marker INSIDE tests/ is not a forgery (control)" \
   "$([ "$BG_RC" = 0 ] && echo 0 || echo 1)"
 
+# --- arm 3 must not pass a real tests/ deletion it cannot SEE (#137) --------
+# Both `ls-tree` redirects were unchecked, and the loop iterates the BASE
+# listing — so an empty file makes it a NO-OP and every tests/ deletion passes.
+# A fail-OPEN in a hard-fail arm, which is the one direction this gate may
+# never fail.
+# THE TRIGGER IS A NESTED SUBTREE under tests/, and that specificity is the
+# finding: corrupting `scripts/` or `docs/` does NOT reach it (the base-readable
+# check dies first, or git prunes the walk by pathspec — both measured). A
+# missing `tests/sub` tree leaves `git show BASE:tests/floors.env` working, so
+# every earlier check passes, while `ls-tree -r -- tests/` must recurse and
+# fails. Measured 2026-09-17 with BOTH guards removed, 3/3 deterministic:
+# rc 0, BASE_GATE_PASSED, zero GONE lines — with `D tests/zzz.sh` printed by
+# the delta report one line above the pass.
+BGT_D="$(mktemp -d "${TMPDIR:-/tmp}/basegate-tsub.XXXXXX")"
+mkdir -p "$BGT_D/tests/sub" "$BGT_D/scripts" "$BGT_D/.github/workflows"
+( cd "$BGT_D" && git init -q . && git config user.email t@example.com && git config user.name t ) >/dev/null 2>&1
+printf 'CHECKS = (\n    check_hook,\n)\n' > "$BGT_D/scripts/validate_plugin.py"
+printf '#!/usr/bin/env bash\n: the wrapper\n' > "$BGT_D/scripts/gate-suite.sh"
+printf 'FLOOR_shell=20\n' > "$BGT_D/tests/floors.env"
+printf 'x\n' > "$BGT_D/tests/zzz.sh"
+printf 'deep\n' > "$BGT_D/tests/sub/deep.sh"
+printf '# ci\nsteps:\n  - run: bash scripts/gate-suite.sh shell\n' > "$BGT_D/.github/workflows/validate.yml"
+git -C "$BGT_D" add -A >/dev/null 2>&1 && git -C "$BGT_D" commit -qm base
+BGT_BASE="$(git -C "$BGT_D" rev-parse HEAD)"
+git -C "$BGT_D" checkout -q -b tsubdel "$BGT_BASE"
+git -C "$BGT_D" rm -q tests/zzz.sh && git -C "$BGT_D" commit -qm "delete a tests file"
+_tsub="$(git -C "$BGT_D" rev-parse "${BGT_BASE}:tests/sub")"
+rm -f "$BGT_D/.git/objects/${_tsub%"${_tsub#??}"}/${_tsub#??}"
+BG_OUT="$(bash "$BG" --base "$BGT_BASE" --pr tsubdel --repo "$BGT_D" 2>&1)"; BG_RC=$?
+check "#137 an unreadable tests/ listing at the BASE is refused, never read as 'no suites'" \
+  "$([ "$BG_RC" = 2 ] && printf '%s' "$BG_OUT" | grep -q 'could not list tests/ at the base ref' && echo 0 || echo 1)"
+# The polarity is the finding, not the message: rc 0 + PASSED is the fail-open.
+check "#137 CONTROL: it never reports BASE_GATE_PASSED on a repo it cannot read" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'BASE_GATE_PASSED' && echo 1 || echo 0)"
+rm -rf "$BGT_D"
+
 # --- an unwritable TMPDIR names ITSELF, not a truncated fetch (#135) --------
 # Every mktemp in base-gate.sh was unchecked. On failure the variable stayed
 # EMPTY, the redirection that followed failed, and the classifier read $? as 1
@@ -5424,7 +5496,7 @@ BG_OUT="$(bash "$BG" --base "$BG_ELSEWHERE" --pr weakens-realmerge --repo "$BGD"
 check "base-gate: a floor LOWERED survives a genuine (non-fast-forward) three-way merge" \
   "$([ "$BG_RC" = 1 ] && printf '%s' "$BG_OUT" | grep -q 'BASE_GATE_FAILED: FLOOR:' && echo 0 || echo 1)"
 
-# --- the seven merge-tree outcomes, six of them refusals (R2, AMENDED) -----
+# --- the eight merge-tree outcomes, seven of them refusals (R2, AMENDED) ---
 # rc alone cannot classify: a real conflict and an UNREADABLE OBJECT both
 # return 1, and only a tree sha on stdout line 1 separates them. A truncated
 # shallow fetch takes the second shape, and this job fetches the PR head.
@@ -6293,6 +6365,18 @@ check "CONTROL: an ordinary tripped ledger still TRIPS — the probe did not ref
 _caps_ledger "$CAPD/v27.md" "| T-é | crité — dash | ev | FAIL |" "| T-é | crité — dash | ev | FAIL |"
 check "CONTROL: a UTF-8 ledger is not read as corrupt — the probe counts bytes, not characters" \
   "$([ "$(_caps_state "$CAPD/v27.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+
+# CRLF fails this parser OPEN, and ops-stop-hook.sh SOURCES the lib — so a
+# CRLF checkout silently disables the same-target-rework cap while every gate
+# reports green. Measured 2026-09-17 on byte-identical content: tripped=1 on
+# LF, tripped=0 on CRLF (#136). Fail-OPEN is the one direction a cap may not
+# fail, which is why this is an equality assertion and not a fixed count.
+_caps_ledger "$CAPD/v28.md" "| T-a | c | ev | FAIL |" "| T-a | c | ev | FAIL |"
+sed 's/$/\r/' "$CAPD/v28.md" > "$CAPD/v28crlf.md"
+check "#136 caps.sh counts a CRLF ledger exactly as it counts LF (fails OPEN otherwise)" \
+  "$([ "$(_caps_state "$CAPD/v28.md")" = "$(_caps_state "$CAPD/v28crlf.md")" ] && echo 0 || echo 1)"
+check "#136 CONTROL: that CRLF ledger actually TRIPS — equality alone would pass if both said 0" \
+  "$([ "$(_caps_state "$CAPD/v28crlf.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
 
 # --- the UNCOVERED caps stay NAMED -----------------------------------------
 # Two of the charter's three caps are not covered, for stated reasons. Dropping the paragraph is

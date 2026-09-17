@@ -20,7 +20,7 @@ single source of truth; bump it in the same commit as the changelog entry.
   adds a `tests/` file in nearly every PR and an unrebased branch read as lowering and
   deleting them. The merge result contained neither weakening. Arm 4 keeps the
   three-dot diff on purpose — it names what *this PR* authored, which a human reads.
-- **Seven merge-tree outcomes, six distinct refusals (#130).** `rc` alone does not
+- **Eight merge-tree outcomes, seven distinct refusals (#130).** `rc` alone does not
   separate them; the discriminator is rc, whether stdout line 1 is a sha, and whether
   the tree has entries. A real conflict, an unreadable object, a corrupt repository
   (rc 128), an empty merge result, an unrecognised output shape, and an unavailable
@@ -55,6 +55,20 @@ single source of truth; bump it in the same commit as the changelog entry.
   filter sits before the cell count, so the row was not even tallied as "not a 4-cell
   row" (measured: that counter reads 0). Invisible, not miscounted. `scripts/lib/caps.sh`
   already carried the whole-line form; this is the same fix in the sibling parser.
+- **Three ledger parsers stopped losing CRLF rows (#136).** `ops-reverify.sh`, `caps.sh`
+  and `ops-verdict.sh --reconcile` each mis-handled a trailing `\r`, and each failed in a
+  different direction. The reverify one was a regression introduced by this release's own
+  #128 fix: exact header equality removed the `*` that had been absorbing the `\r`.
+  `caps.sh` failed **open** — `tripped=1` on LF and `0` on byte-identical CRLF, and the
+  Stop hook sources it, so a CRLF checkout silently disabled the same-target-rework cap.
+  `--reconcile` **dropped** the row outright: 1 of 2 restored, data loss in the recovery
+  path. One `row="${row%$'\r'}"` in each, before any comparison.
+- **The base-gate no longer passes a `tests/` deletion it cannot see (#137).** Both
+  `ls-tree` redirects in arm 3 were unchecked, and the loop iterates the base listing — so
+  an empty file made it a no-op. With a nested `tests/sub` subtree object missing, every
+  earlier check passes while the listing fails: measured 3/3 deterministic as rc 0 and
+  `BASE_GATE_PASSED`, with `D tests/zzz.sh` printed by the delta report one line above the
+  pass. A fail-open in a hard-fail arm.
 - **`base-gate.sh` names an unwritable `TMPDIR` instead of blaming the fetch (#135).**
   All 13 `mktemp` calls were unchecked, so a failure left the variable empty, the
   redirection failed, and the classifier read `$?` as 1 with no tree sha — the

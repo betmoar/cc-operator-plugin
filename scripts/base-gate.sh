@@ -150,7 +150,13 @@ git -C "$REPO" rev-parse --verify --quiet "${BASE_REF}^{commit}" >/dev/null 2>&1
   || die "base ref '${BASE_REF}' does not resolve in '$REPO' — refusing to fall back to any other copy (fail closed)"
 PR_SHA="$(git -C "$REPO" rev-parse --verify --quiet "${PR_REF}^{commit}" 2>/dev/null)" \
   || die "pr ref '${PR_REF}' does not resolve in '$REPO' — nothing to gate"
-BASE_SHA="$(git -C "$REPO" rev-parse --quiet --verify "${BASE_REF}^{commit}")"
+# CHECKED, though the verify above already passed: this is a SECOND call, so a
+# ref deleted or repacked in between yields an empty BASE_SHA that every arm
+# below would then compare against. Cheap to guard, silent if not (#137).
+BASE_SHA="$(git -C "$REPO" rev-parse --quiet --verify "${BASE_REF}^{commit}")" \
+  || die "base ref '${BASE_REF}' stopped resolving between the two rev-parse calls — refusing rather than gating against an empty sha"
+[ -n "$BASE_SHA" ] \
+  || die "base ref '${BASE_REF}' resolved to an EMPTY sha — refusing (every arm below would compare against nothing)"
 
 # --- the SUBJECT: the tree a MERGE would produce (#130) -----------------------
 # Arms 1, 2, 3 and 3b ask "does the RESULT weaken the base". Comparing the two
@@ -165,10 +171,16 @@ BASE_SHA="$(git -C "$REPO" rev-parse --quiet --verify "${BASE_REF}^{commit}")"
 # tree with NO checkout and NO worktree, so the trusted-subject property is
 # untouched: PR bytes are still never on disk and never executed.
 #
-# SEVEN OUTCOMES — ONE accept and SIX refusals — and rc alone does not
-# separate them (measured 2026-09-16; the count was written as six/five
-# until PR #132's review counted the branches: the rc-0 arm SPLITS into
-# accept and empty-tree-refuse, which the first tally folded into one,
+# EIGHT OUTCOMES — ONE accept and SEVEN refusals — and rc alone does not
+# separate them. THE COUNT HAS BEEN WRONG TWICE, both times for the same
+# reason: the prose was updated to the tally that was true BEFORE the same
+# commit changed the branch structure. It read six/five until the rc-0 arm was
+# seen to SPLIT into accept and empty-tree-refuse (seven/six), and seven/six
+# until 397d6d3 split the catch-all into rc 129 and everything-else — which is
+# the eighth. Count the branches, do not trust this comment: at HEAD there are
+# 7 top-level if/elif/else arms plus the nested empty-tree die inside the
+# first. Nothing pins this number, which is why it survived twice (#132
+# review),
 # AMENDED after the first cut folded two of these wrong — R2 in
 # docs/dev/2026-09-16-base-gate-subject-spec.md):
 #   rc 0 + a sha + a NON-EMPTY tree -> clean merge, this is the subject
@@ -191,7 +203,11 @@ BASE_SHA="$(git -C "$REPO" rev-parse --quiet --verify "${BASE_REF}^{commit}")"
 #                                      (a truncated or shallow fetch). This is
 #                                      NOT an old git and NOT a conflict — the
 #                                      shape that bit the #125 marker arm.
-#   any other rc (129, ...)         -> --write-tree unavailable (old git)
+#   rc 129                          -> --write-tree unavailable (old git)
+#   any OTHER rc                    -> an exit status this gate does not
+#                                      recognise. NOT folded into the old-git
+#                                      message: a killed process or a future
+#                                      git's new code is neither (#132 review)
 # Every non-clean case is a rc 2 refusal: the gate says it cannot judge,
 # never that the PR weakens anything. A conflicted PR cannot be merged by
 # GitHub either way, so refusing to judge it costs nothing and claims nothing.
@@ -423,8 +439,16 @@ done
 # and the coverage gone.
 _TESTS_BASE="$(_mk tb)" || exit 2
 _TESTS_PR="$(_mk tp)" || exit 2
-git -C "$REPO" ls-tree -r --name-only "${BASE_SHA}" -- tests/ > "$_TESTS_BASE"
-git -C "$REPO" ls-tree -r --name-only "${PR_TREE}"  -- tests/ > "$_TESTS_PR"
+# BOTH REDIRECTS ARE CHECKED, and the BASE side is the one that matters: the
+# loop below iterates _TESTS_BASE, so an empty file makes it a NO-OP and every
+# tests/ deletion passes silently — a fail-OPEN in a hard-fail arm, which is
+# the one direction this gate may never fail. `ls-tree` exiting non-zero on an
+# unreadable object is not "the base has no tests/"; it is the gate being
+# unable to see, and that is a refusal (#137, PR #132 review).
+git -C "$REPO" ls-tree -r --name-only "${BASE_SHA}" -- tests/ > "$_TESTS_BASE" \
+  || die "could not list tests/ at the base ref — the trusted side is unreadable, and an empty listing here would read as 'the base has no suites' and pass every deletion (fail closed instead)"
+git -C "$REPO" ls-tree -r --name-only "${PR_TREE}"  -- tests/ > "$_TESTS_PR" \
+  || die "could not list tests/ in the merged tree — refusing rather than comparing against a listing that may be truncated"
 while IFS= read -r _t; do
   [ -n "$_t" ] || continue
   grep -qxF "$_t" "$_TESTS_PR" \

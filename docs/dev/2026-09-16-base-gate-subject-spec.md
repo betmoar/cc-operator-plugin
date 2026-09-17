@@ -52,7 +52,7 @@ $ git ls-tree -r --name-only <tree> -- tests/test-new.sh ->  tests/test-new.sh
 Both accessor forms the arms use (`git show <tree>:<path>`, `ls-tree -r <tree>`) work
 against a tree sha unchanged.
 
-### R2 — seven merge-tree outcomes, six distinct refusals
+### R2 — eight merge-tree outcomes, seven distinct refusals
 
 `rc` alone does not separate them.
 
@@ -70,6 +70,7 @@ was missing:
 | `--write-tree` unsupported (old git) | 129 | nothing |
 | unreadable/absent object | 1 | *nothing* — kept, but no construction reaches it |
 | **output shape not understood** | **0** | **not a sha** — the row this table omitted |
+| **an unrecognised exit status** | **other** | nothing — split from 129 in `397d6d3`; the row that made the tally EIGHT |
 
 So the discriminator is **rc, plus whether stdout line 1 is a sha, plus whether the tree
 has any entries**:

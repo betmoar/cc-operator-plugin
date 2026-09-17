@@ -252,6 +252,13 @@ scan_caps() { # scan_caps <verdicts-path>
   # polarity above. Accumulating instead would buy a case no writer of ours
   # can produce.
   while IFS= read -r -n 1048576 row || [ -n "$row" ]; do
+    # CRLF fails this parser OPEN, which is the wrong direction for a cap.
+    # Measured 2026-09-17: byte-identical content gives tripped=1 on LF and
+    # tripped=0 on CRLF, so a CRLF checkout silently disables the
+    # same-target-rework cap — and ops-stop-hook.sh SOURCES this lib, so the
+    # gate that runs is the one that stopped counting (#136). Builtin-only,
+    # as every reader the hook sources must stay.
+    row="${row%$'\r'}"
     n=$((n + 1))
     if [ "$n" -gt "$CAPS_MAX_LINES" ]; then caps_truncated=1; break; fi
     bytes=$((bytes + ${#row} + 1))
