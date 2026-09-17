@@ -4916,6 +4916,18 @@ check "#136 --reconcile restores a CRLF fragment row instead of dropping it" \
   "$([ "$(grep -c 'T-crlf' "$_rcd/.operator/VERDICTS.md")" = 1 ] && echo 0 || echo 1)"
 check "#136 CONTROL: the LF sibling was restored too — the probe ran the real path" \
   "$([ "$(grep -c 'T-lf' "$_rcd/.operator/VERDICTS.md")" = 1 ] && echo 0 || echo 1)"
+# The row must land LF-terminated in the LEDGER OF RECORD. Stripping inside
+# row_is_conformant instead of in the reconcile loop would satisfy both checks
+# above while writing the CR through to VERDICTS.md, where it re-breaks every
+# reader that does not strip — including the two just fixed.
+check "#136 the restored row carries no CR into the ledger of record" \
+  "$(LC_ALL=C grep -q "$(printf 'T-crlf.*\r')" "$_rcd/.operator/VERDICTS.md" && echo 1 || echo 0)"
+# CONTROL: the refusal path was not widened into "accept anything". A row that
+# is genuinely non-conformant — three cells — must still be skipped, CR or not.
+printf '| T-bad | only | three |\r\n' > "$_rcd/.operator/verdicts.d/003.md"
+( cd "$_rcd" && bash "$VERDICT" --reconcile >/dev/null 2>&1 )
+check "#136 CONTROL: a 3-cell CRLF row is still refused (the strip did not widen the schema)" \
+  "$(grep -q 'T-bad' "$_rcd/.operator/VERDICTS.md" && echo 1 || echo 0)"
 rm -rf "$_rcd"
 
 # --- #136: a CRLF ledger parses IDENTICALLY to an LF one --------------------
@@ -4929,6 +4941,11 @@ rm -rf "$_rcd"
 _crlfd="$(newproj)"; mkdir -p "$_crlfd/.operator"
 printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n| T-a | c | ev @no-commit | FAIL |\n' > "$_crlfd/lf.md"
 sed 's/$/\r/' "$_crlfd/lf.md" > "$_crlfd/crlf.md"
+# The fixture asserts its OWN precondition: BSD and GNU sed both accept this
+# `\r`, but a sed that emitted a literal `r` would leave the equality check
+# below comparing LF to LF and every assertion green while testing nothing.
+check "#136 SETUP: the CRLF fixture really carries a CR" \
+  "$(LC_ALL=C grep -q "$(printf '\r')" "$_crlfd/crlf.md" && echo 0 || echo 1)"
 _rv_lf="$(bash "$RV" --ledger "$_crlfd/lf.md" 2>&1 | grep -oE 'undatable: [0-9]+')"
 _rv_crlf="$(bash "$RV" --ledger "$_crlfd/crlf.md" 2>&1 | grep -oE 'undatable: [0-9]+')"
 check "#136 ops-reverify reads a CRLF ledger exactly as it reads LF" \
@@ -5238,8 +5255,23 @@ git -C "$BGT_D" add -A >/dev/null 2>&1 && git -C "$BGT_D" commit -qm base
 BGT_BASE="$(git -C "$BGT_D" rev-parse HEAD)"
 git -C "$BGT_D" checkout -q -b tsubdel "$BGT_BASE"
 git -C "$BGT_D" rm -q tests/zzz.sh && git -C "$BGT_D" commit -qm "delete a tests file"
+# CONTROL FIRST, on the INTACT repo: the deletion is genuinely caught. Without
+# it, the refusal asserted below is satisfied by a gate that refuses every
+# input — the refuses-everything half of the F144 control pair. Measured: rc 1
+# with a GONE line naming the deleted path.
+BG_OUT="$(bash "$BG" --base "$BGT_BASE" --pr tsubdel --repo "$BGT_D" 2>&1)"; BG_RC=$?
+check "#137 CONTROL: the deletion IS caught on an intact repo (not a refuse-everything gate)" \
+  "$([ "$BG_RC" = 1 ] && printf '%s' "$BG_OUT" | grep -q 'GONE: tests/zzz.sh' && echo 0 || echo 1)"
 _tsub="$(git -C "$BGT_D" rev-parse "${BGT_BASE}:tests/sub")"
 rm -f "$BGT_D/.git/objects/${_tsub%"${_tsub#??}"}/${_tsub#??}"
+# The fixture asserts its OWN precondition, in its own words. If the object was
+# packed rather than loose the `rm` is a no-op, the listing still succeeds, and
+# both checks below would measure the HEALTHY path while reporting green — a
+# fixture that silently does nothing (the #134 class, one layer over). Freshly
+# `git init`-ed repos write loose objects, so this is a guard against a future
+# change to the fixture, not a live branch.
+check "#137 SETUP: the base tests/ listing really fails now" \
+  "$(if git -C "$BGT_D" ls-tree -r --name-only "$BGT_BASE" -- tests/ >/dev/null 2>&1; then echo 1; else echo 0; fi)"
 BG_OUT="$(bash "$BG" --base "$BGT_BASE" --pr tsubdel --repo "$BGT_D" 2>&1)"; BG_RC=$?
 check "#137 an unreadable tests/ listing at the BASE is refused, never read as 'no suites'" \
   "$([ "$BG_RC" = 2 ] && printf '%s' "$BG_OUT" | grep -q 'could not list tests/ at the base ref' && echo 0 || echo 1)"
@@ -6377,6 +6409,21 @@ check "#136 caps.sh counts a CRLF ledger exactly as it counts LF (fails OPEN oth
   "$([ "$(_caps_state "$CAPD/v28.md")" = "$(_caps_state "$CAPD/v28crlf.md")" ] && echo 0 || echo 1)"
 check "#136 CONTROL: that CRLF ledger actually TRIPS — equality alone would pass if both said 0" \
   "$([ "$(_caps_state "$CAPD/v28crlf.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+# CONTROL: the strip does not trip EVERYTHING. One FAIL round over CRLF is one
+# round, and a detector that fires on any CRLF input would satisfy both checks
+# above — the accepts-the-ordinary-case half the F144 rule makes mandatory.
+_caps_ledger "$CAPD/v29.md" "| T-a | c | ev | FAIL |"
+sed 's/$/\r/' "$CAPD/v29.md" > "$CAPD/v29crlf.md"
+check "#136 CONTROL: one CRLF FAIL round still does not trip (not a trip-everything strip)" \
+  "$([ "$(_caps_state "$CAPD/v29crlf.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+# CONTROL: the property THIS site was fixed for (#126) must survive. Stripping
+# the CR makes a CRLF header reach the whole-line literal for the FIRST time,
+# so a row whose id is literally `Gate` and criterion `Criterion` must still be
+# counted while the real header is still skipped — the collision #126 closed.
+_caps_ledger "$CAPD/v30.md" "| Gate | Criterion | ev | FAIL |" "| Gate | Criterion | ev | FAIL |"
+sed 's/$/\r/' "$CAPD/v30.md" > "$CAPD/v30crlf.md"
+check "#136 CONTROL: a CRLF row IDed Gate/Criterion still trips (#126 header match survives)" \
+  "$([ "$(_caps_state "$CAPD/v30crlf.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
 
 # --- the UNCOVERED caps stay NAMED -----------------------------------------
 # Two of the charter's three caps are not covered, for stated reasons. Dropping the paragraph is

@@ -1283,3 +1283,83 @@ an argument that a downstream `die` would catch it.
 The structural gap — a rootful dev container cannot execute ten of these cases at all,
 and the suite says `slack 0` while they are skipped — is #134, deliberately not closed
 here.
+
+## A trailing CR is not noise, it is a parser bypass (0.11.13, #136)
+
+Three readers split a 4-cell ledger row (`grep -rn '{row#| }\|{line#| }' scripts/`), and
+all three were defeated by a `\r`. `read -r` strips the `\n` delimiter and **never** a
+preceding `\r`, so on a CRLF ledger every row arrives one invisible byte longer than the
+literal each parser tests against. The three failures were not variants of one symptom —
+each broke where that file happened to anchor:
+
+- `lib/caps.sh` anchors on the verdict enum (`case "$verdict" in PASS | FAIL)`), so
+  `FAIL\r` matched neither arm, every row was `continue`d, the key table stayed empty and
+  the detector reported **`tripped=0` on a ledger that trips**. `ops-stop-hook.sh` sources
+  this lib, so that is a fail-OPEN in the enforcement path. Measured on byte-identical
+  content: LF `tripped=1`, CRLF `tripped=0`.
+- `ops-reverify.sh` anchors on the whole-line header literal, so the header missed its
+  own filter, fell into the data parser, and was **emitted as a phantom finding**
+  (`undatable: 2`, with a row whose verdict cell read `PASS/FAIL`).
+- `ops-verdict.sh`'s `row_is_conformant` anchors on the trailing pipe (`'| '*' |'`), so a
+  CRLF fragment was refused as non-conformant and `--reconcile` **dropped it** — data loss
+  in the recovery path, reached by exactly the messy merges `merge=union` produces.
+
+Two things make this worth a landmine rather than a footnote. First, **the repo already
+knew**: six other readers strip CR, and `lib/partition.sh:204` carries the rule in
+words — "a CRLF checkout must not change semantics". A guard held at six of nine sites
+reads as covered. Second, `ops-reverify.sh`'s was a **regression we shipped**: the #128
+whole-line header fix replaced a prefix glob that had absorbed the `\r` all along, so
+closing a rare collision (a row whose id is literally `Gate`) opened a commoner one. The
+same commit's sibling fix in `caps.sh` inherited it.
+
+Where to strip: immediately after the `read`, before any test that could see the `\r`. In
+`ops-verdict.sh` that means the reconcile LOOP, not inside `row_is_conformant` — the row
+is appended to the ledger of record, and a CR carried in there re-breaks every reader
+downstream. In `lib/caps.sh` it sits before the byte accounting, so `bytes` counts the
+row as the parser sees it rather than as the file stores it: a CRLF ledger is charged one
+byte per line less than its on-disk size. Immaterial against a 2 MiB cap
+(~0.002% looser), but the direction is worth knowing rather than assuming — the
+alternative, charging the CR, costs a line of ordering that buys nothing a cap needs.
+
+`.operator/.gitattributes` sets `merge=union` on the ledgers and no `text`/`eol`, which
+is how CRLF arrives. Adding `eol=lf` is a complement, never a substitute: gitattributes
+normalize on checkout, and a file written CRLF in the worktree still reaches every reader
+(#138).
+
+## An empty listing is not an empty answer (0.11.13, #137)
+
+`base-gate.sh` arm 3 wrote two whole-subtree listings to a file with no exit check:
+
+```sh
+git -C "$REPO" ls-tree -r --name-only "${BASE_SHA}" -- tests/ > "$_TESTS_BASE"
+```
+
+`ls-tree` exits non-zero and writes **nothing** when a subtree object is unreadable, so
+the loop below read zero paths and "no tests/ file was deleted" was the answer. Measured
+3/3: a PR deleting `tests/zzz.sh`, with the unrelated `tests/aaa` subtree object removed,
+produced `BASE_GATE_PASSED` rc 0 — while the delta report printed `D tests/zzz.sh` one
+line above it. The gate saw the violation, named it, and passed. That is the sibling
+incident this file's own header cites, inside the guard written against it.
+
+Nothing upstream caught it, and the reason is worth keeping: `merge-tree` only inflates
+subtrees that **differ** between the two sides, so an unreadable subtree identical on both
+returns rc 0. The change-list diff and arm 5's content diff returned rc 0 for the same
+reason. Four independent review passes read this code and none found it; one executed
+probe did.
+
+Two bounds, both measured, so the fix stays small. A **single-path** `ls-tree` (`:415`,
+`:416`, `:452`, `:453`) resolves without inflating siblings and is unaffected. `:213`
+already fails closed, because an empty capture makes its `[ -z ]` true and it dies. Only
+the two whole-subtree redirects needed the guard.
+
+And the shape of the guard matters: `die` inside `$( )` exits only the **subshell**.
+Measured — `x="$(false || die msg)"` printed the message, left the parent alive and
+returned 0; `x="$(false)" || die msg` exited 2. These two sites are plain redirects, so
+`cmd > file || die …` fires in the right shell. A `checked_git` wrapper called in test
+position would not.
+
+Fixtures for this class remove the loose object rather than `chmod`-ing it: removal needs
+directory permission, not file permission, so root and non-root behave alike (#134's
+lesson, applied). A packed object cannot be removed, so the fixture asserts its own
+precondition and skips with a named reason instead of passing against a repo it never
+broke.
