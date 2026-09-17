@@ -65,6 +65,25 @@ _TMPDIR_T="${TMPDIR:-/tmp}"
 die() { echo "base-gate: $1" >&2; exit 2; }
 fail() { FAILS=$((FAILS + 1)); echo "BASE_GATE_FAILED: $1" >&2; }
 
+# _mk <label> -> a temp file, or a rc-2 refusal NAMING THE REAL CAUSE (#135).
+# Every mktemp here was unchecked. On failure -- a full or read-only TMPDIR, a
+# restrictive runner sandbox -- the variable stayed EMPTY, the redirection that
+# followed failed, and the classifier read `$?` as 1 with no tree sha: the
+# rc-1-no-sha branch, whose message tells the operator to go fix a truncated
+# fetch. The fetch is fine. That is the same two-causes-one-message defect the
+# rc-128 branch was split out to remove, one layer down.
+#
+# THE SUBSHELL IS THE WHOLE TRAP. `X="$(_mk foo)"` runs _mk in a SUBSHELL, so a
+# `die` in here exits THAT shell, not the script -- the parent would sail on
+# with X empty, which is the very bug being fixed. The status does propagate to
+# the assignment, so every call site pairs with `|| exit 2` and the message
+# below has already reached stderr. Do not "simplify" that away.
+_mk() {
+  mktemp "${_TMPDIR_T}/basegate.${1}.XXXXXX" 2>/dev/null && return 0
+  echo "base-gate: could not create a temp file under '${_TMPDIR_T}' — this gate needs a writable TMPDIR. This is NOT a repository problem and must not be read as one: no fetch, no object and no merge result is implicated" >&2
+  exit 2
+}
+
 # --- args ---------------------------------------------------------------------
 BASE_REF="origin/main"
 PR_REF="HEAD"
@@ -180,7 +199,7 @@ _is_sha() {  # _is_sha <string> → 0 when it is 40 or 64 lowercase hex chars
   case "${1:-}" in "" | *[!0-9a-f]*) return 1 ;; esac
   [ "${#1}" -eq 40 ] || [ "${#1}" -eq 64 ]
 }
-_MT_OUT="$(mktemp "${_TMPDIR_T}/basegate.mt.XXXXXX")"
+_MT_OUT="$(_mk mt)" || exit 2
 git -C "$REPO" merge-tree --write-tree "$BASE_SHA" "$PR_SHA" > "$_MT_OUT" 2>/dev/null
 _MT_RC=$?
 PR_TREE="$(head -1 "$_MT_OUT" 2>/dev/null)"
@@ -240,8 +259,8 @@ git -C "$REPO" show "${BASE_SHA}:scripts/validate_plugin.py" 2>/dev/null | grep 
 # `innocent`/`moved` fixture: two-dot named `M tests/floors.env` and
 # `D tests/test-two.sh` (both the base's own commits); three-dot named
 # neither.
-CHANGED_TMP="$(mktemp "${_TMPDIR_T}/basegate.changed.XXXXXX")"
-DIFFSTAT_TMP="$(mktemp "${_TMPDIR_T}/basegate.diffstat.XXXXXX")"
+CHANGED_TMP="$(_mk changed)" || exit 2
+DIFFSTAT_TMP="$(_mk diffstat)" || exit 2
 trap 'rm -f "$CHANGED_TMP" "$DIFFSTAT_TMP"' EXIT
 if ! git -C "$REPO" diff --name-status "${BASE_SHA}...${PR_SHA}" -- > "$DIFFSTAT_TMP" 2>/dev/null; then
   die "git diff base...pr failed — refusing (a diff failure must not read as 'no changes')"
@@ -259,8 +278,8 @@ extract_floors() {  # extract_floors <sha> <out-file>
   git -C "$REPO" show "${1}:tests/floors.env" 2>/dev/null \
     | grep -E '^FLOOR_[A-Za-z0-9_]+=[0-9]+' > "$2"
 }
-BASE_FLOORS="$(mktemp "${_TMPDIR_T}/basegate.bf.XXXXXX")"
-PR_FLOORS="$(mktemp "${_TMPDIR_T}/basegate.pf.XXXXXX")"
+BASE_FLOORS="$(_mk bf)" || exit 2
+PR_FLOORS="$(_mk pf)" || exit 2
 extract_floors "$BASE_SHA" "$BASE_FLOORS"
 extract_floors "$PR_TREE" "$PR_FLOORS"
 # THE SHAPE IS CLOSED, NOT THE INSTANCES. gate-suite.sh SOURCES this file, so
@@ -276,7 +295,7 @@ extract_floors "$PR_TREE" "$PR_FLOORS"
 # Deliberately strict: a legitimately indented or `export`ed assignment is
 # refused too, and the fix is to write it in the one shape (floors.env is
 # four lines of that shape under a comment header, by design).
-_PR_FLOORS_RAW="$(mktemp "${_TMPDIR_T}/basegate.praw.XXXXXX")"
+_PR_FLOORS_RAW="$(_mk praw)" || exit 2
 if git -C "$REPO" show "${PR_TREE}:tests/floors.env" > "$_PR_FLOORS_RAW" 2>/dev/null; then
   _bad_line="$(grep -vE '^[[:space:]]*(#|$)' "$_PR_FLOORS_RAW" \
                | grep -vE '^FLOOR_[A-Za-z0-9_]+=[0-9]+$' | head -1)"
@@ -335,8 +354,8 @@ extract_checks() {  # extract_checks <sha> → stdout
     | grep -vE '^[[:space:]]*#' \
     | grep -oE 'check_[A-Za-z0-9_]+' | grep -v '^check_$'
 }
-BASE_CHECKS="$(mktemp "${_TMPDIR_T}/basegate.bc.XXXXXX")"
-PR_CHECKS="$(mktemp "${_TMPDIR_T}/basegate.pc.XXXXXX")"
+BASE_CHECKS="$(_mk bc)" || exit 2
+PR_CHECKS="$(_mk pc)" || exit 2
 extract_checks "$BASE_SHA" > "$BASE_CHECKS"
 extract_checks "$PR_TREE" > "$PR_CHECKS"
 # ONE BINDING. The extractor reads the tuple BLOCK; python runs the LAST
@@ -380,7 +399,7 @@ rm -f "$BASE_CHECKS" "$PR_CHECKS"
 # absent) — which is correct: `check_suite_floors` requires
 # `gate-suite.sh <rung>` at that exact path in every CI file, so moving it IS
 # removing it, whatever git calls the edit.
-CORE_TOUCHED="$(mktemp "${_TMPDIR_T}/basegate.core.XXXXXX")"
+CORE_TOUCHED="$(_mk core)" || exit 2
 : > "$CORE_TOUCHED"
 while IFS='|' read -r st path; do
   [ -n "$path" ] || continue
@@ -402,8 +421,8 @@ done
 # Every tests/ path present at the base must still be present. Set membership,
 # not a count — a swap (one file deleted, one added) leaves the count equal
 # and the coverage gone.
-_TESTS_BASE="$(mktemp "${_TMPDIR_T}/basegate.tb.XXXXXX")"
-_TESTS_PR="$(mktemp "${_TMPDIR_T}/basegate.tp.XXXXXX")"
+_TESTS_BASE="$(_mk tb)" || exit 2
+_TESTS_PR="$(_mk tp)" || exit 2
 git -C "$REPO" ls-tree -r --name-only "${BASE_SHA}" -- tests/ > "$_TESTS_BASE"
 git -C "$REPO" ls-tree -r --name-only "${PR_TREE}"  -- tests/ > "$_TESTS_PR"
 while IFS= read -r _t; do
@@ -435,7 +454,7 @@ for _ci in $CI_FILES; do
     fail "GONE: ${_ci} exists at the base and NOT at the pr ref — the CI file is what runs the rungs"
     continue
   fi
-  _RUNGS_PR="$(mktemp "${_TMPDIR_T}/basegate.rungs.XXXXXX")"
+  _RUNGS_PR="$(_mk rungs)" || exit 2
   _ci_rungs "$PR_TREE" "$_ci" > "$_RUNGS_PR"
   while IFS= read -r _r; do
     [ -n "$_r" ] || continue
@@ -517,7 +536,7 @@ fi
 # PR_TREE — the merge result, not the unmerged PR head — keeps that
 # false-positive closed while staying literally two dots against the same
 # subject every other arm reads.
-_MARKER_DIFF="$(mktemp "${_TMPDIR_T}/basegate.marker.XXXXXX")"
+_MARKER_DIFF="$(_mk marker)" || exit 2
 if ! git -C "$REPO" diff "${BASE_SHA}" "${PR_TREE}" \
        -- . ':(exclude)tests/' ':(exclude)scripts/base-gate.sh' \
        > "$_MARKER_DIFF" 2>/dev/null; then

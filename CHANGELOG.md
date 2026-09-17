@@ -55,6 +55,21 @@ single source of truth; bump it in the same commit as the changelog entry.
   filter sits before the cell count, so the row was not even tallied as "not a 4-cell
   row" (measured: that counter reads 0). Invisible, not miscounted. `scripts/lib/caps.sh`
   already carried the whole-line form; this is the same fix in the sibling parser.
+- **`base-gate.sh` names an unwritable `TMPDIR` instead of blaming the fetch (#135).**
+  All 13 `mktemp` calls were unchecked, so a failure left the variable empty, the
+  redirection failed, and the classifier read `$?` as 1 with no tree sha — the
+  rc-1-no-sha branch. Measured as uid 1000 against a `0500` TMPDIR, the run emitted a
+  raw bash error (`line 184: : No such file or directory`) and then told the operator
+  the repository was incomplete and to fetch both sides in full. The fetch was fine.
+  `rc` was already 2, so the fix is not the polarity but the cause it names. One `_mk`
+  helper now carries the refusal; each call site pairs with `|| exit 2`, because
+  `X="$(_mk …)"` runs in a subshell where a `die` would exit only that shell.
+- **The shell suite names what it skipped (#134, reporting half).** A skip here is a
+  property the executor cannot exhibit — root bypasses the write bit, so every
+  `chmod` refusal case is unexhibitable as uid 0. That is unavoidable; a run reporting
+  "998 cases, slack 0" while 14 properties went untested is not. The summary now
+  prints a roster of the skipped titles below the marker line. The non-root CI parity
+  job, #134's other option, is not done here.
 - **Two rc-classifier fixtures stop depending on root (#130).** Git writes loose
   objects `0444`; root bypasses that bit and an ordinary user does not, so the
   corrupt-object fixture silently did nothing on every non-root runner and the branch

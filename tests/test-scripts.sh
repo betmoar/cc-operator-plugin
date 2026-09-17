@@ -35,6 +35,7 @@ fi
 PASS=0
 FAIL=0
 SKIP=0
+SKIPPED_NAMES=""
 pass() { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 # Names are accumulated, not just printed, so an intermittent failure can be identified after a re-run.
 FAILED_NAMES=""
@@ -46,7 +47,8 @@ fail() { FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
 # per-CASE: a block that cannot run owes one skip() per check it replaces, or
 # the count is as loose as the echo it replaced. Never a silent pass: the
 # premise must be executor-conditional (root, missing tool), not "flaky here".
-skip() { SKIP=$((SKIP+1)); printf '  skip %s\n' "$1"; }
+skip() { SKIP=$((SKIP+1)); SKIPPED_NAMES="${SKIPPED_NAMES}
+  $1"; printf '  skip %s\n' "$1"; }
 check() { # check <desc> <0|1 condition-result>
   if [ "$2" -eq 0 ]; then pass "$1"; else fail "$1"; fi
 }
@@ -5174,6 +5176,32 @@ bg_run m-forge-intests
 check "base-gate: the same marker INSIDE tests/ is not a forgery (control)" \
   "$([ "$BG_RC" = 0 ] && echo 0 || echo 1)"
 
+# --- an unwritable TMPDIR names ITSELF, not a truncated fetch (#135) --------
+# Every mktemp in base-gate.sh was unchecked. On failure the variable stayed
+# EMPTY, the redirection that followed failed, and the classifier read $? as 1
+# with no tree sha -- the rc-1-no-sha branch, which tells the operator to fetch
+# both sides in full. The fetch is fine; there is nowhere to write. Same
+# two-causes-one-message defect the rc-128 split removed, one layer down.
+# SKIPPED AS ROOT, and that is not laziness: root bypasses the write bit, so a
+# 0500 directory is still writable and the property is UNEXHIBITABLE there (the
+# same reason the 000-ledger and .stopguard cases skip). #134 is the standing
+# record that a rootful container cannot see this class at all.
+if [ "$(id -u)" = 0 ]; then
+  skip "#135 an unwritable TMPDIR is refused by NAME (root: 0500 is still writable)"
+  skip "#135 CONTROL (root): the refusal does not blame a truncated fetch"
+else
+  _mkd="$(mktemp -d "${TMPDIR:-/tmp}/basegate-nomk.XXXXXX")"
+  chmod 500 "$_mkd"
+  BG_OUT="$(TMPDIR="$_mkd" bash "$BG" --base "$BG_BASE" --pr "$BG_BASE" --repo "$BGD" 2>&1)"; BG_RC=$?
+  chmod 700 "$_mkd"; rm -rf "$_mkd"
+  check "#135 an unwritable TMPDIR is refused by NAME" \
+    "$([ "$BG_RC" = 2 ] && printf '%s' "$BG_OUT" | grep -q 'could not create a temp file' && echo 0 || echo 1)"
+  # The control is the whole point of the issue: the OLD behaviour also exited
+  # 2, so rc alone proves nothing. What changed is WHICH cause it names.
+  check "#135 CONTROL: the refusal does not blame a truncated fetch" \
+    "$(printf '%s' "$BG_OUT" | grep -q 'truncated or shallow fetch' && echo 1 || echo 0)"
+fi
+
 # --- arm 5's SUBJECT: base vs the MERGED TREE, not base vs the raw pr head,
 # and not three dots (PR #130 re-review, task 1-1a fix brief). The brief's
 # own motivating shape: a marker present at the merge base, removed by a
@@ -6287,4 +6315,21 @@ fi
 # passed+skipped — executor-invariant. A suite that skips 15 on root and 0 on
 # macOS reports the same total on both, and the floor stops carrying slack.
 echo "== summary: $PASS passed, $FAIL failed, $SKIP skipped =="
+# THE ROSTER, and it goes BELOW the summary on its own lines — never appended
+# to it. gate-suite.sh anchors that marker as `^== summary: ... ==$` (its line
+# 109), so anything added to the line itself fails the rung as a missing
+# marker.
+#
+# Why it exists (#134): a skip here is a property the executor cannot exhibit —
+# root bypasses the write bit, so every chmod-000/500 refusal case is
+# unexhibitable as uid 0. That is correct and unavoidable. What is NOT correct
+# is that the run then says "996 cases, slack 0" while a tenth of the base-gate
+# block never executed, and a maintainer reads that green as evidence. It was
+# not: two fixtures shipped broken this way and were red on CI for three
+# commits. The count alone cannot say WHICH properties went untested; the
+# roster can, and costs nothing when the set is empty.
+if [ "$SKIP" -ne 0 ]; then
+  echo "== skipped here (uid $(id -u)) — NOT covered by this run =="
+  printf '%s\n' "$SKIPPED_NAMES" | sed '/^$/d'
+fi
 [ "$FAIL" -eq 0 ]
