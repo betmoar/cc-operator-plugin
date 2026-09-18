@@ -35,6 +35,7 @@ fi
 PASS=0
 FAIL=0
 SKIP=0
+SKIPPED_NAMES=""
 pass() { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 # Names are accumulated, not just printed, so an intermittent failure can be identified after a re-run.
 FAILED_NAMES=""
@@ -46,7 +47,8 @@ fail() { FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
 # per-CASE: a block that cannot run owes one skip() per check it replaces, or
 # the count is as loose as the echo it replaced. Never a silent pass: the
 # premise must be executor-conditional (root, missing tool), not "flaky here".
-skip() { SKIP=$((SKIP+1)); printf '  skip %s\n' "$1"; }
+skip() { SKIP=$((SKIP+1)); SKIPPED_NAMES="${SKIPPED_NAMES}
+  $1"; printf '  skip %s\n' "$1"; }
 check() { # check <desc> <0|1 condition-result>
   if [ "$2" -eq 0 ]; then pass "$1"; else fail "$1"; fi
 }
@@ -4880,6 +4882,79 @@ RVC="$(newproj)"
 check "reverify: a clean ledger (header only) exits 0" \
   "$( if ( cd "$RVC" && bash "$INIT" >/dev/null 2>&1 && bash "$RV" >/dev/null 2>&1 ); then echo 0; else echo 1; fi )"
 
+# A task id of `Gate` with criterion `Criterion` is a ledger ops-task.sh permits, and the
+# prefix filter dropped it from the sweep ENTIRELY. Measured 2026-09-16: the row is
+# `continue`d at the header filter, which sits BEFORE the cell count, so it is not even
+# counted as "not a 4-cell row" — that tally reads 0. Invisible, not merely miscounted.
+# (The row is UNDATABLE here, not dated: the fixture stamps @no-commit. This case pins
+# that the sweep SEES it.) caps.sh was fixed in #126; this is its sibling parser.
+printf '| Gate | Criterion | ev @no-commit | FAIL |\n' >> "$RVP/.operator/VERDICTS.md"
+RV_OUT="$(bash "$RV" --ledger "$RVP/.operator/VERDICTS.md" 2>&1)"
+check "#128 a row whose task id is Gate is SWEPT, not dropped by the header filter" \
+  "$(printf '%s' "$RV_OUT" | grep -q '| Gate | ' && echo 0 || echo 1)"
+# The control greps the EMITTED shape, not the input's cell order. Measured
+# 2026-09-16 with the filter removed: the header is swept and printed as
+# `| 2 | Gate | PASS/FAIL | (none) | — | UNDATABLE | Criterion |` — scan_ledger
+# REORDERS the cells, so `Criterion | Evidence | PASS/FAIL` never appears in
+# the output under either behaviour and the first version of this control
+# passed both ways (PR #132 review). The header's tell after formatting is the
+# VERDICT cell reading `PASS/FAIL`, which no real row can carry.
+check "#128 CONTROL: the real header line is still skipped" \
+  "$(printf '%s' "$RV_OUT" | grep -q '| Gate | PASS/FAIL |' && echo 1 || echo 0)"
+
+# --- #136: --reconcile must not DROP a CRLF fragment row -------------------
+# Not a miscount — data loss. --reconcile is the recovery path, and a trailing
+# `\r` made row_is_conformant reject an otherwise honest fragment. Measured
+# 2026-09-17 at f306cee: "skipping non-conformant line", 1 of 2 restored, and
+# the CRLF row absent from the rebuilt ledger entirely (#136).
+_rcd="$(newproj)"; ( cd "$_rcd" && git init -q . && git config user.email t@t && git config user.name t && bash "$INIT" >/dev/null 2>&1 )
+mkdir -p "$_rcd/.operator/verdicts.d"
+printf '| T-lf | c | ev @no-commit | PASS |\n'     > "$_rcd/.operator/verdicts.d/001.md"
+printf '| T-crlf | c | ev @no-commit | PASS |\r\n' > "$_rcd/.operator/verdicts.d/002.md"
+( cd "$_rcd" && bash "$VERDICT" --reconcile >/dev/null 2>&1 )
+check "#136 --reconcile restores a CRLF fragment row instead of dropping it" \
+  "$([ "$(grep -c 'T-crlf' "$_rcd/.operator/VERDICTS.md")" = 1 ] && echo 0 || echo 1)"
+check "#136 CONTROL: the LF sibling was restored too — the probe ran the real path" \
+  "$([ "$(grep -c 'T-lf' "$_rcd/.operator/VERDICTS.md")" = 1 ] && echo 0 || echo 1)"
+# The row must land LF-terminated in the LEDGER OF RECORD. Stripping inside
+# row_is_conformant instead of in the reconcile loop would satisfy both checks
+# above while writing the CR through to VERDICTS.md, where it re-breaks every
+# reader that does not strip — including the two just fixed.
+check "#136 the restored row carries no CR into the ledger of record" \
+  "$(LC_ALL=C grep -q "$(printf 'T-crlf.*\r')" "$_rcd/.operator/VERDICTS.md" && echo 1 || echo 0)"
+# CONTROL: the refusal path was not widened into "accept anything". A row that
+# is genuinely non-conformant — three cells — must still be skipped, CR or not.
+printf '| T-bad | only | three |\r\n' > "$_rcd/.operator/verdicts.d/003.md"
+( cd "$_rcd" && bash "$VERDICT" --reconcile >/dev/null 2>&1 )
+check "#136 CONTROL: a 3-cell CRLF row is still refused (the strip did not widen the schema)" \
+  "$(grep -q 'T-bad' "$_rcd/.operator/VERDICTS.md" && echo 1 || echo 0)"
+rm -rf "$_rcd"
+
+# --- #136: a CRLF ledger parses IDENTICALLY to an LF one --------------------
+# The #128 fix regressed this and the suite did not notice: swapping the prefix
+# glob `"| Gate | Criterion |"*` for exact equality removed the `*` that had
+# been absorbing a trailing `\r`. Measured at f306cee: CRLF gave
+# `undatable: 2` plus the header swept as a phantom data row, where the
+# pre-#128 code gave `undatable: 1`. A correctness fix that broke an input it
+# never mentioned — which is why the assertion below is EQUALITY between the
+# two encodings, not a fixed number.
+_crlfd="$(newproj)"; mkdir -p "$_crlfd/.operator"
+printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n| T-a | c | ev @no-commit | FAIL |\n' > "$_crlfd/lf.md"
+sed 's/$/\r/' "$_crlfd/lf.md" > "$_crlfd/crlf.md"
+# The fixture asserts its OWN precondition: BSD and GNU sed both accept this
+# `\r`, but a sed that emitted a literal `r` would leave the equality check
+# below comparing LF to LF and every assertion green while testing nothing.
+check "#136 SETUP: the CRLF fixture really carries a CR" \
+  "$(LC_ALL=C grep -q "$(printf '\r')" "$_crlfd/crlf.md" && echo 0 || echo 1)"
+_rv_lf="$(bash "$RV" --ledger "$_crlfd/lf.md" 2>&1 | grep -oE 'undatable: [0-9]+')"
+_rv_crlf="$(bash "$RV" --ledger "$_crlfd/crlf.md" 2>&1 | grep -oE 'undatable: [0-9]+')"
+check "#136 ops-reverify reads a CRLF ledger exactly as it reads LF" \
+  "$([ "$_rv_lf" = "$_rv_crlf" ] && echo 0 || echo 1)"
+# The tell the regression left behind: the header itself swept as a data row.
+check "#136 CONTROL: the CRLF header is not swept as a phantom row" \
+  "$(bash "$RV" --ledger "$_crlfd/crlf.md" 2>&1 | grep -qE '^\| [0-9]+ \| Gate \|' && echo 1 || echo 0)"
+rm -rf "$_crlfd"
+
 echo "-- Case: gate-suite.sh holds a rung to its MARKER and its FLOOR (0.11.7)"
 # Two claims that fail independently. The FLOOR catches deletion; the MARKER
 # catches a rung that exited 0 without running — which is what a step whose
@@ -5154,6 +5229,129 @@ bg_run m-forge-intests
 check "base-gate: the same marker INSIDE tests/ is not a forgery (control)" \
   "$([ "$BG_RC" = 0 ] && echo 0 || echo 1)"
 
+# --- arm 3 must not pass a real tests/ deletion it cannot SEE (#137) --------
+# Both `ls-tree` redirects were unchecked, and the loop iterates the BASE
+# listing — so an empty file makes it a NO-OP and every tests/ deletion passes.
+# A fail-OPEN in a hard-fail arm, which is the one direction this gate may
+# never fail.
+# THE TRIGGER IS A NESTED SUBTREE under tests/, and that specificity is the
+# finding: corrupting `scripts/` or `docs/` does NOT reach it (the base-readable
+# check dies first, or git prunes the walk by pathspec — both measured). A
+# missing `tests/sub` tree leaves `git show BASE:tests/floors.env` working, so
+# every earlier check passes, while `ls-tree -r -- tests/` must recurse and
+# fails. Measured 2026-09-17 with BOTH guards removed, 3/3 deterministic:
+# rc 0, BASE_GATE_PASSED, zero GONE lines — with `D tests/zzz.sh` printed by
+# the delta report one line above the pass.
+BGT_D="$(mktemp -d "${TMPDIR:-/tmp}/basegate-tsub.XXXXXX")"
+mkdir -p "$BGT_D/tests/sub" "$BGT_D/scripts" "$BGT_D/.github/workflows"
+( cd "$BGT_D" && git init -q . && git config user.email t@example.com && git config user.name t ) >/dev/null 2>&1
+printf 'CHECKS = (\n    check_hook,\n)\n' > "$BGT_D/scripts/validate_plugin.py"
+printf '#!/usr/bin/env bash\n: the wrapper\n' > "$BGT_D/scripts/gate-suite.sh"
+printf 'FLOOR_shell=20\n' > "$BGT_D/tests/floors.env"
+printf 'x\n' > "$BGT_D/tests/zzz.sh"
+printf 'deep\n' > "$BGT_D/tests/sub/deep.sh"
+printf '# ci\nsteps:\n  - run: bash scripts/gate-suite.sh shell\n' > "$BGT_D/.github/workflows/validate.yml"
+git -C "$BGT_D" add -A >/dev/null 2>&1 && git -C "$BGT_D" commit -qm base
+BGT_BASE="$(git -C "$BGT_D" rev-parse HEAD)"
+git -C "$BGT_D" checkout -q -b tsubdel "$BGT_BASE"
+git -C "$BGT_D" rm -q tests/zzz.sh && git -C "$BGT_D" commit -qm "delete a tests file"
+# CONTROL FIRST, on the INTACT repo: the deletion is genuinely caught. Without
+# it, the refusal asserted below is satisfied by a gate that refuses every
+# input — the refuses-everything half of the F144 control pair. Measured: rc 1
+# with a GONE line naming the deleted path.
+BG_OUT="$(bash "$BG" --base "$BGT_BASE" --pr tsubdel --repo "$BGT_D" 2>&1)"; BG_RC=$?
+check "#137 CONTROL: the deletion IS caught on an intact repo (not a refuse-everything gate)" \
+  "$([ "$BG_RC" = 1 ] && printf '%s' "$BG_OUT" | grep -q 'GONE: tests/zzz.sh' && echo 0 || echo 1)"
+_tsub="$(git -C "$BGT_D" rev-parse "${BGT_BASE}:tests/sub")"
+rm -f "$BGT_D/.git/objects/${_tsub%"${_tsub#??}"}/${_tsub#??}"
+# The fixture asserts its OWN precondition, in its own words. If the object was
+# packed rather than loose the `rm` is a no-op, the listing still succeeds, and
+# both checks below would measure the HEALTHY path while reporting green — a
+# fixture that silently does nothing (the #134 class, one layer over). Freshly
+# `git init`-ed repos write loose objects, so this is a guard against a future
+# change to the fixture, not a live branch.
+check "#137 SETUP: the base tests/ listing really fails now" \
+  "$(if git -C "$BGT_D" ls-tree -r --name-only "$BGT_BASE" -- tests/ >/dev/null 2>&1; then echo 1; else echo 0; fi)"
+BG_OUT="$(bash "$BG" --base "$BGT_BASE" --pr tsubdel --repo "$BGT_D" 2>&1)"; BG_RC=$?
+check "#137 an unreadable tests/ listing at the BASE is refused, never read as 'no suites'" \
+  "$([ "$BG_RC" = 2 ] && printf '%s' "$BG_OUT" | grep -q 'could not list tests/ at the base ref' && echo 0 || echo 1)"
+# The polarity is the finding, not the message: rc 0 + PASSED is the fail-open.
+check "#137 CONTROL: it never reports BASE_GATE_PASSED on a repo it cannot read" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'BASE_GATE_PASSED' && echo 1 || echo 0)"
+rm -rf "$BGT_D"
+
+# --- an unwritable TMPDIR names ITSELF, not a truncated fetch (#135) --------
+# Every mktemp in base-gate.sh was unchecked. On failure the variable stayed
+# EMPTY, the redirection that followed failed, and the classifier read $? as 1
+# with no tree sha -- the rc-1-no-sha branch, which tells the operator to fetch
+# both sides in full. The fetch is fine; there is nowhere to write. Same
+# two-causes-one-message defect the rc-128 split removed, one layer down.
+# SKIPPED AS ROOT, and that is not laziness: root bypasses the write bit, so a
+# 0500 directory is still writable and the property is UNEXHIBITABLE there (the
+# same reason the 000-ledger and .stopguard cases skip). #134 is the standing
+# record that a rootful container cannot see this class at all.
+if [ "$(id -u)" = 0 ]; then
+  skip "#135 an unwritable TMPDIR is refused by NAME (root: 0500 is still writable)"
+  skip "#135 CONTROL (root): the refusal does not blame a truncated fetch"
+else
+  _mkd="$(mktemp -d "${TMPDIR:-/tmp}/basegate-nomk.XXXXXX")"
+  chmod 500 "$_mkd"
+  BG_OUT="$(TMPDIR="$_mkd" bash "$BG" --base "$BG_BASE" --pr "$BG_BASE" --repo "$BGD" 2>&1)"; BG_RC=$?
+  chmod 700 "$_mkd"; rm -rf "$_mkd"
+  check "#135 an unwritable TMPDIR is refused by NAME" \
+    "$([ "$BG_RC" = 2 ] && printf '%s' "$BG_OUT" | grep -q 'could not create a temp file' && echo 0 || echo 1)"
+  # The control is the whole point of the issue: the OLD behaviour also exited
+  # 2, so rc alone proves nothing. What changed is WHICH cause it names.
+  check "#135 CONTROL: the refusal does not blame a truncated fetch" \
+    "$(printf '%s' "$BG_OUT" | grep -q 'truncated or shallow fetch' && echo 1 || echo 0)"
+fi
+
+# --- arm 5's SUBJECT: base vs the MERGED TREE, not base vs the raw pr head,
+# and not three dots (PR #130 re-review, task 1-1a fix brief). The brief's
+# own motivating shape: a marker present at the merge base, removed by a
+# LATER base commit, retained untouched by a PR that forked before the
+# removal. MEASURED against real `git merge-tree`, though: when the PR does
+# not otherwise touch that hunk, the base's deletion wins the merge outright
+# and the marker is simply ABSENT from the merged tree — so this shape is
+# NOT a live escape under EITHER diff form (asserted below as a documented
+# CONTROL, not a red case: three-dot's silence on it was already correct).
+git -C "$BGD" checkout -q -b m5-del-common "$BG_BASE"
+printf 'BASE_GATE_PASSED: forged\n' > "$BGD/NOTES-m5del.md"
+git -C "$BGD" add -A >/dev/null 2>&1 && git -C "$BGD" commit -qm m5-del-common
+BG_M5_DEL_COMMON="$(git -C "$BGD" rev-parse HEAD)"
+git -C "$BGD" checkout -q -b m5-del-pr "$BG_M5_DEL_COMMON"
+printf 'an innocuous unrelated file\n' > "$BGD/tests/test-m5del.sh"
+git -C "$BGD" add -A >/dev/null 2>&1 && git -C "$BGD" commit -qm m5-del-pr-innocuous
+git -C "$BGD" checkout -q -b m5-del-base "$BG_M5_DEL_COMMON"
+: > "$BGD/NOTES-m5del.md"
+git -C "$BGD" commit -qam m5-del-base-removes
+BG_OUT="$(bash "$BG" --base m5-del-base --pr m5-del-pr --repo "$BGD" 2>&1)"; BG_RC=$?
+check "base-gate: a marker the base DELETES is not re-blamed on a PR that merely kept it (refutes the two-dot form; the brief's escape shape is not live)" \
+  "$([ "$BG_RC" = 0 ] && echo 0 || echo 1)"
+
+# The REAL, reachable differentiator: content the trusted BASE already
+# carries, restated identically (add/add, no conflict) by the PR. Three-dot
+# flags it — the PR's own diff from the merge base genuinely shows a `+`,
+# blaming the PR for a marker the base's own tip already has. base-vs-
+# PR_TREE does not: nothing is new relative to what the base's tip already
+# carries. Same false-authorship shape arm 4's own history names, one arm
+# over. MUTATION-CHECKED (task 1-1a fix brief, both predictions, restored
+# byte-identical): reverting arm 5 to `"${BASE_SHA}...${PR_SHA}"` makes this
+# case fire (RED); reverting it to the untouched two-dot form,
+# `"${BASE_SHA}" "${PR_SHA}"` (base tip vs the raw, un-merged pr head, no
+# merge-tree) leaves this case PASSING — the two tips are byte-identical for
+# this file, so that form is silent too, and this case does not pin a
+# specific diff form, only the merged-tree behavior.
+git -C "$BGD" checkout -q -b m5-echo-base "$BG_BASE"
+printf 'BASE_GATE_PASSED: forged\n' > "$BGD/NOTES-m5echo.md"
+git -C "$BGD" add -A >/dev/null 2>&1 && git -C "$BGD" commit -qm m5-echo-base
+git -C "$BGD" checkout -q -b m5-echo-pr "$BG_BASE"
+printf 'BASE_GATE_PASSED: forged\n' > "$BGD/NOTES-m5echo.md"
+git -C "$BGD" add -A >/dev/null 2>&1 && git -C "$BGD" commit -qm m5-echo-pr
+BG_OUT="$(bash "$BG" --base m5-echo-base --pr m5-echo-pr --repo "$BGD" 2>&1)"; BG_RC=$?
+check "base-gate: a marker the BASE independently already carries is not re-blamed on a PR that merely restates it (arm 5's chosen form)" \
+  "$([ "$BG_RC" = 0 ] && echo 0 || echo 1)"
+
 # --- arm 1, the SHAPE: three fail-opens of the value compare (PR #125 review)
 # gate-suite.sh SOURCES floors.env, so every line is executed; the compare
 # reads `FLOOR_x=<digits>` lines and the trailing `[0-9]+$`. Each of these
@@ -5233,6 +5431,205 @@ check "base-gate: a rung ADDED to a CI file passes (control)" \
 # absent at both refs in this fixture and the arm must stay silent about it.
 check "base-gate: a CI file absent at BOTH refs is not a finding (control)" \
   "$(printf '%s' "$BG_OUT" | grep -q 'forgejo' && echo 1 || echo 0)"
+
+# A base-gate WORKFLOW file deleted by the PR is the gate removed, and the
+# base's own copy is what runs, so it can and must catch that (R6).
+mkdir -p "$BGD/.github/workflows"
+printf 'name: base-gate\non:\n  pull_request_target:\n' > "$BGD/.github/workflows/base-gate.yml"
+git -C "$BGD" add -A >/dev/null 2>&1 && git -C "$BGD" commit -qm "add the base-gate workflow"
+BG_BASE2="$(git -C "$BGD" rev-parse HEAD)"
+git -C "$BGD" checkout -q -b delgate "$BG_BASE2"
+git -C "$BGD" rm -q .github/workflows/base-gate.yml && git -C "$BGD" commit -qm delgate
+BG_OUT="$(bash "$BG" --base "$BG_BASE2" --pr delgate --repo "$BGD" 2>&1)"; BG_RC=$?
+check "base-gate: a DELETED base-gate workflow is refused by name (R6)" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'GONE: .github/workflows/base-gate.yml' && echo 0 || echo 1)"
+# Control: the same fixture WITHOUT the deletion must not emit the GONE line
+# — otherwise the case above could pass for the wrong reason (some other
+# GONE:, or the fixture failing to commit).
+git -C "$BGD" checkout -q -b keepgate "$BG_BASE2"
+git -C "$BGD" commit -q --allow-empty -m keepgate
+BG_OUT="$(bash "$BG" --base "$BG_BASE2" --pr keepgate --repo "$BGD" 2>&1)"; BG_RC=$?
+check "base-gate: a base-gate workflow NOT deleted does not emit GONE (control)" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'GONE: .github/workflows/base-gate.yml' && echo 1 || echo 0)"
+
+# --- the SUBJECT is the MERGE RESULT, not the PR head (#130) ----------------
+# Re-measured 2026-09-16: a PR that touches nothing the gate guards went RED
+# the moment the base raised a floor and added a tests/ file underneath it,
+# because both sides were compared as COMMITS. Merging that branch leaves the
+# raised floor and the added file in place, so the gate asserted a weakening
+# the result does not contain. The subject is now `git merge-tree`'s tree.
+git -C "$BGD" checkout -q -b innocent "$BG_BASE"
+printf 'a docs line\n' >> "$BGD/NOTES-innocent.md"
+git -C "$BGD" add -A >/dev/null 2>&1 && git -C "$BGD" commit -qm innocent
+# the base moves the way every PR in this repo moves it
+git -C "$BGD" checkout -q -b moved "$BG_BASE"
+bg_floors 10 25
+printf 'another suite file\n' > "$BGD/tests/test-two.sh"
+git -C "$BGD" add -A >/dev/null 2>&1 && git -C "$BGD" commit -qm moved
+BG_MOVED="$(git -C "$BGD" rev-parse moved)"
+BG_OUT="$(bash "$BG" --base "$BG_MOVED" --pr innocent --repo "$BGD" 2>&1)"; BG_RC=$?
+check "base-gate: a PR that is BEHIND the base passes — the merge result is the subject (#130)" \
+  "$([ "$BG_RC" = 0 ] && echo 0 || echo 1)"
+check "base-gate: and it says which tree it judged" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'merged tree' && echo 0 || echo 1)"
+# THE DELTA REPORT NAMES WHAT THE PR TOUCHED, NOT WHAT THE BASE TOUCHED (the
+# same false-authorship defect the arms were fixed for, one level up, in the
+# only human-facing half). Measured 2026-09-16 on this exact fixture:
+#   two-dot  (what shipped pre-fix)  A NOTES-innocent.md  M tests/floors.env  D tests/test-two.sh
+#   three-dot (merge-base..pr)       A NOTES-innocent.md
+# NOTES-innocent.md is never itself a CORE path (is_core_path only matches
+# CORE_FILES/CORE_GLOBS), so it never surfaces in the delta report either way
+# — the observable signal is the two files the BASE moved (both under
+# CORE_GLOBS' `tests/`): a two-dot diff misreports them as this PR's own
+# M/D, and a three-dot diff, seeing this PR touched no core file at all,
+# correctly reports "untouched" instead.
+check "base-gate: the delta report names what the PR touched, not what the BASE touched" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'enforcer core untouched by this PR' \
+     && ! printf '%s' "$BG_OUT" | grep -q 'tests/floors.env' \
+     && ! printf '%s' "$BG_OUT" | grep -q 'tests/test-two.sh' && echo 0 || echo 1)"
+# CONTROL: a real weakening ON TOP of a moved base is still caught, or the
+# case above would be satisfied by a gate that stopped looking. Branched from
+# $BG_MOVED, not $BG_BASE: branching from $BG_BASE edits the same floors.env
+# line "moved" already touched, which is a genuine git merge CONFLICT (both
+# sides differ from the shared base on one line) — that is arm 3's shape, not
+# this control's. "on top of" means a descendant of the moved base, so the
+# merge is clean and the lowered value is what the arms actually compare.
+git -C "$BGD" checkout -q -b weakens "$BG_MOVED"
+bg_floors 10 1
+git -C "$BGD" commit -qam weakens
+BG_OUT="$(bash "$BG" --base "$BG_MOVED" --pr weakens --repo "$BGD" 2>&1)"; BG_RC=$?
+check "base-gate: a floor LOWERED is still refused when the base has moved (control, FAST-FORWARD merge)" \
+  "$([ "$BG_RC" = 1 ] && echo 0 || echo 1)"
+# THE ABOVE IS A FAST-FORWARD, not a real merge: `weakens` branches from
+# $BG_MOVED, so merge-base(moved, weakens) == moved, and the merged tree IS
+# weakens' own tree — the arms see exactly what pre-#130 code saw. Nothing
+# above proves a weakening survives a genuine THREE-WAY merge, which is what
+# every arm now depends on. So: a SECOND base branch that moves ELSEWHERE
+# ONLY (a tests/ file, never floors.env) x a weakening branched from
+# $BG_BASE (never touching that same tests/ file) — the two diverge on
+# disjoint paths, so `merge-tree` produces a genuine non-fast-forward clean
+# merge whose tree carries BOTH the base's added file AND the PR's lowered
+# floor, and arm 1 must fire on that merge RESULT.
+git -C "$BGD" checkout -q -b elsewhere-only "$BG_BASE"
+printf 'an unrelated suite file\n' > "$BGD/tests/test-elsewhere.sh"
+git -C "$BGD" add -A >/dev/null 2>&1 && git -C "$BGD" commit -qm elsewhere-only
+BG_ELSEWHERE="$(git -C "$BGD" rev-parse elsewhere-only)"
+git -C "$BGD" checkout -q -b weakens-realmerge "$BG_BASE"
+bg_floors 10 1
+git -C "$BGD" commit -qam weakens-realmerge
+BG_WEAKENS_RM="$(git -C "$BGD" rev-parse weakens-realmerge)"
+# CONTROL: this fixture is a genuine three-way merge, not a fast-forward in
+# disguise — the merge base must be $BG_BASE itself, distinct from both tips.
+_bg_mb="$(git -C "$BGD" merge-base "$BG_ELSEWHERE" "$BG_WEAKENS_RM")"
+check "base-gate: the real-merge weakening fixture is NOT a fast-forward (control)" \
+  "$([ "$_bg_mb" = "$BG_BASE" ] && [ "$_bg_mb" != "$BG_ELSEWHERE" ] \
+     && [ "$_bg_mb" != "$BG_WEAKENS_RM" ] && echo 0 || echo 1)"
+BG_OUT="$(bash "$BG" --base "$BG_ELSEWHERE" --pr weakens-realmerge --repo "$BGD" 2>&1)"; BG_RC=$?
+check "base-gate: a floor LOWERED survives a genuine (non-fast-forward) three-way merge" \
+  "$([ "$BG_RC" = 1 ] && printf '%s' "$BG_OUT" | grep -q 'BASE_GATE_FAILED: FLOOR:' && echo 0 || echo 1)"
+
+# --- the eight merge-tree outcomes, seven of them refusals (R2, AMENDED) ---
+# rc alone cannot classify: a real conflict and an UNREADABLE OBJECT both
+# return 1, and only a tree sha on stdout line 1 separates them. A truncated
+# shallow fetch takes the second shape, and this job fetches the PR head.
+git -C "$BGD" checkout -q -b conflicts "$BG_BASE"
+bg_floors 10 30
+git -C "$BGD" commit -qam conflicts
+BG_OUT="$(bash "$BG" --base "$BG_MOVED" --pr conflicts --repo "$BGD" 2>&1)"; BG_RC=$?
+check "base-gate: a CONFLICTING pr is rc 2 (cannot judge), never rc 1 (weakens)" \
+  "$([ "$BG_RC" = 2 ] && echo 0 || echo 1)"
+check "base-gate: the conflict refusal says CONFLICT, and does not claim a weakening" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'conflicts with the base' \
+     && ! printf '%s' "$BG_OUT" | grep -q 'BASE_GATE_FAILED' && echo 0 || echo 1)"
+
+# --- rc 128 is a CORRUPT REPOSITORY, not an unavailable git option (#130 AMENDMENT) ---
+# Task 1's classifier folded rc 128 into the catch-all "--write-tree
+# unavailable (needs git >= 2.38)" branch and blamed the runner's git version
+# for a corrupt repository. Measured 2026-09-16: corrupting the PR commit's
+# root tree object yields rc 128 with empty stdout — the REACHABLE
+# unreadable-object shape (rc 1 with no sha is retained but unconstructed).
+# Its OWN scratch repo, same reason as the empty-tree case below: corrupting
+# the CHECKED-OUT branch's root tree also breaks `git checkout` away from
+# it — measured: a "checkout back to $BG_BASE" afterward fails silently
+# (its stderr was going to /dev/null) and leaves the repo stuck on the
+# corrupted branch, so every later case sharing that repo starts failing on
+# unrelated "object corrupt" errors instead of its own assertion.
+BGC_D="$(mktemp -d "${TMPDIR:-/tmp}/basegate-corrupt.XXXXXX")"
+( cd "$BGC_D" && git init -q . && git config user.email t@example.com && git config user.name t ) >/dev/null 2>&1
+mkdir -p "$BGC_D/tests"
+printf 'FLOOR_python=10\nFLOOR_shell=20\n' > "$BGC_D/tests/floors.env"
+git -C "$BGC_D" add -A >/dev/null 2>&1 && git -C "$BGC_D" commit -qm base
+BGC_BASE="$(git -C "$BGC_D" rev-parse HEAD)"
+git -C "$BGC_D" checkout -q -b corrupttree "$BGC_BASE"
+printf 'x\n' > "$BGC_D/tests/t-corrupt.sh"
+git -C "$BGC_D" add -A >/dev/null 2>&1 && git -C "$BGC_D" commit -qm corrupttree
+_ct="$(git -C "$BGC_D" rev-parse 'corrupttree^{tree}')"
+# chmod FIRST: git writes loose objects 0444, and root BYPASSES that bit while
+# an ordinary user does not. Without the chmod the redirect below fails with
+# "Permission denied" for every non-root runner, the object stays INTACT,
+# merge-tree succeeds, and the rc-128 branch this case exists for never fires —
+# so the case passed on a rootful dev container and failed on CI. Measured
+# 2026-09-16 as uid 1000 against the real block: object unchanged at 47 bytes
+# (not 7), no 'fatal error (128)' anywhere in the output.
+_co="$BGC_D/.git/objects/${_ct%"${_ct#??}"}/${_ct#??}"
+chmod u+w "$_co" && printf 'garbage' > "$_co"
+# The fixture asserts its OWN precondition. A corruption that did not take is a
+# broken fixture, not a passing gate, and it must say so in its own words
+# rather than surfacing as the assertion below quietly going red.
+[ "$(wc -c < "$_co")" -eq 7 ] \
+  || echo "  !! fixture: the corruption did not take (object is $(wc -c < "$_co") bytes)" >&2
+BG_OUT="$(bash "$BG" --base "$BGC_BASE" --pr corrupttree --repo "$BGC_D" 2>&1)"; BG_RC=$?
+# 'repository is incomplete' alone cannot tell rc 128 from rc 1 (both die
+# messages carry it) — folding rc 128 into the rc-1 branch, the same class
+# of mistake as the #130 AMENDMENT defect this fixture exists to catch,
+# would stay green. 'fatal error (128)' is only in the rc-128 message.
+check "base-gate: an UNREADABLE object is rc 2 and names the repository, not the git version" \
+  "$([ "$BG_RC" = 2 ] && printf '%s' "$BG_OUT" | grep -q 'fatal error (128)' \
+     && ! printf '%s' "$BG_OUT" | grep -q 'git >= 2.38' && echo 0 || echo 1)"
+rm -rf "$BGC_D"
+
+# --- rc 0 + git's EMPTY tree is never a legitimate subject ---
+# Its OWN scratch repo rather than $BGD: the case commits an orphan-shaped
+# root onto the base and leaves a ref no later case should have to reason
+# about.
+# THE FIXTURE CARRIES THE SAME CORE FILES $BGD DOES (not just tests/floors.env):
+# a thin fixture with no scripts/validate_plugin.py dies at the base-readable
+# check BEFORE the classifier's own guard is ever reached, so removing that
+# guard entirely would be invisible — the `! grep BASE_GATE_FAILED` half of
+# the assertion below would be satisfied by the fixture, not by the guard.
+# With the richer fixture AND the version-stable construction below, the guard
+# is genuinely load-bearing: remove it and PR_TREE is the empty tree, so arm 1
+# reads tests/floors.env as gone and emits `BASE_GATE_FAILED: … the ratchet is
+# deleted` — which is exactly the confident weakening verdict on an
+# infrastructure cause that the guard exists to refuse. Mutation-checked: red
+# in this case in the bash suite (2026-09-16).
+BGE_D="$(mktemp -d "${TMPDIR:-/tmp}/basegate-empty.XXXXXX")"
+( cd "$BGE_D" && git init -q . && git config user.email t@example.com && git config user.name t ) >/dev/null 2>&1
+mkdir -p "$BGE_D/scripts" "$BGE_D/tests" "$BGE_D/.github/workflows"
+printf 'CHECKS = (\n    check_hook,\n    check_floors,\n)\n' > "$BGE_D/scripts/validate_plugin.py"
+printf 'FLOOR_python=10\nFLOOR_shell=20\n' > "$BGE_D/tests/floors.env"
+printf '#!/usr/bin/env bash\n: the wrapper\n' > "$BGE_D/scripts/gate-suite.sh"
+printf '# ci\nsteps:\n  - run: bash scripts/gate-suite.sh shell\n  - run: bash scripts/gate-suite.sh python\n' > "$BGE_D/.github/workflows/validate.yml"
+git -C "$BGE_D" add -A >/dev/null 2>&1 && git -C "$BGE_D" commit -qm base
+BGE_BASE="$(git -C "$BGE_D" rev-parse HEAD)"
+# NO OBJECT SURGERY. The first cut deleted the PR commit's root tree object,
+# which relies on git ANSWERING a missing tree with rc 0 + the empty tree —
+# behaviour that is not contractual and differs by version (this case passed on
+# git 2.43.0 and failed on the runner's 2.55.0; measured 2026-09-16, the cause
+# on 2.55 unverified because that build is not available here). What the guard
+# actually claims is narrower and version-stable: a CLEAN merge whose RESULT is
+# the empty tree is never a legitimate subject. So the fixture builds exactly
+# that with ordinary plumbing — a commit whose tree IS git's empty tree,
+# parented on the base — and merge-tree returns rc 0 + 4b825dc6… by plain
+# semantics rather than by tolerating a broken repository. Measured identical
+# as root and as uid 1000.
+_empty_tree="$(git -C "$BGE_D" hash-object -t tree /dev/null)"
+_empty_pr="$(git -C "$BGE_D" commit-tree "$_empty_tree" -p "$BGE_BASE" -m 'a pr whose root tree is empty')"
+BG_OUT="$(bash "$BG" --base "$BGE_BASE" --pr "$_empty_pr" --repo "$BGE_D" 2>&1)"; BG_RC=$?
+check "base-gate: an EMPTY merged tree is refused as a subject, never judged" \
+  "$([ "$BG_RC" = 2 ] && printf '%s' "$BG_OUT" | grep -q 'empty' \
+     && ! printf '%s' "$BG_OUT" | grep -q 'BASE_GATE_FAILED' && echo 0 || echo 1)"
+rm -rf "$BGE_D"
 
 # --- fail-closed: unreadable base -----------------------------------------
 # The MESSAGE is asserted, not only the code. rc 2 alone is vacuous here:
@@ -6001,6 +6398,33 @@ _caps_ledger "$CAPD/v27.md" "| T-é | crité — dash | ev | FAIL |" "| T-é | c
 check "CONTROL: a UTF-8 ledger is not read as corrupt — the probe counts bytes, not characters" \
   "$([ "$(_caps_state "$CAPD/v27.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
 
+# CRLF fails this parser OPEN, and ops-stop-hook.sh SOURCES the lib — so a
+# CRLF checkout silently disables the same-target-rework cap while every gate
+# reports green. Measured 2026-09-17 on byte-identical content: tripped=1 on
+# LF, tripped=0 on CRLF (#136). Fail-OPEN is the one direction a cap may not
+# fail, which is why this is an equality assertion and not a fixed count.
+_caps_ledger "$CAPD/v28.md" "| T-a | c | ev | FAIL |" "| T-a | c | ev | FAIL |"
+sed 's/$/\r/' "$CAPD/v28.md" > "$CAPD/v28crlf.md"
+check "#136 caps.sh counts a CRLF ledger exactly as it counts LF (fails OPEN otherwise)" \
+  "$([ "$(_caps_state "$CAPD/v28.md")" = "$(_caps_state "$CAPD/v28crlf.md")" ] && echo 0 || echo 1)"
+check "#136 CONTROL: that CRLF ledger actually TRIPS — equality alone would pass if both said 0" \
+  "$([ "$(_caps_state "$CAPD/v28crlf.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+# CONTROL: the strip does not trip EVERYTHING. One FAIL round over CRLF is one
+# round, and a detector that fires on any CRLF input would satisfy both checks
+# above — the accepts-the-ordinary-case half the F144 rule makes mandatory.
+_caps_ledger "$CAPD/v29.md" "| T-a | c | ev | FAIL |"
+sed 's/$/\r/' "$CAPD/v29.md" > "$CAPD/v29crlf.md"
+check "#136 CONTROL: one CRLF FAIL round still does not trip (not a trip-everything strip)" \
+  "$([ "$(_caps_state "$CAPD/v29crlf.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+# CONTROL: the property THIS site was fixed for (#126) must survive. Stripping
+# the CR makes a CRLF header reach the whole-line literal for the FIRST time,
+# so a row whose id is literally `Gate` and criterion `Criterion` must still be
+# counted while the real header is still skipped — the collision #126 closed.
+_caps_ledger "$CAPD/v30.md" "| Gate | Criterion | ev | FAIL |" "| Gate | Criterion | ev | FAIL |"
+sed 's/$/\r/' "$CAPD/v30.md" > "$CAPD/v30crlf.md"
+check "#136 CONTROL: a CRLF row IDed Gate/Criterion still trips (#126 header match survives)" \
+  "$([ "$(_caps_state "$CAPD/v30crlf.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+
 # --- the UNCOVERED caps stay NAMED -----------------------------------------
 # Two of the charter's three caps are not covered, for stated reasons. Dropping the paragraph is
 # how "one of three" quietly becomes "three of three" to the next reader — the honesty #85
@@ -6022,4 +6446,21 @@ fi
 # passed+skipped — executor-invariant. A suite that skips 15 on root and 0 on
 # macOS reports the same total on both, and the floor stops carrying slack.
 echo "== summary: $PASS passed, $FAIL failed, $SKIP skipped =="
+# THE ROSTER, and it goes BELOW the summary on its own lines — never appended
+# to it. gate-suite.sh anchors that marker as `^== summary: ... ==$` (its line
+# 109), so anything added to the line itself fails the rung as a missing
+# marker.
+#
+# Why it exists (#134): a skip here is a property the executor cannot exhibit —
+# root bypasses the write bit, so every chmod-000/500 refusal case is
+# unexhibitable as uid 0. That is correct and unavoidable. What is NOT correct
+# is that the run then says "996 cases, slack 0" while a tenth of the base-gate
+# block never executed, and a maintainer reads that green as evidence. It was
+# not: two fixtures shipped broken this way and were red on CI for three
+# commits. The count alone cannot say WHICH properties went untested; the
+# roster can, and costs nothing when the set is empty.
+if [ "$SKIP" -ne 0 ]; then
+  echo "== skipped here (uid $(id -u)) — NOT covered by this run =="
+  printf '%s\n' "$SKIPPED_NAMES" | sed '/^$/d'
+fi
 [ "$FAIL" -eq 0 ]

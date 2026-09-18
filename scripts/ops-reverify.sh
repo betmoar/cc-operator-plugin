@@ -90,8 +90,25 @@ scan_ledger() {
   printf '%s\n' "|---|---|---|---|---|---|---|"
   while IFS= read -r -n 1048576 row || [ -n "$row" ]; do
     n=$((n+1)); [ "$n" -le 200000 ] || { echo "ops-reverify: ledger exceeds 200000 lines — stopping" >&2; break; }
+    # STRIP CR FIRST, and that ordering is the whole bug. #128 replaced the
+    # prefix glob `"| Gate | Criterion |"*` with exact equality; the glob's
+    # trailing `*` had been absorbing a `\r`, and exact equality does not.
+    # Measured at f306cee on a CRLF ledger: `undatable: 2` and the header
+    # swept as a phantom data row, where the pre-#128 code reported
+    # `undatable: 1`. A correctness fix that regressed a case it never named.
+    row="${row%$'\r'}"
     case "$row" in "| "*) ;; *) continue ;; esac
-    case "$row" in "| Gate | Criterion |"* | "|---"*) continue ;; esac
+    # The header is matched WHOLE, not by prefix (#128). `"| Gate | Criterion |"*`
+    # discards any row whose id is `Gate` and whose criterion is `Criterion`, and
+    # ops-task.sh permits that id. THIS FILTER IS THE ONLY THING THAT SKIPS THE
+    # HEADER — there is no verdict enum below to catch it as a fallback (the
+    # loop rejects a FIFTH cell, not an unknown verdict word, and deliberately
+    # so: a new word like MOOT must not vanish, #91). So if
+    # templates/VERDICTS-header.md ever changes, THIS LITERAL CHANGES WITH IT
+    # or an older ledger's header is swept as a data row. Same fix as caps.sh.
+    case "$row" in
+      "| Gate | Criterion | Evidence | PASS/FAIL |" | "|---"*) continue ;;
+    esac
     # EXACTLY four cells — `| gate | criterion | evidence @stamp | verdict |` —
     # the same schema ops-verdict.sh --reconcile enforces; anything else is
     # counted as skipped, never silently dropped (a row you cannot see is a row

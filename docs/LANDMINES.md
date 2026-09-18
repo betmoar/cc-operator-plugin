@@ -1208,3 +1208,177 @@ loops' byte caps real, so a counter that cannot see the probes is the same
 defect one layer up — and it stayed invisible because the number it produced
 (1, 1, 3) was correct for the reads it COULD see. A floor satisfied by the
 wrong subset reads identically to a floor satisfied.
+
+## A gate that compares two commits answers a different question than the merge (0.11.13)
+
+`base-gate.sh` compared `BASE_SHA` against `PR_SHA` as commits. The question it is
+meant to ask is "does the RESULT of merging this PR weaken the base enforcer", and in
+this repo those diverge in the ordinary case: nearly every PR raises a floor and adds a
+`tests/` file, so any branch that has not rebased since reads as LOWERING that floor and
+DELETING that file. Measured 2026-09-16 against `d9ed4cd`: a PR whose only change was
+one README line produced two `BASE_GATE_FAILED` lines and rc 1, while the merge result
+contained neither weakening. The subject is now `git merge-tree --write-tree`'s tree —
+no checkout, no worktree, so PR bytes are still never on disk.
+
+**`rc` alone cannot classify what came back.** The first cut had four outcomes and folded
+two of them wrong. The reachable set is six, and the discriminator is rc PLUS whether
+stdout line 1 is a sha PLUS whether the tree has any entries:
+
+- rc 0 + sha + non-empty → the subject.
+- rc 0 + sha + EMPTY → the PR's root tree object is absent. The base always carries
+  files, so a clean merge whose result is empty cannot be a legitimate PR. Without this
+  guard every arm reads every enforcer file as GONE — a confident weakening verdict with
+  an infrastructure cause.
+- rc 0 + no sha → an output shape this gate does not understand.
+- rc 1 + sha → a real conflict. The message says the gate CANNOT JUDGE it, never that
+  the PR weakens anything: GitHub refuses to merge a conflicted PR anyway, so the only
+  honest claim is that no result tree exists to read.
+- rc 1 + no sha → an unreadable object. Retained though no construction reaches it
+  (#133).
+- rc 128 → a FATAL git error: the repository is incomplete. This is the REACHABLE
+  truncated-fetch shape that bit the #125 marker arm, and the first cut reported it as
+  `--write-tree` being unavailable — blaming the runner's git version for a corrupt
+  repository, which is the same two-causes-one-message defect the classifier exists to
+  remove.
+
+Every one is rc 2. Fail closed, as the file's header claims everywhere else.
+
+**Arm 4 keeps the three-dot diff and that is not an oversight.** It names what *this PR*
+authored, which a human reads as authorship; two dots there attributes the base's own
+commits to the PR — the same false-authorship defect, one level up, in the only
+human-facing half. Arm 5 went the other way, to `diff BASE_SHA PR_TREE`: a hard-fail arm
+must ask what the merged tree carries, not what the PR's diff happens to show. Measured
+honestly: the escape that motivated moving arm 5 does NOT reproduce — when the PR does
+not touch the hunk, the base's deletion wins the merge and the marker is absent from the
+tree under either form; when it does, merge-tree reports a conflict and the script
+refuses before arm 5 runs. The change closes a FALSE POSITIVE (a marker the base's own
+tip already carries, restated by the PR) and unifies the subject. Two cases pin the
+form together — three-dot reddens one, two-dot reddens the other, only base-vs-tree
+passes both; neither alone would have.
+
+## A fixture that needs root does not run on CI's uid (0.11.13)
+
+Two cases added with the classifier were RED on CI from the commit that introduced them
+and passed locally every time. Git writes loose objects `0444`; **root bypasses that bit
+and an ordinary user does not.** The corrupt-object fixture did
+`printf 'garbage' > "$OBJ"`, which silently failed as uid 1000 — the object stayed
+intact at 47 bytes, `merge-tree` succeeded, and the rc-128 branch never fired.
+
+They stayed invisible for three more commits because `validate.yml` runs the `python`
+rung BEFORE `shell`, and python was red for an unrelated known reason, so the job
+aborted before the shell rung ever ran. **A known red on one rung hides every later
+rung**; that is the part worth remembering, not the chmod.
+
+The empty-merge-tree fixture had a second, subtler version of the same fault: it deleted
+the PR commit's root tree object and relied on git ANSWERING that with rc 0 + the empty
+tree. That is not contractual — it held on git 2.43.0 and failed on the runner's 2.55.0,
+and the cause on 2.55 was never verified because that build was not available. The fix
+does not bet on a diagnosis: the fixture now builds the empty result from ordinary
+plumbing (`commit-tree $(hash-object -t tree /dev/null) -p <base>`), which is what the
+guard actually claims and behaves identically under both uids. It also made the guard
+genuinely load-bearing for the first time — remove it now and arm 1 emits
+`BASE_GATE_FAILED: … the ratchet is deleted`, where the deletion-based fixture had only
+an argument that a downstream `die` would catch it.
+
+The structural gap — a rootful dev container cannot execute ten of these cases at all,
+and the suite says `slack 0` while they are skipped — is #134, deliberately not closed
+here.
+
+## A trailing CR is not noise, it is a parser bypass (0.11.13, #136)
+
+Three readers split a 4-cell ledger row (`grep -rn '{row#| }\|{line#| }' scripts/`), and
+all three were defeated by a `\r`. `read -r` strips the `\n` delimiter and **never** a
+preceding `\r`, so on a CRLF ledger every row arrives one invisible byte longer than the
+literal each parser tests against. The three failures were not variants of one symptom —
+each broke where that file happened to anchor:
+
+- `lib/caps.sh` anchors on the verdict enum (`case "$verdict" in PASS | FAIL)`), so
+  `FAIL\r` matched neither arm, every row was `continue`d, the key table stayed empty and
+  the detector reported **`tripped=0` on a ledger that trips**. `ops-stop-hook.sh` sources
+  this lib, so that is a fail-OPEN in the enforcement path. Measured on byte-identical
+  content: LF `tripped=1`, CRLF `tripped=0`.
+- `ops-reverify.sh` anchors on the whole-line header literal, so the header missed its
+  own filter, fell into the data parser, and was **emitted as a phantom finding**
+  (`undatable: 2`, with a row whose verdict cell read `PASS/FAIL`).
+- `ops-verdict.sh`'s `row_is_conformant` anchors on the trailing pipe (`'| '*' |'`), so a
+  CRLF fragment was refused as non-conformant and `--reconcile` **left it unrecovered** in
+  the one path that exists to recover it, reached by exactly the messy merges `merge=union`
+  produces. Measure the POLARITY before calling this one data loss, as two drafts of this
+  paragraph did: the refusal is ANNOUNCED (`skipping non-conformant line in <frag>: <row>`
+  on stderr, plus a `skipped` count in the summary), so it is the mildest of the three and
+  the only one an operator could notice unaided. The other two answer wrongly in silence.
+
+Two things make this worth a landmine rather than a footnote. First, **the repo already
+knew**: six other readers strip CR, and `lib/partition.sh:204` carries the rule in
+words — "a CRLF checkout must not change semantics". A guard held at six of nine sites
+reads as covered. Second, `ops-reverify.sh`'s was a **regression we shipped**: the #128
+whole-line header fix replaced a prefix glob that had absorbed the `\r` all along, so
+closing a rare collision (a row whose id is literally `Gate`) opened a commoner one. The
+same commit's sibling fix in `caps.sh` inherited it.
+
+Where to strip: immediately after the `read`, before any test that could see the `\r`. In
+`ops-verdict.sh` that means the reconcile LOOP, not inside `row_is_conformant` — the row
+is appended to the ledger of record, and a CR carried in there re-breaks every reader
+downstream. In `lib/caps.sh` it sits before the byte accounting, so `bytes` counts the
+row as the parser sees it rather than as the file stores it: a CRLF ledger is charged one
+byte per line less than its on-disk size, so `CAPS_MAX_BYTES` reads ~1.2% looser there
+(measured on 80-byte rows: the accounted budget trips at 25,890 rows, whose true on-disk
+size is 2,122,980 bytes against a 2,097,152 cap). It cannot matter, and the reason is
+`CAPS_MAX_LINES=20000` — the row bound fires ~5,900 rows earlier than the byte bound on
+any ledger of ordinary rows, so the byte cap is the backstop for pathologically long
+rows, where one byte per line is noise. Worth stating rather than assuming: an earlier
+draft of this paragraph guessed "~0.002%", which is three orders out, and a wrong number
+in a landmine file is the thing this file exists to prevent.
+
+`.operator/.gitattributes` sets `merge=union` on the ledgers and no `text`/`eol`, which
+is how CRLF arrives. Adding `eol=lf` is a complement, never a substitute: gitattributes
+normalize on checkout, and a file written CRLF in the worktree still reaches every reader
+(#138).
+
+## An empty listing is not an empty answer (0.11.13, #137)
+
+`base-gate.sh` arm 3 wrote two whole-subtree listings to a file with no exit check:
+
+```sh
+git -C "$REPO" ls-tree -r --name-only "${BASE_SHA}" -- tests/ > "$_TESTS_BASE"
+```
+
+`ls-tree` exits non-zero and writes **nothing** when a subtree object is unreadable, so
+the loop below read zero paths and "no tests/ file was deleted" was the answer. Measured
+3/3: a PR deleting `tests/zzz.sh`, with the unrelated `tests/aaa` subtree object removed,
+produced `BASE_GATE_PASSED` rc 0 — while the delta report printed `D tests/zzz.sh` one
+line above it. The gate saw the violation, named it, and passed. That is the sibling
+incident this file's own header cites, inside the guard written against it.
+
+Nothing upstream caught it, and the reason is worth keeping: `merge-tree` only inflates
+subtrees that **differ** between the two sides, so an unreadable subtree identical on both
+returns rc 0. The change-list diff and arm 5's content diff returned rc 0 for the same
+reason. Four independent review passes read this code and none found it; one executed
+probe did.
+
+Two bounds, both measured, so the fix stays small. A **single-path** `ls-tree` — the four
+calls that pass `-- "$_f"` (the `CORE_FILES` presence loop) or `-- "$_ci"` (the CI-rung
+presence check) — resolves without inflating siblings and is unaffected. The empty-tree
+guard in the merge-tree classifier (`[ -z "$(… ls-tree "$PR_TREE" … | head -1)" ]`)
+already fails closed, because an empty capture makes its `[ -z ]` true and it dies. Only
+the two whole-subtree redirects, the ones passing `-- tests/`, needed the guard.
+
+Cited by SYMBOL, not by line: the first draft of this paragraph named `:415`, `:416`,
+`:452`, `:453` and `:213`, every one of them stale within two commits — they had been read
+off a pre-merge copy of the file, and at HEAD all five pointed at comment or control-flow
+lines instead of the calls they claimed. Nothing catches that: `check_coupling_case_refs`
+resolves `_"…"_` case-title citations in CLAUDE.md, and has no opinion on a `:NNN` in
+prose. A line number in a narrative file is a citation that rots on the next insertion,
+so cite the code the way a grep would find it.
+
+And the shape of the guard matters: `die` inside `$( )` exits only the **subshell**.
+Measured — `x="$(false || die msg)"` printed the message, left the parent alive and
+returned 0; `x="$(false)" || die msg` exited 2. These two sites are plain redirects, so
+`cmd > file || die …` fires in the right shell. A `checked_git` wrapper called in test
+position would not.
+
+Fixtures for this class remove the loose object rather than `chmod`-ing it: removal needs
+directory permission, not file permission, so root and non-root behave alike (#134's
+lesson, applied). A packed object cannot be removed, so the fixture asserts its own
+precondition and skips with a named reason instead of passing against a repo it never
+broke.

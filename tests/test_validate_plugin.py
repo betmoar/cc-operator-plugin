@@ -4923,16 +4923,19 @@ class BaseGateTest(unittest.TestCase):
     # The base-gate job as it ships, minus the comments (the pin reads a
     # comment-stripped view for the script and a comment-stripped LIVE view
     # for the CI files, so a fixture of pure code is the honest shape).
+    # #131: the job now lives in its OWN pull_request_target-only workflow,
+    # so it carries no job-level `if:` — the trigger is the guard. Full
+    # history, not --depth=1 (#130's merge-tree needs a merge base).
     JOB = (
         "  base-gate:\n"
-        "    if: github.event_name == 'pull_request_target'\n"
         "    runs-on: ubuntu-latest\n"
         "    steps:\n"
         "      - uses: actions/checkout@v4\n"
         "        with:\n"
         "          ref: ${{ github.event.pull_request.base.sha }}\n"
+        "          fetch-depth: 0\n"
         "      - name: Fetch the PR head (never checked out)\n"
-        "        run: git fetch --no-tags --depth=1 origin sha\n"
+        "        run: git fetch --no-tags origin sha\n"
         "      - name: Trusted base-ref gate (#108)\n"
         "        run: |\n"
         "          if [ ! -f scripts/base-gate.sh ]; then\n"
@@ -4945,13 +4948,20 @@ class BaseGateTest(unittest.TestCase):
         self.dir = pathlib.Path(tempfile.mkdtemp())
         write(self.dir / "scripts" / "base-gate.sh",
               (ROOT / "scripts" / "base-gate.sh").read_text(encoding="utf-8"))
+        # validate.yml carries the ORDINARY suite workflow only — no job,
+        # no pull_request_target: — because claim 5 refuses a base-gate: job
+        # left here, and the fixture must be clean-by-construction.
         for rel in vp._CI_FILES:
             if pathlib.PurePath(rel).name != "validate.yml":
                 continue
             write(self.dir / rel,
-                  "on:\n  pull_request:\n  pull_request_target:\n"
-                  "jobs:\n  validate:\n    steps:\n      - run: true\n"
-                  + self.JOB)
+                  "on:\n  push:\n  pull_request:\n"
+                  "jobs:\n  validate:\n    steps:\n      - run: true\n")
+        # The job lives ONLY in its own trusted-event workflow.
+        for rel in vp._BASE_GATE_FILES:
+            write(self.dir / rel,
+                  "on:\n  pull_request_target:\n"
+                  "jobs:\n" + self.JOB)
 
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)
@@ -4980,7 +4990,7 @@ class BaseGateTest(unittest.TestCase):
     def test_trigger_missing_fires(self):
         # `pull_request:` alone runs the workflow file FROM THE PR HEAD — the
         # self-judging loop restated in YAML.
-        self._edit(".github/workflows/validate.yml",
+        self._edit(".github/workflows/base-gate.yml",
                    "  pull_request_target:\n", "")
         self.assertTrue(any("pull_request_target" in p
                             for p in self._probs()), self._probs())
@@ -4988,19 +4998,19 @@ class BaseGateTest(unittest.TestCase):
     def test_commented_out_trigger_fires(self):
         # The raw-text vacuity shape (2026-08-31 audit): a comment holding the
         # token must not satisfy the pin.
-        self._edit(".github/workflows/validate.yml",
+        self._edit(".github/workflows/base-gate.yml",
                    "  pull_request_target:", "  # pull_request_target:")
         self.assertTrue(any("pull_request_target" in p
                             for p in self._probs()), self._probs())
 
     def test_job_missing_fires(self):
-        self._edit(".forgejo/workflows/validate.yml", self.JOB, "")
+        self._edit(".forgejo/workflows/base-gate.yml", self.JOB, "")
         self.assertTrue(any("base-gate:" in p and "unwired" in p
                             for p in self._probs()), self._probs())
 
     def test_job_that_never_invokes_the_script_fires(self):
         # The costume: the job has the name and not the gate.
-        self._edit(".github/workflows/validate.yml",
+        self._edit(".github/workflows/base-gate.yml",
                    "          bash scripts/base-gate.sh --base b --pr p\n",
                    "          echo placeholder\n")
         # The needle is the RUN claim: the bootstrap branch legitimately names
@@ -5013,7 +5023,7 @@ class BaseGateTest(unittest.TestCase):
         # THE PWN-REQUEST SHAPE. In a pull_request_target workflow a bare
         # checkout is the PR HEAD on disk — the exact bytes this gate exists
         # to judge rather than trust, executed by the job that judges them.
-        self._edit(".github/workflows/validate.yml",
+        self._edit(".github/workflows/base-gate.yml",
                    "        with:\n"
                    "          ref: ${{ github.event.pull_request.base.sha }}\n",
                    "")
@@ -5023,56 +5033,147 @@ class BaseGateTest(unittest.TestCase):
     def test_checkout_pinned_to_the_head_ref_fires(self):
         # Sharper than the bare-checkout case: a `ref:` IS present, and it
         # names the head. A pin that only asked "is there a ref:" would pass.
-        self._edit(".github/workflows/validate.yml",
+        self._edit(".github/workflows/base-gate.yml",
                    "          ref: ${{ github.event.pull_request.base.sha }}",
                    "          ref: ${{ github.event.pull_request.head.sha }}")
         self.assertTrue(any("does not pin the base ref" in p
                             for p in self._probs()), self._probs())
 
-    def test_the_job_guarded_on_pull_request_fires(self):
-        # THE DEFECT THIS PIN EXISTS FOR, and it shipped in the first draft
-        # of #108: `pull_request` reads the workflow AND base-gate.sh from
-        # the PR HEAD, so the job judges the PR with the PR's own code, while
-        # `pull_request_target` — the trusted event — is skipped. Measured on
-        # Forgejo, task 483 (2026-09-05): the job ran under the untrusted
-        # event. Both spellings read as deliberate, which is why care is not
-        # the mechanism here.
-        self._edit(".github/workflows/validate.yml",
-                   "    if: github.event_name == 'pull_request_target'",
-                   "    if: github.event_name == 'pull_request'")
-        self.assertTrue(any("must gate on `pull_request_target`" in p
+    def test_base_gate_workflow_subscribing_to_pull_request_is_refused(self):
+        # #131's structural replacement for the old job-level `if:` string
+        # pin: the job now lives in its OWN workflow, so the only way it can
+        # run under the untrusted event is for that workflow to ALSO
+        # subscribe to `pull_request`. THE DEFECT THIS PIN EXISTS FOR shipped
+        # in the first draft of #108 (as a job-level `if:` inversion); a real
+        # Forgejo run measured it running under the untrusted event (task
+        # 483, 2026-09-05).
+        self._edit(".github/workflows/base-gate.yml",
+                   "on:\n  pull_request_target:\n",
+                   "on:\n  pull_request:\n  pull_request_target:\n")
+        self.assertTrue(any("ALSO subscribes to `pull_request:`" in p
                             for p in self._probs()), self._probs())
 
+    def test_a_base_gate_workflow_missing_while_validate_exists_fires(self):
+        # #131 moved the job out of validate.yml and out of the reach of the
+        # old "every validate.yml carries a live base-gate: job" claim. For one
+        # commit, deleting BOTH base-gate workflows left the validator
+        # reporting "all contracts hold" — measured 2026-09-16 on the real
+        # tree, and red in check_base_gate only after claim 1b.
+        #
+        # ONE FORGE AT A TIME, and that is the whole point of the loop. The
+        # first version of this case deleted both files together and passed
+        # while the FORGEJO half was dead: claim 1b paired the tuples by
+        # POSITION, so `.forgejo/workflows/base-gate.yml` was keyed off
+        # `.github/workflows/release.yml` (absent here, so skipped) and the
+        # GitHub pair alone satisfied the assertion. A fixture that guarantees
+        # its own answer — the vacuity shape this repo has shipped six times.
+        for rel in vp._BASE_GATE_FILES:
+            with self.subTest(workflow=rel):
+                self.tearDown()   # the previous iteration's tree, or it leaks
+                self.setUp()      # a clean tree per forge; only ONE file goes
+                (self.dir / rel).unlink()
+                probs = self._probs()
+                self.assertTrue(
+                    any(rel in p_ and "missing while" in p_ for p_ in probs),
+                    f"{rel} deleted alone did not fire: {probs}")
+
+    def test_a_forge_with_neither_file_is_not_a_finding(self):
+        # NEGATIVE CONTROL for claim 1b. A forge nobody configured claims
+        # nothing — demanding the workflow everywhere would be the false
+        # positive that trains people to ignore the alarm.
+        for rel in list(vp._CI_FILES) + list(vp._BASE_GATE_FILES):
+            f = self.dir / rel
+            if f.is_file():
+                f.unlink()
+        self.assertEqual(self._probs(), [])
+
+    def test_a_job_level_if_on_the_base_gate_job_fires(self):
+        # `if: false` is a ONE-LINE retirement of the enforcer. Since #131 the
+        # `on:` block is the guard, so any job-level `if:` can only subtract.
+        # Measured 2026-09-16: adding this to the real workflow left the
+        # validator green, where the same edit on origin/main fired twice.
+        self._edit(".github/workflows/base-gate.yml",
+                   "  base-gate:\n", "  base-gate:\n    if: false\n")
+        self.assertTrue(any("job-level `if:`" in p_ for p_ in self._probs()),
+                        self._probs())
+
     def test_a_step_level_if_does_not_stand_in_for_the_job_guard(self):
-        # ANCHOR CASE. A step-level `if:` is legitimate (a conditional
-        # cleanup step) and can sit textually BEFORE the job-level one. A
-        # locator matching the first `if:` in the block would read that step's
-        # condition as the guard — so here the job guard is wrong
-        # (`pull_request`) while a step carries a correct-looking
-        # `pull_request_target` string. The check must still fire.
-        # Two properties are needed for this to discriminate, both measured:
-        # the decoy must come FIRST (with the job guard first, loose and
-        # anchored regexes return the same line), and it must be a step
-        # PROPERTY `if:` (8 spaces, no dash) — a `- if:` list item does not
-        # match `^\s*if:` either, so it would prove nothing about the anchor.
-        self._edit(".github/workflows/validate.yml",
-                   "    if: github.event_name == 'pull_request_target'\n"
-                   "    runs-on: ubuntu-latest\n"
+        # THE ANCHOR CASE, restored. #131 deleted its ancestor along with the
+        # locator it guarded; the property survived the locator. A step-level
+        # `if:` is LEGITIMATE (a conditional cleanup step) and can sit
+        # textually BEFORE any job-level one, so a loose `^\s*if:` would read
+        # that step's condition as the job's. Two properties make this
+        # discriminate, both deliberate: the decoy comes FIRST, and it is a
+        # step PROPERTY `if:` at 8 spaces (a `- if:` list item would not match
+        # `^\s*if:` either, and would prove nothing about the anchor).
+        self._edit(".github/workflows/base-gate.yml",
                    "    steps:\n",
-                   "    runs-on: ubuntu-latest\n"
                    "    steps:\n"
                    "      - name: a conditional cleanup step\n"
                    "        if: github.event_name == 'pull_request_target'\n"
-                   "        run: echo decoy\n"
-                   "    if: github.event_name == 'pull_request'\n")
-        self.assertTrue(any("must gate on `pull_request_target`" in p
-                            for p in self._probs()), self._probs())
+                   "        run: echo decoy\n")
+        self.assertEqual(self._probs(), [])
 
-    def test_the_job_with_no_guard_fires(self):
-        self._edit(".forgejo/workflows/validate.yml",
-                   "    if: github.event_name == 'pull_request_target'\n", "")
-        self.assertTrue(any("no `if:` guard" in p for p in self._probs()),
+    def test_a_nested_pull_request_target_key_does_not_satisfy_the_trigger(self):
+        # THE ANCHOR CASE for claim 2. `^\\s*pull_request_target:` over the
+        # whole comment-stripped file accepted that key at ANY indentation, so
+        # a nested mapping inside a job satisfied the positive claim while the
+        # real trigger map said something else (PR #132 review). The key must
+        # be read from the TOP-LEVEL `on:` map or the pin is decorative.
+        self._edit(".github/workflows/base-gate.yml",
+                   "on:\n  pull_request_target:\njobs:\n",
+                   "on:\n  push:\njobs:\n  decoy:\n    with:\n"
+                   "      pull_request_target: true\n")
+        self.assertTrue(any("top-level `on:` map" in p_ for p_ in self._probs()),
                         self._probs())
+
+    def test_a_workflow_triggered_only_on_push_fires(self):
+        # The same gap from the other side: swapping the trusted event for an
+        # unrelated one must not pass merely because `pull_request:` is absent.
+        self._edit(".github/workflows/base-gate.yml",
+                   "on:\n  pull_request_target:\n", "on:\n  push:\n")
+        self.assertTrue(any("pull_request_target" in p_ for p_ in self._probs()),
+                        self._probs())
+
+    def test_an_aliased_leftover_base_gate_job_is_refused(self):
+        # Claim 5b. `base_gate:` with `name: base-gate` and the same call is a
+        # second gate under the UNTRUSTED event, identical in the checks UI,
+        # and the id-keyed locator never sees it (PR #132 review).
+        self._edit(".github/workflows/validate.yml",
+                   "      - run: true\n",
+                   "      - run: true\n  base_gate:\n"
+                   "    name: base-gate\n    steps:\n"
+                   "      - run: bash scripts/base-gate.sh --base b --pr p\n")
+        self.assertTrue(any("still INVOKES" in p_ for p_ in self._probs()),
+                        self._probs())
+
+    def test_a_shallow_base_gate_checkout_fires(self):
+        # R3 was prose with no pin. A depth-1 checkout has no ancestors for
+        # merge-tree to find a merge base in, so every PR becomes a refusal —
+        # which reads as the gate being broken rather than the fetch (#130).
+        self._edit(".github/workflows/base-gate.yml",
+                   "          fetch-depth: 0\n", "")
+        self.assertTrue(any("fetch-depth: 0" in p_ for p_ in self._probs()),
+                        self._probs())
+
+    def test_a_truncated_head_fetch_fires(self):
+        # The other half of R3: a truncated fetch leaves objects merge-tree
+        # cannot read, and that returns rc 128 — not a conflict (#130).
+        self._edit(".github/workflows/base-gate.yml",
+                   "git fetch --no-tags origin",
+                   "git fetch --no-tags --depth=1 origin")
+        self.assertTrue(any("--depth=1" in p_ for p_ in self._probs()),
+                        self._probs())
+
+    def test_a_leftover_base_gate_job_in_validate_yml_is_refused(self):
+        # Claim 5: the job must not ALSO remain where the untrusted event
+        # reaches it. Moving a job is two edits, and only one of them is
+        # visible in claim 2.
+        self._edit(".github/workflows/validate.yml",
+                   "      - run: true\n",
+                   "      - run: true\n  base-gate:\n    runs-on: ubuntu-latest\n")
+        self.assertTrue(any("still carries a `base-gate:` job" in p
+                            for p in self._probs()), self._probs())
 
     def test_the_bootstrap_branch_removed_fires(self):
         # Before #108 lands on the default branch the BASE has no
@@ -5080,7 +5181,7 @@ class BaseGateTest(unittest.TestCase):
         # reads as a broken runner rather than "no gate here yet" (measured
         # on Forgejo, task 483). The branch must announce itself: a silent
         # `exit 0` in its place is indistinguishable from a clean run.
-        self._edit(".github/workflows/validate.yml",
+        self._edit(".github/workflows/base-gate.yml",
                    "            echo BASE_GATE_BOOTSTRAP; exit 0\n",
                    "            exit 0\n")
         self.assertTrue(any("BASE_GATE_BOOTSTRAP" in p
@@ -5090,12 +5191,18 @@ class BaseGateTest(unittest.TestCase):
         # base-gate.sh's registry arm removed — function AND both call sites,
         # because a dangling reference would leave the token present and the
         # mutation would prove nothing about the arm (the anchor rule, #114).
+        # Keyed on `> "$BASE_CHECKS"` / `> "$PR_CHECKS"`, not on the SUBJECT
+        # variable name feeding extract_checks (#130 moved it from $PR_SHA to
+        # $PR_TREE) — the whole point of #130 is that the subject moves, so a
+        # harness pinned to it breaks again next time (#131 amendment 1).
         p = self.dir / "scripts" / "base-gate.sh"
         s = p.read_text(encoding="utf-8")
         s = re.sub(r"extract_checks\(\) \{.*?\n\}\n", "", s, count=1,
                    flags=re.S)
-        s = s.replace('extract_checks "$BASE_SHA" > "$BASE_CHECKS"\n', "")
-        s = s.replace('extract_checks "$PR_SHA" > "$PR_CHECKS"\n', "")
+        s = re.sub(r'extract_checks "\$\w+" > "\$BASE_CHECKS"\n', "", s,
+                   count=1)
+        s = re.sub(r'extract_checks "\$\w+" > "\$PR_CHECKS"\n', "", s,
+                   count=1)
         self.assertNotIn("extract_checks", s)
         p.write_text(s, encoding="utf-8")
         self.assertTrue(any("extract_checks" in p_ and "absent from code" in p_
@@ -5112,17 +5219,52 @@ class BaseGateTest(unittest.TestCase):
 
     def test_a_comment_does_not_satisfy_an_arm_pin(self):
         # The arm pins read shell_code (comments stripped): moving an arm into
-        # a comment is deletion wearing a hash.
+        # a comment is deletion wearing a hash. Keyed on the call-site suffix,
+        # not the subject variable name — same reason as the case above.
         p = self.dir / "scripts" / "base-gate.sh"
         s = p.read_text(encoding="utf-8")
         s = re.sub(r"^extract_checks\(\) \{", "# extract_checks() {", s,
                    count=1, flags=re.M)
-        s = s.replace('extract_checks "$BASE_SHA" > "$BASE_CHECKS"',
-                      '# extract_checks "$BASE_SHA"')
-        s = s.replace('extract_checks "$PR_SHA" > "$PR_CHECKS"',
-                      '# extract_checks "$PR_SHA"')
+        s = re.sub(r'extract_checks "\$\w+" > "\$BASE_CHECKS"',
+                   '# extract_checks "$BASE_SHA"', s, count=1)
+        s = re.sub(r'extract_checks "\$\w+" > "\$PR_CHECKS"',
+                   '# extract_checks "$PR_SHA"', s, count=1)
         p.write_text(s, encoding="utf-8")
         self.assertTrue(any("extract_checks" in p_ and "absent from code" in p_
+                            for p_ in self._probs()), self._probs())
+
+    def test_the_merge_tree_classifier_removed_fires(self):
+        # Amendment 2 of 2 (#131): claim 4's token list held nothing from the
+        # merge-tree classifier Task 1 added — the subject all four arms now
+        # read — so deleting that whole block was caught only by the bash
+        # suite, not here. Deletes the WHOLE classifier (`_is_sha()` through
+        # the outcome if/elif/else/fi chain, ending right before the `echo
+        # "== base-gate:` line that follows it) — the actual escape the
+        # amendment names, not a token rename. PR_TREE is read in many later
+        # arms (a subject, not an arm-local var), so it stays textually
+        # present after this deletion; `merge-tree` does not — its only CODE
+        # occurrence (not counting the header's prose) is the deleted call.
+        p = self.dir / "scripts" / "base-gate.sh"
+        s = p.read_text(encoding="utf-8")
+        s2 = re.sub(r'_is_sha\(\) \{.*?\n(?=echo "== base-gate:)',
+                   "", s, count=1, flags=re.S)
+        self.assertNotEqual(s, s2, "anchor missing: the classifier block")
+        code2 = "\n".join(ln for ln in s2.splitlines()
+                          if not ln.lstrip().startswith("#"))
+        self.assertNotIn("merge-tree", code2)
+        p.write_text(s2, encoding="utf-8")
+        self.assertTrue(any("merge-tree" in p_ and "absent from code" in p_
+                            for p_ in self._probs()), self._probs())
+
+    def test_the_pr_tree_subject_renamed_fires(self):
+        # The second half of amendment 2: PR_TREE is the merge-tree
+        # classifier's OUTPUT, read by every arm — a rename out of the script
+        # (the token gone, not merely the classifier that produces it) must
+        # fire the same as any other arm token.
+        p = self.dir / "scripts" / "base-gate.sh"
+        s = p.read_text(encoding="utf-8")
+        p.write_text(s.replace("PR_TREE", "ZZ_GONE_TREE"), encoding="utf-8")
+        self.assertTrue(any("PR_TREE" in p_ and "absent from code" in p_
                             for p_ in self._probs()), self._probs())
 
     def test_release_yml_is_not_required_to_carry_the_job(self):

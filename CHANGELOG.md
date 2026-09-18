@@ -9,6 +9,110 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.13] - 2026-09-16
+
+### Fixed
+
+- **The base-gate judges the MERGE RESULT, not the PR head (#130).** `base-gate.sh`
+  computes `git merge-tree --write-tree` and uses that tree as the subject for arms 1,
+  2, 3 and 3b. Measured against `d9ed4cd`: a PR whose only change was one README line
+  produced two `BASE_GATE_FAILED` lines and rc 1, because this repo raises a floor and
+  adds a `tests/` file in nearly every PR and an unrebased branch read as lowering and
+  deleting them. The merge result contained neither weakening. Arm 4 keeps the
+  three-dot diff on purpose — it names what *this PR* authored, which a human reads.
+- **Eight merge-tree outcomes, seven distinct refusals (#130).** `rc` alone does not
+  separate them; the discriminator is rc, whether stdout line 1 is a sha, and whether
+  the tree has entries. A real conflict, an unreadable object, a corrupt repository
+  (rc 128), an empty merge result, an unrecognised output shape, an old git with no
+  `--write-tree` (rc 129), and any other exit status are seven branches with their own
+  messages. Every one is rc 2 — the gate says it cannot judge, never that the PR weakens
+  anything. The first cut folded rc 128 into "your git is too old", blaming the runner's
+  version for a corrupt repository.
+- **Arm 5 diffs the base against the merged tree (#130).** The anti-wormhole arm no
+  longer blames a PR for a marker line the base's own tip already carries. Measured:
+  the shape that motivated the change — a marker at the merge base, removed later by
+  the base, retained untouched by the PR — does *not* reach the merge result under any
+  diff form, so three-dot's silence there was already correct; the change closes a
+  false positive and unifies the subject with every other hard-fail arm.
+- **The base-gate job runs from its own trusted-event workflow (#131).**
+  `.github/workflows/base-gate.yml` and the Forgejo mirror subscribe to
+  `pull_request_target` and nothing else, so the `on:` block *is* the guard — a
+  workflow that never receives the untrusted event cannot run under it, which replaces
+  an `if:` string a reviewer had to read. Both `validate.yml` files lose the job and
+  the trigger. This also removes a measured duplicate: with both triggers on
+  `validate.yml`, every push ran the full ~4.5 minute suite twice (runs 35081274929
+  and 35081274847, both green, both complete). The checkout gains `fetch-depth: 0` and
+  the head fetch drops `--depth=1`: `merge-tree` needs a merge base, and a truncated
+  fetch leaves objects it cannot read.
+- **`check_base_gate` follows the job (#131).** It reads a new `_BASE_GATE_FILES`
+  tuple, requires `pull_request_target:` *and* refuses a `pull_request:` subscription,
+  and refuses a leftover `base-gate:` job in either `validate.yml` — moving a job is
+  two edits and a reviewer sees one diff. Claim 4's token list gains `merge-tree` and
+  `PR_TREE`, so deleting the classifier is caught here and not only in the bash suite.
+- **`ops-reverify.sh` matches the ledger header WHOLE, not by prefix (#128).** A task
+  id of `Gate` with criterion `Criterion` is a ledger `ops-task.sh` permits, and the
+  prefix filter dropped that row from the re-verification sweep ENTIRELY: the header
+  filter sits before the cell count, so the row was not even tallied as "not a 4-cell
+  row" (measured: that counter reads 0). Invisible, not miscounted. `scripts/lib/caps.sh`
+  already carried the whole-line form; this is the same fix in the sibling parser.
+- **Three ledger parsers stopped losing CRLF rows (#136).** `ops-reverify.sh`, `caps.sh`
+  and `ops-verdict.sh --reconcile` each mis-handled a trailing `\r`, and each failed in a
+  different direction. The reverify one was a regression introduced by this release's own
+  #128 fix: exact header equality removed the `*` that had been absorbing the `\r`.
+  `caps.sh` failed **open** — `tripped=1` on LF and `0` on byte-identical CRLF, and the
+  Stop hook sources it, so a CRLF checkout silently disabled the same-target-rework cap.
+  `--reconcile` **refused** the row: 1 of 2 restored, so a recoverable row stayed
+  unrecovered in the one path that exists to recover it. That refusal is ANNOUNCED — the
+  row is named on stderr and counted as non-conformant — which makes it the mildest of the
+  three and the only one an operator could notice. One `row="${row%$'\r'}"` in each,
+  before any comparison.
+- **The base-gate no longer passes a `tests/` deletion it cannot see (#137).** Both
+  `ls-tree` redirects in arm 3 were unchecked, and the loop iterates the base listing — so
+  an empty file made it a no-op. With a nested `tests/sub` subtree object missing, every
+  earlier check passes while the listing fails: measured 3/3 deterministic as rc 0 and
+  `BASE_GATE_PASSED`, with `D tests/zzz.sh` printed by the delta report one line above the
+  pass. A fail-open in a hard-fail arm.
+- **The controls those two fixes needed, and the mutations that prove them (#136/#137).**
+  A rejection probe with no accepts-the-ordinary-case half is satisfied by a guard that
+  refuses everything, and a fixture that silently does nothing reports green while
+  testing nothing — so seven more cases, each mutation-checked against the shape it
+  guards. Two are worth naming because the fix created them. Stripping the CR makes a
+  CRLF header reach `caps.sh`'s whole-line literal for the **first** time, so #126's
+  collision fix became newly reachable and needed its own control (revert that literal to
+  the prefix glob → red). And the reconcile strip's PLACEMENT is now pinned, not merely
+  stated: moving it into `row_is_conformant` leaves the restore assertion green while the
+  row carries its `\r` through into `VERDICTS.md`, where it re-breaks every reader that
+  does not strip — including the two just fixed.
+- **The merge-tree tally said SEVEN/SIX; the classifier has EIGHT/SEVEN.** `397d6d3`
+  split rc 129 out of the catch-all — adding a branch — and updated the prose two lines
+  above the table but not the table row, the file header, or the arm-5 back-reference.
+  Counted at HEAD: 7 `if/elif/else`, 7 `die`, plus the accept. Corrected in all five
+  places, and the superseded plan doc now says to count the arms rather than trust a
+  number. No pin: the drift cost is a wrong comment, not a wrong gate, and the arms are
+  the enumeration.
+- **`base-gate.sh` names an unwritable `TMPDIR` instead of blaming the fetch (#135).**
+  All 13 `mktemp` calls were unchecked, so a failure left the variable empty, the
+  redirection failed, and the classifier read `$?` as 1 with no tree sha — the
+  rc-1-no-sha branch. Measured as uid 1000 against a `0500` TMPDIR, the run emitted a
+  raw bash error (`line 184: : No such file or directory`) and then told the operator
+  the repository was incomplete and to fetch both sides in full. The fetch was fine.
+  `rc` was already 2, so the fix is not the polarity but the cause it names. One `_mk`
+  helper now carries the refusal; each call site pairs with `|| exit 2`, because
+  `X="$(_mk …)"` runs in a subshell where a `die` would exit only that shell.
+- **The shell suite names what it skipped (#134, reporting half).** A skip here is a
+  property the executor cannot exhibit — root bypasses the write bit, so every
+  `chmod` refusal case is unexhibitable as uid 0. That is unavoidable; a run reporting
+  "998 cases, slack 0" while 14 properties went untested is not. The summary now
+  prints a roster of the skipped titles below the marker line. The non-root CI parity
+  job, #134's other option, is not done here.
+- **Two rc-classifier fixtures stop depending on root (#130).** Git writes loose
+  objects `0444`; root bypasses that bit and an ordinary user does not, so the
+  corrupt-object fixture silently did nothing on every non-root runner and the branch
+  it tests never fired. It now chmods first and asserts its own precondition. The
+  empty-merged-tree fixture no longer deletes an object at all — it builds the empty
+  result from ordinary plumbing, which is version-stable and makes the guard genuinely
+  load-bearing. See #134 for the structural gap that let both ship green.
+
 ## [0.11.12] - 2026-09-07
 
 - **The charter's cap table now has something behind it (#107).**

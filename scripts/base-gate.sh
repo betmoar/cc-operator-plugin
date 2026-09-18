@@ -15,6 +15,13 @@
 #
 # What it can and cannot catch — known boundaries, on purpose:
 #   CATCHES (hard red):
+#     - THE SUBJECT is the tree a MERGE would produce, not the PR head — so a
+#       PR that is merely BEHIND the base is not reported as deleting what
+#       the base added (#130). Conflict, unreadable object, corrupt
+#       repository, empty merge result, an unrecognised merge-tree output
+#       shape (rc 0 with no tree sha), an old git with no --write-tree, and any
+#       exit status this gate does not recognise are SEVEN distinct rc-2
+#       refusals; none of them is a weakening.
 #     - a floor LOWERED, REMOVED, or hidden behind a DUPLICATE key (the file
 #       is sourced, so the last assignment is the effective one), or a
 #       floors.env line of ANY shape other than `FLOOR_<name>=<digits>` (the
@@ -59,6 +66,25 @@ _TMPDIR_T="${TMPDIR:-/tmp}"
 die() { echo "base-gate: $1" >&2; exit 2; }
 fail() { FAILS=$((FAILS + 1)); echo "BASE_GATE_FAILED: $1" >&2; }
 
+# _mk <label> -> a temp file, or a rc-2 refusal NAMING THE REAL CAUSE (#135).
+# Every mktemp here was unchecked. On failure -- a full or read-only TMPDIR, a
+# restrictive runner sandbox -- the variable stayed EMPTY, the redirection that
+# followed failed, and the classifier read `$?` as 1 with no tree sha: the
+# rc-1-no-sha branch, whose message tells the operator to go fix a truncated
+# fetch. The fetch is fine. That is the same two-causes-one-message defect the
+# rc-128 branch was split out to remove, one layer down.
+#
+# THE SUBSHELL IS THE WHOLE TRAP. `X="$(_mk foo)"` runs _mk in a SUBSHELL, so a
+# `die` in here exits THAT shell, not the script -- the parent would sail on
+# with X empty, which is the very bug being fixed. The status does propagate to
+# the assignment, so every call site pairs with `|| exit 2` and the message
+# below has already reached stderr. Do not "simplify" that away.
+_mk() {
+  mktemp "${_TMPDIR_T}/basegate.${1}.XXXXXX" 2>/dev/null && return 0
+  echo "base-gate: could not create a temp file under '${_TMPDIR_T}' — this gate needs a writable TMPDIR. This is NOT a repository problem and must not be read as one: no fetch, no object and no merge result is implicated" >&2
+  exit 2
+}
+
 # --- args ---------------------------------------------------------------------
 BASE_REF="origin/main"
 PR_REF="HEAD"
@@ -87,7 +113,7 @@ CORE_GLOBS="tests/ .github/workflows/ .forgejo/workflows/"
 # rung arm below asks each one by name at both refs. A forge whose file is
 # absent at the BASE is not configured and makes no claim; absent at the PR
 # ref while present at the base is the file deleted.
-CI_FILES=".github/workflows/validate.yml .forgejo/workflows/validate.yml"
+CI_FILES=".github/workflows/validate.yml .forgejo/workflows/validate.yml .github/workflows/base-gate.yml .forgejo/workflows/base-gate.yml"
 
 is_core_path() {  # is_core_path <path> → 0 when the path is enforcer core
   local p="$1" f g
@@ -125,9 +151,106 @@ git -C "$REPO" rev-parse --verify --quiet "${BASE_REF}^{commit}" >/dev/null 2>&1
   || die "base ref '${BASE_REF}' does not resolve in '$REPO' — refusing to fall back to any other copy (fail closed)"
 PR_SHA="$(git -C "$REPO" rev-parse --verify --quiet "${PR_REF}^{commit}" 2>/dev/null)" \
   || die "pr ref '${PR_REF}' does not resolve in '$REPO' — nothing to gate"
-BASE_SHA="$(git -C "$REPO" rev-parse --quiet --verify "${BASE_REF}^{commit}")"
+# CHECKED, though the verify above already passed: this is a SECOND call, so a
+# ref deleted or repacked in between yields an empty BASE_SHA that every arm
+# below would then compare against. Cheap to guard, silent if not (#137).
+BASE_SHA="$(git -C "$REPO" rev-parse --quiet --verify "${BASE_REF}^{commit}")" \
+  || die "base ref '${BASE_REF}' stopped resolving between the two rev-parse calls — refusing rather than gating against an empty sha"
+[ -n "$BASE_SHA" ] \
+  || die "base ref '${BASE_REF}' resolved to an EMPTY sha — refusing (every arm below would compare against nothing)"
 
-echo "== base-gate: trusted base ${BASE_SHA:0:12} vs pr ${PR_SHA:0:12} =="
+# --- the SUBJECT: the tree a MERGE would produce (#130) -----------------------
+# Arms 1, 2, 3 and 3b ask "does the RESULT weaken the base". Comparing the two
+# sides as commits answers a different question, and answers it wrongly in the
+# ordinary case: this repo raises a floor and adds a tests/ file in nearly
+# every PR, so any branch that has not rebased since is reported as LOWERING
+# that floor and DELETING that file. Measured 2026-09-16 against d9ed4cd: a PR
+# whose only change was one line of README produced two BASE_GATE_FAILED lines
+# and rc 1, while the merge result contained neither weakening.
+#
+# `merge-tree --write-tree` (git >= 2.38; the runner has 2.55) produces that
+# tree with NO checkout and NO worktree, so the trusted-subject property is
+# untouched: PR bytes are still never on disk and never executed.
+#
+# EIGHT OUTCOMES — ONE accept and SEVEN refusals — and rc alone does not
+# separate them. THE COUNT HAS BEEN WRONG TWICE, both times for the same
+# reason: the prose was updated to the tally that was true BEFORE the same
+# commit changed the branch structure. It read six/five until the rc-0 arm was
+# seen to SPLIT into accept and empty-tree-refuse (seven/six), and seven/six
+# until 397d6d3 split the catch-all into rc 129 and everything-else — which is
+# the eighth. Count the branches, do not trust this comment: at HEAD there are
+# 7 top-level if/elif/else arms plus the nested empty-tree die inside the
+# first. Nothing pins this number, which is why it survived twice (#132
+# review),
+# AMENDED after the first cut folded two of these wrong — R2 in
+# docs/dev/2026-09-16-base-gate-subject-spec.md):
+#   rc 0 + a sha + a NON-EMPTY tree -> clean merge, this is the subject
+#   rc 0 + a sha + an EMPTY tree    -> the PR's root tree object is ABSENT;
+#                                      the base always carries files, so a
+#                                      clean merge whose result is empty
+#                                      cannot be a legitimate PR
+#   rc 0 + no sha                   -> an output shape this gate does not
+#                                      understand
+#   rc 1 + a sha                    -> a real CONFLICT (the stages follow
+#                                      the tree)
+#   rc 1 + no sha                   -> an object could not be READ, which is
+#                                      what a truncated shallow fetch looks
+#                                      like — the same shape that silently
+#                                      disarmed the marker arm in #125. It
+#                                      must never read as a conflict. Kept
+#                                      though no construction here reaches it.
+#   rc 128                          -> a FATAL git error: the repository is
+#                                      incomplete or an object is unreadable
+#                                      (a truncated or shallow fetch). This is
+#                                      NOT an old git and NOT a conflict — the
+#                                      shape that bit the #125 marker arm.
+#   rc 129                          -> --write-tree unavailable (old git)
+#   any OTHER rc                    -> an exit status this gate does not
+#                                      recognise. NOT folded into the old-git
+#                                      message: a killed process or a future
+#                                      git's new code is neither (#132 review)
+# Every non-clean case is a rc 2 refusal: the gate says it cannot judge,
+# never that the PR weakens anything. A conflicted PR cannot be merged by
+# GitHub either way, so refusing to judge it costs nothing and claims nothing.
+_is_sha() {  # _is_sha <string> → 0 when it is 40 or 64 lowercase hex chars
+  case "${1:-}" in "" | *[!0-9a-f]*) return 1 ;; esac
+  [ "${#1}" -eq 40 ] || [ "${#1}" -eq 64 ]
+}
+_MT_OUT="$(_mk mt)" || exit 2
+git -C "$REPO" merge-tree --write-tree "$BASE_SHA" "$PR_SHA" > "$_MT_OUT" 2>/dev/null
+_MT_RC=$?
+PR_TREE="$(head -1 "$_MT_OUT" 2>/dev/null)"
+rm -f "$_MT_OUT"
+if [ "$_MT_RC" -eq 0 ] && _is_sha "$PR_TREE"; then
+  # A CLEAN merge whose result is EMPTY is not a clean merge — the base
+  # always carries files, so an empty result means an input was incomplete.
+  # Measured 2026-09-16: deleting the PR commit's root tree object yields
+  # rc 0 and git's empty tree, which every arm then reads as "every
+  # enforcer file is gone".
+  if [ -z "$(git -C "$REPO" ls-tree "$PR_TREE" 2>/dev/null | head -1)" ]; then
+    die "the merge of ${BASE_SHA:0:12} and ${PR_SHA:0:12} produced an empty tree — the base carries files, so this means the repository is incomplete (a missing tree object takes exactly this shape), not that the PR deleted everything. Refusing rather than reporting every enforcer file as GONE"
+  fi
+elif [ "$_MT_RC" -eq 0 ]; then
+  die "merge-tree reported success but printed no tree object — an output shape this gate does not understand; refusing rather than guessing at a subject"
+elif [ "$_MT_RC" -eq 1 ] && _is_sha "$PR_TREE"; then
+  die "the pr ref '${PR_REF}' conflicts with the base ref '${BASE_REF}' — there is no merge result to judge, so this gate refuses rather than reporting a weakening it cannot see. Rebase or merge the base into the PR and re-run"
+elif [ "$_MT_RC" -eq 1 ]; then
+  die "merge-tree could not read an object for ${BASE_SHA:0:12}..${PR_SHA:0:12} — the repository is incomplete (a truncated or shallow fetch takes exactly this shape). This is NOT a conflict and must not be read as one; fetch both sides in full"
+elif [ "$_MT_RC" -eq 128 ]; then
+  die "git reported a fatal error (128) merging ${BASE_SHA:0:12} and ${PR_SHA:0:12} — the repository is incomplete or an object is unreadable, which is what a truncated or shallow fetch leaves behind. This is NOT an old git and NOT a conflict; fetch both sides in full"
+elif [ "$_MT_RC" -eq 129 ]; then
+  die "git merge-tree --write-tree exited 129 — the option is unavailable on this runner (it needs git >= 2.38). Refusing: falling back to comparing the PR head is the defect this subject exists to remove"
+else
+  # ANY OTHER STATUS IS NOT AN OLD GIT. The catch-all used to say "needs git
+  # >= 2.38" for every rc it did not recognise — a killed process (130, 137),
+  # a future git's new failure code, anything — which is the same
+  # two-causes-one-message defect the rc-128 branch above was split out to
+  # remove (PR #132 review). 129 is the documented old-option status and it
+  # keeps that message; everything else says only what is known.
+  die "git merge-tree --write-tree exited ${_MT_RC} — an exit status this gate does not recognise (129 is the old-git case; 1 and 128 are handled above). Refusing rather than guessing at a cause: falling back to comparing the PR head is the defect this subject exists to remove"
+fi
+
+echo "== base-gate: trusted base ${BASE_SHA:0:12} vs pr ${PR_SHA:0:12} (merged tree ${PR_TREE:0:12}) =="
 
 # --- base copy readable (fail closed BEFORE anything compares) ----------------
 # The half the sibling incident turned green: if the trusted copy cannot be
@@ -140,13 +263,24 @@ git -C "$REPO" show "${BASE_SHA}:scripts/validate_plugin.py" 2>/dev/null | grep 
   || die "no CHECKS registry at the base ref — the trusted copy is not a shape this gate understands (fail closed)"
 
 # --- change list (the PR's own view of what it touched) -----------------------
-# Changed = diff base..pr. This includes files the PR DELETED (state D) — a
+# Changed = diff base...pr (THREE dots — merge-base..pr, the PR's own commits
+# since it branched). This includes files the PR DELETED (state D) — a
 # deleted enforcer file is the loudest possible delta and must be reported.
-CHANGED_TMP="$(mktemp "${_TMPDIR_T}/basegate.changed.XXXXXX")"
-DIFFSTAT_TMP="$(mktemp "${_TMPDIR_T}/basegate.diffstat.XXXXXX")"
+# TWO dots would compare the two TREES, which attributes the BASE's own work
+# to the PR: this repo raises a floor and adds a tests/ file in nearly every
+# PR, so a two-dot diff against an unrebased branch reports the base's raise
+# as the PR LOWERING it and the base's new file as the PR DELETING it — the
+# same false-authorship defect arms 1-3b were just fixed for (#130), one
+# level up, in the only human-facing half, and now the ONLY signal on such a
+# PR because the arms correctly stay silent. Measured 2026-09-16 on the
+# `innocent`/`moved` fixture: two-dot named `M tests/floors.env` and
+# `D tests/test-two.sh` (both the base's own commits); three-dot named
+# neither.
+CHANGED_TMP="$(_mk changed)" || exit 2
+DIFFSTAT_TMP="$(_mk diffstat)" || exit 2
 trap 'rm -f "$CHANGED_TMP" "$DIFFSTAT_TMP"' EXIT
-if ! git -C "$REPO" diff --name-status "${BASE_SHA}" "${PR_SHA}" -- > "$DIFFSTAT_TMP" 2>/dev/null; then
-  die "git diff base..pr failed — refusing (a diff failure must not read as 'no changes')"
+if ! git -C "$REPO" diff --name-status "${BASE_SHA}...${PR_SHA}" -- > "$DIFFSTAT_TMP" 2>/dev/null; then
+  die "git diff base...pr failed — refusing (a diff failure must not read as 'no changes')"
 fi
 # name-status: one "<status>\t<path>" per line. Strip the rename/copy dest
 # (second tab field) — the DEST is the path that exists on the PR side.
@@ -161,10 +295,10 @@ extract_floors() {  # extract_floors <sha> <out-file>
   git -C "$REPO" show "${1}:tests/floors.env" 2>/dev/null \
     | grep -E '^FLOOR_[A-Za-z0-9_]+=[0-9]+' > "$2"
 }
-BASE_FLOORS="$(mktemp "${_TMPDIR_T}/basegate.bf.XXXXXX")"
-PR_FLOORS="$(mktemp "${_TMPDIR_T}/basegate.pf.XXXXXX")"
+BASE_FLOORS="$(_mk bf)" || exit 2
+PR_FLOORS="$(_mk pf)" || exit 2
 extract_floors "$BASE_SHA" "$BASE_FLOORS"
-extract_floors "$PR_SHA" "$PR_FLOORS"
+extract_floors "$PR_TREE" "$PR_FLOORS"
 # THE SHAPE IS CLOSED, NOT THE INSTANCES. gate-suite.sh SOURCES this file, so
 # every line it carries is executed, and a line the value-compare below cannot
 # parse is a line the runtime still obeys. Three bypasses of that compare, all
@@ -178,18 +312,18 @@ extract_floors "$PR_SHA" "$PR_FLOORS"
 # Deliberately strict: a legitimately indented or `export`ed assignment is
 # refused too, and the fix is to write it in the one shape (floors.env is
 # four lines of that shape under a comment header, by design).
-_PR_FLOORS_RAW="$(mktemp "${_TMPDIR_T}/basegate.praw.XXXXXX")"
-if git -C "$REPO" show "${PR_SHA}:tests/floors.env" > "$_PR_FLOORS_RAW" 2>/dev/null; then
+_PR_FLOORS_RAW="$(_mk praw)" || exit 2
+if git -C "$REPO" show "${PR_TREE}:tests/floors.env" > "$_PR_FLOORS_RAW" 2>/dev/null; then
   _bad_line="$(grep -vE '^[[:space:]]*(#|$)' "$_PR_FLOORS_RAW" \
                | grep -vE '^FLOOR_[A-Za-z0-9_]+=[0-9]+$' | head -1)"
   if [ -n "$_bad_line" ]; then
-    fail "FLOOR: tests/floors.env at the PR ref carries a line that is not blank, a comment, or exactly FLOOR_<name>=<digits> — gate-suite.sh sources every line, so a line this gate cannot read is a value it cannot compare (first offender: ${_bad_line})"
+    fail "FLOOR: tests/floors.env in the MERGED TREE carries a line that is not blank, a comment, or exactly FLOOR_<name>=<digits> — gate-suite.sh sources every line, so a line this gate cannot read is a value it cannot compare (first offender: ${_bad_line})"
   fi
 fi
 rm -f "$_PR_FLOORS_RAW"
 # a missing PR floors.env is a deleted ratchet — RED, named
 if [ ! -s "$PR_FLOORS" ] && [ -s "$BASE_FLOORS" ]; then
-  fail "tests/floors.env is gone or empty at the PR ref — the ratchet is deleted"
+  fail "tests/floors.env is gone or empty in the MERGED TREE — the ratchet is deleted"
 elif ! diff -q "$BASE_FLOORS" "$PR_FLOORS" >/dev/null; then
   # some floor line changed: any DECREASE or REMOVAL is red.
   #
@@ -209,11 +343,11 @@ elif ! diff -q "$BASE_FLOORS" "$PR_FLOORS" >/dev/null; then
     _n_decl="$(grep -cE "^${k}=" "$PR_FLOORS")"
     PRV="$(grep -E "^${k}=" "$PR_FLOORS" | tail -1 | grep -oE '[0-9]+$')"
     if [ -z "$PRV" ]; then
-      fail "FLOOR: ${k} removed at the PR ref (base ${v})"
+      fail "FLOOR: ${k} removed in the MERGED TREE (base ${v})"
       continue
     fi
     if [ "$_n_decl" -gt 1 ]; then
-      fail "FLOOR: ${k} is declared ${_n_decl} times at the PR ref — the LAST assignment is the one gate-suite.sh sources, so a restated key hides the value it enforces (effective: ${PRV})"
+      fail "FLOOR: ${k} is declared ${_n_decl} times in the MERGED TREE — the LAST assignment is the one gate-suite.sh sources, so a restated key hides the value it enforces (effective: ${PRV})"
     fi
     if [ "$PRV" -lt "$v" ]; then
       fail "FLOOR: ${k} lowered ${v} -> ${PRV} — deleting cases requires lowering the floor; the trusted copy catches it here"
@@ -237,10 +371,10 @@ extract_checks() {  # extract_checks <sha> → stdout
     | grep -vE '^[[:space:]]*#' \
     | grep -oE 'check_[A-Za-z0-9_]+' | grep -v '^check_$'
 }
-BASE_CHECKS="$(mktemp "${_TMPDIR_T}/basegate.bc.XXXXXX")"
-PR_CHECKS="$(mktemp "${_TMPDIR_T}/basegate.pc.XXXXXX")"
+BASE_CHECKS="$(_mk bc)" || exit 2
+PR_CHECKS="$(_mk pc)" || exit 2
 extract_checks "$BASE_SHA" > "$BASE_CHECKS"
-extract_checks "$PR_SHA" > "$PR_CHECKS"
+extract_checks "$PR_TREE" > "$PR_CHECKS"
 # ONE BINDING. The extractor reads the tuple BLOCK; python runs the LAST
 # assignment. A `CHECKS = (check_x,)` rebound after the full tuple leaves the
 # block intact for the extractor and shrinks the registry that actually runs —
@@ -248,13 +382,13 @@ extract_checks "$PR_SHA" > "$PR_CHECKS"
 # one file over). Counted on the comment-stripped view at column 0, which is
 # where a module-level binding lives; an indented `CHECKS =` inside a function
 # would be a rewrite of the runner, and that is #112's gap, not this arm's.
-_n_checks_bind="$(git -C "$REPO" show "${PR_SHA}:scripts/validate_plugin.py" 2>/dev/null \
+_n_checks_bind="$(git -C "$REPO" show "${PR_TREE}:scripts/validate_plugin.py" 2>/dev/null \
                   | grep -vE '^[[:space:]]*#' | grep -cE '^CHECKS[[:space:]]*=')"
 if [ "${_n_checks_bind:-0}" -gt 1 ]; then
-  fail "CHECKS: the registry is bound ${_n_checks_bind} times at the PR ref — this gate reads the tuple block, python runs the LAST binding, so a rebinding after the tuple hides the registry that actually runs"
+  fail "CHECKS: the registry is bound ${_n_checks_bind} times in the MERGED TREE — this gate reads the tuple block, python runs the LAST binding, so a rebinding after the tuple hides the registry that actually runs"
 fi
 if [ ! -s "$PR_CHECKS" ]; then
-  fail "the CHECKS registry is gone or empty at the PR ref — a validator that runs nothing reports nothing"
+  fail "the CHECKS registry is gone or empty in the MERGED TREE — a validator that runs nothing reports nothing"
 else
   while IFS= read -r c; do
     [ -n "$c" ] || continue
@@ -282,7 +416,7 @@ rm -f "$BASE_CHECKS" "$PR_CHECKS"
 # absent) — which is correct: `check_suite_floors` requires
 # `gate-suite.sh <rung>` at that exact path in every CI file, so moving it IS
 # removing it, whatever git calls the edit.
-CORE_TOUCHED="$(mktemp "${_TMPDIR_T}/basegate.core.XXXXXX")"
+CORE_TOUCHED="$(_mk core)" || exit 2
 : > "$CORE_TOUCHED"
 while IFS='|' read -r st path; do
   [ -n "$path" ] || continue
@@ -296,7 +430,7 @@ done < "$CHANGED_TMP"
 # finding here, not a skip.
 for _f in $CORE_FILES; do
   if [ -n "$(git -C "$REPO" ls-tree -r --name-only "${BASE_SHA}" -- "$_f")" ] \
-     && [ -z "$(git -C "$REPO" ls-tree -r --name-only "${PR_SHA}" -- "$_f")" ]; then
+     && [ -z "$(git -C "$REPO" ls-tree -r --name-only "${PR_TREE}" -- "$_f")" ]; then
     fail "GONE: ${_f} exists at the base and NOT at the pr ref — the gate itself removed (deleted, renamed, or moved: the path is what CI runs)"
   fi
 done
@@ -304,10 +438,18 @@ done
 # Every tests/ path present at the base must still be present. Set membership,
 # not a count — a swap (one file deleted, one added) leaves the count equal
 # and the coverage gone.
-_TESTS_BASE="$(mktemp "${_TMPDIR_T}/basegate.tb.XXXXXX")"
-_TESTS_PR="$(mktemp "${_TMPDIR_T}/basegate.tp.XXXXXX")"
-git -C "$REPO" ls-tree -r --name-only "${BASE_SHA}" -- tests/ > "$_TESTS_BASE"
-git -C "$REPO" ls-tree -r --name-only "${PR_SHA}"  -- tests/ > "$_TESTS_PR"
+_TESTS_BASE="$(_mk tb)" || exit 2
+_TESTS_PR="$(_mk tp)" || exit 2
+# BOTH REDIRECTS ARE CHECKED, and the BASE side is the one that matters: the
+# loop below iterates _TESTS_BASE, so an empty file makes it a NO-OP and every
+# tests/ deletion passes silently — a fail-OPEN in a hard-fail arm, which is
+# the one direction this gate may never fail. `ls-tree` exiting non-zero on an
+# unreadable object is not "the base has no tests/"; it is the gate being
+# unable to see, and that is a refusal (#137, PR #132 review).
+git -C "$REPO" ls-tree -r --name-only "${BASE_SHA}" -- tests/ > "$_TESTS_BASE" \
+  || die "could not list tests/ at the base ref — the trusted side is unreadable, and an empty listing here would read as 'the base has no suites' and pass every deletion (fail closed instead)"
+git -C "$REPO" ls-tree -r --name-only "${PR_TREE}"  -- tests/ > "$_TESTS_PR" \
+  || die "could not list tests/ in the merged tree — refusing rather than comparing against a listing that may be truncated"
 while IFS= read -r _t; do
   [ -n "$_t" ] || continue
   grep -qxF "$_t" "$_TESTS_PR" \
@@ -333,12 +475,12 @@ _ci_rungs() {  # _ci_rungs <sha> <file> → the rung tokens run, one per line
 }
 for _ci in $CI_FILES; do
   [ -n "$(git -C "$REPO" ls-tree -r --name-only "${BASE_SHA}" -- "$_ci")" ] || continue
-  if [ -z "$(git -C "$REPO" ls-tree -r --name-only "${PR_SHA}" -- "$_ci")" ]; then
+  if [ -z "$(git -C "$REPO" ls-tree -r --name-only "${PR_TREE}" -- "$_ci")" ]; then
     fail "GONE: ${_ci} exists at the base and NOT at the pr ref — the CI file is what runs the rungs"
     continue
   fi
-  _RUNGS_PR="$(mktemp "${_TMPDIR_T}/basegate.rungs.XXXXXX")"
-  _ci_rungs "$PR_SHA" "$_ci" > "$_RUNGS_PR"
+  _RUNGS_PR="$(_mk rungs)" || exit 2
+  _ci_rungs "$PR_TREE" "$_ci" > "$_RUNGS_PR"
   while IFS= read -r _r; do
     [ -n "$_r" ] || continue
     grep -qxF "$_r" "$_RUNGS_PR" \
@@ -386,12 +528,45 @@ fi
 # Measured: the first version went red on the very PR that added these
 # cases. The exclusion is narrow on purpose — a marker planted anywhere a
 # human reads CI output as evidence (source, docs, workflows) is still red.
-_MARKER_DIFF="$(mktemp "${_TMPDIR_T}/basegate.marker.XXXXXX")"
-if ! git -C "$REPO" diff "${BASE_SHA}" "${PR_SHA}" \
+# NOT three dots, unlike the change list above — this arm's subject is the
+# MERGED TREE, same as arm 1 (which already reads BASE_SHA and PR_TREE
+# directly, never a diff of PR_SHA). `merge-base..pr` (three-dot) answers
+# "what did the PR's own commits add since it forked", which is right for
+# arm 4's human-facing authorship report but is the wrong question for a
+# hard-fail arm, which must ask what the tree a merge would actually produce
+# carries — not what the PR's own diff happens to show.
+#
+# The re-review's motivating shape: a line present at the merge base,
+# removed by a LATER base commit, retained unmodified by a PR that forked
+# before the removal — reaches the merge result without ever being an
+# addition on the PR's own side, so three-dot cannot show it as `+`.
+# MEASURED against real `git merge-tree` (fixture in tests/test-scripts.sh),
+# though: when the PR does not otherwise touch that hunk, the base's
+# deletion wins the merge outright and the line is simply ABSENT from
+# PR_TREE — so this exact shape is not a live escape under EITHER diff form,
+# and three-dot's silence on it is correct, not a gap. When the PR's own
+# edit instead collides with the same hunk, `git merge-tree` reports a
+# CONFLICT and this script already refuses the run before arm 5 runs at all
+# (see the eight merge-tree outcomes above) — so that path never reaches this
+# arm either, on any diff form.
+#
+# The form is kept anyway, for a property that IS real and IS reachable: the
+# ORIGINAL two-dot form this arm never used — `git diff "$BASE_SHA"
+# "$PR_SHA"`, base tip against the raw PR head, no merge-tree involved — is
+# the false-authorship shape from the paragraph above, LIVE: on the same
+# fixture (base removes the line, PR never touches it), that raw comparison
+# reports `+BASE_GATE_PASSED: forged` even though PR_TREE never carries it
+# (measured on the same fixture: three-dot and base-vs-PR_TREE both stay
+# silent; base-vs-raw-PR_SHA alone fires). Diffing the base tip against
+# PR_TREE — the merge result, not the unmerged PR head — keeps that
+# false-positive closed while staying literally two dots against the same
+# subject every other arm reads.
+_MARKER_DIFF="$(_mk marker)" || exit 2
+if ! git -C "$REPO" diff "${BASE_SHA}" "${PR_TREE}" \
        -- . ':(exclude)tests/' ':(exclude)scripts/base-gate.sh' \
        > "$_MARKER_DIFF" 2>/dev/null; then
   rm -f "$_MARKER_DIFF"
-  die "git diff base..pr (full content) failed — refusing (a diff failure must not read as 'no forged marker')"
+  die "git diff base vs merged tree (full content) failed — refusing (a diff failure must not read as 'no forged marker')"
 fi
 # The EMITTED SHAPE, not the bare token: a marker line is
 # `BASE_GATE_PASSED: <text>` at the start of an output line. Matching the
