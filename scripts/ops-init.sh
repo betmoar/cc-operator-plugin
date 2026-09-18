@@ -147,16 +147,47 @@ else
   # migration step — and is also why it must be IDEMPOTENT: an unconditional
   # append grows the file on every session, and a rule repeated forty times
   # still works, so nothing would ever report it.
+  # TERMINATE THE LAST LINE FIRST. `>>` appends at the byte offset the file
+  # ends at, so an existing .gitattributes with no trailing newline FUSES its
+  # last rule with the first appended one: measured, a file containing exactly
+  # `VERDICTS.md merge=union` (no newline) became
+  # `VERDICTS.md merge=unionVERDICTS.md text eol=lf`. git accepts that silently
+  # as an attribute nobody wrote, and the ORIGINAL merge=union rule is gone —
+  # so the upgrade would destroy the very rule it was meant to sit beside.
+  # An editor that strips the final newline is ordinary, not exotic.
+  if [ -s "$OPDIR/.gitattributes" ] \
+     && [ -n "$(tail -c 1 "$OPDIR/.gitattributes")" ]; then
+    # `$( )` strips trailing newlines, so non-empty output means the last byte
+    # is NOT one — the portable spelling of "does this file end in a newline".
+    printf '\n' >> "$OPDIR/.gitattributes" || true
+  fi
   _ga_added=0
+  _ga_failed=0
   for _ga_path in 'VERDICTS.md' 'DECISIONS.md' 'verdicts.d/*.md'; do
-    # -F: `verdicts.d/*.md` is a literal here, not a pattern.
-    grep -qF "${_ga_path} text eol=lf" "$OPDIR/.gitattributes" && continue
-    printf '%s text eol=lf\n' "$_ga_path" >> "$OPDIR/.gitattributes" || {
-      echo "ops-init: WARNING — could not append the eol=lf rule for ${_ga_path} to $OPDIR/.gitattributes (read-only?). Ledgers may still be checked out CRLF on a core.autocrlf=true clone; the readers strip a trailing CR either way (#136)." >&2
-      break
+    # LINE-ANCHORED, not a bare substring. `grep -qF "<path> text eol=lf"` also
+    # matches the rule inside a COMMENT or as the tail of a longer path, and
+    # either one suppresses the append forever: measured, a file carrying
+    # `# VERDICTS.md text eol=lf disabled by the project` kept
+    # `git check-attr text eol -- .operator/VERDICTS.md` at `unspecified` while
+    # ops-init reported success, and `sub/VERDICTS.md text eol=lf` did the same.
+    # -x with the exact line is what "is this rule present" actually means.
+    # -F still, because `verdicts.d/*.md` is a literal here, not a pattern.
+    grep -qxF "${_ga_path} text eol=lf" "$OPDIR/.gitattributes" && continue
+    # REDIRECT SUPPRESSED, then reported in our own words. A bare `>>` on an
+    # unwritable file prints bash's own `line 168: …: Permission denied`
+    # BEFORE the warning below — the "raw bash error as operator guidance"
+    # landmine this file already observes everywhere else (see _gi_write).
+    { printf '%s text eol=lf\n' "$_ga_path" >> "$OPDIR/.gitattributes"; } 2>/dev/null || {
+      _ga_failed=$((_ga_failed + 1))
+      continue   # NOT break: each path is independent, and stopping at the
+                 # first failure hid the other two while still printing a
+                 # success line for whatever had already landed.
     }
     _ga_added=$((_ga_added + 1))
   done
+  if [ "$_ga_failed" -gt 0 ]; then
+    echo "ops-init: WARNING — could not append ${_ga_failed} eol=lf rule(s) to $OPDIR/.gitattributes (read-only file or directory?). Ledgers may still be checked out CRLF on a core.autocrlf=true clone; the readers strip a trailing CR either way (#136), so this degrades rather than breaks." >&2
+  fi
   [ "$_ga_added" -eq 0 ] \
     || echo "updated $OPDIR/.gitattributes (+${_ga_added} eol=lf rule(s); existing lines untouched)"
 fi
