@@ -893,6 +893,46 @@ check "#138 gitattributes pins DECISIONS.md to eol=lf" \
   "$(grep -q 'DECISIONS.md text eol=lf' "$P/.operator/.gitattributes" && echo 0 || echo 1)"
 check "#138 gitattributes pins the fragments dir to eol=lf" \
   "$(grep -q 'verdicts.d/\*.md text eol=lf' "$P/.operator/.gitattributes" && echo 0 || echo 1)"
+# THE UPGRADE PATH, which the write above does not cover: the heredoc is guarded
+# by `[ ! -f ]`, so EVERY project scaffolded before #138 keeps its existing
+# .gitattributes and never gains the rule. Measured on this very repo, which has
+# a pre-#138 file: `grep -c 'eol=lf' .operator/.gitattributes` -> 0. A fix that
+# only reaches new projects is not the fix the issue asked for.
+#
+# APPEND-ONLY, and per missing line. The file may be hand-edited (a project can
+# add its own attributes), so rewriting it would destroy work the operator did;
+# the upgrade adds exactly the lines that are absent and leaves everything else
+# byte-identical. ops-init.sh re-runs on every /cc-operator:start, so an existing
+# project picks this up on its next run without a migration step.
+UPG="$(newproj)"
+mkdir -p "$UPG/.operator"
+printf '# hand-edited by the project\nVERDICTS.md merge=union\nDECISIONS.md merge=union\nverdicts.d/*.md merge=union\n*.bin -text\n' > "$UPG/.operator/.gitattributes"
+( cd "$UPG" && bash "$INIT" >/dev/null 2>&1 )
+check "#138 UPGRADE: a pre-existing .gitattributes GAINS the three eol=lf rules" \
+  "$([ "$(grep -c 'text eol=lf' "$UPG/.operator/.gitattributes")" -eq 3 ] && echo 0 || echo 1)"
+check "#138 UPGRADE: the operator's own hand-written lines survive byte-for-byte" \
+  "$(grep -q '^\*\.bin -text$' "$UPG/.operator/.gitattributes" \
+     && grep -q '^# hand-edited by the project$' "$UPG/.operator/.gitattributes" && echo 0 || echo 1)"
+check "#138 UPGRADE: the merge=union rules are not duplicated" \
+  "$([ "$(grep -c 'VERDICTS.md merge=union' "$UPG/.operator/.gitattributes")" -eq 1 ] && echo 0 || echo 1)"
+# IDEMPOTENT. ops-init.sh runs on every /cc-operator:start, so an upgrade that
+# appends unconditionally grows the file without bound — a rule repeated 40
+# times still works, which is exactly why nothing would ever report it.
+( cd "$UPG" && bash "$INIT" >/dev/null 2>&1 )
+( cd "$UPG" && bash "$INIT" >/dev/null 2>&1 )
+check "#138 UPGRADE is IDEMPOTENT: three re-runs leave exactly three eol=lf lines" \
+  "$([ "$(grep -c 'text eol=lf' "$UPG/.operator/.gitattributes")" -eq 3 ] && echo 0 || echo 1)"
+# THE EFFECT of the upgraded file, not just its text — the same discipline the
+# fresh-write case below applies, because a rule appended in the wrong SHAPE
+# (`eol=lf` with no `text`) is inert and greps identically.
+( cd "$UPG" && git init -q . && git config user.email t@e && git config user.name t \
+  && git config core.autocrlf true \
+  && printf '| a | b | c | PASS |\n' >> .operator/VERDICTS.md \
+  && git add -A >/dev/null 2>&1 && git commit -qm base >/dev/null 2>&1 \
+  && rm .operator/VERDICTS.md && git checkout -- .operator/VERDICTS.md ) >/dev/null 2>&1
+check "#138 UPGRADE EFFECT: the upgraded file really stops CRLF on checkout" \
+  "$(! grep -q $'\r' "$UPG/.operator/VERDICTS.md" && echo 0 || echo 1)"
+rm -rf "$UPG"
 # THE EFFECT, not the line. A rule present in the file proves nothing about what
 # git does with it — `eol=lf` without `text` is inert, and a typo'd path matches
 # nothing. So: a real repo, core.autocrlf=true (what every Windows clone gets),

@@ -59,11 +59,16 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ### Notes
 
-- `FLOOR_shell` 1013 → 1033. Twenty cases; six mutations, each red in the case written
+- `FLOOR_shell` 1013 → 1038. Twenty-five cases; nine mutations, each red in the case written
   for it (M5 — the message revert — is why that case exists: it shipped green before).
   `check_guard_parity` gained the `a\rb` probe tuple, red on each of the three CLIs and
   green restored; before it existed, deleting the shipped arm reported `all contracts
-  hold`. Measured macOS uid 501, isolated rung runs; not measured under root.
+  hold`. The five UPGRADE cases came from verifying this PR's own claim rather than from
+  a mutation: reading `.operator/.gitattributes` in this repo returned 0 `eol=lf` lines,
+  because the `[ ! -f ]` guard meant the rule never reached an existing project. Their
+  mutations: drop the `grep -qF` guard → 1 red (idempotence); rewrite instead of append →
+  1 red (hand-edits destroyed); append the inert `eol=lf` shape with no `text` → 2 red.
+  Measured macOS uid 501, isolated rung runs; not measured under root.
 - Filed **#140**: `base-gate.sh` arm 3b repeats #137's fail-open (`_ci_rungs` pipes
   `git show` into grep unchecked and iterates the BASE side). Reproduced end-to-end —
   rung removed, base CI blob unreadable, one unrelated arm-5 pathspec widening →

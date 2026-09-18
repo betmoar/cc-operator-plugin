@@ -133,6 +133,32 @@ verdicts.d/*.md merge=union
 verdicts.d/*.md text eol=lf
 EOF
   echo "created $OPDIR/.gitattributes (append-only merge=union, eol=lf)"
+else
+  # THE UPGRADE PATH. The write above is guarded by `[ ! -f ]`, so without this
+  # branch every project scaffolded before #138 keeps its existing file and
+  # NEVER gains the rule — measured on this plugin's own repo, whose
+  # `.operator/.gitattributes` returned `grep -c 'eol=lf'` -> 0. A fix that
+  # reaches only new projects is not the fix #138 asked for.
+  #
+  # APPEND-ONLY, one line at a time, and never a rewrite: the file may carry
+  # attributes the project added by hand, and clobbering those to deliver an
+  # eol rule trades one silent loss for another. ops-init.sh re-runs on every
+  # /cc-operator:start, which is what carries this to existing projects with no
+  # migration step — and is also why it must be IDEMPOTENT: an unconditional
+  # append grows the file on every session, and a rule repeated forty times
+  # still works, so nothing would ever report it.
+  _ga_added=0
+  for _ga_path in 'VERDICTS.md' 'DECISIONS.md' 'verdicts.d/*.md'; do
+    # -F: `verdicts.d/*.md` is a literal here, not a pattern.
+    grep -qF "${_ga_path} text eol=lf" "$OPDIR/.gitattributes" && continue
+    printf '%s text eol=lf\n' "$_ga_path" >> "$OPDIR/.gitattributes" || {
+      echo "ops-init: WARNING — could not append the eol=lf rule for ${_ga_path} to $OPDIR/.gitattributes (read-only?). Ledgers may still be checked out CRLF on a core.autocrlf=true clone; the readers strip a trailing CR either way (#136)." >&2
+      break
+    }
+    _ga_added=$((_ga_added + 1))
+  done
+  [ "$_ga_added" -eq 0 ] \
+    || echo "updated $OPDIR/.gitattributes (+${_ga_added} eol=lf rule(s); existing lines untouched)"
 fi
 
 if [ ! -f "$OPDIR/VERDICTS.md" ]; then
