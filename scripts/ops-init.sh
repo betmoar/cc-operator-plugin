@@ -104,15 +104,61 @@ fi
 # Per-session fragments (verdicts.d/<owner>.md) let two branches append to two
 # files and merge cleanly; --reconcile restores rows after any messy merge.
 # merge=union needs no user config; scoped to .operator/, never the host root.
+#
+# `text eol=lf` is #138's complement to #136's reader guards, and the ORDER of
+# that sentence matters: it is an ADDITION, never a replacement. Measured on a
+# scratch repo with core.autocrlf=true — the setting every Windows clone gets:
+#   without it, a fresh checkout of a committed ledger yields `| … | PASS |\r\n`
+#   with it,    the same checkout yields `| … | PASS |\n`
+# and, in the same repo, a ledger written CRLF by an EDITOR in the worktree
+# stays CRLF regardless, because gitattributes normalize on checkout and commit,
+# not on third-party writes. So this closes git as a PRODUCER of CRLF ledgers
+# and leaves every reader guard load-bearing.
+#
+# Written per-file rather than as a `*` rule: .operator/ also holds bin/ (the
+# installed CLIs) and pending/ sentinels, and declaring those `text` would
+# invite git to rewrite bytes in files whose whole point is byte-fidelity.
 if [ ! -f "$OPDIR/.gitattributes" ]; then
   cat > "$OPDIR/.gitattributes" <<'EOF'
 # Append-only ledgers: take both sides on merge, never a conflict marker.
 # Re-run `.operator/bin/ops-verdict.sh --reconcile` after any messy merge.
+#
+# eol=lf: git must never hand a reader a CRLF ledger (#138). The readers strip
+# a trailing CR anyway (#136) — this stops the file from arriving that way.
 VERDICTS.md merge=union
+VERDICTS.md text eol=lf
 DECISIONS.md merge=union
+DECISIONS.md text eol=lf
 verdicts.d/*.md merge=union
+verdicts.d/*.md text eol=lf
 EOF
-  echo "created $OPDIR/.gitattributes (append-only merge=union)"
+  echo "created $OPDIR/.gitattributes (append-only merge=union, eol=lf)"
+else
+  # THE UPGRADE PATH. The write above is guarded by `[ ! -f ]`, so without this
+  # branch every project scaffolded before #138 keeps its existing file and
+  # NEVER gains the rule — measured on this plugin's own repo, whose
+  # `.operator/.gitattributes` returned `grep -c 'eol=lf'` -> 0. A fix that
+  # reaches only new projects is not the fix #138 asked for.
+  #
+  # APPEND-ONLY, one line at a time, and never a rewrite: the file may carry
+  # attributes the project added by hand, and clobbering those to deliver an
+  # eol rule trades one silent loss for another. ops-init.sh re-runs on every
+  # /cc-operator:start, which is what carries this to existing projects with no
+  # migration step — and is also why it must be IDEMPOTENT: an unconditional
+  # append grows the file on every session, and a rule repeated forty times
+  # still works, so nothing would ever report it.
+  _ga_added=0
+  for _ga_path in 'VERDICTS.md' 'DECISIONS.md' 'verdicts.d/*.md'; do
+    # -F: `verdicts.d/*.md` is a literal here, not a pattern.
+    grep -qF "${_ga_path} text eol=lf" "$OPDIR/.gitattributes" && continue
+    printf '%s text eol=lf\n' "$_ga_path" >> "$OPDIR/.gitattributes" || {
+      echo "ops-init: WARNING — could not append the eol=lf rule for ${_ga_path} to $OPDIR/.gitattributes (read-only?). Ledgers may still be checked out CRLF on a core.autocrlf=true clone; the readers strip a trailing CR either way (#136)." >&2
+      break
+    }
+    _ga_added=$((_ga_added + 1))
+  done
+  [ "$_ga_added" -eq 0 ] \
+    || echo "updated $OPDIR/.gitattributes (+${_ga_added} eol=lf rule(s); existing lines untouched)"
 fi
 
 if [ ! -f "$OPDIR/VERDICTS.md" ]; then

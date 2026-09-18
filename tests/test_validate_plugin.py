@@ -268,12 +268,21 @@ F136_DUPLOOP = ("for _dup in \"$OPDIR/pending\"/*__\"$ID\"; do\n"
 # fixture was under-built, not the tree (the same fixture lesson the 0.11.6
 # audit hit when check_claims started executing matches_protected). Keep this
 # in sync with scripts/ops-task.sh's copy: it must REFUSE `/`, a leading dot,
-# `|`, a newline and `__`, and accept an ordinary id.
+# `|`, a newline, a CR and `__`, and accept an ordinary id.
+#
+# The CR arm arrived with #139 and this fixture is why the lesson above repeats:
+# adding the `a\rb` probe tuple to check_guard_parity turned the good-tree
+# control RED, because the stub had every arm the OLD table probed and not the
+# new one. That is the fixture being under-built, not the tree — the shipped
+# CLIs all carry the arm. A fixture edited only to go green is how a check gets
+# disabled with every gate passing (F30); a fixture that must GAIN an arm when
+# the guard does is the same coupling working correctly.
 GUARDS = (
     "check_bare_name() { case \"$2\" in\n"
     "    */*) die x ;;\n"
     "    .*) die x ;;\n"
     "    *\"|\"* | *\"$NL\"*) die x ;;\n"
+    "    *$'\\r'*) die x ;;\n"
     "    *__*) die x ;;\n"
     "  esac; }\n"
     "check_owner_name() { check_bare_name owner \"$1\"\n"
@@ -3429,11 +3438,17 @@ class GuardParityVacuityTest(unittest.TestCase):
         src = p.read_text(encoding="utf-8")
         body = re.search(r"check_bare_name\(\) \{.*?\n\}", src, re.S)
         self.assertIsNotNone(body)
+        # EVERY arm the shipped guard carries, reordered and reflowed — that is
+        # the whole claim. Dropping one here would not test reflow, it would
+        # test deletion, and the probe SHOULD fire on that (it did when #139's
+        # CR arm landed in the CLIs and this control still spelled four arms).
         reflowed = (
             'check_bare_name() { # reflowed: same arms, different order\n'
             '  case "$2" in\n'
             '    *__*)\n'
             '      die "$1 must not contain \'__\'" ;;\n'
+            '    *$\'\\r\'*)\n'
+            '      die "$1 must not contain a carriage return" ;;\n'
             '    *"|"* | *"$NL"*)\n'
             '      die "$1 must not contain a pipe or newline" ;;\n'
             '    .*)\n'

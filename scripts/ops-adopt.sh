@@ -307,6 +307,7 @@ check_bare_name() { # check_bare_name <label> <value>
     */*) die "$1 must be a bare name (no '/')" ;;
     .*) die "$1 must not start with '.' — a dotfile sentinel is invisible to the Stop hook's glob" ;;
     *"|"* | *"$NL"*) die "$1 must not contain '|' or newlines" ;;
+    *$'\r'*) die "$1 must not contain a carriage return — ops-verdict.sh refuses one too, so re-stamping a sentinel to this name would make it unclosable by every path (#139)" ;;
     *__*) die "$1 must not contain '__' (it separates owner from task in the sentinel name)" ;;
   esac
 }

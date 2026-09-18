@@ -1382,3 +1382,85 @@ directory permission, not file permission, so root and non-root behave alike (#1
 lesson, applied). A packed object cannot be removed, so the fixture asserts its own
 precondition and skips with a named reason instead of passing against a repo it never
 broke.
+
+## A writer guard and its reader bucket are ONE decision (0.11.14, #139)
+
+`check_cell` in `ops-verdict.sh` refused `|` and newline and admitted `\r`, so a caller
+passing one landed it INSIDE a cell in the ledger of record. Measured, and byte-identical
+on `origin/main`, so it predates #136:
+
+```
+$ ops-verdict.sh T1 "$(printf 'cr\rit')" ev PASS --owner S1
+recorded T1 = PASS
+$ od -c .operator/VERDICTS.md | tail -2
+| T1 | c r \r i t | ev @no-commit | PASS |\n
+```
+
+#136 taught three row parsers to strip a TRAILING CR. That is the right fix for a CRLF
+checkout and says nothing about a CR in the middle, which reaches every consumer: the Stop
+hook's `sanitize_row` renders it `?`, and `ops-reverify.sh`, which has no sanitizer, emits
+the raw byte into its report. Refusing at the writer is what keeps it out.
+
+**The arm could not stop at the cells, and could not be added to one CLI.** `check_cell`
+is called by `check_bare_name`, so the arm also reaches the task-id — and that is the
+half that makes it safe rather than the half that makes it dangerous. Measured on a
+patched `.operator/bin/` copy, with the arm in `ops-verdict.sh` alone:
+
+```
+ops-task.sh    (unpatched) opens ta\rsk   -> sentinel S1__ta\rsk, rc 0
+ops-verdict.sh (patched)   close          -> "task-id contains a CR", sentinel intact
+ops-verdict.sh (patched)   --defer        -> same refusal, sentinel intact
+Stop hook                                  -> rc 2, blocking, forever
+```
+
+An opener admitting what the closer refuses does not produce a stricter gate; it produces
+an unclosable task. So all three writers (`ops-task.sh`, `ops-verdict.sh`, `ops-adopt.sh`)
+carry the arm, and `check_guard_parity`'s executing probe table carries the `a\rb` tuple
+that proves each one still dies on it.
+
+**And the sentinel already on disk is the reader's problem.** A name our CLIs can no
+longer address is F118/F135's class exactly, so a CR in the TASK half joins the MALFORMED
+bucket in `scan_pending` with the same `rm -f` remedy. Keyed on `$id`, not `$name`: the
+bucket keyed on the whole name turned 28 cases red, because a CR in the OWNER half is a
+different thing — `sentinel_owner_of_name` already degrades it to unowned (its
+`*[[:space:]]*` arm matches a CR; verified in bash 3.2 and 5), which fails CLOSED as MINE
+while the task half stays addressable and closable. Bucketing that would destroy a task
+the operator could have closed honestly.
+
+**The message is part of the fix, and nothing saw it.** With the bucket arm in place and
+the Stop hook's message reverted to its pre-#139 wording — naming only `__` and empty ids
+— the whole suite shipped GREEN. A CR is invisible in a terminal, so a message listing
+causes that do not include it sends the operator hunting for a separator that is not
+there. The enumeration is now pinned by its own case. This is the same
+message-drifts-from-code shape #99 exists to prevent, one file over: there the
+disagreement was between the bar and the gate, here between the gate and its own remedy.
+
+Mutations, each red in the case written for it, run in an isolated clone (parallel
+mutate/restore cycles corrupt each other): `check_cell` arm removed 6 red; `ops-task.sh`
+arm removed 1; MALFORMED arm removed 4; bucket keyed on `$name` 28; message reverted 1;
+the arm widened to `*)` 108 (the refuse-everything control). In `check_guard_parity`, the
+`a\rb` tuple goes red on each of the three CLIs and green when restored — and before that
+tuple existed, deleting the shipped arm reported `all contracts hold`.
+
+## `eol=lf` closes git as a producer, not CRLF as a class (0.11.14, #138)
+
+`.operator/.gitattributes` set `merge=union` on the ledgers and no `text`/`eol` attribute,
+so a clone with `core.autocrlf=true` — what every Windows clone gets — checked the ledgers
+out CRLF. Measured on a scratch repo, same fixture both ways:
+
+```
+without the rule:  | a | b | c | PASS |\r\n
+with text eol=lf:  | a | b | c | PASS |\n
+```
+
+And the limit, measured in the same repo immediately after: a ledger written CRLF by an
+EDITOR in the worktree stays CRLF, because gitattributes normalize on checkout and commit,
+not on third-party writes. So this is an ADDITION to #136's reader guards and never a
+replacement — which is why the suite carries the LIMIT as its own case, beside the EFFECT
+one. A rule present in the file proves nothing about what git does with it (`eol=lf`
+without `text` is inert, a typo'd path matches nothing), so the EFFECT case commits a
+ledger under `core.autocrlf=true`, checks it back out, and reads the bytes.
+
+Written per-file rather than as a `*` rule: `.operator/` also holds `bin/` and `pending/`
+sentinels, and declaring those `text` invites git to rewrite bytes in files whose whole
+point is byte-fidelity.

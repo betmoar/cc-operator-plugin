@@ -57,14 +57,23 @@ _ops_cd_project_root || :
 
 NL="$(printf '\nx')"; NL="${NL%x}"
 
-# Bare name: '/' would let a later rm -f escape .operator/; '|'/newline break
+# Bare name: '/' would let a later rm -f escape .operator/; '|'/newline/CR break
 # the 4-cell ledger; a leading dot is invisible to the Stop hook's glob; '__'
 # is the owner/task separator. Keep identical in ops-verdict.sh + ops-adopt.sh.
+#
+# THE CR ARM MUST MATCH ops-verdict.sh's (#139 item 2), and this is the one
+# place the parity is load-bearing rather than tidy: ops-verdict.sh refuses a
+# CR id through check_cell, so an id THIS writer still admitted would open a
+# sentinel that neither the verdict path nor --defer could ever clear
+# (measured: both died with `task-id contains a carriage return`, sentinel
+# intact, Stop blocking forever). The opener and the closer agree about what
+# an id may contain, or the gate wedges.
 check_bare_name() { # check_bare_name <label> <value>
   case "$2" in
     */*) die "$1 must be a bare name (no '/')" ;;
     .*) die "$1 must not start with '.' — a dotfile sentinel is invisible to the Stop hook's glob" ;;
     *"|"* | *"$NL"*) die "$1 must not contain '|' or newlines" ;;
+    *$'\r'*) die "$1 must not contain a carriage return — ops-verdict.sh refuses one too, so a sentinel opened under this id could never be closed by either the verdict path or --defer" ;;
     *__*) die "$1 must not contain '__' (it separates owner from task in the sentinel name)" ;;
   esac
 }
