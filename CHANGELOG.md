@@ -23,11 +23,11 @@ single source of truth; bump it in the same commit as the changelog entry.
 - **Eight merge-tree outcomes, seven distinct refusals (#130).** `rc` alone does not
   separate them; the discriminator is rc, whether stdout line 1 is a sha, and whether
   the tree has entries. A real conflict, an unreadable object, a corrupt repository
-  (rc 128), an empty merge result, an unrecognised output shape, and an unavailable
-  `merge-tree` are now six branches with their own messages. Every one is rc 2 — the
-  gate says it cannot judge, never that the PR weakens anything. The first cut folded
-  rc 128 into "your git is too old", blaming the runner's version for a corrupt
-  repository.
+  (rc 128), an empty merge result, an unrecognised output shape, an old git with no
+  `--write-tree` (rc 129), and any other exit status are seven branches with their own
+  messages. Every one is rc 2 — the gate says it cannot judge, never that the PR weakens
+  anything. The first cut folded rc 128 into "your git is too old", blaming the runner's
+  version for a corrupt repository.
 - **Arm 5 diffs the base against the merged tree (#130).** The anti-wormhole arm no
   longer blames a PR for a marker line the base's own tip already carries. Measured:
   the shape that motivated the change — a marker at the merge base, removed later by

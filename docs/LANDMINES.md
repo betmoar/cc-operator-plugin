@@ -1352,10 +1352,20 @@ returns rc 0. The change-list diff and arm 5's content diff returned rc 0 for th
 reason. Four independent review passes read this code and none found it; one executed
 probe did.
 
-Two bounds, both measured, so the fix stays small. A **single-path** `ls-tree` (`:415`,
-`:416`, `:452`, `:453`) resolves without inflating siblings and is unaffected. `:213`
+Two bounds, both measured, so the fix stays small. A **single-path** `ls-tree` — the four
+calls that pass `-- "$_f"` (the `CORE_FILES` presence loop) or `-- "$_ci"` (the CI-rung
+presence check) — resolves without inflating siblings and is unaffected. The empty-tree
+guard in the merge-tree classifier (`[ -z "$(… ls-tree "$PR_TREE" … | head -1)" ]`)
 already fails closed, because an empty capture makes its `[ -z ]` true and it dies. Only
-the two whole-subtree redirects needed the guard.
+the two whole-subtree redirects, the ones passing `-- tests/`, needed the guard.
+
+Cited by SYMBOL, not by line: the first draft of this paragraph named `:415`, `:416`,
+`:452`, `:453` and `:213`, every one of them stale within two commits — they had been read
+off a pre-merge copy of the file, and at HEAD all five pointed at comment or control-flow
+lines instead of the calls they claimed. Nothing catches that: `check_coupling_case_refs`
+resolves `_"…"_` case-title citations in CLAUDE.md, and has no opinion on a `:NNN` in
+prose. A line number in a narrative file is a citation that rots on the next insertion,
+so cite the code the way a grep would find it.
 
 And the shape of the guard matters: `die` inside `$( )` exits only the **subshell**.
 Measured — `x="$(false || die msg)"` printed the message, left the parent alive and
