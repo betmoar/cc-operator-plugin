@@ -1317,9 +1317,14 @@ Where to strip: immediately after the `read`, before any test that could see the
 is appended to the ledger of record, and a CR carried in there re-breaks every reader
 downstream. In `lib/caps.sh` it sits before the byte accounting, so `bytes` counts the
 row as the parser sees it rather than as the file stores it: a CRLF ledger is charged one
-byte per line less than its on-disk size. Immaterial against a 2 MiB cap
-(~0.002% looser), but the direction is worth knowing rather than assuming — the
-alternative, charging the CR, costs a line of ordering that buys nothing a cap needs.
+byte per line less than its on-disk size, so `CAPS_MAX_BYTES` reads ~1.2% looser there
+(measured on 80-byte rows: the accounted budget trips at 25,890 rows, whose true on-disk
+size is 2,122,980 bytes against a 2,097,152 cap). It cannot matter, and the reason is
+`CAPS_MAX_LINES=20000` — the row bound fires ~5,900 rows earlier than the byte bound on
+any ledger of ordinary rows, so the byte cap is the backstop for pathologically long
+rows, where one byte per line is noise. Worth stating rather than assuming: an earlier
+draft of this paragraph guessed "~0.002%", which is three orders out, and a wrong number
+in a landmine file is the thing this file exists to prevent.
 
 `.operator/.gitattributes` sets `merge=union` on the ledgers and no `text`/`eol`, which
 is how CRLF arrives. Adding `eol=lf` is a complement, never a substitute: gitattributes
