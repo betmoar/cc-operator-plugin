@@ -469,24 +469,62 @@ rm -f "$_TESTS_BASE" "$_TESTS_PR"
 # ref while present at the base is the file deleted (red); present at both,
 # every `gate-suite.sh <rung>` token the base runs must still be run.
 # Comment-stripped on both sides, the shell_code() discipline.
-_ci_rungs() {  # _ci_rungs <sha> <file> → the rung tokens run, one per line
-  git -C "$REPO" show "${1}:${2}" 2>/dev/null \
-    | grep -vE '^[[:space:]]*#' | grep -oE 'gate-suite\.sh [a-z]+' | sort -u
+# EVERY GIT CALL BELOW IS CHECKED, and #140 is the record of why: this arm
+# shipped with the same unchecked-listing fail-open #137 fixed one arm up. It
+# was written in that commit and the fix did not reach it.
+#
+# `git show | grep | grep | sort` CANNOT be checked as a pipeline. `pipefail`
+# reports the last non-zero status, and `grep` exits 1 on no-match, so an
+# unreadable blob and a CI file that legitimately runs no rungs produce the
+# same 1. The blob is staged to a file first, and only THAT status is read.
+#
+# Polarity matches arm 3 exactly: the BASE side is the trusted half, so
+# unreadable there is `die` (rc 2 — the gate cannot see, which is never the
+# same as "the base runs no rungs"); the PR side is `fail` (rc 1), since a
+# PR-side listing we cannot read is a subject we will not clear.
+_ci_show() {  # _ci_show <sha> <file> <dest> → 0 when the blob was READ
+  git -C "$REPO" show "${1}:${2}" > "$3" 2>/dev/null
+}
+_ci_rungs_from() {  # _ci_rungs_from <staged-blob> → the rung tokens, one per line
+  grep -vE '^[[:space:]]*#' "$1" | grep -oE 'gate-suite\.sh [a-z]+' | sort -u
 }
 for _ci in $CI_FILES; do
-  [ -n "$(git -C "$REPO" ls-tree -r --name-only "${BASE_SHA}" -- "$_ci")" ] || continue
-  if [ -z "$(git -C "$REPO" ls-tree -r --name-only "${PR_TREE}" -- "$_ci")" ]; then
+  # The base-side presence probe. An unreadable listing here used to read as
+  # "this forge is not configured" and `continue` past the file entirely —
+  # the fail-open in its quietest form, since a skipped file makes no claim
+  # and prints nothing.
+  _CI_AT_BASE="$(git -C "$REPO" ls-tree -r --name-only "${BASE_SHA}" -- "$_ci")" \
+    || die "could not list '${_ci}' at the base ref — the trusted side is unreadable, and an empty listing here would read as 'this forge is not configured' and skip the rung check for that file entirely (fail closed instead; #140, the #137 shape at arm 3b)"
+  [ -n "$_CI_AT_BASE" ] || continue
+  _CI_AT_PR="$(git -C "$REPO" ls-tree -r --name-only "${PR_TREE}" -- "$_ci")" \
+    || die "could not list '${_ci}' in the merged tree — refusing rather than reading an unreadable listing as 'the PR deleted this CI file'"
+  if [ -z "$_CI_AT_PR" ]; then
     fail "GONE: ${_ci} exists at the base and NOT at the pr ref — the CI file is what runs the rungs"
     continue
   fi
   _RUNGS_PR="$(_mk rungs)" || exit 2
-  _ci_rungs "$PR_TREE" "$_ci" > "$_RUNGS_PR"
+  _RUNGS_BASE="$(_mk rungsb)" || exit 2
+  _BLOB_PR="$(_mk ciblobp)" || exit 2
+  _BLOB_BASE="$(_mk ciblobb)" || exit 2
+  # BASE FIRST and `die`, before anything is compared: with the base list
+  # empty the loop below is a no-op and every rung removal passes silently,
+  # which is the one direction a hard-fail arm may never take.
+  _ci_show "$BASE_SHA" "$_ci" "$_BLOB_BASE" \
+    || { rm -f "$_RUNGS_PR" "$_RUNGS_BASE" "$_BLOB_PR" "$_BLOB_BASE"
+         die "could not read '${_ci}' at the base ref — the trusted copy is unreadable, and an empty rung set here would read as 'this file runs no suites' and pass every rung removal (fail closed instead; #140)"; }
+  if ! _ci_show "$PR_TREE" "$_ci" "$_BLOB_PR"; then
+    fail "UNREADABLE: '${_ci}' in the merged tree could not be read — the rung set it runs cannot be compared, and an empty one would clear every rung the base runs"
+    rm -f "$_RUNGS_PR" "$_RUNGS_BASE" "$_BLOB_PR" "$_BLOB_BASE"
+    continue
+  fi
+  _ci_rungs_from "$_BLOB_PR"   > "$_RUNGS_PR"
+  _ci_rungs_from "$_BLOB_BASE" > "$_RUNGS_BASE"
   while IFS= read -r _r; do
     [ -n "$_r" ] || continue
     grep -qxF "$_r" "$_RUNGS_PR" \
       || fail "RUNG: '${_r}' is run by ${_ci} at the base and NOT at the pr ref — a rung dropped from the CI file is a suite that never runs, and the PR-side pin (check_suite_floors) is the PR's to edit"
-  done < <(_ci_rungs "$BASE_SHA" "$_ci")
-  rm -f "$_RUNGS_PR"
+  done < "$_RUNGS_BASE"
+  rm -f "$_RUNGS_PR" "$_RUNGS_BASE" "$_BLOB_PR" "$_BLOB_BASE"
 done
 
 # --- arm 4: the trusted delta is REPORTED, never the only red ------------------

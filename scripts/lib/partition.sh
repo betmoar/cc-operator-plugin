@@ -8,6 +8,14 @@
 # projects (no lib/ beside them), so they keep their own copies, pinned by
 # check_guard_parity the same way this file's copies are.
 
+# A literal newline, for the MALFORMED bucket's reject set. Built the way the
+# CLIs build theirs (`NL="$(printf '\nx')"; NL="${NL%x}"`) — the command
+# substitution strips trailing newlines, so the `x` is what survives to be
+# removed. Prefixed `_P_` because this file is SOURCED into ops-stop-hook.sh
+# and statusline.sh: a bare `NL` would collide with whatever the sourcing
+# script has, which is the class of bug a shared lib exists to avoid.
+_P_NL="$(printf '\nx')"; _P_NL="${_P_NL%x}"
+
 # Ownership is the sentinel's NAME: pending/<owner>__<task>, unowned when there
 # is no `__`. Nothing is opened, so no byte-bounded read guards it — a planted
 # entry cannot smuggle an owner, only a name our CLIs could never have written.
@@ -100,17 +108,24 @@ scan_pending() { # scan_pending <opdir> <session>
     # condition is that list, returned 0 while the bar rendered op[N] red.
     # Bucketed BEFORE the ownership branch so neither message can name the
     # unusable id.
-    # A CR in the TASK half joins them (#139). Once ops-verdict.sh's check_cell
-    # refuses a carriage return, `--defer` cannot close such a task either, so
-    # the id is unaddressable in exactly F135's sense — and naming it in
-    # "pending verdict(s):" would hand the operator a string they cannot type
-    # back, while the byte itself is invisible in the terminal. The OWNER half
-    # is deliberately NOT bucketed here: sentinel_owner_of_name already
-    # degrades a CR owner to unowned (its `*[[:space:]]*` arm matches a CR in
-    # bash 3.2 and 5, verified), which fails CLOSED as MINE, and the task half
-    # stays addressable — so that sentinel can still be closed honestly.
+    # A CR in the TASK half joins them (#139) — and so do `|` and a newline,
+    # which were unaddressable all along and were NOT bucketed until the review
+    # of that change asked why one cell-breaking byte was special. Measured on
+    # a `sid__a|b` sentinel before this arm: `ops-verdict.sh 'a|b' …` and
+    # `--defer` BOTH exit 2 (`task-id contains '|'`), while the Stop hook
+    # printed `pending verdict(s): a|b — run …ops-verdict.sh <id> …`, which is
+    # guidance for a command that cannot succeed. The bucket's rule is not
+    # "which byte" but "can any CLI close this", so it must list every reject
+    # check_bare_name/check_cell enforce for a task id. Keep it in step with
+    # those guards: a byte the writers refuse is a sentinel no writer produced
+    # and no writer can clear.
+    #
+    # The OWNER half is deliberately NOT bucketed: sentinel_owner_of_name
+    # already degrades a bad owner to unowned (its `*[[:space:]]*` arm matches
+    # a CR in bash 3.2 and 5, verified), which fails CLOSED as MINE, and the
+    # task half stays addressable — so that sentinel can still be closed.
     case "$id" in
-      *__* | "" | *$'\r'*)
+      *__* | "" | *$'\r'* | *"|"* | *"$_P_NL"*)
         MALFORMED_LIST+=("$f")
         MALFORMED=$((MALFORMED + 1))
         continue ;;

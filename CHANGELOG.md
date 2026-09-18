@@ -11,6 +11,10 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [0.11.14] - 2026-09-18
 
+Closes #134 and #140. Delivers **part** of #139 (item 2, the writer-side CR refusal) and
+part of #138 (the `.gitattributes` complement); both issues stay open — #139's items 1, 3
+and 4 are untouched, and #138's priced omission (the six unpinned CR sites) is unchanged.
+
 ### Fixed
 
 - **A carriage return is refused at the WRITER, in all three CLIs (#139 item 2).**
@@ -26,6 +30,17 @@ single source of truth; bump it in the same commit as the changelog entry.
   it, leaving Stop blocking on a sentinel no invocation could clear. An opener admitting
   what the closer refuses is not a stricter gate, it is an unclosable task.
   `ops-adopt.sh` carries the arm for the same reason (re-stamping to such a name).
+- **Every UNCLOSABLE task id is MALFORMED, not just the CR one.** The first cut of this
+  bucket asked which BYTE; the review asked whether any CLI can close the sentinel, which
+  is the question the bucket exists to answer. `|` and a newline are refused by
+  `check_bare_name`/`check_cell` exactly as a CR is, so they were equally unclosable and
+  were not bucketed — measured on `SESS-A__a|b`: `ops-verdict.sh 'a|b' …` and `--defer`
+  both exit 2 with `task-id contains '|'`, while the Stop hook printed
+  `pending verdict(s): a|b — run …ops-verdict.sh <id> …`, guidance for a command that
+  cannot succeed on a task that can never be closed. That half predates #139; the CR work
+  is what made it visible. The bucket now encodes the writers' reject set rather than a
+  list of bytes, and its cases assert the PREMISE (neither path can close it) so the
+  bucket stays the correct home rather than a convenient one.
 - **A CR in a sentinel's TASK half is MALFORMED (the reader half of the same fix).** A
   name our CLIs can no longer address is F118/F135's class exactly, so `scan_pending`
   buckets it with the same `rm -f` remedy rather than naming an id the operator cannot
@@ -59,21 +74,60 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ### Notes
 
-- `FLOOR_shell` 1013 → 1038. Twenty-five cases; nine mutations, each red in the case written
-  for it (M5 — the message revert — is why that case exists: it shipped green before).
-  `check_guard_parity` gained the `a\rb` probe tuple, red on each of the three CLIs and
-  green restored; before it existed, deleting the shipped arm reported `all contracts
-  hold`. The five UPGRADE cases came from verifying this PR's own claim rather than from
-  a mutation: reading `.operator/.gitattributes` in this repo returned 0 `eol=lf` lines,
-  because the `[ ! -f ]` guard meant the rule never reached an existing project. Their
-  mutations: drop the `grep -qF` guard → 1 red (idempotence); rewrite instead of append →
-  1 red (hand-edits destroyed); append the inert `eol=lf` shape with no `text` → 2 red.
+- `FLOOR_shell` 1013 → 1072. Fifty-nine cases; sixteen mutations, each red in the case
+  written for it. Two of those cases exist only because a mutation found nothing: the
+  #139 message revert, and #140's PR-side case, which accepted arm 5's message as
+  standing in for arm 3b until it was made to name the arm — the interlock masks BOTH
+  sides. `check_guard_parity` gained the `a\rb` probe tuple (red on each of the three
+  CLIs; before it existed, deleting the shipped arm reported `all contracts hold`), and
+  `check_base_gate`'s arm-token set gained `_ci_show` (red when the helper is deleted
+  and the unchecked pipeline inlined back — the regression that looks like a
+  simplification). Five of the cases came from verifying a claim rather than from a
+  mutation: `.operator/.gitattributes` in this very repo returned 0 `eol=lf` lines,
+  because the `[ ! -f ]` guard meant #138's rule never reached an existing project —
+  their own mutations are drop the `grep -qF` guard → 1 red (idempotence), rewrite
+  instead of append → 1 red (hand-edits destroyed), append the inert `eol=lf` shape with
+  no `text` → 2 red. Three more came from the review panel rather than from either:
+  `>>` appends at the byte offset a file ends at, so on a `.gitattributes` with no
+  trailing newline the first appended rule FUSED with the last existing one —
+  `VERDICTS.md merge=unionVERDICTS.md text eol=lf`, which git accepts silently and which
+  destroys the original `merge=union` rule. Every fixture until then ended in a newline.
+  A second review round found three more of the same kind, none of them reachable by a
+  mutation of the shipped code: the presence grep was unanchored, so a COMMENTED-OUT copy
+  of the rule left `git check-attr` at `unspecified` while ops-init reported success; a
+  bare `>>` on an unwritable file printed bash's own `Permission denied` before the
+  crafted warning, and `break` hid the remaining two paths.
   Measured macOS uid 501, isolated rung runs; not measured under root.
-- Filed **#140**: `base-gate.sh` arm 3b repeats #137's fail-open (`_ci_rungs` pipes
-  `git show` into grep unchecked and iterates the BASE side). Reproduced end-to-end —
-  rung removed, base CI blob unreadable, one unrelated arm-5 pathspec widening →
-  `BASE_GATE_PASSED`, rc 0. Today it is masked by an undeclared interlock: arm 5's
-  own diff fails on the same corruption because `.github/` is inside its pathspec.
+- TWO of #140's four guards are deliberately unasserted, and the `HONESTY NOTE` names
+  both: the base-side AND the PR-side `ls-tree` presence probes. The first draft of this
+  entry said "one" — the review panel deleted the PR-side `|| die` and the whole suite
+  stayed green, which is the claim failing on its own terms.
+  `PR_TREE` is the MERGED tree and shares the base's objects, so any corruption reachable
+  from it trips the base-side check (or the change-list diff) first; measured on a fixture
+  that deletes the PR commit's `.github/workflows` tree object, the run refuses with
+  "could not list … at the base ref", never the PR-side message. The base-side probe is
+  unassertable for the same reason: A missing TREE object is what makes `ls-tree`
+  fail (deleting the BLOB leaves it at rc 0; only `git show` fails), and that
+  corruption is refused EARLIER by the change-list `git diff base...pr` that runs
+  BEFORE arm 1, so no fixture in this repo shape
+  reaches the guard. Its pair asserts the polarity instead — the #133 situation one
+  arm over, recorded rather than faked.
+- **`base-gate.sh` arm 3b no longer fails open on an unreadable CI file (#140).** The
+  same defect #137 fixed at arm 3, in the arm that commit wrote: `_ci_rungs` piped
+  `git show` into grep with `2>/dev/null` and the loop iterated the BASE side, so an
+  unreadable base blob made it a no-op and every rung removal passed. The base-side
+  `ls-tree` presence probe had the same hole one line up, in its quietest form — a
+  `continue` past the whole file, printing nothing and claiming nothing.
+  The pipeline is not checkable as a pipeline (`grep` exits 1 on no-match, so an
+  unreadable blob and a file that legitimately runs no rungs are the same status), so
+  the blob is staged through a checked `_ci_show` and only that status is read.
+  Polarity matches arm 3: base side `die` (rc 2 — the gate cannot see), PR side `fail`.
+  Reproduced before the fix, end-to-end: rung removed + base CI blob unreadable + one
+  unrelated widening of arm 5's pathspec → `BASE_GATE_PASSED`, rc 0. The escape had
+  been masked by an **undeclared interlock** — arm 5's own diff dies on the same
+  corruption because `.github/` sits inside its pathspec — so arm 3b's correctness
+  depended on another arm's pathspec, with nothing stating it. That probe is now a
+  case, and it refuses with the widened pathspec too.
 
 ## [0.11.13] - 2026-09-16
 
