@@ -1047,6 +1047,81 @@ def check_scripts(root, problems):
             problems.append(f"scripts/{name}: bash syntax error — {r.stderr.strip()}")
 
 
+def check_cr_strip_parity(root, problems):
+    """The bounded trailing-CR strip is hand-copied into three parsers (#139).
+
+    `lib/caps.sh` owns the rule; `ops-reverify.sh` and `ops-verdict.sh`'s
+    `--reconcile` loop carry hand-copies because neither may source a lib —
+    ops-verdict.sh installs standalone into `.operator/bin/`, and ops-reverify
+    sources nothing. So the three can drift, and drift here is silent in the
+    direction that matters: one copy reverted to a single `${row%$'\r'}` reads
+    a `\r\r\n` ledger differently from the other two, which is exactly the
+    fail-open #139 item 1 closed.
+
+    This check exists because a comment CLAIMED `check_guard_parity` covered
+    it and nothing did (PR #144 review). Measured before writing this:
+    reverting ops-reverify.sh's whole loop to a single strip left
+    `validate_plugin: all contracts hold`. The bash suite caught it; the
+    validator did not, and a comment naming the wrong gate is the #111 defect.
+
+    Two claims, and they fail independently: every site must HAVE the loop,
+    and every site's bound must equal `CAPS_MAX_CR`. Equality alone is
+    satisfied by three identically-gutted copies (F30), so the bound is also
+    pinned to its canonical value.
+    """
+    lib = root / "scripts" / "lib" / "caps.sh"
+    if not lib.is_file():
+        return  # check_caps reports the absence; one finding is enough
+    m = re.search(r"^CAPS_MAX_CR=(\d+)\s*$", shell_code(lib), re.M)
+    if not m:
+        problems.append(
+            "scripts/lib/caps.sh: no `CAPS_MAX_CR=<n>` declaration — it is the "
+            "bound the three hand-copied CR strips are held to (#139), and a "
+            "renamed constant makes this parity check compare nothing")
+        return
+    bound = m.group(1)
+    # Whitespace-insensitive: reflowing a copy is free, changing its bound is
+    # not. The `16` in the two hand-copies is the literal CAPS_MAX_CR value —
+    # they cannot read the constant, which is the whole reason they are copies.
+    sites = {
+        "lib/caps.sh": (lib, r'while\s*\[\s*"\$_cr"\s*-lt\s*"\$CAPS_MAX_CR"\s*\]'),
+        "ops-reverify.sh": (root / "scripts" / "ops-reverify.sh",
+                            r'while\s*\[\s*"\$_cr"\s*-lt\s*' + bound + r'\s*\]'),
+        "ops-verdict.sh": (root / "scripts" / "ops-verdict.sh",
+                           r'while\s*\[\s*"\$_cr"\s*-lt\s*' + bound + r'\s*\]'),
+    }
+    for rel, (path, pat) in sites.items():
+        if not path.is_file():
+            continue
+        code = shell_code(path)
+        # A file with NO `_cr` strip at all is not drift — the fixture trees
+        # carry minimal stubs with no reconcile path, and reporting those would
+        # make this check fire on every good-tree test rather than on the
+        # divergence it exists for. What is refused is a site that HAS the
+        # mechanism and disagrees about it: a `_cr` counter with no conforming
+        # loop is a copy that drifted, which is the reachable failure.
+        if "_cr" not in code:
+            continue
+        if not re.search(pat, code):
+            problems.append(
+                f"scripts/{rel}: no bounded trailing-CR strip loop bounded by "
+                f"{bound} (#139 item 1). All three 4-cell row parsers strip the "
+                f"whole trailing RUN — one removal leaves a `\\r\\r\\n` row "
+                f"still carrying a CR and that parser fails OPEN, silently, "
+                f"while the other two do not. If the bound moved, move it in "
+                f"ALL THREE: caps.sh cannot be sourced by the other two")
+        # The strip must also be a RUN, not a single removal wearing a loop:
+        # pin the body's removal alongside the counter increment.
+        if not re.search(r"""row="\$\{row%\$'\\r'\}"\s*;\s*_cr=\$\(\(_cr \+ 1\)\)""",
+                         code):
+            problems.append(
+                f"scripts/{rel}: the CR strip does not remove-and-count in one "
+                f"step (#139). The counter is what makes caps.sh's byte "
+                f"accounting exact and what proves the loop strips a RUN; a "
+                f"loop that removes without counting reads as bounded and is "
+                f"not")
+
+
 def check_reader_bounds(root, problems):
     """
     Every reader of a sentinel/fragment must bound its reads in BYTES —
@@ -3909,13 +3984,32 @@ def check_caps(root, problems):
         "reset": "| T-1 | crit | ev @a1 | FAIL |\n| T-1 | crit | ev @a2 | FAIL |\n"
                  "| T-1 | crit | ev @a3 | PASS |\n",
         "keyed": "| T-1 | crit-a | ev @a1 | FAIL |\n| T-1 | crit-b | ev @a2 | FAIL |\n",
+        # #139 item 1, and it is EXECUTED for the reason the whole probe exists:
+        # the shape that shipped was a detector keeping its form and answering
+        # zero. A single `${row%$'\r'}` leaves a `\r\r\n` row still carrying a
+        # CR, every comparison below misses, and scan_caps returns tripped=0
+        # with scan_failed=0 and truncated=0 — byte-identical to a clean
+        # ledger. Measured at HEAD before the fix: LF 1, CRLF 1, `\r\r\n` 0.
+        # A substring pin on the strip cannot see this; only running it can.
+        "dblcr": "| T-1 | crit | ev @a1 | FAIL |\r\r\n| T-1 | crit | ev @a2 | FAIL |\r\r\n",
+        # The CONTROL that keeps the fix from being "strip everything": only
+        # the TRAILING run is a terminator artifact. A mid-cell CR is data, and
+        # `${row%%$'\r'*}` — the other remedy the issue proposed — truncates
+        # the row there and discards cells, which this row would catch.
+        "midcr": "| T-2 | cr\rit | ev @a1 | FAIL |\n| T-2 | cr\rit | ev @a2 | FAIL |\n",
     }
-    _expect = {"trip": "1", "reset": "0", "keyed": "0", "budget": "1"}
+    _expect = {"trip": "1", "reset": "0", "keyed": "0", "budget": "1",
+               "dblcr": "1", "midcr": "1"}
     with tempfile.TemporaryDirectory() as _td:
         _script = ["\n".join(_consts), _fn.group(0)]
         for _k, _body in _rows.items():
             _f = os.path.join(_td, f"{_k}.md")
-            with open(_f, "w", encoding="utf-8") as _fh:
+            # newline="" so the CR fixtures reach disk VERBATIM. Text mode
+            # translates "\n" to os.linesep, which would make the `dblcr`
+            # fixture platform-dependent — and a fixture that silently loses
+            # the byte it exists to carry is the vacuity this probe guards
+            # against, one layer down.
+            with open(_f, "w", encoding="utf-8", newline="") as _fh:
                 _fh.write(_hdr + _body)
             _script.append(f'scan_caps "{_f}"\necho "{_k}=$caps_tripped"')
         # THE WORK BUDGET, asserted by EFFECT. The three size bounds do not
@@ -3965,13 +4059,36 @@ def check_caps(root, problems):
                       "bounds do not bound the WORK (the ceiling is rows x "
                       "keys), which measured an 11.1s Stop at the shipped "
                       "bounds before the budget existed",
+            "dblcr": "a `\\r\\r\\n` ledger must trip exactly as its LF twin "
+                     "does — one `${row%$'\\r'}` strips ONE CR, so the residue "
+                     "makes every comparison below miss and the scan answers "
+                     "tripped=0 with failed=0 and truncated=0, which is "
+                     "byte-identical to a clean ledger (#139 item 1). Strip "
+                     "the whole trailing run, bounded by CAPS_MAX_CR",
+            "midcr": "a MID-CELL CR must survive the strip and the row must "
+                     "still trip — only the TRAILING run is a terminator "
+                     "artifact. `${row%%$'\\r'*}` truncates the row there and "
+                     "discards cells, which is why the bounded loop is the "
+                     "shape and this is its control (#139)",
         }
+        # A key with no entry here would raise KeyError and take the whole
+        # validator down with a traceback instead of a finding — measured
+        # while adding the #139 fixtures. A gate that crashes reports nothing
+        # about the other 30-odd checks behind it, so the missing entry is
+        # itself a finding.
+        _unexplained = [_k for _k in _expect if _k not in _why]
+        if _unexplained:
+            problems.append(
+                f"{rel}: the probe carries fixture(s) {_unexplained!r} with no "
+                f"entry in _why — a failure on one would raise KeyError and "
+                f"abort the whole validator instead of reporting. Every "
+                f"fixture owes the reader the defect it was written against")
         for _k, _want in _expect.items():
             if _got.get(_k) != _want:
                 problems.append(
                     f"{rel}: scan_caps() reported caps_tripped="
                     f"{_got.get(_k)!r} on the {_k!r} ledger, expected "
-                    f"{_want!r} — {_why[_k]} (#107)")
+                    f"{_want!r} — {_why.get(_k, 'no rationale recorded')} (#107)")
 
 
 def check_base_gate(root, problems):
@@ -4258,6 +4375,80 @@ def check_base_gate(root, problems):
                 f"script both come from the PR head")
 
 
+def check_line_citations(root, problems):
+    """#139 item 4: a `file.sh:NNN` citation in prose has no guard, and rots.
+
+    Five such citations in docs/LANDMINES.md's #137 section were stale within
+    two commits — read off a pre-merge copy, and at HEAD all five pointed at
+    comment or control-flow lines while the validator reported "all contracts
+    hold". `check_coupling_case_refs` resolves `_"…"_` case titles and has no
+    opinion on a line number.
+
+    The issue proposed a CONVENTION (cite by symbol). A convention followed in
+    one file and stated nowhere is what this repo calls a hypothesis, so this
+    is the mechanical half: every `<file>:<line>` citation in tracked prose
+    must land on a line that still exists AND is not blank. It deliberately
+    does NOT try to judge whether the line still says what the prose claims —
+    that needs a human — but the cheap half catches the shape that actually
+    happened: lines shifting under an edit until the number means nothing.
+
+    Measured when this check was written: SIX citations across three files,
+    of which `ops-init.sh:194` had already drifted onto a BLANK line and
+    `lib/partition.sh:204` onto a comment. Both predate this check.
+    """
+    import re as _re
+    _CITE = _re.compile(r"\b([A-Za-z0-9_][A-Za-z0-9_./-]*\.(?:sh|py|mjs|js|yml))"
+                        r":(\d+)\b")
+    # Where a bare `name.sh` may live. A citation naming a path we cannot
+    # resolve is NOT reported — the prose quotes other repos' files too, and a
+    # check that cries wolf on those is a check people route around.
+    _SEARCH = ("", "scripts/", "scripts/lib/", "workflows/", "tests/", "hooks/")
+    # EVERY tracked markdown, not just docs/. The first cut globbed `docs/**`
+    # only, and a reviewer found a live rot it could not see: CHANGELOG.md
+    # cited `statusline.sh:84` for the `$PWD` fallback, which at HEAD is a
+    # `stat -c %Y` probe — the fallback moved to the PROJ resolution. A check
+    # that looks in one directory reports green about the files it never read,
+    # which is the _tool_loops shape this file already carries a floor against.
+    _roots = ["docs/**/*.md", "*.md", "templates/*.md", "agents/*.md",
+              "commands/*.md", "skills/**/*.md"]
+    _files = sorted({p.relative_to(root).as_posix()
+                     for pat in _roots for p in root.glob(pat) if p.is_file()})
+    for rel in _files:
+        text = (root / rel).read_text(encoding="utf-8", errors="replace")
+        for m in _CITE.finditer(text):
+            name, num = m.group(1), int(m.group(2))
+            target = None
+            for pre in _SEARCH:
+                cand = root / (pre + name)
+                if cand.is_file():
+                    target = cand
+                    break
+            if target is None:
+                continue  # not ours to judge
+            lines = target.read_text(encoding="utf-8",
+                                     errors="replace").splitlines()
+            # `num < 1` is not pedantry: `lines[0 - 1]` is Python's LAST line,
+            # so a `:0` citation read the end of the file and reported nothing
+            # whenever that line was non-blank. Measured on a synthetic fixture
+            # while reviewing this check — a silent accept in the one branch
+            # written to refuse (PR #144 review).
+            if num < 1 or num > len(lines):
+                _why = ("line numbers start at 1" if num < 1
+                        else f"{name} has only {len(lines)} lines")
+                problems.append(
+                    f"{rel}: cites `{name}:{num}` — {_why}; the citation "
+                    f"cannot resolve (#139 item 4). "
+                    f"Cite the SYMBOL (the function or the literal) instead: a "
+                    f"line number has no guard and shifts under any edit above "
+                    f"it")
+            elif not lines[num - 1].strip():
+                problems.append(
+                    f"{rel}: cites `{name}:{num}`, which is now a BLANK line "
+                    f"(#139 item 4). Cite the SYMBOL instead — five citations "
+                    f"in this file's own #137 section rotted within two commits "
+                    f"while the validator reported all contracts hold")
+
+
 def check_claude_md_size(root, problems):
     """CLAUDE.md stays under the harness's 40.0k-char injection clip.
 
@@ -4477,6 +4668,7 @@ CHECKS = (
     check_permission_guards,
     check_scripts,
     check_reader_bounds,
+    check_cr_strip_parity,
     check_guard_parity,
     check_autobar,
     check_caps,
@@ -4496,6 +4688,7 @@ CHECKS = (
     check_suite_floors,
     check_base_gate,
     check_coupling_case_refs,
+    check_line_citations,
     check_claude_md_size,
 )
 

@@ -275,7 +275,7 @@ being re-read every session.
 - **A statusline assertion that was really an assertion about the maintainer's
   desk.** Three cases claimed *"degenerate stdin renders nothing"* while running
   with cwd = **this repository**. When the payload cannot be parsed there is no
-  cwd to read, so `statusline.sh:84` falls back to `$PWD` deliberately (the bar
+  cwd to read, so `statusline.sh`'s `PROJ` resolution falls back to `$PWD` deliberately (the bar
   renders for where it stands). The repo had never had `.operator/` scaffolded in
   it, so the fallback found no ledger and the three cases passed — for a reason
   nothing to do with degenerate stdin. Opening one real task in the plugin's own
@@ -1309,7 +1309,7 @@ each broke where that file happened to anchor:
   the only one an operator could notice unaided. The other two answer wrongly in silence.
 
 Two things make this worth a landmine rather than a footnote. First, **the repo already
-knew**: six other readers strip CR, and `lib/partition.sh:204` carries the rule in
+knew**: six other readers strip CR, and `_dec_line` in `lib/partition.sh` carries the rule in
 words — "a CRLF checkout must not change semantics". A guard held at six of nine sites
 reads as covered. Second, `ops-reverify.sh`'s was a **regression we shipped**: the #128
 whole-line header fix replaced a prefix glob that had absorbed the `\r` all along, so
@@ -1524,3 +1524,138 @@ repo and two of them measured the corrupted tree while claiming to measure a hea
 the ADD-a-rung control (which should pass and could not) and the PR-side case (which never
 reached its own branch, because the run refused at the base check first). Four repos, one
 per corruption. Same class as the shared-sentinel error in #139's first draft, one layer up.
+
+## One removal is not "the CR is handled" (0.11.15, #139 items 1 and 3)
+
+#136 taught the three 4-cell row parsers to strip a trailing CR, and that closed the
+case it named: a plain CRLF ledger, which is what `core.autocrlf` produces on every
+Windows clone. It did not close CR handling as a class. `${row%$'\r'}` removes at most
+ONE CR, so `\r\r\n` kept one and every comparison below it missed. Measured on
+byte-identical content at the 0.11.14 tree:
+
+```
+LF       tripped=1
+CRLF     tripped=1      <- what #136 bought
+\r\r\n   tripped=0      <- unchanged, scan_failed=0, truncated=0
+```
+
+That last line is the whole reason this is a landmine rather than a footnote. A
+`tripped=0` with both error flags clear is **byte-identical to a clean ledger**, in a
+detector whose entire job is not to miss a sequence. The fix was strictly narrower than
+the bug it replaced, which is the shape that reads as "handled" in every later review.
+
+**Both remedies the issue proposed were wrong, and measuring said so.** The issue offered
+"strip in a loop, or `${row%%$'\r'*}`":
+
+| candidate | 1 MiB all-CR line | correctness |
+|---|---|---|
+| unbounded `while ${row%$'\r'}` | **>300s**, killed | correct |
+| `${row%%$'\r'*}` | 0.006s | **truncates the row** at a mid-cell CR |
+| bounded loop, max 16 | 0.30s | correct on all six probes |
+
+The unbounded loop is O(n²) on a pathological line, and the row loop's own
+`read -r -n 1048576` permits exactly such a line — inside a hook that runs on every Stop.
+The greedy form is fast and silently discards cells. Only the TRAILING run is a
+terminator artifact; a mid-cell CR is data, which is why `CAPS_MAX_CR` is a bound and not
+a convenience, and why a row still ending in CR after 16 removals sets `caps_truncated`
+rather than being guessed at.
+
+**The byte cap was loose, and is also unreachable.** The strip ran before
+`bytes=$((bytes + ${#row} + 1))`, so a CRLF line was charged one byte less than it
+occupies — the ~1.2% the issue measured. `+ _cr` makes the identity exact. But the
+probe written to assert it through behaviour could not discriminate, and the reason is
+worth keeping: the **NUL probe above the loop refuses any file over 4096 × 512 bytes,
+which is exactly `CAPS_MAX_BYTES`**, and accounted bytes can never exceed on-disk bytes.
+Bisected: 2,097,152 B passes the probe, 2,097,664 B is refused. So the row loop's byte
+cap is a second line of defence behind a tighter one, and the looseness was never
+reachable through it. The case says so instead of asserting a discrimination that does
+not exist.
+
+The first draft of that case recomputed the accounting inside the test and asserted its
+own arithmetic — green against a `caps.sh` with the addend deleted. A test that
+reimplements the rule it is testing tests the reimplementation. The surviving pin is a
+literal token grep, which is weaker and honest about being weaker.
+
+## A citation with a number in it has no guard (0.11.15, #139 item 4)
+
+Five `file.sh:NNN` citations in this file's own #137 section were stale within two
+commits — read off a pre-merge copy, and at HEAD all five pointed at comment or
+control-flow lines while the validator reported "all contracts hold".
+`check_coupling_case_refs` resolves `_"…"_` case titles and has no opinion on a line
+number.
+
+The issue proposed a CONVENTION (cite by symbol). A convention followed in one file and
+stated nowhere is what this repo elsewhere calls a hypothesis, so `check_line_citations`
+is the mechanical half: past EOF or onto a blank line is refused. It **cannot** see a
+citation that still resolves and no longer says what the prose claims, and the message
+says so rather than implying the number is verified.
+
+It found a live defect on arrival, no mutation needed: `docs/REPLAY-CHARTER.md` cited a
+line in `ops-init.sh` that was blank, attached to a claim ("the install set lives here")
+that had been false since #76 moved the set to `scripts/ops-install-set.sh`. Two rots in
+one citation — the address and the assertion — which is the argument for symbols in one
+example.
+
+One more thing the fix itself demonstrated: the first repair kept the rotted citation
+inside the sentence explaining that it had rotted, and the check matched it again. A
+check that scans prose cannot tell a citation from prose ABOUT a citation — the same
+shape as the commit that closed #139 by quoting a closing keyword. Paraphrase it.
+
+## A comment that names the wrong gate is worse than no comment (0.11.15, PR #144 review)
+
+The 0.11.15 fix hand-copies a bounded CR strip into three parsers, because two of them
+may not source a lib. The comment on one copy said `check_guard_parity` pinned them
+equal. It did not, and nothing did: that check compares `check_bare_name` and
+`check_owner_name` across the three CLIs and contains no reference to a CR, a counter, or
+a bound. Measured — reverting `ops-reverify.sh`'s whole loop to a single
+`${row%$'\r'}` left `validate_plugin: all contracts hold`.
+
+The bash suite caught it. So the code was safe and the SENTENCE was not, which is the
+harder failure: a maintainer who reads "the validator pins this" runs the validator,
+sees green, and ships the drift. That is #111's rule — *name the gate that went red* —
+applied to prose instead of to a verdict row. The remedy was not to soften the comment
+but to make it true: `check_cr_strip_parity` now holds all three sites to `CAPS_MAX_CR`
+and refuses a loop that removes without counting, because equality alone is satisfied by
+three identically-gutted copies (F30).
+
+## One bad row can silence a detector, and the message must say which bound fired (0.11.15, PR #144 review)
+
+`scan_caps` breaks on a row still carrying a CR after the bound, and a break abandons the
+rest of the ledger. Measured: two genuine FAIL rounds plus one 20-CR row reports
+`tripped=0`, where the same ledger without that row reports 1. The polarity is right —
+a truncated scan read a prefix, and a prefix cannot claim even a floor — but the
+consequence is that ONE planted row anywhere suppresses a real trip everywhere.
+
+What made that dangerous was the message, not the break. The Stop hook's truncation
+notice enumerated four SIZE bounds, so a session stopped by a corrupt row told the
+operator their ledger was too big. They then go looking for length in a file whose real
+problem is one line. A message describing a different bound than the one that fired is
+the #99 defect one file over, and this repo has now hit that shape three times: the
+statusline/hook disagreement, #139's MALFORMED wording, and here.
+
+`caps_truncated_reason` lets a bound name itself. The size bounds leave it empty on
+purpose and the caller enumerates them — an always-set reason would describe the CR case
+on a ledger that is merely long, which is the same defect pointing the other way.
+
+**The three copies answer differently past the bound, and that is deliberate.** `caps.sh`
+stops the scan: it is a detector, and a partial count is worse than none.
+`ops-reverify.sh` skips the row and says so: it REPORTS rows, so stopping would hide every
+later one — and without an arm it rebuilt the exact defect the strip exists to remove
+(measured at 17 CRs: `| 3 | T-y | FAIL | ^M | no-commit | … |`, a broken cell in the
+operator's own report). `ops-verdict.sh --reconcile` needs no arm at all, because the
+residual CR lands in the verdict cell and `row_is_conformant`'s enum already refuses it,
+named on stderr with a skipped count. Three answers, one rule: never let a corrupt row
+pass as a clean one, and never let the refusal be silent.
+
+## A check scoped to one directory reports green about the rest (0.11.15, PR #144 review)
+
+`check_line_citations` shipped globbing `docs/**/*.md`. A reviewer found a live rot it
+could not see: `CHANGELOG.md` cited `statusline.sh:84` for the `$PWD` fallback, which at
+HEAD is a `stat -c %Y` probe — the fallback moved to the `PROJ` resolution. The check was
+correct about every file it read and silent about the one where the defect was.
+
+Two smaller ones from the same review, both in the branch written to refuse: `:0` was
+accepted, because `lines[0 - 1]` is Python's LAST line and that line is usually non-blank;
+and the message for an out-of-range citation said "has only N lines", which is nonsense
+for `:0`. A guard whose refusal path has its own bug refuses nothing, and reads as
+coverage.

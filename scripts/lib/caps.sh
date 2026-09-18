@@ -110,6 +110,11 @@ CAPS_REWORK_MAX=2
 CAPS_MAX_KEYS=100
 CAPS_MAX_LINES=20000
 CAPS_MAX_BYTES=2097152   # 2 MiB — orders above any honest verdict ledger
+# The trailing-CR strip is bounded for the same reason (#139). No honest
+# terminator carries more than two (`\r\n` from git, `\r\r\n` from a tool that
+# converted twice); 16 is orders above that and keeps the per-row cost O(16·n)
+# instead of the O(n²) an unbounded loop measured at >300s on one 1 MiB line.
+CAPS_MAX_CR=16
 
 # THE STEP BUDGET, and it exists because the three bounds above do not bound
 # the WORK. Their product does: rows x keys. Measured 2026-09-07 on this
@@ -178,9 +183,11 @@ CAPS_MAX_STEPS=100000
 # Sets: caps_tripped (count of targets at or over the cap), caps_rows (one
 # "<n> FAIL rounds: <id> | <criterion>" line each — the CALLER sanitizes and
 # truncates them; they are untrusted project data), caps_truncated (1 = a
-# bound stopped the scan early), caps_scan_failed (1 = no readable ledger).
+# bound stopped the scan early), caps_truncated_reason ("" when the bound
+# cannot name itself; the caller enumerates the size bounds then),
+# caps_scan_failed (1 = no readable ledger).
 scan_caps() { # scan_caps <verdicts-path>
-  local f="$1" row body id crit ev verdict key r1 r2 i n=0 bytes=0 found steps=0
+  local f="$1" row body id crit ev verdict key r1 r2 i n=0 bytes=0 found steps=0 _cr=0
   # The key table is INTERNAL state, and it must be local (PR #126 review,
   # Copilot). Only the caps_* globals are outputs; `_caps_k`/`_caps_c`/`_caps_n`
   # were plain assignments, so sourcing this lib silently clobbered any caller
@@ -198,6 +205,11 @@ scan_caps() { # scan_caps <verdicts-path>
   caps_tripped=0
   caps_rows=""
   caps_truncated=0
+  # Set ONLY by a bound that can name itself (today: the CR-residue break). The
+  # size bounds leave it empty and the caller falls back to enumerating them —
+  # an empty reason must never read as "no truncation", which is what
+  # caps_truncated is for.
+  caps_truncated_reason=""
   caps_scan_failed=0
   # Absent or symlinked ledger: nothing to report. Report-only, so there is no
   # fail-closed direction to choose here — a missing ledger is a scaffold
@@ -258,10 +270,55 @@ scan_caps() { # scan_caps <verdicts-path>
     # same-target-rework cap — and ops-stop-hook.sh SOURCES this lib, so the
     # gate that runs is the one that stopped counting (#136). Builtin-only,
     # as every reader the hook sources must stay.
-    row="${row%$'\r'}"
+    #
+    # STRIP THE WHOLE TRAILING RUN, BOUNDED, AND COUNT IT (#139 item 1). A
+    # single `${row%$'\r'}` removes at most ONE CR, so `\r\r\n` kept one and
+    # every comparison below missed — measured on byte-identical content:
+    # LF tripped=1, CRLF tripped=1, \r\r\n tripped=0 with caps_scan_failed=0
+    # and caps_truncated=0, which reads exactly like a clean ledger. Strictly
+    # narrower than the pre-#136 bug, the same fail-open shape one byte deeper.
+    #
+    # The bound is not decoration. The issue proposed an unbounded strip loop;
+    # measured on ONE line of 1 MiB of CRs (reachable — the row loop's own
+    # `read -n 1048576` permits it) that loop had not finished after 300s,
+    # inside a hook that runs on every Stop. The other proposal,
+    # `${row%%$'\r'*}`, costs 0.006s and TRUNCATES the row at a mid-cell CR,
+    # discarding cells. This form is 0.30s on the same pathological line and
+    # leaves a mid-cell CR alone, because only the trailing run is a
+    # terminator artifact.
+    _cr=0
+    while [ "$_cr" -lt "$CAPS_MAX_CR" ]; do
+      case "$row" in *$'\r') row="${row%$'\r'}"; _cr=$((_cr + 1)) ;; *) break ;; esac
+    done
+    # A row still ending in CR after CAPS_MAX_CR removals is not a terminator
+    # artifact; it is a planted line. Refusing to guess is the same polarity as
+    # every other bound here: say the scan is incomplete rather than report a
+    # confident zero over input we did not parse.
+    #
+    # IT SETS A REASON, and that is not decoration (PR #144 review). This break
+    # abandons the rest of the ledger, so ONE planted row anywhere suppresses a
+    # real trip elsewhere — measured: a ledger with two genuine FAIL rounds plus
+    # one 20-CR row reports tripped=0 where the same ledger without it reports
+    # 1. That is the right polarity for a report-only gate, but the hook's
+    # truncation notice enumerates four SIZE bounds, so without a reason the
+    # operator is told their ledger is too big and goes looking for rows that
+    # are not the problem. A message describing a different bound than the one
+    # that fired is the #99 defect, one file over.
+    case "$row" in *$'\r')
+      caps_truncated=1
+      caps_truncated_reason="a row still carries a carriage return after $CAPS_MAX_CR strips — that is a planted or corrupt line, not a line ending; find it with: grep -n \$'\\\\r' <ledger>"
+      break ;;
+    esac
     n=$((n + 1))
     if [ "$n" -gt "$CAPS_MAX_LINES" ]; then caps_truncated=1; break; fi
-    bytes=$((bytes + ${#row} + 1))
+    # `+ _cr` is what makes the byte cap EXACT (#139 item 3). The strip runs
+    # before the accounting, so every stripped CR was charged to nobody and a
+    # CRLF ledger was billed one byte per line less than it occupies — the
+    # accounted budget tripped at 25,890 rows whose true on-disk size was
+    # 2,122,980 against a 2,097,152 cap, ~1.2% loose. It never mattered
+    # (CAPS_MAX_LINES fires ~5,900 rows earlier on ordinary rows), and it costs
+    # one addend to stop being a number that is wrong on purpose.
+    bytes=$((bytes + ${#row} + _cr + 1))
     if [ "$bytes" -gt "$CAPS_MAX_BYTES" ]; then caps_truncated=1; break; fi
     # A ledger ROW starts "| " and is not the header or its rule.
     case "$row" in "| "*) ;; *) continue ;; esac

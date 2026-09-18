@@ -52,7 +52,7 @@ Run `/cc-operator:start`. **Expected:** `.operator/` scaffolded and `OPERATOR.md
 materialized.
 
 **The id does NOT arrive here, and the ordering is the point.**
-`ops-sessionstart-hook.sh:95` exits silently when `.operator/` is absent, and the
+`ops-sessionstart-hook.sh` exits silently when its walk-up finds no `.operator/`, and the
 banner that carries the id is written at the very end of that hook — so the
 SessionStart that fired *before* the scaffold existed said nothing, and running
 the slash command does not re-fire it. In a genuinely fresh project the id
@@ -152,7 +152,9 @@ Open the replay's own tracking task:
   rule is gone (third run, 2026-08-16). Then: `printf '/.operator/\n' >> .gitignore`, then re-run the
   scaffold. `ops-init.sh` is **not** in the `.operator/bin/` install set — that
   set is `ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh ops-backlog.sh`
-  (`ops-init.sh:194`), because init is what *creates* `bin/` and would have to
+  (`_OPS_TOOLS` in `scripts/ops-install-set.sh` — the ONE declaration since #76;
+  this cited a line number in `ops-init.sh` until #139 item 4, by which time the
+  line was blank AND the set had moved out of that file), because init is what *creates* `bin/` and would have to
   install itself. So run it the way the harness does, from the plugin root:
   `bash "$PR/scripts/ops-init.sh"` (see R0 — `${CLAUDE_PLUGIN_ROOT}` is unset
   here), or re-issue `/cc-operator:start`. Expected on stderr, naming file and

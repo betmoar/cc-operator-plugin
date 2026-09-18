@@ -516,12 +516,51 @@ if [ "${1:-}" = "--reconcile" ]; then
       # 1MiB per read: a smaller cap split long rows across chunks and both
       # halves failed row_is_conformant — honest rows silently dropped (#9).
       while IFS= read -r -n 1048576 row || [ -n "$row" ]; do
-        # CRLF here is DATA LOSS, not a miscount: --reconcile is the recovery
-        # path, and a `\r` made row_is_conformant reject an otherwise honest
-        # fragment row. Measured 2026-09-17: 1 of 2 restored, the CRLF row
-        # absent from the rebuilt ledger (#136). Strip before the schema test,
-        # never after.
-        row="${row%$'\r'}"
+        # CRLF here is a RECOVERABLE ROW LEFT UNRECOVERED, announced on stderr
+        # with a skipped count — not silent data loss (#139 comment, measured
+        # both pre- and post-#136). --reconcile is the recovery path, and a
+        # `\r` made row_is_conformant reject an otherwise honest fragment row.
+        # Measured 2026-09-17: 1 of 2 restored, the CRLF row named on stderr
+        # and absent from the rebuilt ledger (#136). Strip before the schema
+        # test, never after.
+        #
+        # THE WHOLE TRAILING RUN, BOUNDED (#139 item 1). One `${row%$'\r'}`
+        # left a `\r\r\n` row still ending in CR, so row_is_conformant refused
+        # it and the recovery path dropped a row it could have restored. The
+        # bound mirrors lib/caps.sh's CAPS_MAX_CR and exists for the same
+        # measured reason: an unbounded loop on one 1 MiB line of CRs had not
+        # finished after 300s. This file cannot source that lib — it installs
+        # standalone into .operator/bin/ — so the rule is hand-copied.
+        #
+        # THE THREE COPIES ARE UNPINNED, and saying so is the point. An earlier
+        # draft of this comment claimed `check_guard_parity` pinned them; it
+        # does not — that check only compares check_bare_name/check_owner_name
+        # across the three CLIs and has no notion of a CR strip. Measured:
+        # reverting this whole loop to a single `${row%$'\r'}` leaves
+        # `validate_plugin: all contracts hold`. The bash suite catches it
+        # (each copy has its own case, each red on its own mutation); the
+        # VALIDATOR does not, and #146 carries the gap. Naming the wrong gate
+        # is the #111 defect — a maintainer trusting the claim would skip the
+        # one suite that actually covers this.
+        #
+        # `_cr` cannot be `local` here: this block is at TOP LEVEL (the
+        # `--reconcile` branch), and bash refuses `local` outside a function.
+        # It is reset per row, immediately below. Do not "fix" the asymmetry
+        # with caps.sh/ops-reverify.sh by adding one — that is a hard error,
+        # not a style difference.
+        _cr=0
+        while [ "$_cr" -lt 16 ]; do
+          case "$row" in *$'\r') row="${row%$'\r'}"; _cr=$((_cr + 1)) ;; *) break ;; esac
+        done
+        # PAST THE BOUND this file needs NO arm of its own, and that is a
+        # measured fact rather than an omission (PR #144 review). The residual
+        # CR lands in the verdict cell, `row_is_conformant`'s PASS/FAIL enum
+        # misses, and the row is refused and NAMED on stderr with a skipped
+        # count — verified at 17 CRs: "skipping non-conformant line in 002.md",
+        # 1 restored of 2. That is already this file's polarity. caps.sh stops
+        # the scan and ops-reverify.sh skips-and-says because neither has a
+        # schema test downstream to catch it; adding a third arm here would
+        # duplicate a refusal that already fires.
         [ -n "$row" ] || continue
         # Reconcile WRITES the ledger, so it enforces the same 4-cell
         # schema. COUNT the cells — a glob's `*` happily consumes ` | `.

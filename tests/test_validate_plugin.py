@@ -105,8 +105,9 @@ GOOD_CAPS_LIB = (
     "CAPS_MAX_LINES=20000\n"
     "CAPS_MAX_BYTES=2097152\n"
     "CAPS_MAX_STEPS=100000\n"
+    "CAPS_MAX_CR=16\n"
     "scan_caps() {\n"
-    "  local f=\"$1\" row body id crit ev verdict key r1 r2 i found n=0 steps=0\n"
+    "  local f=\"$1\" row body id crit ev verdict key r1 r2 i found n=0 steps=0 _cr=0\n"
     "  local LC_ALL=C\n"
     "  caps_tripped=0; caps_rows=\"\"; caps_truncated=0; caps_scan_failed=0\n"
     "  _caps_k=(); _caps_c=(); _caps_n=0\n"
@@ -125,6 +126,15 @@ GOOD_CAPS_LIB = (
     "    caps_truncated=1; return 0\n"
     "  fi\n"
     "  while IFS= read -r -n 1048576 row || [ -n \"$row\" ]; do\n"
+    # The bounded trailing-CR run strip (#139 item 1). The stub mirrors it for
+    # the same reason it mirrors the budget accounting above: check_caps
+    # EXECUTES this fixture, and a stub that keeps the defect cannot witness
+    # the fix. Only the TRAILING run goes — a mid-cell CR is data the row keeps.
+    "    _cr=0\n"
+    "    while [ \"$_cr\" -lt \"$CAPS_MAX_CR\" ]; do\n"
+    "      case \"$row\" in *$'\\r') row=\"${row%$'\\r'}\"; _cr=$((_cr + 1)) ;; *) break ;; esac\n"
+    "    done\n"
+    "    case \"$row\" in *$'\\r') caps_truncated=1; break ;; esac\n"
     "    n=$((n+1)); [ \"$n\" -le \"$CAPS_MAX_LINES\" ] || { caps_truncated=1; break; }\n"
     "    case \"$row\" in \"| \"*) ;; *) continue ;; esac\n"
     "    case \"$row\" in \"| Gate | Criterion |\"* | \"|---\"*) continue ;; esac\n"
@@ -5305,6 +5315,147 @@ class BaseGateTest(unittest.TestCase):
             self.assertEqual(probs, [])
         finally:
             shutil.rmtree(empty, ignore_errors=True)
+
+
+class CrStripParityTest(unittest.TestCase):
+    """check_cr_strip_parity: the three hand-copied CR strips cannot drift (#139).
+
+    Written because a comment in ops-verdict.sh CLAIMED check_guard_parity
+    covered this and nothing did (PR #144 review). Measured before the check
+    existed: reverting ops-reverify.sh's whole loop to a single
+    `${row%$'\r'}` left `validate_plugin: all contracts hold`.
+    """
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        (self.dir / "scripts" / "lib").mkdir(parents=True)
+        for rel in ("scripts/lib/caps.sh", "scripts/ops-reverify.sh",
+                    "scripts/ops-verdict.sh"):
+            shutil.copy(ROOT / rel, self.dir / rel)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _probs(self):
+        probs = []
+        vp.check_cr_strip_parity(self.dir, probs)
+        return probs
+
+    def _edit(self, rel, old, new):
+        p = self.dir / rel
+        t = p.read_text(encoding="utf-8")
+        self.assertIn(old, t, f"{rel}: mutation target not found — the pin "
+                              f"would be vacuous")
+        p.write_text(t.replace(old, new), encoding="utf-8")
+
+    def test_the_real_tree_passes(self):
+        self.assertEqual(self._probs(), [])
+
+    def test_a_copy_reverted_to_a_single_strip_fires(self):
+        # The exact drift: one parser back to #136's behaviour, two ahead of it.
+        self._edit("scripts/ops-reverify.sh",
+                   '    while [ "$_cr" -lt 16 ]; do',
+                   '    while [ "$_cr" -lt 0 ]; do')
+        probs = self._probs()
+        self.assertTrue(probs, "a reverted copy must fire")
+        self.assertTrue(any("ops-reverify.sh" in p for p in probs))
+
+    def test_a_drifted_bound_in_one_copy_fires(self):
+        self._edit("scripts/ops-verdict.sh",
+                   'while [ "$_cr" -lt 16 ]; do',
+                   'while [ "$_cr" -lt 8 ]; do')
+        self.assertTrue(any("ops-verdict.sh" in p for p in self._probs()))
+
+    def test_moving_the_constant_without_the_copies_fires(self):
+        # CAPS_MAX_CR is the canonical bound; the two copies hard-code its
+        # VALUE because they cannot source the lib. Moving one without the
+        # others is the drift, whichever side moves.
+        self._edit("scripts/lib/caps.sh", "CAPS_MAX_CR=16", "CAPS_MAX_CR=8")
+        probs = self._probs()
+        self.assertEqual(len(probs), 2, f"both copies must fire, got: {probs}")
+
+    def test_a_renamed_constant_is_reported_not_skipped(self):
+        # A parity check that cannot find its canonical value must SAY so —
+        # silently comparing nothing is how a pin goes vacuous (#111).
+        self._edit("scripts/lib/caps.sh", "CAPS_MAX_CR=16", "CAPS_MAX_CRS=16")
+        probs = self._probs()
+        self.assertTrue(probs and "CAPS_MAX_CR" in probs[0])
+
+    def test_a_gutted_loop_that_keeps_its_shape_fires(self):
+        # F30: equality alone is satisfied by identically-broken copies. A loop
+        # that removes without counting reads as bounded and is not.
+        self._edit("scripts/lib/caps.sh",
+                   """row="${row%$'\\r'}"; _cr=$((_cr + 1))""",
+                   """row="${row%$'\\r'}"; :""")
+        self.assertTrue(any("remove-and-count" in p for p in self._probs()))
+
+
+class LineCitationTest(unittest.TestCase):
+    """check_line_citations: a `file.sh:NNN` in prose must still resolve (#139 item 4).
+
+    The defect is real and was found by RUNNING this check, not by mutating it:
+    on the tree as it stood, `docs/REPLAY-CHARTER.md` cited `ops-init.sh:194`,
+    which was a BLANK line — and the claim attached to it ("the install set
+    lives here") had been false since #76 moved the set to
+    scripts/ops-install-set.sh. Two more (`lib/partition.sh:204`,
+    `statusline.sh:84`) resolved to a comment and to an unrelated `stat` probe;
+    the mechanical half cannot see those, which is why the message tells the
+    author to cite the SYMBOL rather than promising the number is checked.
+    """
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        (self.dir / "docs").mkdir()
+        (self.dir / "scripts").mkdir()
+        (self.dir / "scripts" / "thing.sh").write_text(
+            "#!/usr/bin/env bash\nreal_line() { :; }\n\nlast=1\n",
+            encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _probs(self, prose):
+        (self.dir / "docs" / "N.md").write_text(prose, encoding="utf-8")
+        probs = []
+        vp.check_line_citations(self.dir, probs)
+        return probs
+
+    def test_a_citation_past_end_of_file_fires(self):
+        probs = self._probs("see `thing.sh:99` for the rule\n")
+        self.assertTrue(probs, "a citation past EOF must fire")
+        self.assertIn("thing.sh:99", probs[0])
+        self.assertIn("4 lines", probs[0])
+
+    def test_a_citation_on_a_blank_line_fires(self):
+        # The shape that actually shipped: the number still resolves, and
+        # points at nothing. Line 3 of the fixture is blank.
+        probs = self._probs("see `thing.sh:3` for the rule\n")
+        self.assertTrue(probs, "a citation onto a blank line must fire")
+        self.assertIn("BLANK", probs[0])
+
+    def test_a_zero_line_citation_fires(self):
+        # `lines[0 - 1]` is Python's LAST line, so `:0` read the end of the
+        # file and reported nothing whenever that line was non-blank — a silent
+        # accept in the one branch written to refuse (PR #144 review, measured
+        # on this fixture before the `num < 1` guard existed).
+        probs = self._probs("see `thing.sh:0` for the rule\n")
+        self.assertTrue(probs, "a `:0` citation must fire, not wrap to lines[-1]")
+        self.assertIn("line numbers start at 1", probs[0])
+
+    def test_a_live_citation_stays_green(self):
+        self.assertEqual(self._probs("see `thing.sh:2` for the rule\n"), [])
+
+    def test_an_unresolvable_path_is_not_judged(self):
+        # The prose quotes sibling repos' files (cc-skills, local-ci). A check
+        # that fires on those is a check maintainers route around, so a name we
+        # cannot resolve is skipped rather than guessed at.
+        self.assertEqual(self._probs("their `other-repo-thing.sh:900` does X\n"), [])
+
+    def test_the_real_tree_passes(self):
+        # Ran RED on the tree before the #139 fix (ops-init.sh:194 blank).
+        probs = []
+        vp.check_line_citations(ROOT, probs)
+        self.assertEqual(probs, [])
 
 
 class ClaudeMdSizeTest(unittest.TestCase):
