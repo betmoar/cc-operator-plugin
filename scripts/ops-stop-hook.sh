@@ -602,7 +602,7 @@ scan_deviations "$opdir/DECISIONS.md" "$session"
 # Guarded on the count: on bash 3.2 under `set -u`, `"${arr[@]}"` on an empty
 # array is "unbound variable", and macOS ships 3.2.
 if [ "$MALFORMED" -gt 0 ]; then
-  echo "operator: $MALFORMED pending sentinel(s) with a MALFORMED name — a second '__', an EMPTY task id (a name ending in '__'), or a CARRIAGE RETURN in the task id makes it unaddressable, so no ops-verdict.sh invocation can clear them (each of those is refused by the CLI's own guard; the CR is invisible in this message, which is why the remedy below quotes the path). No writer of ours produces this shape; it was planted, hand-made, or opened by a pre-#139 ops-task.sh. Inspect, then remove:" >&2
+  echo "operator: $MALFORMED pending sentinel(s) with a MALFORMED name — a second '__', an EMPTY task id (a name ending in '__'), or a '|', NEWLINE or CARRIAGE RETURN in the task id makes it unaddressable, so no ops-verdict.sh invocation can clear them (each of those is refused by the CLI's own guard, so neither a verdict nor --defer can close it). No writer of ours produces this shape; it was planted, hand-made, or opened by a pre-0.11.14 CLI. Inspect, then remove — the quoting is exact, but a CR is INVISIBLE here and a newline makes a path SPAN TWO LINES, so copy the whole quoted string, not one line of it:" >&2
   for _mfone in "${MALFORMED_LIST[@]}"; do
     echo "operator:   rm -f $(shq "$_mfone")" >&2
   done

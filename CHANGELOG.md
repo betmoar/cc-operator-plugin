@@ -28,6 +28,17 @@ Closes #139 (item 2), #138 (the gitattributes half), #134, #140.
   it, leaving Stop blocking on a sentinel no invocation could clear. An opener admitting
   what the closer refuses is not a stricter gate, it is an unclosable task.
   `ops-adopt.sh` carries the arm for the same reason (re-stamping to such a name).
+- **Every UNCLOSABLE task id is MALFORMED, not just the CR one.** The first cut of this
+  bucket asked which BYTE; the review asked whether any CLI can close the sentinel, which
+  is the question the bucket exists to answer. `|` and a newline are refused by
+  `check_bare_name`/`check_cell` exactly as a CR is, so they were equally unclosable and
+  were not bucketed — measured on `SESS-A__a|b`: `ops-verdict.sh 'a|b' …` and `--defer`
+  both exit 2 with `task-id contains '|'`, while the Stop hook printed
+  `pending verdict(s): a|b — run …ops-verdict.sh <id> …`, guidance for a command that
+  cannot succeed on a task that can never be closed. That half predates #139; the CR work
+  is what made it visible. The bucket now encodes the writers' reject set rather than a
+  list of bytes, and its cases assert the PREMISE (neither path can close it) so the
+  bucket stays the correct home rather than a convenient one.
 - **A CR in a sentinel's TASK half is MALFORMED (the reader half of the same fix).** A
   name our CLIs can no longer address is F118/F135's class exactly, so `scan_pending`
   buckets it with the same `rm -f` remedy rather than naming an id the operator cannot
@@ -61,7 +72,7 @@ Closes #139 (item 2), #138 (the gitattributes half), #134, #140.
 
 ### Notes
 
-- `FLOOR_shell` 1013 → 1057. Forty-four cases; twelve mutations, each red in the case
+- `FLOOR_shell` 1013 → 1072. Fifty-nine cases; sixteen mutations, each red in the case
   written for it. Two of those cases exist only because a mutation found nothing: the
   #139 message revert, and #140's PR-side case, which accepted arm 5's message as
   standing in for arm 3b until it was made to name the arm — the interlock masks BOTH
@@ -79,6 +90,11 @@ Closes #139 (item 2), #138 (the gitattributes half), #134, #140.
   trailing newline the first appended rule FUSED with the last existing one —
   `VERDICTS.md merge=unionVERDICTS.md text eol=lf`, which git accepts silently and which
   destroys the original `merge=union` rule. Every fixture until then ended in a newline.
+  A second review round found three more of the same kind, none of them reachable by a
+  mutation of the shipped code: the presence grep was unanchored, so a COMMENTED-OUT copy
+  of the rule left `git check-attr` at `unspecified` while ops-init reported success; a
+  bare `>>` on an unwritable file printed bash's own `Permission denied` before the
+  crafted warning, and `break` hid the remaining two paths.
   Measured macOS uid 501, isolated rung runs; not measured under root.
 - One #140 guard is deliberately unasserted and says so in an `HONESTY NOTE`: the
   base-side `ls-tree` presence probe. A missing TREE object is what makes `ls-tree`

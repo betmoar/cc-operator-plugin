@@ -934,6 +934,44 @@ check "#138 UPGRADE: …and no fused garbage attribute is produced" \
 check "#138 UPGRADE: …and all three eol=lf rules still land, one per line" \
   "$([ "$(grep -c '^[A-Za-z_.*/]* text eol=lf$' "$UPGN/.operator/.gitattributes")" -eq 3 ] && echo 0 || echo 1)"
 rm -rf "$UPGN"
+# THE PRESENCE PROBE IS LINE-ANCHORED. A bare substring grep also matches the
+# rule inside a COMMENT, or as the tail of a longer path, and either one
+# suppresses the append FOREVER while ops-init reports success. Measured on the
+# first cut: a file carrying `# VERDICTS.md text eol=lf disabled by the project`
+# left `git check-attr text eol -- .operator/VERDICTS.md` at `unspecified`.
+# Asserted through GIT, not through grep — the whole defect is that the file
+# LOOKS like it has the rule.
+UPGC="$(newproj)"
+mkdir -p "$UPGC/.operator"
+printf '# VERDICTS.md text eol=lf disabled by the project\nVERDICTS.md merge=union\n' > "$UPGC/.operator/.gitattributes"
+( cd "$UPGC" && git init -q . >/dev/null 2>&1 && bash "$INIT" >/dev/null 2>&1 )
+check "#138 UPGRADE: a COMMENTED-OUT copy of the rule does not suppress the real one" \
+  "$( ( cd "$UPGC" && git check-attr eol -- .operator/VERDICTS.md 2>/dev/null ) | grep -q 'eol: lf' && echo 0 || echo 1)"
+check "#138 UPGRADE: …and the project's comment is left intact" \
+  "$(grep -q '^# VERDICTS.md text eol=lf disabled by the project$' "$UPGC/.operator/.gitattributes" && echo 0 || echo 1)"
+rm -rf "$UPGC"
+# AN APPEND FAILURE IS REPORTED IN OUR OWN WORDS, and every path is attempted.
+# Two defects in one fixture: a bare `>>` on an unwritable file prints bash's
+# own "Permission denied" BEFORE the crafted warning (the "raw bash error as
+# operator guidance" landmine), and a `break` at the first failure hid the other
+# two paths while still printing a success line for whatever had landed.
+# Root bypasses the write bit, so the premise is unexhibitable there (#109).
+UPGR="$(newproj)"
+mkdir -p "$UPGR/.operator"
+printf 'VERDICTS.md merge=union\n' > "$UPGR/.operator/.gitattributes"
+if [ "$(id -u)" = "0" ]; then
+  skip "#138 UPGRADE (root): an unwritable .gitattributes is still writable, no raw bash error to suppress"
+  skip "#138 UPGRADE (root): …and the warning cannot count all three failed paths"
+else
+  chmod 444 "$UPGR/.operator/.gitattributes"
+  UPGROUT="$( cd "$UPGR" && bash "$INIT" 2>&1 )"
+  chmod 644 "$UPGR/.operator/.gitattributes"
+  check "#138 UPGRADE: an unwritable .gitattributes leaks NO raw bash error" \
+    "$(printf '%s' "$UPGROUT" | grep -qiE 'permission denied|No such file' && echo 1 || echo 0)"
+  check "#138 UPGRADE: …and the warning counts ALL THREE paths, not just the first" \
+    "$(printf '%s' "$UPGROUT" | grep -q 'could not append 3 eol=lf rule' && echo 0 || echo 1)"
+fi
+rm -rf "$UPGR"
 # IDEMPOTENT. ops-init.sh runs on every /cc-operator:start, so an upgrade that
 # appends unconditionally grows the file without bound — a rule repeated 40
 # times still works, which is exactly why nothing would ever report it.
@@ -4978,6 +5016,75 @@ run_hook stop-session-a.json "$CRSP"
 check "#139 CONTROL running the printed remedy ends the block (nothing else was bucketed)" \
   "$([ "$HRC" -eq 0 ] && echo 0 || echo 1)"
 rm -rf "$CRSP"
+
+########################################################################
+echo "-- Case: the MALFORMED bucket covers EVERY unclosable task id, not just the CR (review of #139)"
+# The CR arm above answered "which byte"; the review asked the right question
+# instead: CAN ANY CLI CLOSE THIS? `|` and a newline are refused by
+# check_bare_name/check_cell exactly as a CR is, so a sentinel carrying one was
+# equally unclosable — and was NOT bucketed. Measured on `SESS-A__a|b` before
+# this arm: `ops-verdict.sh 'a|b' c e PASS` and `--defer` BOTH exit 2 with
+# "task-id contains '|'", while the Stop hook printed
+#   operator: pending verdict(s): a|b — run …/ops-verdict.sh <id> …
+# which is guidance for a command that cannot succeed, on a task that can never
+# be closed. That is the F118/F135 defect one byte over, and it PREDATES #139 —
+# the CR work is only what made it visible.
+#
+# So the rule the bucket encodes is "the writers' reject set", not "a list of
+# bytes someone thought of": whatever check_bare_name refuses for a task id is a
+# sentinel no writer of ours produced and no writer of ours can clear.
+MFB="$(newproj)"; ( cd "$MFB" && bash "$INIT" >/dev/null 2>&1 )
+: > "$MFB/.operator/pending/SESS-A__a|b"
+: > "$MFB/.operator/pending/$(printf 'SESS-A__c\nd')"
+run_hook stop-session-a.json "$MFB"
+check "a '|' and a newline in the task half BLOCK the stop (rc 2, fails closed)" \
+  "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+check "…and both are called MALFORMED, not offered as closable pending verdicts" \
+  "$(printf '%s' "$HERR" | grep -q 'MALFORMED' \
+     && ! printf '%s' "$HERR" | grep -q 'pending verdict(s):' && echo 0 || echo 1)"
+check "…and the remedy names the '|' sentinel's real path" \
+  "$(printf '%s' "$HERR" | grep -qF "rm -f '$MFB/.operator/pending/SESS-A__a|b'" && echo 0 || echo 1)"
+check "…and there are exactly two rm -f lines, one per malformed sentinel" \
+  "$([ "$(printf '%s\n' "$HERR" | grep -c "^operator:   rm -f '")" -eq 2 ] && echo 0 || echo 1)"
+# THE PREMISE, asserted rather than assumed: these really are unclosable. If a
+# CLI could close one, bucketing it would be WRONG — this is what makes the
+# bucket the correct home rather than a convenient one.
+( cd "$MFB" && bash "$VERDICT" 'a|b' crit ev PASS --owner SESS-A >/dev/null 2>&1 ); MFBRC=$?
+check "PREMISE: ops-verdict.sh cannot close the '|' task (so the bucket is correct)" \
+  "$([ "$MFBRC" -ne 0 ] && echo 0 || echo 1)"
+( cd "$MFB" && bash "$VERDICT" 'a|b' --defer "blocked" --owner SESS-A >/dev/null 2>&1 ); MFBRC2=$?
+check "PREMISE: --defer cannot close it either (no honest exit exists)" \
+  "$([ "$MFBRC2" -ne 0 ] && echo 0 || echo 1)"
+# CONTROL: an ordinary task beside them is still named and still closable — the
+# bucket widened, it did not swallow the normal path.
+( cd "$MFB" && bash "$TASK" legit --owner SESS-A >/dev/null 2>&1 )
+run_hook stop-session-a.json "$MFB"
+check "CONTROL a well-formed task beside them is still named: 'pending verdict(s): legit'" \
+  "$(printf '%s' "$HERR" | grep -q 'pending verdict(s): legit — run' && echo 0 || echo 1)"
+# A NEWLINE-BEARING NAME MAKES ITS REMEDY SPAN TWO LINES, and that is a real
+# property of the output, not a test artifact: `shq` quotes it correctly (a
+# literal newline inside '…' is valid shell and pastes fine into a terminal),
+# but any LINE-ORIENTED extraction — this suite's `grep -o`, an operator's
+# editor macro, a log scraper — reconstructs only the first half. Measured:
+# the pipe sentinel is removed and the newline one survives, so a second Stop
+# still blocks with one MALFORMED entry. The remedies are still correct and
+# still the only remedy; the message now says the name may span lines, because
+# an operator who pastes half a path and sees the block persist has no way to
+# learn why. Deleting by hand is what that case needs.
+eval "$(printf '%s\n' "$HERR" | grep -o "rm -f '[^']*'" | tr '\n' ';')"
+check "CONTROL the single-line remedy really cleared the '|' sentinel" \
+  "$([ ! -e "$MFB/.operator/pending/SESS-A__a|b" ] && echo 0 || echo 1)"
+check "CONTROL the newline sentinel SURVIVES a line-oriented paste (why the message warns)" \
+  "$([ -e "$MFB/.operator/pending/$(printf 'SESS-A__c\nd')" ] && echo 0 || echo 1)"
+check "CONTROL the MALFORMED message warns that a name can span lines" \
+  "$(printf '%s' "$HERR" | grep -qi 'span.*line\|more than one line' && echo 0 || echo 1)"
+# Remove it the way the message tells an operator to, then the ordinary close.
+rm -f "$MFB/.operator/pending/$(printf 'SESS-A__c\nd')"
+( cd "$MFB" && bash "$VERDICT" legit crit ev PASS --owner SESS-A >/dev/null 2>&1 )
+run_hook stop-session-a.json "$MFB"
+check "CONTROL every malformed entry gone plus one honest verdict ends the block" \
+  "$([ "$HRC" -eq 0 ] && echo 0 || echo 1)"
+rm -rf "$MFB"
 
 ########################################################################
 echo "-- Case: F136 a task id resolves ONLY to a name whose task half is that id — the CLIs read names the way the hook does"
