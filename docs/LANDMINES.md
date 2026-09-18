@@ -1301,8 +1301,12 @@ each broke where that file happened to anchor:
   own filter, fell into the data parser, and was **emitted as a phantom finding**
   (`undatable: 2`, with a row whose verdict cell read `PASS/FAIL`).
 - `ops-verdict.sh`'s `row_is_conformant` anchors on the trailing pipe (`'| '*' |'`), so a
-  CRLF fragment was refused as non-conformant and `--reconcile` **dropped it** — data loss
-  in the recovery path, reached by exactly the messy merges `merge=union` produces.
+  CRLF fragment was refused as non-conformant and `--reconcile` **left it unrecovered** in
+  the one path that exists to recover it, reached by exactly the messy merges `merge=union`
+  produces. Measure the POLARITY before calling this one data loss, as two drafts of this
+  paragraph did: the refusal is ANNOUNCED (`skipping non-conformant line in <frag>: <row>`
+  on stderr, plus a `skipped` count in the summary), so it is the mildest of the three and
+  the only one an operator could notice unaided. The other two answer wrongly in silence.
 
 Two things make this worth a landmine rather than a footnote. First, **the repo already
 knew**: six other readers strip CR, and `lib/partition.sh:204` carries the rule in

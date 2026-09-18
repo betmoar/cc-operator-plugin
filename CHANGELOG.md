@@ -61,8 +61,11 @@ single source of truth; bump it in the same commit as the changelog entry.
   #128 fix: exact header equality removed the `*` that had been absorbing the `\r`.
   `caps.sh` failed **open** — `tripped=1` on LF and `0` on byte-identical CRLF, and the
   Stop hook sources it, so a CRLF checkout silently disabled the same-target-rework cap.
-  `--reconcile` **dropped** the row outright: 1 of 2 restored, data loss in the recovery
-  path. One `row="${row%$'\r'}"` in each, before any comparison.
+  `--reconcile` **refused** the row: 1 of 2 restored, so a recoverable row stayed
+  unrecovered in the one path that exists to recover it. That refusal is ANNOUNCED — the
+  row is named on stderr and counted as non-conformant — which makes it the mildest of the
+  three and the only one an operator could notice. One `row="${row%$'\r'}"` in each,
+  before any comparison.
 - **The base-gate no longer passes a `tests/` deletion it cannot see (#137).** Both
   `ls-tree` redirects in arm 3 were unchecked, and the loop iterates the base listing — so
   an empty file made it a no-op. With a nested `tests/sub` subtree object missing, every
