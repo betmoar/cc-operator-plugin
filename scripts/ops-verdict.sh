@@ -72,12 +72,29 @@ NL="$(printf '\nx')"; NL="${NL%x}"
 
 # Ledgers are one-line pipe-tables: '|' or newline in a cell breaks the 4-cell
 # schema every grep consumer depends on. Refuse, never sanitize.
+#
+# A CR is the THIRD cell-breaking byte and was admitted until #139 item 2: a
+# caller passing one landed it INSIDE a cell in the ledger of record
+# (`| T1 | c r \r i t | ev @no-commit | PASS |`, measured; byte-identical
+# guard on origin/main, so it predates #136). It is contained where it matters
+# — the Stop hook's sanitize_row renders it `?` — and NOT where it does not:
+# ops-reverify.sh has no sanitizer and emits the raw byte into its report.
+# #136 taught the readers to strip a TRAILING CR; refusing at the writer is
+# what keeps a MID-cell one from ever reaching them, and makes every reader's
+# job smaller rather than larger.
+#
+# Written as the `$'\r'` escape, never a raw CR byte — the 0.10.0 debloat
+# stripped raw control bytes out of ops-compress.mjs's regexes and the
+# "lossless" tier silently truncated every `]`-bearing output (audit F120).
+# The same hazard applies to a literal CR sitting invisibly in a `case` arm.
 check_cell() { # check_cell <label> <value>
   case "$2" in
     *"|"*)
       die "$1 contains '|' — cells are pipe-delimited; rephrase without it" ;;
     *"$NL"*)
       die "$1 contains a newline — ledger rows are exactly one line" ;;
+    *$'\r'*)
+      die "$1 contains a carriage return — a CR inside a cell is invisible in the ledger and reaches consumers that do not sanitize (ops-reverify.sh emits it raw); the readers strip a TRAILING CR (#136), not one in the middle" ;;
   esac
 }
 

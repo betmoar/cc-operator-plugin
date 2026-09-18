@@ -1350,10 +1350,24 @@ def check_guard_parity(root, problems):
                 if _h)
             _harness = _pre + _helpers + _bb.group(0) + "\n" + _ob.group(0) + "\n"
             # (value, must-be-refused, the rule it proves)
+            #
+            # The CR tuple is #139 item 2, and it must be EXECUTED like the
+            # rest: the arm landed in three CLIs with the bash suite red on
+            # each mutation, and the validator still said "all contracts hold"
+            # when the ops-verdict.sh arm was deleted — because no probe
+            # carried a `\r`. That is the F144 shape one rule over.
+            #
+            # It probes a REAL COUPLING, not a preference: ops-verdict.sh
+            # refuses a CR id (check_bare_name delegates to check_cell), so a
+            # CLI that still ADMITS one opens a sentinel neither the verdict
+            # path nor --defer can clear — measured, Stop blocking forever.
+            # The three writers agreeing is what keeps the gate closable.
             _bare = (("a/b", "'/' would let a later rm -f escape .operator/"),
                      (".hidden", "a dotfile sentinel is invisible to the hook's glob"),
                      ("a|b", "'|' breaks the 4-cell ledger row"),
                      ("a\nb", "a newline breaks the 4-cell ledger row"),
+                     ("a\rb", "a CR breaks the 4-cell row and, in a task id, "
+                              "opens a sentinel ops-verdict.sh can never close (#139)"),
                      ("a__b", "'__' is the owner/task separator"))
             for _call, _probes in (
                     ('check_bare_name t "$1"', _bare),

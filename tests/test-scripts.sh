@@ -510,6 +510,56 @@ check "traversal task-id → victim file survives" "$([ -f "$P/victim.txt" ] && 
 check "ops-task refuses '|' in task-id" "$([ "$TRC2" -ne 0 ] && echo 0 || echo 1)"
 ( cd "$P" && bash "$VERDICT" T-P --defer "$(printf 'blocked\nfake | row')" >/dev/null 2>&1 ); DRC2=$?
 check "newline/pipe in defer reason → refused" "$([ "$DRC2" -ne 0 ] && echo 0 || echo 1)"
+# --- #139 item 2: a CR is a FOURTH cell-breaking byte -------------------------
+# check_cell refused '|' and newline and admitted '\r', so a caller passing one
+# landed it inside a cell in the ledger of record. Measured on origin/main
+# (byte-identical guard, so this predates #136):
+#   | T1 | c r \r i t | ev @no-commit | PASS |\n
+# Downstream it is CONTAINED where it matters (the Stop hook's sanitize_row
+# turns it into '?') and NOT where it does not (ops-reverify.sh has no
+# sanitizer and emits the raw byte into its report). The honest fix is at the
+# WRITER: one arm here makes every reader's job smaller.
+#
+# THE ARM IS IN check_cell, WHICH check_bare_name CALLS — so it reaches the
+# CRITERION and EVIDENCE cells AND the task-id. That asymmetry is deliberate
+# and was measured before it was chosen: an arm reaching the task-id via
+# check_bare_name would refuse a CR id at ops-verdict.sh while ops-task.sh
+# (whose check_bare_name does NOT call check_cell) still OPENS one, and the
+# sentinel would be unclosable by BOTH the verdict path and --defer —
+# `ops-verdict: task-id contains a CR`, rc non-zero, sentinel intact, Stop
+# blocking forever (measured on a patched .operator/bin copy). So ops-task.sh
+# gets the same arm in ITS check_bare_name: the two writers must agree about
+# what an id may contain, or the gate wedges. The pair is what makes this safe.
+# EACH PROBE RE-ARMS THE SENTINEL. Written without it first, and two of these
+# four went GREEN on unfixed code: the criterion probe wrote its row and
+# CLEARED T-P, so the evidence and --defer probes were refused by the
+# ownership gate ("no open sentinel") rather than by the CR arm — a pass that
+# certifies the bug as fixed. Verified in isolation against a fresh sentinel:
+# `ops-verdict.sh T-P crit $'ev\rid' PASS` returned rc 0, "row appended,
+# sentinel cleared". Re-arming is what makes each probe test its own arm.
+: > "$P/.operator/pending/T-P"
+( cd "$P" && bash "$VERDICT" T-P "$(printf 'cr\rit')" "evidence" PASS >/dev/null 2>&1 ); CRRC=$?
+check "#139 CR in criterion → refused (a CR inside a cell is a byte no reader can see)" \
+  "$([ "$CRRC" -ne 0 ] && echo 0 || echo 1)"
+check "#139 CR in criterion → no row written, sentinel intact" \
+  "$([ "$(wc -l < "$P/.operator/VERDICTS.md")" = "$ROWS_BEFORE" ] && sentinel_any "$P" T-P && echo 0 || echo 1)"
+: > "$P/.operator/pending/T-P"
+( cd "$P" && bash "$VERDICT" T-P "crit" "$(printf 'ev\rid')" PASS >/dev/null 2>&1 ); CRRC2=$?
+check "#139 CR in evidence → refused" "$([ "$CRRC2" -ne 0 ] && echo 0 || echo 1)"
+check "#139 CR in evidence → no row written (the refusal precedes the append)" \
+  "$([ "$(wc -l < "$P/.operator/VERDICTS.md")" = "$ROWS_BEFORE" ] && echo 0 || echo 1)"
+: > "$P/.operator/pending/T-P"
+( cd "$P" && bash "$VERDICT" T-P --defer "$(printf 'blo\rcked')" >/dev/null 2>&1 ); CRRC3=$?
+check "#139 CR in defer reason → refused (--defer writes a DECISIONS line, same schema)" \
+  "$([ "$CRRC3" -ne 0 ] && echo 0 || echo 1)"
+# BOTH WRITERS, or the pair wedges. ops-task.sh opening what ops-verdict.sh
+# refuses is the unclosable-sentinel state described above.
+( cd "$P" && bash "$TASK" "$(printf 'ta\rsk')" >/dev/null 2>&1 ); CRRC4=$?
+check "#139 ops-task refuses a CR in the task-id (or ops-verdict could never close it)" \
+  "$([ "$CRRC4" -ne 0 ] && echo 0 || echo 1)"
+( cd "$P" && bash "$VERDICT" "$(printf 'ta\rsk')" "crit" "evidence" PASS >/dev/null 2>&1 ); CRRC5=$?
+check "#139 ops-verdict refuses a CR in the task-id (the other half of the pair)" \
+  "$([ "$CRRC5" -ne 0 ] && echo 0 || echo 1)"
 # clean inputs still pass end-to-end after the hygiene guards
 ( cd "$P" && bash "$VERDICT" T-P "crit" "42 passed, 0 failed" PASS >/dev/null 2>&1 ); CRC=$?
 check "clean row still accepted after guards" "$([ "$CRC" -eq 0 ] && [ ! -e "$P/.operator/pending/T-P" ] && echo 0 || echo 1)"
@@ -834,6 +884,36 @@ check "init writes .operator/.gitattributes (merge=union)" "$(grep -q 'VERDICTS.
 # All three append-only paths need this — a regression in any one silently reintroduces merge conflicts.
 check "gitattributes covers DECISIONS.md" "$(grep -q 'DECISIONS.md merge=union' "$P/.operator/.gitattributes" && echo 0 || echo 1)"
 check "gitattributes covers the fragments dir" "$(grep -q 'verdicts.d/\*.md merge=union' "$P/.operator/.gitattributes" && echo 0 || echo 1)"
+# #138: eol=lf on the same three paths — git must never be the thing that hands
+# a reader a CRLF ledger. All three, for the merge=union reason: a regression in
+# one path is silent, and the fragments are what --reconcile reads back.
+check "#138 gitattributes pins VERDICTS.md to eol=lf" \
+  "$(grep -q 'VERDICTS.md text eol=lf' "$P/.operator/.gitattributes" && echo 0 || echo 1)"
+check "#138 gitattributes pins DECISIONS.md to eol=lf" \
+  "$(grep -q 'DECISIONS.md text eol=lf' "$P/.operator/.gitattributes" && echo 0 || echo 1)"
+check "#138 gitattributes pins the fragments dir to eol=lf" \
+  "$(grep -q 'verdicts.d/\*.md text eol=lf' "$P/.operator/.gitattributes" && echo 0 || echo 1)"
+# THE EFFECT, not the line. A rule present in the file proves nothing about what
+# git does with it — `eol=lf` without `text` is inert, and a typo'd path matches
+# nothing. So: a real repo, core.autocrlf=true (what every Windows clone gets),
+# commit a ledger, delete it, check it back out, and read the BYTES.
+# Measured without the rule, same fixture: `| … | PASS |\r\n`.
+EOLP="$(newproj)"; ( cd "$EOLP" && bash "$INIT" >/dev/null 2>&1 )
+( cd "$EOLP" && git init -q . && git config user.email t@t && git config user.name t \
+  && git config core.autocrlf true \
+  && printf '| a | b | c | PASS |\n' >> .operator/VERDICTS.md \
+  && git add -A >/dev/null 2>&1 && git commit -qm base >/dev/null 2>&1 \
+  && rm .operator/VERDICTS.md && git checkout -- .operator/VERDICTS.md ) >/dev/null 2>&1
+check "#138 EFFECT: under core.autocrlf=true a checked-out ledger has NO CR (the rule is live, not just present)" \
+  "$(! grep -q $'\r' "$EOLP/.operator/VERDICTS.md" && echo 0 || echo 1)"
+# THE LIMIT, stated as a case so it cannot be mistaken for full coverage:
+# gitattributes normalize on checkout/commit, so a ledger written CRLF by an
+# EDITOR in the worktree stays CRLF and every reader still meets it. This is
+# why #138 is an ADDITION to #136's reader guards, never a replacement.
+printf '| x | y | z | PASS |\r\n' > "$EOLP/.operator/VERDICTS.md"
+check "#138 LIMIT: a CRLF ledger written in the worktree STAYS CRLF — the reader guards stay load-bearing" \
+  "$(grep -q $'\r' "$EOLP/.operator/VERDICTS.md" && echo 0 || echo 1)"
+rm -rf "$EOLP"
 # The schema check alone doesn't discriminate (short printfs land atomically unlocked too); prove the lock is held.
 ( cd "$P" && bash "$TASK" T-LOCK --owner SESS-A >/dev/null 2>&1 )
 mkdir "$P/.operator/.lock"
@@ -4782,6 +4862,63 @@ check "F135 running every printed remedy leaves ONLY the real task blocking" \
 ( cd "$F135P" && bash "$VERDICT" legit crit ev PASS --owner SESS-A >/dev/null 2>&1 )
 run_hook stop-session-a.json "$F135P"
 check "F135 …and the stop is allowed once the real task has its verdict" "$([ "$HRC" -eq 0 ] && echo 0 || echo 1)"
+rm -rf "$F135P"
+
+########################################################################
+echo "-- Case: #139 a CR in a sentinel's task half is MALFORMED — the writer guard and the reader bucket are ONE decision"
+# #139 item 2 adds a CR arm to ops-verdict.sh's check_cell, which check_bare_name
+# calls — so the task-id is refused too, and that half is NOT optional: measured
+# on a patched .operator/bin copy, an arm reaching only the CELLS left
+# ops-task.sh (whose check_bare_name does not call check_cell) free to OPEN
+# `ta\rsk` while ops-verdict.sh refused to close it. Both paths died —
+# `ops-verdict: task-id contains a carriage return`, sentinel intact, --defer
+# refused identically — so Stop blocked forever on a task no invocation could
+# clear. The writers agreeing is what makes the guard safe.
+#
+# That leaves the sentinel ALREADY on disk: written by a pre-#139 ops-task.sh,
+# or planted. A name our CLIs can no longer address is exactly F118/F135's
+# class, so it belongs in the same MALFORMED bucket with the same `rm -f`
+# remedy — not in MINE_IDS, where the hook would name an id the operator
+# cannot type back. Without this the guard converts a closable task into a
+# permanent block, which is a worse gate than the one it replaced.
+CRSP="$(newproj)"; ( cd "$CRSP" && bash "$INIT" >/dev/null 2>&1 )
+CRSENT="$(printf 'SESS-A__ta\rsk')"
+: > "$CRSP/.operator/pending/$CRSENT"
+run_hook stop-session-a.json "$CRSP"
+check "#139 a CR-bearing sentinel BLOCKS the stop (rc 2, fails closed)" \
+  "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
+check "#139 the block calls it MALFORMED, not a pending verdict the operator could close" \
+  "$(printf '%s' "$HERR" | grep -q 'MALFORMED' && echo 0 || echo 1)"
+# The message ENUMERATES the causes, and that enumeration is what the operator
+# acts on: a CR is invisible in a terminal, so a message listing only `__` and
+# empty ids sends them looking for a separator that is not there. Pinned
+# because the bucket-only mutation (arm kept, message reverted to the pre-#139
+# wording) shipped GREEN across the whole suite — the same
+# message-drifts-from-code shape as the statusline/hook disagreement #99 exists
+# to prevent, one file over.
+check "#139 the MALFORMED message NAMES the carriage return as a cause" \
+  "$(printf '%s' "$HERR" | grep -qi 'carriage return' && echo 0 || echo 1)"
+check "#139 no 'pending verdict(s)' line offers an id containing a CR" \
+  "$(printf '%s' "$HERR" | grep -q 'pending verdict(s):' && echo 1 || echo 0)"
+check "#139 the remedy names the CR sentinel's real path" \
+  "$(printf '%s' "$HERR" | grep -qF "rm -f '$CRSP/.operator/pending/$CRSENT'" && echo 0 || echo 1)"
+check "#139 the bar agrees with the hook: op[1], blocking" \
+  "$([ "$(f118_render SESS-A "$CRSP")" = "op[1]" ] && echo 0 || echo 1)"
+# A CR in the OWNER half is the same defect one branch over: sentinel_owner_of_name
+# already degrades it to unowned (`*[[:space:]]*` matches a CR — verified in bash
+# 3.2 and 5), which fails CLOSED as MINE. Bucketing it MALFORMED instead would be
+# wrong: the TASK half is addressable, so `--defer` can still close it honestly.
+: > "$CRSP/.operator/pending/$(printf 'SE\rSS-A__legit2')"
+run_hook stop-session-a.json "$CRSP"
+check "#139 a CR in the OWNER half stays unowned→MINE (addressable id, not MALFORMED)" \
+  "$(printf '%s' "$HERR" | grep -q 'pending verdict(s): legit2' && echo 0 || echo 1)"
+# CONTROL: the remedy clears the malformed one and an ordinary task still gates.
+eval "$(printf '%s\n' "$HERR" | grep -o "rm -f '[^']*'" | tr '\n' ';')"
+( cd "$CRSP" && bash "$VERDICT" legit2 crit ev PASS --owner SESS-A >/dev/null 2>&1 )
+run_hook stop-session-a.json "$CRSP"
+check "#139 CONTROL running the printed remedy ends the block (nothing else was bucketed)" \
+  "$([ "$HRC" -eq 0 ] && echo 0 || echo 1)"
+rm -rf "$CRSP"
 
 ########################################################################
 echo "-- Case: F136 a task id resolves ONLY to a name whose task half is that id — the CLIs read names the way the hook does"

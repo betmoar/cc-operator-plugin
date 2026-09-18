@@ -104,15 +104,35 @@ fi
 # Per-session fragments (verdicts.d/<owner>.md) let two branches append to two
 # files and merge cleanly; --reconcile restores rows after any messy merge.
 # merge=union needs no user config; scoped to .operator/, never the host root.
+#
+# `text eol=lf` is #138's complement to #136's reader guards, and the ORDER of
+# that sentence matters: it is an ADDITION, never a replacement. Measured on a
+# scratch repo with core.autocrlf=true — the setting every Windows clone gets:
+#   without it, a fresh checkout of a committed ledger yields `| … | PASS |\r\n`
+#   with it,    the same checkout yields `| … | PASS |\n`
+# and, in the same repo, a ledger written CRLF by an EDITOR in the worktree
+# stays CRLF regardless, because gitattributes normalize on checkout and commit,
+# not on third-party writes. So this closes git as a PRODUCER of CRLF ledgers
+# and leaves every reader guard load-bearing.
+#
+# Written per-file rather than as a `*` rule: .operator/ also holds bin/ (the
+# installed CLIs) and pending/ sentinels, and declaring those `text` would
+# invite git to rewrite bytes in files whose whole point is byte-fidelity.
 if [ ! -f "$OPDIR/.gitattributes" ]; then
   cat > "$OPDIR/.gitattributes" <<'EOF'
 # Append-only ledgers: take both sides on merge, never a conflict marker.
 # Re-run `.operator/bin/ops-verdict.sh --reconcile` after any messy merge.
+#
+# eol=lf: git must never hand a reader a CRLF ledger (#138). The readers strip
+# a trailing CR anyway (#136) — this stops the file from arriving that way.
 VERDICTS.md merge=union
+VERDICTS.md text eol=lf
 DECISIONS.md merge=union
+DECISIONS.md text eol=lf
 verdicts.d/*.md merge=union
+verdicts.d/*.md text eol=lf
 EOF
-  echo "created $OPDIR/.gitattributes (append-only merge=union)"
+  echo "created $OPDIR/.gitattributes (append-only merge=union, eol=lf)"
 fi
 
 if [ ! -f "$OPDIR/VERDICTS.md" ]; then

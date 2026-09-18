@@ -100,8 +100,17 @@ scan_pending() { # scan_pending <opdir> <session>
     # condition is that list, returned 0 while the bar rendered op[N] red.
     # Bucketed BEFORE the ownership branch so neither message can name the
     # unusable id.
+    # A CR in the TASK half joins them (#139). Once ops-verdict.sh's check_cell
+    # refuses a carriage return, `--defer` cannot close such a task either, so
+    # the id is unaddressable in exactly F135's sense — and naming it in
+    # "pending verdict(s):" would hand the operator a string they cannot type
+    # back, while the byte itself is invisible in the terminal. The OWNER half
+    # is deliberately NOT bucketed here: sentinel_owner_of_name already
+    # degrades a CR owner to unowned (its `*[[:space:]]*` arm matches a CR in
+    # bash 3.2 and 5, verified), which fails CLOSED as MINE, and the task half
+    # stays addressable — so that sentinel can still be closed honestly.
     case "$id" in
-      *__* | "")
+      *__* | "" | *$'\r'*)
         MALFORMED_LIST+=("$f")
         MALFORMED=$((MALFORMED + 1))
         continue ;;

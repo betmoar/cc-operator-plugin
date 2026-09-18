@@ -197,6 +197,47 @@ catches that. Never treat a green validator as evidence the gate works.
    "mutation-checked". The python suite already asserts the specific check
    fires; the prose owes the same granularity.
 
+## Running the shell suite under BOTH uids (#134)
+
+The shell suite's total is executor-invariant (#109 — a case that cannot hold
+here calls `skip()`, so the floor sits at the true total). The **split** is not.
+Root bypasses the write bit, so every `chmod 000`/`500` refusal case is
+unexhibitable as uid 0 and self-skips. Measured on the same commit: a rootful
+container ran 984 passed / 12 skipped where uid 1000 ran 994 / 2 — **ten cases
+that a maintainer working as root never executes**, and two of them shipped
+broken and were red on CI for three commits.
+
+Since #134 the suite prints the roster below its summary, so a run now says
+which properties it did not cover:
+
+```
+== summary: 984 passed, 0 failed, 12 skipped ==
+== skipped here (uid 0) — NOT covered by this run ==
+  4n read-only .stopguard (root): chmod 500 still permits the write
+  …
+```
+
+Read that roster. A non-empty one means the run is not the evidence it looks
+like, and the remedy is to run the rung under the other uid before pushing:
+
+```sh
+# From a rootful container/devbox — run the shell rung as a normal user.
+# The suite needs a writable HOME and TMPDIR, so hand it both; without them
+# mktemp fails and the failure reports as a suite error, not a permission one.
+useradd -m ccop 2>/dev/null || true
+chown -R ccop "$PWD"
+su ccop -c "cd '$PWD' && HOME=/home/ccop TMPDIR=/tmp bash scripts/gate-suite.sh shell"
+```
+
+The inverse also holds and is the cheaper habit on macOS, where a maintainer is
+already non-root: nothing locally exercises the uid-0 path, so the **root**
+skips are the ones CI sees first. `sudo -E bash scripts/gate-suite.sh shell`
+covers that direction — and if the roster is empty under both, the split is
+closed for that commit.
+
+Neither run replaces the other, and a green run under one uid is not a claim
+about the other. When only one is available, say which one in the report.
+
 ## What a green suite does NOT prove
 
 Keep this list honest; add to it when you find a new gap.
@@ -204,6 +245,7 @@ Keep this list honest; add to it when you find a new gap.
 | Not proven | Why |
 |---|---|
 | Lock exclusivity under reclaim | Needs two writers timing out simultaneously. Code-review only. |
+| Anything a `skip()` covered on this executor | The roster under the summary names them. Ten cases self-skip as root (#134); the total stays identical, so the count alone cannot tell you. |
 | Bounded parse at scale | Sized to discriminate at 64 MB; the real-world bad case is larger. |
 | A live SessionStart payload carries `cwd`, and `additionalContext` reaches the model | End-to-end, needs a real session. Verified live, never in CI. |
 | bash 3.2 compatibility | CI runs modern bash. The `${ARR+"${ARR[@]}"}` idiom is load-bearing on macOS and is validated only by local dev. |

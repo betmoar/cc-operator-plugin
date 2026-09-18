@@ -9,6 +9,67 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.14] - 2026-09-18
+
+### Fixed
+
+- **A carriage return is refused at the WRITER, in all three CLIs (#139 item 2).**
+  `check_cell` refused `|` and newline and admitted `\r`, so a caller passing one landed
+  it inside a cell in the ledger of record — `| T1 | c r \r i t | ev @no-commit | PASS |`,
+  measured, and byte-identical on `origin/main`, so it predates #136. #136 taught three
+  row parsers to strip a TRAILING CR; a mid-cell one still reached every consumer, and
+  `ops-reverify.sh` (no sanitizer) emits it raw into its report.
+- **The arm reaches the task-id too, and that is what makes it safe.** `check_bare_name`
+  calls `check_cell`, so `ops-verdict.sh` refuses a CR id — which means `ops-task.sh` had
+  to refuse one as well. Measured with the arm in `ops-verdict.sh` alone: `ops-task.sh`
+  opened `ta\rsk` (rc 0), and both the verdict path and `--defer` then refused to close
+  it, leaving Stop blocking on a sentinel no invocation could clear. An opener admitting
+  what the closer refuses is not a stricter gate, it is an unclosable task.
+  `ops-adopt.sh` carries the arm for the same reason (re-stamping to such a name).
+- **A CR in a sentinel's TASK half is MALFORMED (the reader half of the same fix).** A
+  name our CLIs can no longer address is F118/F135's class exactly, so `scan_pending`
+  buckets it with the same `rm -f` remedy rather than naming an id the operator cannot
+  type back. Keyed on the task half, not the whole name: a CR in the OWNER half already
+  degrades to unowned via `sentinel_owner_of_name` (its `*[[:space:]]*` arm matches a CR
+  — verified in bash 3.2 and 5), which fails closed as MINE with the task still
+  addressable. Keying the bucket on `$name` turned 28 cases red.
+- **The Stop hook's MALFORMED message now names the carriage return.** With the bucket
+  arm in place and only the message reverted to its pre-#139 wording, the whole suite
+  shipped green — so the enumeration has its own pin. A CR is invisible in a terminal;
+  a message listing only `__` and empty ids sends the operator hunting for a separator
+  that is not there.
+- **`.operator/.gitattributes` pins the ledgers to `eol=lf` (#138's actionable half).**
+  Measured on a scratch repo with `core.autocrlf=true`: without the rule a checked-out
+  ledger is `| a | b | c | PASS |\r\n`, with it `\n`. Measured in the same repo
+  immediately after: a ledger written CRLF by an EDITOR in the worktree stays CRLF,
+  because gitattributes normalize on checkout/commit and not on third-party writes. So
+  this closes git as a PRODUCER of CRLF ledgers and every reader guard stays
+  load-bearing — the suite carries that LIMIT as its own case beside the EFFECT one.
+  Per-file rather than a `*` rule: `.operator/` also holds `bin/` and `pending/`, whose
+  whole point is byte-fidelity.
+
+### Changed
+
+- **`docs/PLAYBOOK.md` documents running the shell rung under BOTH uids (#134's
+  remaining half).** The roster under the summary (which #134 already shipped) names
+  what a run skipped; the playbook now gives the `su`/`sudo` invocation that covers the
+  other direction, and "What a green suite does NOT prove" gains the row for it. Ten
+  cases self-skip as root, the total is unchanged by design (#109), so the count alone
+  cannot tell you.
+
+### Notes
+
+- `FLOOR_shell` 1013 → 1033. Twenty cases; six mutations, each red in the case written
+  for it (M5 — the message revert — is why that case exists: it shipped green before).
+  `check_guard_parity` gained the `a\rb` probe tuple, red on each of the three CLIs and
+  green restored; before it existed, deleting the shipped arm reported `all contracts
+  hold`. Measured macOS uid 501, isolated rung runs; not measured under root.
+- Filed **#140**: `base-gate.sh` arm 3b repeats #137's fail-open (`_ci_rungs` pipes
+  `git show` into grep unchecked and iterates the BASE side). Reproduced end-to-end —
+  rung removed, base CI blob unreadable, one unrelated arm-5 pathspec widening →
+  `BASE_GATE_PASSED`, rc 0. Today it is masked by an undeclared interlock: arm 5's
+  own diff fails on the same corruption because `.github/` is inside its pathspec.
+
 ## [0.11.13] - 2026-09-16
 
 ### Fixed
