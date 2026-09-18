@@ -84,7 +84,7 @@ AFFECTED=0; CLEAR=0; UNDATABLE=0; SKIPPED=0; n=0
 # inside counts bytes for the same reason and may cut a multibyte character —
 # display only; the row itself is never rewritten.
 scan_ledger() {
-  local LC_ALL=C
+  local LC_ALL=C _cr=0
   printf '%s\n' "# ops-reverify — rows whose HEAD window overlaps [$FROM, $TO] — ledger: $LEDGER"
   printf '%s\n' "| # | gate | verdict | stamp | HEAD window | status | criterion |"
   printf '%s\n' "|---|---|---|---|---|---|---|"
@@ -96,7 +96,20 @@ scan_ledger() {
     # Measured at f306cee on a CRLF ledger: `undatable: 2` and the header
     # swept as a phantom data row, where the pre-#128 code reported
     # `undatable: 1`. A correctness fix that regressed a case it never named.
-    row="${row%$'\r'}"
+    #
+    # THE WHOLE TRAILING RUN, BOUNDED (#139 item 1). One removal left a
+    # `\r\r\n` row still carrying a CR, which lands in the row's LAST cell:
+    # measured on a double-CR ledger, this report printed `| T1 | FAIL | |
+    # no-commit | …` — an extra empty cell in the operator's own report, and
+    # the header swept as a phantom row for exactly the same reason #128
+    # names. The bound mirrors lib/caps.sh's CAPS_MAX_CR; an unbounded loop
+    # measured >300s on one 1 MiB line of CRs. This file sources no lib, so
+    # the rule is hand-copied — the same standalone constraint as the
+    # .operator/bin/ CLIs.
+    _cr=0
+    while [ "$_cr" -lt 16 ]; do
+      case "$row" in *$'\r') row="${row%$'\r'}"; _cr=$((_cr + 1)) ;; *) break ;; esac
+    done
     case "$row" in "| "*) ;; *) continue ;; esac
     # The header is matched WHOLE, not by prefix (#128). `"| Gate | Criterion |"*`
     # discards any row whose id is `Gate` and whose criterion is `Criterion`, and

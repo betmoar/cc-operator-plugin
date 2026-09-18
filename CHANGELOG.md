@@ -9,6 +9,77 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.15] - 2026-09-18
+
+Finishes #139 — items 1, 3 and 4, the residue 0.11.14 left open. #139 can close with
+this; #138's priced omission (the six unpinned CR sites) is unchanged and stays open.
+
+### Fixed
+
+- **A `\r\r\n` ledger no longer fails the cap detector OPEN (#139 item 1).** `${row%$'\r'}`
+  removes at most ONE CR, so a double-terminated row kept one and every comparison below
+  it missed. Measured on byte-identical content at 0.11.14: LF `tripped=1`,
+  CRLF `tripped=1`, `\r\r\n` `tripped=0` — with `caps_scan_failed=0` and
+  `caps_truncated=0`, which reads exactly like a clean ledger. All three 4-cell row
+  parsers now strip the whole TRAILING run, bounded: `scripts/lib/caps.sh`,
+  `scripts/ops-reverify.sh`, and `ops-verdict.sh`'s `--reconcile` loop (the latter two
+  source no lib, so the rule is hand-copied — the standalone constraint the
+  `.operator/bin/` CLIs live under).
+- **Both remedies the issue proposed were measured and rejected.** The unbounded
+  `while ${row%$'\r'}` it suggested is O(n²): on ONE line of 1 MiB of CRs — which the row
+  loop's own `read -r -n 1048576` permits — it had not finished after **300s**, inside a
+  hook that runs on every Stop. `${row%%$'\r'*}` costs 0.006s and TRUNCATES the row at a
+  mid-cell CR, discarding cells. The shipped form is a bounded loop (`CAPS_MAX_CR=16`,
+  0.30s on the same line) that leaves a mid-cell CR alone; a row still ending in CR after
+  16 removals sets `caps_truncated` rather than being guessed at.
+- **`ops-reverify.sh` stops emitting a spurious empty cell.** On a double-CR ledger the
+  surviving CR landed in the row's last cell: `| 3 | T1 | FAIL | | no-commit | … |`,
+  measured — an extra cell in the operator's own report, plus the header swept as a
+  phantom row for the reason #128 names.
+- **`--reconcile` restores what it can read.** Four fragments terminated LF / `\r\n` /
+  `\r\r\n` / `\r\r\r\n` restored **2 of 4** before this change (announced on stderr with
+  a skipped count, never silent); now 4 of 4, with a genuine 5-cell row still refused and
+  named.
+- **The byte cap charges what a line occupies (#139 item 3).** The strip ran before
+  `bytes=$((bytes + ${#row} + 1))`, so a CRLF line was billed one byte less than its true
+  size (~1.2% loose). `+ _cr` makes `accounted == on-disk` exact. Recorded honestly: the
+  row loop's byte cap is **effectively unreachable**, because the NUL probe above it
+  refuses any file over 4096 × 512 bytes — exactly `CAPS_MAX_BYTES` — and accounted bytes
+  can never exceed on-disk bytes (bisected: 2,097,152 B passes, 2,097,664 B is refused).
+  So this is an exact bound behind a tighter one, not a defect anyone could reach.
+- **A rotted line citation now fails the build (#139 item 4).** `check_line_citations`
+  refuses a `file.sh:NNN` in tracked prose that is past EOF or lands on a BLANK line. It
+  found a live defect on arrival, no mutation needed: `docs/REPLAY-CHARTER.md` cited a
+  blank line in `ops-init.sh`, attached to a claim ("the install set lives here") false
+  since #76 moved the set to `scripts/ops-install-set.sh`. It deliberately CANNOT see a
+  citation that still resolves and no longer says what the prose claims — the message
+  tells the author to cite the symbol instead of implying the number is verified. Three
+  further citations were converted to symbols (`_dec_line`, `PROJ`, the walk-up).
+
+### Verification
+
+Every fix ran RED on unmodified pre-fix code taken from git, then green, with the tree
+restored byte-identical. caps 0/2 trips on `\r\r\n`; reverify's phantom cell; reconcile
+2/4 with both skips named. Four shell mutations, each red only on its own case
+(`1086/1 failed` ×3, `1087/1` ×1), each in an isolated tree. Two validator mutations red
+in `check_caps` — the single-strip revert on the `dblcr` fixture, the greedy-prefix form
+on the `midcr` control. Removing `check_line_citations` from `CHECKS` is red in
+`CheckRegistryTest`.
+
+One case was rewritten mid-flight rather than believed: the first item-3 probe
+recomputed the accounting inside the test and asserted its own arithmetic — green against
+a `caps.sh` with the addend deleted. A test that reimplements the rule it tests, tests the
+reimplementation.
+
+Gates: shell 1087@1087, python 390@390, workflows 384@384, compress 161@161, validator
+all contracts hold, shellcheck clean (one pre-existing SC2329 in `ops-verdict.sh`, present
+on `main` and unknown to CI's pinned 0.10.0).
+
+### Known, unchanged by this release
+
+`scan_caps` does not return within 120s on a 2 MB single-line ledger — measured at HEAD
+**and** with this fix, so it is pre-existing and filed separately, not introduced here.
+
 ## [0.11.14] - 2026-09-18
 
 Closes #134 and #140. Delivers **part** of #139 (item 2, the writer-side CR refusal) and

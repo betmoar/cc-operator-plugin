@@ -105,8 +105,9 @@ GOOD_CAPS_LIB = (
     "CAPS_MAX_LINES=20000\n"
     "CAPS_MAX_BYTES=2097152\n"
     "CAPS_MAX_STEPS=100000\n"
+    "CAPS_MAX_CR=16\n"
     "scan_caps() {\n"
-    "  local f=\"$1\" row body id crit ev verdict key r1 r2 i found n=0 steps=0\n"
+    "  local f=\"$1\" row body id crit ev verdict key r1 r2 i found n=0 steps=0 _cr=0\n"
     "  local LC_ALL=C\n"
     "  caps_tripped=0; caps_rows=\"\"; caps_truncated=0; caps_scan_failed=0\n"
     "  _caps_k=(); _caps_c=(); _caps_n=0\n"
@@ -125,6 +126,15 @@ GOOD_CAPS_LIB = (
     "    caps_truncated=1; return 0\n"
     "  fi\n"
     "  while IFS= read -r -n 1048576 row || [ -n \"$row\" ]; do\n"
+    # The bounded trailing-CR run strip (#139 item 1). The stub mirrors it for
+    # the same reason it mirrors the budget accounting above: check_caps
+    # EXECUTES this fixture, and a stub that keeps the defect cannot witness
+    # the fix. Only the TRAILING run goes — a mid-cell CR is data the row keeps.
+    "    _cr=0\n"
+    "    while [ \"$_cr\" -lt \"$CAPS_MAX_CR\" ]; do\n"
+    "      case \"$row\" in *$'\\r') row=\"${row%$'\\r'}\"; _cr=$((_cr + 1)) ;; *) break ;; esac\n"
+    "    done\n"
+    "    case \"$row\" in *$'\\r') caps_truncated=1; break ;; esac\n"
     "    n=$((n+1)); [ \"$n\" -le \"$CAPS_MAX_LINES\" ] || { caps_truncated=1; break; }\n"
     "    case \"$row\" in \"| \"*) ;; *) continue ;; esac\n"
     "    case \"$row\" in \"| Gate | Criterion |\"* | \"|---\"*) continue ;; esac\n"
@@ -5305,6 +5315,65 @@ class BaseGateTest(unittest.TestCase):
             self.assertEqual(probs, [])
         finally:
             shutil.rmtree(empty, ignore_errors=True)
+
+
+class LineCitationTest(unittest.TestCase):
+    """check_line_citations: a `file.sh:NNN` in prose must still resolve (#139 item 4).
+
+    The defect is real and was found by RUNNING this check, not by mutating it:
+    on the tree as it stood, `docs/REPLAY-CHARTER.md` cited `ops-init.sh:194`,
+    which was a BLANK line — and the claim attached to it ("the install set
+    lives here") had been false since #76 moved the set to
+    scripts/ops-install-set.sh. Two more (`lib/partition.sh:204`,
+    `statusline.sh:84`) resolved to a comment and to an unrelated `stat` probe;
+    the mechanical half cannot see those, which is why the message tells the
+    author to cite the SYMBOL rather than promising the number is checked.
+    """
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        (self.dir / "docs").mkdir()
+        (self.dir / "scripts").mkdir()
+        (self.dir / "scripts" / "thing.sh").write_text(
+            "#!/usr/bin/env bash\nreal_line() { :; }\n\nlast=1\n",
+            encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _probs(self, prose):
+        (self.dir / "docs" / "N.md").write_text(prose, encoding="utf-8")
+        probs = []
+        vp.check_line_citations(self.dir, probs)
+        return probs
+
+    def test_a_citation_past_end_of_file_fires(self):
+        probs = self._probs("see `thing.sh:99` for the rule\n")
+        self.assertTrue(probs, "a citation past EOF must fire")
+        self.assertIn("thing.sh:99", probs[0])
+        self.assertIn("4 lines", probs[0])
+
+    def test_a_citation_on_a_blank_line_fires(self):
+        # The shape that actually shipped: the number still resolves, and
+        # points at nothing. Line 3 of the fixture is blank.
+        probs = self._probs("see `thing.sh:3` for the rule\n")
+        self.assertTrue(probs, "a citation onto a blank line must fire")
+        self.assertIn("BLANK", probs[0])
+
+    def test_a_live_citation_stays_green(self):
+        self.assertEqual(self._probs("see `thing.sh:2` for the rule\n"), [])
+
+    def test_an_unresolvable_path_is_not_judged(self):
+        # The prose quotes sibling repos' files (cc-skills, local-ci). A check
+        # that fires on those is a check maintainers route around, so a name we
+        # cannot resolve is skipped rather than guessed at.
+        self.assertEqual(self._probs("their `other-repo-thing.sh:900` does X\n"), [])
+
+    def test_the_real_tree_passes(self):
+        # Ran RED on the tree before the #139 fix (ops-init.sh:194 blank).
+        probs = []
+        vp.check_line_citations(ROOT, probs)
+        self.assertEqual(probs, [])
 
 
 class ClaudeMdSizeTest(unittest.TestCase):

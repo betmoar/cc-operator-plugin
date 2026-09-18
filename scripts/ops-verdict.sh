@@ -516,12 +516,26 @@ if [ "${1:-}" = "--reconcile" ]; then
       # 1MiB per read: a smaller cap split long rows across chunks and both
       # halves failed row_is_conformant — honest rows silently dropped (#9).
       while IFS= read -r -n 1048576 row || [ -n "$row" ]; do
-        # CRLF here is DATA LOSS, not a miscount: --reconcile is the recovery
-        # path, and a `\r` made row_is_conformant reject an otherwise honest
-        # fragment row. Measured 2026-09-17: 1 of 2 restored, the CRLF row
-        # absent from the rebuilt ledger (#136). Strip before the schema test,
-        # never after.
-        row="${row%$'\r'}"
+        # CRLF here is a RECOVERABLE ROW LEFT UNRECOVERED, announced on stderr
+        # with a skipped count — not silent data loss (#139 comment, measured
+        # both pre- and post-#136). --reconcile is the recovery path, and a
+        # `\r` made row_is_conformant reject an otherwise honest fragment row.
+        # Measured 2026-09-17: 1 of 2 restored, the CRLF row named on stderr
+        # and absent from the rebuilt ledger (#136). Strip before the schema
+        # test, never after.
+        #
+        # THE WHOLE TRAILING RUN, BOUNDED (#139 item 1). One `${row%$'\r'}`
+        # left a `\r\r\n` row still ending in CR, so row_is_conformant refused
+        # it and the recovery path dropped a row it could have restored. The
+        # bound mirrors lib/caps.sh's CAPS_MAX_CR and exists for the same
+        # measured reason: an unbounded loop on one 1 MiB line of CRs had not
+        # finished after 300s. This file cannot source that lib — it installs
+        # standalone into .operator/bin/ — so the rule is hand-copied, and
+        # check_guard_parity pins the copies equal.
+        _cr=0
+        while [ "$_cr" -lt 16 ]; do
+          case "$row" in *$'\r') row="${row%$'\r'}"; _cr=$((_cr + 1)) ;; *) break ;; esac
+        done
         [ -n "$row" ] || continue
         # Reconcile WRITES the ledger, so it enforces the same 4-cell
         # schema. COUNT the cells — a glob's `*` happily consumes ` | `.

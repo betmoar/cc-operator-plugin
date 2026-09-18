@@ -876,6 +876,40 @@ check "--reconcile exits 0 and restores every row" "$([ "$RRC" -eq 0 ] && [ "$RE
 ( cd "$P" && bash "$VERDICT" --reconcile >/dev/null 2>&1 )
 AGAIN="$(grep -cE '^\| T-' "$P/.operator/VERDICTS.md" || true)"
 check "--reconcile is idempotent (no duplicate rows)" "$([ "$AGAIN" = "$TOTAL" ] && echo 0 || echo 1)"
+# #139 item 1: --reconcile is the RECOVERY path, so a fragment it cannot parse
+# is a row left unrecovered. #136's single strip restores a `\r\n` fragment and
+# still refuses `\r\r\n`: row_is_conformant sees the residual CR in the verdict
+# cell and the enum misses. Measured at HEAD before this change, four fragments
+# terminated LF / \r\n / \r\r\n / \r\r\r\n -> "reconciled: 2 row(s) restored …
+# (2 non-conformant line(s) skipped)". ANNOUNCED, not silent — the mildest of
+# the three double-CR degradations and the only one an operator could notice
+# unaided — but still a recoverable row left unrecovered.
+_rcd="$(newproj)"; ( cd "$_rcd" && bash "$INIT" >/dev/null 2>&1 )
+mkdir -p "$_rcd/.operator/verdicts.d"
+_i=0
+for _term in '\n' '\r\n' '\r\r\n' '\r\r\r\n'; do
+  _i=$((_i + 1))
+  # The terminator is INTERPRETED, not printed literally — `%b` is what turns
+  # the `\r\r\n` in $_term into real bytes. A `%s` here would write a backslash
+  # and an `r`, and every assertion below would pass while testing nothing
+  # (the F144 shape: a fixture that loses the byte it exists to carry).
+  printf '| T-cr%s | crit | ev @no-commit | PASS |%b' "$_i" "$_term" \
+    > "$_rcd/.operator/verdicts.d/90$_i.md"
+done
+check "#139 SETUP: the fragments really carry 1, 2 and 3 trailing CRs" \
+  "$(LC_ALL=C grep -q "$(printf '\r\r\r')" "$_rcd/.operator/verdicts.d/904.md" && echo 0 || echo 1)"
+_rcout="$( cd "$_rcd" && bash "$VERDICT" --reconcile 2>&1 )"
+check "#139 --reconcile restores ALL FOUR terminator shapes, not just LF and \\r\\n" \
+  "$([ "$(grep -cE '^\| T-cr' "$_rcd/.operator/VERDICTS.md" || true)" = 4 ] && echo 0 || echo 1)"
+check "#139 CONTROL: nothing was skipped — a restore that skips is not a restore" \
+  "$(printf '%s' "$_rcout" | grep -q 'non-conformant' && echo 1 || echo 0)"
+# CONTROL: the strip must not make the schema PERMISSIVE. A genuine 5-cell row
+# stays refused and announced, whatever it is terminated with.
+printf '| T-bad | crit | ev | extra | PASS |\r\r\n' > "$_rcd/.operator/verdicts.d/905.md"
+_rcbad="$( cd "$_rcd" && bash "$VERDICT" --reconcile 2>&1 )"
+check "#139 CONTROL: a 5-cell \\r\\r\\n row is still refused and NAMED on stderr" \
+  "$(printf '%s' "$_rcbad" | grep -q 'skipping non-conformant line' && echo 0 || echo 1)"
+rm -rf "$_rcd"
 # --reconcile must REPAIR, never regenerate: hand-written BAR blocks survive
 printf '\n### BAR: hand-written block\n- criterion: must survive reconcile\n' >> "$P/.operator/VERDICTS.md"
 ( cd "$P" && bash "$VERDICT" --reconcile >/dev/null 2>&1 )
@@ -5256,6 +5290,23 @@ check "#136 ops-reverify reads a CRLF ledger exactly as it reads LF" \
 # The tell the regression left behind: the header itself swept as a data row.
 check "#136 CONTROL: the CRLF header is not swept as a phantom row" \
   "$(bash "$RV" --ledger "$_crlfd/crlf.md" 2>&1 | grep -qE '^\| [0-9]+ \| Gate \|' && echo 1 || echo 0)"
+# #139 item 1: ONE removal leaves a `\r\r\n` row still carrying a CR, and here
+# the residue lands INSIDE the report's last cell. Measured at HEAD before this
+# change: `| 3 | T1 | FAIL | | no-commit | — | UNDATABLE | crit |` — an extra
+# empty cell in the operator's own report, and the header swept as a phantom
+# row for the same reason #128 names. The strip takes the whole trailing run,
+# bounded at 16 like lib/caps.sh's CAPS_MAX_CR (an unbounded loop measured
+# >300s on one 1 MiB line of CRs).
+sed 's/$/\r\r/' "$_crlfd/lf.md" > "$_crlfd/dbl.md"
+check "#139 SETUP: the double-CR fixture really carries two CRs" \
+  "$(LC_ALL=C grep -q "$(printf '\r\r')" "$_crlfd/dbl.md" && echo 0 || echo 1)"
+_rv_dbl="$(bash "$RV" --ledger "$_crlfd/dbl.md" 2>&1 | grep -oE 'undatable: [0-9]+')"
+check "#139 ops-reverify reads a \\r\\r\\n ledger exactly as it reads LF" \
+  "$([ "$_rv_lf" = "$_rv_dbl" ] && echo 0 || echo 1)"
+check "#139 no row carries a SPURIOUS EMPTY CELL from the surviving CR" \
+  "$(bash "$RV" --ledger "$_crlfd/dbl.md" 2>&1 | grep -qE '^\| [0-9]+ \| [^|]* \| FAIL \| \|' && echo 1 || echo 0)"
+check "#139 CONTROL: the double-CR header is not swept as a phantom row either" \
+  "$(bash "$RV" --ledger "$_crlfd/dbl.md" 2>&1 | grep -qE '^\| [0-9]+ \| Gate \|' && echo 1 || echo 0)"
 rm -rf "$_crlfd"
 
 echo "-- Case: gate-suite.sh holds a rung to its MARKER and its FLOOR (0.11.7)"
@@ -6938,6 +6989,76 @@ _caps_ledger "$CAPD/v30.md" "| Gate | Criterion | ev | FAIL |" "| Gate | Criteri
 sed 's/$/\r/' "$CAPD/v30.md" > "$CAPD/v30crlf.md"
 check "#136 CONTROL: a CRLF row IDed Gate/Criterion still trips (#126 header match survives)" \
   "$([ "$(_caps_state "$CAPD/v30crlf.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+
+# --- #139 item 1: the WHOLE trailing CR run, not one -----------------------
+# #136 stripped ONE CR, which closes the case it names (git's `\r\n`) and leaves
+# the same fail-open shape one byte deeper. Measured on byte-identical content
+# at HEAD before this change: LF tripped=1, CRLF tripped=1, `\r\r\n` tripped=0
+# with failed=0 and truncated=0 — a silent zero that reads exactly like a clean
+# ledger, in a detector whose whole job is not to miss a sequence. The producer
+# is a hand edit or a tool that converted twice; git cannot make one (verified:
+# core.autocrlf re-checkout yields exactly one CR).
+_caps_ledger "$CAPD/v31.md" "| T-d | c | ev | FAIL |" "| T-d | c | ev | FAIL |"
+sed 's/$/\r\r/' "$CAPD/v31.md" > "$CAPD/v31dbl.md"
+check "#139 a \\r\\r\\n ledger trips exactly as its LF twin does (the strip takes the RUN)" \
+  "$([ "$(_caps_state "$CAPD/v31dbl.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+sed 's/$/\r\r\r/' "$CAPD/v31.md" > "$CAPD/v31tpl.md"
+check "#139 three trailing CRs trip too — the fix is not another off-by-one" \
+  "$([ "$(_caps_state "$CAPD/v31tpl.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+# CONTROL, and it is the one that separates this fix from `${row%%$'\r'*}`:
+# that form costs 0.006s and TRUNCATES the row at the first CR, discarding
+# cells. Only the TRAILING run is a terminator artifact; a mid-cell CR is data
+# the row must keep, and ops-verdict.sh's #139 item-2 writer guard is what stops
+# new ones arriving. A row already carrying one must still parse.
+_caps_ledger "$CAPD/v32.md" "$(printf '| T-e | cr\rit | ev | FAIL |')" \
+  "$(printf '| T-e | cr\rit | ev | FAIL |')"
+check "#139 CONTROL: a MID-CELL CR survives the strip and the row still trips" \
+  "$([ "$(_caps_state "$CAPD/v32.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+# CONTROL: the strip stays bounded, and the bound ANNOUNCES rather than guesses.
+# The issue proposed an unbounded `while ${row%$'\r'}`; measured on ONE line of
+# 1 MiB of CRs (which the row loop's own `read -n 1048576` permits) it had not
+# finished after 300s, inside a hook that runs on every Stop. Past CAPS_MAX_CR a
+# row is planted, not mis-terminated, so the scan says it stopped reading —
+# the same polarity as every other bound in this file.
+_caps_ledger "$CAPD/v33.md" "| T-f | c | ev | FAIL |" "| T-f | c | ev | FAIL |"
+sed "s/\$/$(printf '\r%.0s' $(seq 17))/" "$CAPD/v33.md" > "$CAPD/v33plant.md"
+check "#139 a row past CAPS_MAX_CR sets truncated — never a confident zero" \
+  "$(printf '%s' "$(_caps_state "$CAPD/v33plant.md")" | grep -q 'truncated=1' && echo 0 || echo 1)"
+check "#139 CAPS_MAX_CR is a NAMED bound, like every other bound in this file" \
+  "$(grep -q '^CAPS_MAX_CR=' "$SCRIPTS/lib/caps.sh" && echo 0 || echo 1)"
+# --- #139 item 3: the byte cap charges what the line OCCUPIES --------------
+# The strip runs before the accounting, so every stripped CR was charged to
+# nobody and a CRLF ledger was billed one byte per line less than it occupies.
+# `+ _cr` restores the identity `accounted == on-disk`.
+#
+# WHAT THIS CASE CANNOT ASSERT, measured while writing it. The obvious probe —
+# a CRLF ledger sized to straddle CAPS_MAX_BYTES where its LF twin stays under
+# — cannot discriminate, because the row loop's byte cap is effectively
+# UNREACHABLE: the NUL probe above it refuses any file over 4096 x 512 bytes,
+# which is exactly CAPS_MAX_BYTES, and accounted bytes can never exceed
+# on-disk bytes. Bisected 2026-09-18: 2,097,152 B passes the probe, 2,097,664 B
+# is refused; both a 2,095,172 B and a 2,099,222 B ledger came back truncated=1
+# from the probe, never from the loop. So the loop's cap is a second line of
+# defence behind a tighter one, and the ~1.2% looseness the issue measured was
+# never reachable through it either. (A row longer than the 1 MiB read bound is
+# the one path where accounted could exceed on-disk — each fragment charged a
+# newline that is not there — but scan_caps does not return on a 2 MB
+# single-line file within 120s at HEAD *or* with this fix, which is a
+# PRE-EXISTING cost, filed separately, not something this change introduced.)
+#
+# So the assertion is the identity itself, read off the SHIPPED loop rather
+# than a reimplementation of it. An earlier draft of this case recomputed the
+# accounting in the test and asserted its own arithmetic — green against a
+# caps.sh with the addend deleted, which is the vacuity this project forbids.
+# The token pin below is what actually went red on that mutation.
+_caps_ledger "$CAPD/v34.md" "| T-g | c | ev | PASS |" "| T-g | c | ev | PASS |"
+sed 's/$/\r/' "$CAPD/v34.md" > "$CAPD/v34crlf.md"
+check "#139 CONTROL: a CRLF ledger under every bound still scans clean (no false truncation)" \
+  "$([ "$(_caps_state "$CAPD/v34crlf.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+# shellcheck disable=SC2016  # NOT expanding is the point: this is the literal
+# text grepped for in caps.sh's source, not an expression this suite evaluates.
+check "#139 the row loop charges the stripped CRs (+ _cr), not just the survivors" \
+  "$(grep -q 'bytes=$((bytes + ${#row} + _cr + 1))' "$SCRIPTS/lib/caps.sh" && echo 0 || echo 1)"
 
 # --- the UNCOVERED caps stay NAMED -----------------------------------------
 # Two of the charter's three caps are not covered, for stated reasons. Dropping the paragraph is

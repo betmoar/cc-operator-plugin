@@ -3909,13 +3909,32 @@ def check_caps(root, problems):
         "reset": "| T-1 | crit | ev @a1 | FAIL |\n| T-1 | crit | ev @a2 | FAIL |\n"
                  "| T-1 | crit | ev @a3 | PASS |\n",
         "keyed": "| T-1 | crit-a | ev @a1 | FAIL |\n| T-1 | crit-b | ev @a2 | FAIL |\n",
+        # #139 item 1, and it is EXECUTED for the reason the whole probe exists:
+        # the shape that shipped was a detector keeping its form and answering
+        # zero. A single `${row%$'\r'}` leaves a `\r\r\n` row still carrying a
+        # CR, every comparison below misses, and scan_caps returns tripped=0
+        # with scan_failed=0 and truncated=0 — byte-identical to a clean
+        # ledger. Measured at HEAD before the fix: LF 1, CRLF 1, `\r\r\n` 0.
+        # A substring pin on the strip cannot see this; only running it can.
+        "dblcr": "| T-1 | crit | ev @a1 | FAIL |\r\r\n| T-1 | crit | ev @a2 | FAIL |\r\r\n",
+        # The CONTROL that keeps the fix from being "strip everything": only
+        # the TRAILING run is a terminator artifact. A mid-cell CR is data, and
+        # `${row%%$'\r'*}` — the other remedy the issue proposed — truncates
+        # the row there and discards cells, which this row would catch.
+        "midcr": "| T-2 | cr\rit | ev @a1 | FAIL |\n| T-2 | cr\rit | ev @a2 | FAIL |\n",
     }
-    _expect = {"trip": "1", "reset": "0", "keyed": "0", "budget": "1"}
+    _expect = {"trip": "1", "reset": "0", "keyed": "0", "budget": "1",
+               "dblcr": "1", "midcr": "1"}
     with tempfile.TemporaryDirectory() as _td:
         _script = ["\n".join(_consts), _fn.group(0)]
         for _k, _body in _rows.items():
             _f = os.path.join(_td, f"{_k}.md")
-            with open(_f, "w", encoding="utf-8") as _fh:
+            # newline="" so the CR fixtures reach disk VERBATIM. Text mode
+            # translates "\n" to os.linesep, which would make the `dblcr`
+            # fixture platform-dependent — and a fixture that silently loses
+            # the byte it exists to carry is the vacuity this probe guards
+            # against, one layer down.
+            with open(_f, "w", encoding="utf-8", newline="") as _fh:
                 _fh.write(_hdr + _body)
             _script.append(f'scan_caps "{_f}"\necho "{_k}=$caps_tripped"')
         # THE WORK BUDGET, asserted by EFFECT. The three size bounds do not
@@ -3965,13 +3984,36 @@ def check_caps(root, problems):
                       "bounds do not bound the WORK (the ceiling is rows x "
                       "keys), which measured an 11.1s Stop at the shipped "
                       "bounds before the budget existed",
+            "dblcr": "a `\\r\\r\\n` ledger must trip exactly as its LF twin "
+                     "does — one `${row%$'\\r'}` strips ONE CR, so the residue "
+                     "makes every comparison below miss and the scan answers "
+                     "tripped=0 with failed=0 and truncated=0, which is "
+                     "byte-identical to a clean ledger (#139 item 1). Strip "
+                     "the whole trailing run, bounded by CAPS_MAX_CR",
+            "midcr": "a MID-CELL CR must survive the strip and the row must "
+                     "still trip — only the TRAILING run is a terminator "
+                     "artifact. `${row%%$'\\r'*}` truncates the row there and "
+                     "discards cells, which is why the bounded loop is the "
+                     "shape and this is its control (#139)",
         }
+        # A key with no entry here would raise KeyError and take the whole
+        # validator down with a traceback instead of a finding — measured
+        # while adding the #139 fixtures. A gate that crashes reports nothing
+        # about the other 30-odd checks behind it, so the missing entry is
+        # itself a finding.
+        _unexplained = [_k for _k in _expect if _k not in _why]
+        if _unexplained:
+            problems.append(
+                f"{rel}: the probe carries fixture(s) {_unexplained!r} with no "
+                f"entry in _why — a failure on one would raise KeyError and "
+                f"abort the whole validator instead of reporting. Every "
+                f"fixture owes the reader the defect it was written against")
         for _k, _want in _expect.items():
             if _got.get(_k) != _want:
                 problems.append(
                     f"{rel}: scan_caps() reported caps_tripped="
                     f"{_got.get(_k)!r} on the {_k!r} ledger, expected "
-                    f"{_want!r} — {_why[_k]} (#107)")
+                    f"{_want!r} — {_why.get(_k, 'no rationale recorded')} (#107)")
 
 
 def check_base_gate(root, problems):
@@ -4258,6 +4300,64 @@ def check_base_gate(root, problems):
                 f"script both come from the PR head")
 
 
+def check_line_citations(root, problems):
+    """#139 item 4: a `file.sh:NNN` citation in prose has no guard, and rots.
+
+    Five such citations in docs/LANDMINES.md's #137 section were stale within
+    two commits — read off a pre-merge copy, and at HEAD all five pointed at
+    comment or control-flow lines while the validator reported "all contracts
+    hold". `check_coupling_case_refs` resolves `_"…"_` case titles and has no
+    opinion on a line number.
+
+    The issue proposed a CONVENTION (cite by symbol). A convention followed in
+    one file and stated nowhere is what this repo calls a hypothesis, so this
+    is the mechanical half: every `<file>:<line>` citation in tracked prose
+    must land on a line that still exists AND is not blank. It deliberately
+    does NOT try to judge whether the line still says what the prose claims —
+    that needs a human — but the cheap half catches the shape that actually
+    happened: lines shifting under an edit until the number means nothing.
+
+    Measured when this check was written: SIX citations across three files,
+    of which `ops-init.sh:194` had already drifted onto a BLANK line and
+    `lib/partition.sh:204` onto a comment. Both predate this check.
+    """
+    import re as _re
+    _CITE = _re.compile(r"\b([A-Za-z0-9_][A-Za-z0-9_./-]*\.(?:sh|py|mjs|js|yml))"
+                        r":(\d+)\b")
+    # Where a bare `name.sh` may live. A citation naming a path we cannot
+    # resolve is NOT reported — the prose quotes other repos' files too, and a
+    # check that cries wolf on those is a check people route around.
+    _SEARCH = ("", "scripts/", "scripts/lib/", "workflows/", "tests/", "hooks/")
+    for rel in sorted(p.relative_to(root).as_posix()
+                      for p in root.glob("docs/**/*.md")):
+        text = (root / rel).read_text(encoding="utf-8", errors="replace")
+        for m in _CITE.finditer(text):
+            name, num = m.group(1), int(m.group(2))
+            target = None
+            for pre in _SEARCH:
+                cand = root / (pre + name)
+                if cand.is_file():
+                    target = cand
+                    break
+            if target is None:
+                continue  # not ours to judge
+            lines = target.read_text(encoding="utf-8",
+                                     errors="replace").splitlines()
+            if num > len(lines):
+                problems.append(
+                    f"{rel}: cites `{name}:{num}` but {name} has only "
+                    f"{len(lines)} lines — the citation rotted (#139 item 4). "
+                    f"Cite the SYMBOL (the function or the literal) instead: a "
+                    f"line number has no guard and shifts under any edit above "
+                    f"it")
+            elif not lines[num - 1].strip():
+                problems.append(
+                    f"{rel}: cites `{name}:{num}`, which is now a BLANK line "
+                    f"(#139 item 4). Cite the SYMBOL instead — five citations "
+                    f"in this file's own #137 section rotted within two commits "
+                    f"while the validator reported all contracts hold")
+
+
 def check_claude_md_size(root, problems):
     """CLAUDE.md stays under the harness's 40.0k-char injection clip.
 
@@ -4496,6 +4596,7 @@ CHECKS = (
     check_suite_floors,
     check_base_gate,
     check_coupling_case_refs,
+    check_line_citations,
     check_claude_md_size,
 )
 
