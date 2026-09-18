@@ -1464,3 +1464,55 @@ ledger under `core.autocrlf=true`, checks it back out, and reads the bytes.
 Written per-file rather than as a `*` rule: `.operator/` also holds `bin/` and `pending/`
 sentinels, and declaring those `text` invites git to rewrite bytes in files whose whole
 point is byte-fidelity.
+
+## An arm held closed by another arm's pathspec (0.11.14, #140)
+
+`base-gate.sh` arm 3b — the rung-set comparison — shipped with the same unchecked-listing
+fail-open #137 fixed at arm 3, in the arm that same commit wrote:
+
+```sh
+_ci_rungs() {
+  git -C "$REPO" show "${1}:${2}" 2>/dev/null \
+    | grep -vE '^[[:space:]]*#' | grep -oE 'gate-suite\.sh [a-z]+' | sort -u
+}
+...
+done < <(_ci_rungs "$BASE_SHA" "$_ci")
+```
+
+An unreadable base blob yields an empty list, the `while` is a no-op, every rung removal
+passes. The base-side `ls-tree` presence probe one line up had the same hole in its
+quietest form: a `continue` past the whole file, which prints nothing and makes no claim.
+
+**Why it was not caught by reading.** The pipeline cannot be checked AS a pipeline.
+`pipefail` reports the last non-zero status and `grep` exits 1 on no-match, so "the blob
+is unreadable" and "this CI file legitimately runs no rungs" are the same status. Any
+guard written around the pipe is either vacuous or fires on honest input. The fix stages
+the blob to a file through a checked `_ci_show` and reads only THAT status.
+
+**The interlock is the real lesson.** On the shipped gate the escape did not reproduce as
+rc 0 — arm 5's `git diff` fails on the same corruption, because `.github/` sits inside its
+pathspec, and it `die`s rc 2 first. So the gate was correct by accident, through a
+dependency nothing declared. Widening arm 5's pathspec by one `':(exclude).github/'` — an
+unrelated, entirely plausible edit — turned a dropped rung into `BASE_GATE_PASSED`, rc 0
+(measured). An arm whose correctness depends on which OTHER arm happens to die first is
+not a gate; it is a coincidence with good luck so far. The fix is verified against the
+widened copy for exactly that reason, and that probe is now a case.
+
+**Two guards, two different corruptions.** Deleting a file's BLOB leaves `ls-tree` at rc 0
+— the tree still names the entry, only `git show` fails (rc 128). Deleting the enclosing
+TREE object is what makes `ls-tree` exit 1. So the `git show` guard and the `ls-tree`
+guard cannot share a fixture, which is how the second one was found: reverting its `die`
+alone left the whole suite green, because every case corrupted the blob.
+
+That guard then turned out to be **unreachable in this repo shape** — a missing tree
+object is refused earlier still, by arm 4's `git diff base...pr`. Its case pair asserts
+the POLARITY with an `HONESTY NOTE` rather than asserting a message that never appears.
+The guard stays: unreachable today is not unreachable after the next arm moves, and that
+is the whole failure this section is about.
+
+**Fixtures that destroy shared state owe every later case a fresh one.** Deleting a loose
+object is permanent for the repository. Three cases here were written against one scratch
+repo and two of them measured the corrupted tree while claiming to measure a healthy one —
+the ADD-a-rung control (which should pass and could not) and the PR-side case (which never
+reached its own branch, because the run refused at the base check first). Four repos, one
+per corruption. Same class as the shared-sentinel error in #139's first draft, one layer up.

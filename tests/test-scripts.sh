@@ -5457,6 +5457,210 @@ check "#137 CONTROL: it never reports BASE_GATE_PASSED on a repo it cannot read"
   "$(printf '%s' "$BG_OUT" | grep -q 'BASE_GATE_PASSED' && echo 1 || echo 0)"
 rm -rf "$BGT_D"
 
+# --- arm 3b: an unreadable CI file is a REFUSAL, not an empty rung set (#140)
+# The same unchecked-listing fail-open #137 fixed at arm 3, in the arm written
+# by that same commit. `_ci_rungs` piped `git show` into grep with 2>/dev/null
+# and the loop iterated the BASE side, so an unreadable base blob made it a
+# NO-OP and every rung removal passed. The base-side `ls-tree` presence probe
+# had the same hole one line up, in its quietest form: a `continue` past the
+# whole file, which prints nothing and makes no claim.
+#
+# WHY THE PRE-FIX rc IS ALREADY 2, and what that means for this case. On the
+# shipped gate the escape was MASKED by an undeclared interlock: arm 5's
+# `git diff` fails on the same corruption, because `.github/` sits inside its
+# pathspec, and it `die`s before arm 3b's silence can matter. So this case
+# cannot assert on rc alone — rc is 2 either way. It asserts WHICH ARM SPEAKS,
+# which is the whole finding: arm 3b runs first and must name the CI file it
+# could not read, rather than leaving arm 5 to blame a forged-marker diff.
+# Measured pre-fix on this fixture: rc 2, "git diff base vs merged tree (full
+# content) failed" — a message about the wrong thing entirely.
+#
+# The interlock is also why the escape was LIVE rather than theoretical:
+# widening arm 5's pathspec by one `':(exclude).github/'` — a plausible,
+# unrelated edit — returned BASE_GATE_PASSED rc 0 with a rung dropped
+# (measured). That probe is re-run below against the fixed gate.
+BGR_D="$(mktemp -d "${TMPDIR:-/tmp}/basegate-rung.XXXXXX")"
+mkdir -p "$BGR_D/scripts" "$BGR_D/tests" "$BGR_D/.github/workflows"
+( cd "$BGR_D" && git init -q . && git config user.email t@example.com && git config user.name t ) >/dev/null 2>&1
+printf 'CHECKS = (\n    check_hook,\n)\n' > "$BGR_D/scripts/validate_plugin.py"
+printf '#!/usr/bin/env bash\n: the wrapper\n' > "$BGR_D/scripts/gate-suite.sh"
+printf 'FLOOR_shell=20\n' > "$BGR_D/tests/floors.env"
+printf 'x\n' > "$BGR_D/tests/t.sh"
+printf '# ci\nsteps:\n  - run: bash scripts/gate-suite.sh shell\n  - run: bash scripts/gate-suite.sh python\n' > "$BGR_D/.github/workflows/validate.yml"
+git -C "$BGR_D" add -A >/dev/null 2>&1 && git -C "$BGR_D" commit -qm base
+BGR_BASE="$(git -C "$BGR_D" rev-parse HEAD)"
+git -C "$BGR_D" checkout -q -b rungdrop "$BGR_BASE"
+printf '# ci\nsteps:\n  - run: bash scripts/gate-suite.sh python\n' > "$BGR_D/.github/workflows/validate.yml"
+git -C "$BGR_D" commit -qam "drop the shell rung"
+# CONTROL FIRST, intact repo: the removal is genuinely caught. Without it every
+# refusal below is satisfied by a gate that refuses everything — the F144
+# control pair's other half.
+BG_OUT="$(bash "$BG" --base "$BGR_BASE" --pr rungdrop --repo "$BGR_D" 2>&1)"; BG_RC=$?
+check "#140 CONTROL: a dropped rung IS caught on an intact repo (not a refuse-everything gate)" \
+  "$([ "$BG_RC" = 1 ] && printf '%s' "$BG_OUT" | grep -q "RUNG: 'gate-suite.sh shell'" && echo 0 || echo 1)"
+# Remove the BASE blob. `rm` of a loose object needs directory permission, not
+# file permission, so root and non-root behave alike — #134's lesson, the same
+# reason the #137 fixture above removes rather than chmods.
+_bgr_blob="$(git -C "$BGR_D" rev-parse "${BGR_BASE}:.github/workflows/validate.yml")"
+rm -f "$BGR_D/.git/objects/${_bgr_blob%"${_bgr_blob#??}"}/${_bgr_blob#??}"
+check "#140 SETUP: the base CI blob really is unreadable now" \
+  "$(if git -C "$BGR_D" show "${BGR_BASE}:.github/workflows/validate.yml" >/dev/null 2>&1; then echo 1; else echo 0; fi)"
+BG_OUT="$(bash "$BG" --base "$BGR_BASE" --pr rungdrop --repo "$BGR_D" 2>&1)"; BG_RC=$?
+check "#140 an unreadable CI file at the BASE is refused by ARM 3B, naming that file" \
+  "$([ "$BG_RC" = 2 ] && printf '%s' "$BG_OUT" | grep -q "could not read '.github/workflows/validate.yml' at the base ref" && echo 0 || echo 1)"
+# The finding is the POLARITY, not the message: a silent no-op here passes
+# every rung removal.
+check "#140 it never reports BASE_GATE_PASSED on a CI file it cannot read" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'BASE_GATE_PASSED' && echo 1 || echo 0)"
+# ARM 3B SPEAKS BEFORE ARM 5 — the assertion that discriminates. Pre-fix this
+# same fixture produced arm 5's diff message and nothing from 3b, at the same
+# rc: a refusal that blamed a truncated-looking diff for an unreadable CI file.
+check "#140 the refusal is NOT arm 5's diff message (pre-fix, that was the only thing said)" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'git diff base vs merged tree' && echo 1 || echo 0)"
+# THE INTERLOCK, retired. Arm 5's pathspec is widened by one exclusion — the
+# unrelated edit that made this live — and the gate must STILL refuse. Pre-fix
+# this exact combination returned BASE_GATE_PASSED, rc 0, with the rung gone.
+_bgr_widened="$BGR_D/bg-widened.sh"
+sed "s|':(exclude)scripts/base-gate.sh'|':(exclude)scripts/base-gate.sh' ':(exclude).github/'|" "$BG" > "$_bgr_widened"
+check "#140 SETUP: the widened copy really differs from the shipped gate" \
+  "$(! cmp -s "$_bgr_widened" "$BG" && echo 0 || echo 1)"
+BG_OUT="$(bash "$_bgr_widened" --base "$BGR_BASE" --pr rungdrop --repo "$BGR_D" 2>&1)"; BG_RC=$?
+check "#140 arm 3b refuses WITHOUT arm 5's help — the interlock is no longer load-bearing" \
+  "$([ "$BG_RC" = 2 ] && printf '%s' "$BG_OUT" | grep -q "could not read '.github/workflows/validate.yml' at the base ref" && echo 0 || echo 1)"
+check "#140 …and that combination no longer PASSES (it did, rc 0, pre-fix)" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'BASE_GATE_PASSED' && echo 1 || echo 0)"
+rm -rf "$BGR_D"
+# THE PR SIDE is `fail`, not `die` — arm 3's asymmetry. An unreadable subject
+# is rc 1: we will not clear it, but the trusted half was readable, so the gate
+# can still speak about everything else.
+#
+# ITS OWN REPO, for the reason the CONTROL below documents: deleting a loose
+# object is permanent for that repository, so a PR-side case cut from a base
+# whose blob was already removed never reaches its own branch — the run refuses
+# at the BASE check and this case measures that instead, reporting a pass or a
+# failure that has nothing to do with the PR side. Written against the shared
+# fixture it did exactly that.
+BGRP_D="$(mktemp -d "${TMPDIR:-/tmp}/basegate-rungpr.XXXXXX")"
+mkdir -p "$BGRP_D/scripts" "$BGRP_D/tests" "$BGRP_D/.github/workflows"
+( cd "$BGRP_D" && git init -q . && git config user.email t@example.com && git config user.name t ) >/dev/null 2>&1
+printf 'CHECKS = (\n    check_hook,\n)\n' > "$BGRP_D/scripts/validate_plugin.py"
+printf '#!/usr/bin/env bash\n: the wrapper\n' > "$BGRP_D/scripts/gate-suite.sh"
+printf 'FLOOR_shell=20\n' > "$BGRP_D/tests/floors.env"
+printf 'x\n' > "$BGRP_D/tests/t.sh"
+printf '# ci\nsteps:\n  - run: bash scripts/gate-suite.sh shell\n  - run: bash scripts/gate-suite.sh python\n' > "$BGRP_D/.github/workflows/validate.yml"
+git -C "$BGRP_D" add -A >/dev/null 2>&1 && git -C "$BGRP_D" commit -qm base
+BGRP_BASE="$(git -C "$BGRP_D" rev-parse HEAD)"
+git -C "$BGRP_D" checkout -q -b rungpr "$BGRP_BASE"
+printf '# ci\nsteps:\n  - run: bash scripts/gate-suite.sh shell\n  - run: bash scripts/gate-suite.sh python\n  - run: bash scripts/gate-suite.sh workflows\n' > "$BGRP_D/.github/workflows/validate.yml"
+git -C "$BGRP_D" commit -qam "add a rung (distinct PR-side blob)"
+_bgrp_prblob="$(git -C "$BGRP_D" rev-parse "rungpr:.github/workflows/validate.yml")"
+_bgrp_baseblob="$(git -C "$BGRP_D" rev-parse "${BGRP_BASE}:.github/workflows/validate.yml")"
+rm -f "$BGRP_D/.git/objects/${_bgrp_prblob%"${_bgrp_prblob#??}"}/${_bgrp_prblob#??}"
+# Three premises, all required: the PR blob is unreadable, it is a DIFFERENT
+# object from the base one (or this would corrupt the trusted side and measure
+# the base branch), and the BASE side is still readable.
+check "#140 SETUP: the PR-side blob is unreadable, distinct from the base blob, base still readable" \
+  "$(if git -C "$BGRP_D" show "rungpr:.github/workflows/validate.yml" >/dev/null 2>&1; then echo 1; \
+     elif [ "$_bgrp_prblob" = "$_bgrp_baseblob" ]; then echo 1; \
+     elif ! git -C "$BGRP_D" show "${BGRP_BASE}:.github/workflows/validate.yml" >/dev/null 2>&1; then echo 1; \
+     else echo 0; fi)"
+BG_OUT="$(bash "$BG" --base "$BGRP_BASE" --pr rungpr --repo "$BGRP_D" 2>&1)"; BG_RC=$?
+# ARM 3B'S OWN WORDS, not "some refusal happened". The first spelling of this
+# case accepted arm 5's diff message as satisfying it, and the mutation proved
+# that vacuous: reverting the PR-side `fail` to a silent `continue` left the
+# whole suite GREEN, because arm 5 caught the same corruption (its pathspec
+# covers `.github/`) and the loose regex read that as arm 3b speaking. The
+# interlock masks BOTH sides, so both halves of this case must name the arm.
+check "#140 an unreadable CI file on the PR side is refused BY ARM 3B, naming that file" \
+  "$(printf '%s' "$BG_OUT" | grep -qF "UNREADABLE: '.github/workflows/validate.yml' in the merged tree" && echo 0 || echo 1)"
+check "#140 …and the PR-side refusal is not arm 5's diff message standing in for it" \
+  "$(printf '%s' "$BG_OUT" | grep -qF "UNREADABLE: '.github/workflows/validate.yml' in the merged tree" \
+     && [ "$BG_RC" -ne 0 ] && echo 0 || echo 1)"
+check "#140 …and it never reports BASE_GATE_PASSED either" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'BASE_GATE_PASSED' && echo 1 || echo 0)"
+rm -rf "$BGRP_D"
+# THE PRESENCE PROBE is the second unchecked call in this arm, and it fails on
+# a DIFFERENT corruption than the one above — which is why it needs its own
+# fixture rather than riding the blob one. Measured: deleting the file's BLOB
+# leaves `ls-tree` at rc 0 (the tree still names the entry; only `git show`
+# fails, rc 128), so the blob fixture cannot reach this guard at all. Deleting
+# the enclosing TREE object is what makes `ls-tree` exit 1.
+#
+# Unguarded, that rc 1 produced an EMPTY listing, which the arm read as "this
+# forge is not configured" and `continue`d past — the fail-open in its quietest
+# form: no message, no claim, and the rung set for that file never compared.
+# Found by mutation: reverting this `die` alone left the whole suite green,
+# because every other case here corrupts the blob instead.
+BGRT_D="$(mktemp -d "${TMPDIR:-/tmp}/basegate-rungtree.XXXXXX")"
+mkdir -p "$BGRT_D/scripts" "$BGRT_D/tests" "$BGRT_D/.github/workflows"
+( cd "$BGRT_D" && git init -q . && git config user.email t@example.com && git config user.name t ) >/dev/null 2>&1
+printf 'CHECKS = (\n    check_hook,\n)\n' > "$BGRT_D/scripts/validate_plugin.py"
+printf '#!/usr/bin/env bash\n: the wrapper\n' > "$BGRT_D/scripts/gate-suite.sh"
+printf 'FLOOR_shell=20\n' > "$BGRT_D/tests/floors.env"
+printf 'x\n' > "$BGRT_D/tests/t.sh"
+printf '# ci\nsteps:\n  - run: bash scripts/gate-suite.sh shell\n  - run: bash scripts/gate-suite.sh python\n' > "$BGRT_D/.github/workflows/validate.yml"
+git -C "$BGRT_D" add -A >/dev/null 2>&1 && git -C "$BGRT_D" commit -qm base
+BGRT_BASE="$(git -C "$BGRT_D" rev-parse HEAD)"
+git -C "$BGRT_D" checkout -q -b rungdrop "$BGRT_BASE"
+printf '# ci\nsteps:\n  - run: bash scripts/gate-suite.sh python\n' > "$BGRT_D/.github/workflows/validate.yml"
+git -C "$BGRT_D" commit -qam "drop the shell rung"
+_bgrt_tree="$(git -C "$BGRT_D" rev-parse "${BGRT_BASE}:.github/workflows")"
+rm -f "$BGRT_D/.git/objects/${_bgrt_tree%"${_bgrt_tree#??}"}/${_bgrt_tree#??}"
+# The fixture asserts its own precondition in its own words: if the object was
+# packed the `rm` is a no-op, `ls-tree` still succeeds, and the check below
+# would measure the healthy path while reporting green (#134's class).
+check "#140 SETUP: the base CI LISTING really fails now (tree object gone, not the blob)" \
+  "$(if git -C "$BGRT_D" ls-tree -r --name-only "$BGRT_BASE" -- .github/workflows/validate.yml >/dev/null 2>&1; then echo 1; else echo 0; fi)"
+BG_OUT="$(bash "$BG" --base "$BGRT_BASE" --pr rungdrop --repo "$BGRT_D" 2>&1)"; BG_RC=$?
+# HONESTY NOTE — this pair asserts the POLARITY, not the arm, and the reason is
+# measured: a missing TREE object is refused EARLIER, at arm 4's `git diff
+# base...pr` ("could not read the base...pr diff"), so arm 3b's own listing
+# guard never runs on this fixture and no fixture in this repo shape reaches
+# it. Asserting that its message appears would be asserting something false.
+#
+# The guard stays, and it is not decoration: the two git calls fail on
+# DIFFERENT corruptions (deleting the file's BLOB leaves `ls-tree` at rc 0 —
+# only `git show` fails, rc 128 — while deleting the enclosing TREE is what
+# makes `ls-tree` exit 1), and an arm whose correctness depends on which other
+# arm happens to die first is exactly the undeclared interlock #140 exists to
+# retire. What this pair CAN prove is that the corruption is refused and never
+# passes, which is the finding; it is the #133 situation one arm over — a
+# branch with no constructible fixture, recorded rather than faked.
+check "#140 an unreadable base LISTING is refused (polarity; the ARM is unreachable — see the note)" \
+  "$([ "$BG_RC" = 2 ] && echo 0 || echo 1)"
+check "#140 …and the listing refusal never reports BASE_GATE_PASSED" \
+  "$(printf '%s' "$BG_OUT" | grep -q 'BASE_GATE_PASSED' && echo 1 || echo 0)"
+rm -rf "$BGRT_D"
+# CONTROL: the ordinary case is untouched by all of this — a healthy repo whose
+# PR ADDS a rung passes. A fail-closed fix that reddens honest PRs is a worse
+# gate than the fail-open it replaced.
+#
+# ITS OWN REPO, and that is the finding, not a style choice. Written against
+# the fixture above it FAILED, and the fix was not the cause: deleting a loose
+# object is PERMANENT for that repository, so every later branch cut from
+# BGR_BASE still reads a base whose CI blob is gone. `git checkout -b` printed
+# `error: unable to read sha1 file` and the run refused at arm 3b — correctly.
+# The control was measuring the corrupted repo while claiming to measure a
+# healthy one, which is the shape that makes a control worthless. A fixture
+# that destroys shared state owes every later case a fresh one.
+BGRH_D="$(mktemp -d "${TMPDIR:-/tmp}/basegate-rungok.XXXXXX")"
+mkdir -p "$BGRH_D/scripts" "$BGRH_D/tests" "$BGRH_D/.github/workflows"
+( cd "$BGRH_D" && git init -q . && git config user.email t@example.com && git config user.name t ) >/dev/null 2>&1
+printf 'CHECKS = (\n    check_hook,\n)\n' > "$BGRH_D/scripts/validate_plugin.py"
+printf '#!/usr/bin/env bash\n: the wrapper\n' > "$BGRH_D/scripts/gate-suite.sh"
+printf 'FLOOR_shell=20\n' > "$BGRH_D/tests/floors.env"
+printf 'x\n' > "$BGRH_D/tests/t.sh"
+printf '# ci\nsteps:\n  - run: bash scripts/gate-suite.sh shell\n  - run: bash scripts/gate-suite.sh python\n' > "$BGRH_D/.github/workflows/validate.yml"
+git -C "$BGRH_D" add -A >/dev/null 2>&1 && git -C "$BGRH_D" commit -qm base
+BGRH_BASE="$(git -C "$BGRH_D" rev-parse HEAD)"
+git -C "$BGRH_D" checkout -q -b rungadd "$BGRH_BASE"
+printf '# ci\nsteps:\n  - run: bash scripts/gate-suite.sh shell\n  - run: bash scripts/gate-suite.sh python\n  - run: bash scripts/gate-suite.sh compress\n' > "$BGRH_D/.github/workflows/validate.yml"
+git -C "$BGRH_D" commit -qam "add a rung"
+BG_OUT="$(bash "$BG" --base "$BGRH_BASE" --pr rungadd --repo "$BGRH_D" 2>&1)"; BG_RC=$?
+check "#140 CONTROL: a PR that ADDS a rung to a healthy CI file still passes" \
+  "$([ "$BG_RC" = 0 ] && printf '%s' "$BG_OUT" | grep -q 'BASE_GATE_PASSED' && echo 0 || echo 1)"
+rm -rf "$BGRH_D"
+
 # --- an unwritable TMPDIR names ITSELF, not a truncated fetch (#135) --------
 # Every mktemp in base-gate.sh was unchecked. On failure the variable stayed
 # EMPTY, the redirection that followed failed, and the classifier read $? as 1

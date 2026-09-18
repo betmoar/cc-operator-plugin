@@ -4029,8 +4029,17 @@ def check_base_gate(root, problems):
     # CORE_FILES/is_core_path are the ONE declaration of the enforcer core
     # (a hardcoded second copy beside them is how the two drift and the gate
     # stops covering a file it still names).
+    # `_ci_show` is arm 3b's #140 guard: the rung comparison reads the base CI
+    # file through a CHECKED call instead of an unchecked `git show |` pipeline.
+    # Pinned by name because the shape it replaced is the one that ships back:
+    # a pipeline whose status cannot be read (`grep` exits 1 on no-match, so an
+    # unreadable blob and a file that runs no rungs are indistinguishable), and
+    # with the base list empty the loop is a NO-OP that passes every rung
+    # removal. Deleting the helper and inlining the pipe again is the exact
+    # regression, and it looks like a simplification in a diff.
     for token in ("FLOOR_", "extract_checks", "CORE_FILES", "is_core_path",
-                  "BASE_GATE_FAILED", "die ", "merge-tree", "PR_TREE"):
+                  "BASE_GATE_FAILED", "die ", "merge-tree", "PR_TREE",
+                  "_ci_show"):
         if token not in code:
             problems.append(
                 f"{bg_rel}: the arm keyed on {token!r} is absent from code "

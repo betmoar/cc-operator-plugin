@@ -11,6 +11,8 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [0.11.14] - 2026-09-18
 
+Closes #139 (item 2), #138 (the gitattributes half), #134, #140.
+
 ### Fixed
 
 - **A carriage return is refused at the WRITER, in all three CLIs (#139 item 2).**
@@ -59,21 +61,42 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ### Notes
 
-- `FLOOR_shell` 1013 → 1038. Twenty-five cases; nine mutations, each red in the case written
-  for it (M5 — the message revert — is why that case exists: it shipped green before).
-  `check_guard_parity` gained the `a\rb` probe tuple, red on each of the three CLIs and
-  green restored; before it existed, deleting the shipped arm reported `all contracts
-  hold`. The five UPGRADE cases came from verifying this PR's own claim rather than from
-  a mutation: reading `.operator/.gitattributes` in this repo returned 0 `eol=lf` lines,
-  because the `[ ! -f ]` guard meant the rule never reached an existing project. Their
-  mutations: drop the `grep -qF` guard → 1 red (idempotence); rewrite instead of append →
-  1 red (hand-edits destroyed); append the inert `eol=lf` shape with no `text` → 2 red.
-  Measured macOS uid 501, isolated rung runs; not measured under root.
-- Filed **#140**: `base-gate.sh` arm 3b repeats #137's fail-open (`_ci_rungs` pipes
-  `git show` into grep unchecked and iterates the BASE side). Reproduced end-to-end —
-  rung removed, base CI blob unreadable, one unrelated arm-5 pathspec widening →
-  `BASE_GATE_PASSED`, rc 0. Today it is masked by an undeclared interlock: arm 5's
-  own diff fails on the same corruption because `.github/` is inside its pathspec.
+- `FLOOR_shell` 1013 → 1054. Forty-one cases; twelve mutations, each red in the case
+  written for it. Two of those cases exist only because a mutation found nothing: the
+  #139 message revert, and #140's PR-side case, which accepted arm 5's message as
+  standing in for arm 3b until it was made to name the arm — the interlock masks BOTH
+  sides. `check_guard_parity` gained the `a\rb` probe tuple (red on each of the three
+  CLIs; before it existed, deleting the shipped arm reported `all contracts hold`), and
+  `check_base_gate`'s arm-token set gained `_ci_show` (red when the helper is deleted
+  and the unchecked pipeline inlined back — the regression that looks like a
+  simplification). Five of the cases came from verifying a claim rather than from a
+  mutation: `.operator/.gitattributes` in this very repo returned 0 `eol=lf` lines,
+  because the `[ ! -f ]` guard meant #138's rule never reached an existing project —
+  their own mutations are drop the `grep -qF` guard → 1 red (idempotence), rewrite
+  instead of append → 1 red (hand-edits destroyed), append the inert `eol=lf` shape with
+  no `text` → 2 red. Measured macOS uid 501, isolated rung runs; not measured under root.
+- One #140 guard is deliberately unasserted and says so in an `HONESTY NOTE`: the
+  base-side `ls-tree` presence probe. A missing TREE object is what makes `ls-tree`
+  fail (deleting the BLOB leaves it at rc 0; only `git show` fails), and that
+  corruption is refused EARLIER by arm 4's diff, so no fixture in this repo shape
+  reaches the guard. Its pair asserts the polarity instead — the #133 situation one
+  arm over, recorded rather than faked.
+- **`base-gate.sh` arm 3b no longer fails open on an unreadable CI file (#140).** The
+  same defect #137 fixed at arm 3, in the arm that commit wrote: `_ci_rungs` piped
+  `git show` into grep with `2>/dev/null` and the loop iterated the BASE side, so an
+  unreadable base blob made it a no-op and every rung removal passed. The base-side
+  `ls-tree` presence probe had the same hole one line up, in its quietest form — a
+  `continue` past the whole file, printing nothing and claiming nothing.
+  The pipeline is not checkable as a pipeline (`grep` exits 1 on no-match, so an
+  unreadable blob and a file that legitimately runs no rungs are the same status), so
+  the blob is staged through a checked `_ci_show` and only that status is read.
+  Polarity matches arm 3: base side `die` (rc 2 — the gate cannot see), PR side `fail`.
+  Reproduced before the fix, end-to-end: rung removed + base CI blob unreadable + one
+  unrelated widening of arm 5's pathspec → `BASE_GATE_PASSED`, rc 0. The escape had
+  been masked by an **undeclared interlock** — arm 5's own diff dies on the same
+  corruption because `.github/` sits inside its pathspec — so arm 3b's correctness
+  depended on another arm's pathspec, with nothing stating it. That probe is now a
+  case, and it refuses with the widened pathspec too.
 
 ## [0.11.13] - 2026-09-16
 
