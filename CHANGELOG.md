@@ -96,8 +96,15 @@ Closes #139 (item 2), #138 (the gitattributes half), #134, #140.
   bare `>>` on an unwritable file printed bash's own `Permission denied` before the
   crafted warning, and `break` hid the remaining two paths.
   Measured macOS uid 501, isolated rung runs; not measured under root.
-- One #140 guard is deliberately unasserted and says so in an `HONESTY NOTE`: the
-  base-side `ls-tree` presence probe. A missing TREE object is what makes `ls-tree`
+- TWO of #140's four guards are deliberately unasserted, and the `HONESTY NOTE` names
+  both: the base-side AND the PR-side `ls-tree` presence probes. The first draft of this
+  entry said "one" — the review panel deleted the PR-side `|| die` and the whole suite
+  stayed green, which is the claim failing on its own terms.
+  `PR_TREE` is the MERGED tree and shares the base's objects, so any corruption reachable
+  from it trips the base-side check (or the change-list diff) first; measured on a fixture
+  that deletes the PR commit's `.github/workflows` tree object, the run refuses with
+  "could not list … at the base ref", never the PR-side message. The base-side probe is
+  unassertable for the same reason: A missing TREE object is what makes `ls-tree`
   fail (deleting the BLOB leaves it at rc 0; only `git show` fails), and that
   corruption is refused EARLIER by the change-list `git diff base...pr` that runs
   BEFORE arm 1, so no fixture in this repo shape

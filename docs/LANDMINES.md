@@ -1504,7 +1504,13 @@ TREE object is what makes `ls-tree` exit 1. So the `git show` guard and the `ls-
 guard cannot share a fixture, which is how the second one was found: reverting its `die`
 alone left the whole suite green, because every case corrupted the blob.
 
-That guard then turned out to be **unreachable in this repo shape** — a missing tree
+Both `ls-tree` presence probes then turned out to be **unreachable in this repo shape**
+— the PR-side one too, which the first draft of this section did not say and a review
+panel caught by deleting its `|| die` and watching the suite stay green. `PR_TREE` is the
+MERGED tree and shares the base's objects, so corrupting one side corrupts both views:
+a fixture deleting the PR commit's `.github/workflows` tree refuses with *"could not list
+… at the base ref"*, never the PR-side message. The base-side probe is unreachable for
+the nearer reason — a missing tree
 object is refused earlier still, by the CHANGE-LIST `git diff base...pr` that runs before
 arm 1 (not by arm 4, which makes no git call at all — the first draft of this paragraph
 said arm 4, and a review pass caught it). Its case pair asserts

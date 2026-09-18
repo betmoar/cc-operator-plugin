@@ -5738,11 +5738,18 @@ rm -f "$BGRT_D/.git/objects/${_bgrt_tree%"${_bgrt_tree#??}"}/${_bgrt_tree#??}"
 check "#140 SETUP: the base CI LISTING really fails now (tree object gone, not the blob)" \
   "$(if git -C "$BGRT_D" ls-tree -r --name-only "$BGRT_BASE" -- .github/workflows/validate.yml >/dev/null 2>&1; then echo 1; else echo 0; fi)"
 BG_OUT="$(bash "$BG" --base "$BGRT_BASE" --pr rungdrop --repo "$BGRT_D" 2>&1)"; BG_RC=$?
-# HONESTY NOTE — this pair asserts the POLARITY, not the arm, and the reason is
-# measured: a missing TREE object is refused EARLIER, by the CHANGE-LIST `git diff
-# base...pr` ("git diff base...pr failed"), so arm 3b's own listing
-# guard never runs on this fixture and no fixture in this repo shape reaches
-# it. Asserting that its message appears would be asserting something false.
+# HONESTY NOTE — this pair asserts the POLARITY, not the arm, and it covers BOTH
+# `ls-tree` presence probes (base side and PR side): neither has a discriminating
+# case, and the review panel proved it by deleting the PR-side `|| die` and
+# watching the whole suite stay green.
+#
+# Measured, twice. A missing TREE object is refused EARLIER by the CHANGE-LIST
+# `git diff base...pr` ("git diff base...pr failed"). And `PR_TREE` is the
+# MERGED tree, which SHARES the base's objects — so a fixture that deletes the
+# PR commit's `.github/workflows` tree object refuses with "could not list …
+# at the base ref", never the PR-side message. Corrupting one side corrupts
+# both views, which is why no fixture in this repo shape reaches either probe.
+# Asserting that either message appears would be asserting something false.
 #
 # The guard stays, and it is not decoration: the two git calls fail on
 # DIFFERENT corruptions (deleting the file's BLOB leaves `ls-tree` at rc 0 —
