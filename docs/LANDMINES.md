@@ -1600,3 +1600,62 @@ One more thing the fix itself demonstrated: the first repair kept the rotted cit
 inside the sentence explaining that it had rotted, and the check matched it again. A
 check that scans prose cannot tell a citation from prose ABOUT a citation — the same
 shape as the commit that closed #139 by quoting a closing keyword. Paraphrase it.
+
+## A comment that names the wrong gate is worse than no comment (0.11.15, PR #144 review)
+
+The 0.11.15 fix hand-copies a bounded CR strip into three parsers, because two of them
+may not source a lib. The comment on one copy said `check_guard_parity` pinned them
+equal. It did not, and nothing did: that check compares `check_bare_name` and
+`check_owner_name` across the three CLIs and contains no reference to a CR, a counter, or
+a bound. Measured — reverting `ops-reverify.sh`'s whole loop to a single
+`${row%$'\r'}` left `validate_plugin: all contracts hold`.
+
+The bash suite caught it. So the code was safe and the SENTENCE was not, which is the
+harder failure: a maintainer who reads "the validator pins this" runs the validator,
+sees green, and ships the drift. That is #111's rule — *name the gate that went red* —
+applied to prose instead of to a verdict row. The remedy was not to soften the comment
+but to make it true: `check_cr_strip_parity` now holds all three sites to `CAPS_MAX_CR`
+and refuses a loop that removes without counting, because equality alone is satisfied by
+three identically-gutted copies (F30).
+
+## One bad row can silence a detector, and the message must say which bound fired (0.11.15, PR #144 review)
+
+`scan_caps` breaks on a row still carrying a CR after the bound, and a break abandons the
+rest of the ledger. Measured: two genuine FAIL rounds plus one 20-CR row reports
+`tripped=0`, where the same ledger without that row reports 1. The polarity is right —
+a truncated scan read a prefix, and a prefix cannot claim even a floor — but the
+consequence is that ONE planted row anywhere suppresses a real trip everywhere.
+
+What made that dangerous was the message, not the break. The Stop hook's truncation
+notice enumerated four SIZE bounds, so a session stopped by a corrupt row told the
+operator their ledger was too big. They then go looking for length in a file whose real
+problem is one line. A message describing a different bound than the one that fired is
+the #99 defect one file over, and this repo has now hit that shape three times: the
+statusline/hook disagreement, #139's MALFORMED wording, and here.
+
+`caps_truncated_reason` lets a bound name itself. The size bounds leave it empty on
+purpose and the caller enumerates them — an always-set reason would describe the CR case
+on a ledger that is merely long, which is the same defect pointing the other way.
+
+**The three copies answer differently past the bound, and that is deliberate.** `caps.sh`
+stops the scan: it is a detector, and a partial count is worse than none.
+`ops-reverify.sh` skips the row and says so: it REPORTS rows, so stopping would hide every
+later one — and without an arm it rebuilt the exact defect the strip exists to remove
+(measured at 17 CRs: `| 3 | T-y | FAIL | ^M | no-commit | … |`, a broken cell in the
+operator's own report). `ops-verdict.sh --reconcile` needs no arm at all, because the
+residual CR lands in the verdict cell and `row_is_conformant`'s enum already refuses it,
+named on stderr with a skipped count. Three answers, one rule: never let a corrupt row
+pass as a clean one, and never let the refusal be silent.
+
+## A check scoped to one directory reports green about the rest (0.11.15, PR #144 review)
+
+`check_line_citations` shipped globbing `docs/**/*.md`. A reviewer found a live rot it
+could not see: `CHANGELOG.md` cited `statusline.sh:84` for the `$PWD` fallback, which at
+HEAD is a `stat -c %Y` probe — the fallback moved to the `PROJ` resolution. The check was
+correct about every file it read and silent about the one where the defect was.
+
+Two smaller ones from the same review, both in the branch written to refuse: `:0` was
+accepted, because `lines[0 - 1]` is Python's LAST line and that line is usually non-blank;
+and the message for an out-of-range citation said "has only N lines", which is nonsense
+for `:0`. A guard whose refusal path has its own bug refuses nothing, and reads as
+coverage.

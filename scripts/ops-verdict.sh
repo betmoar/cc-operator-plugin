@@ -530,12 +530,37 @@ if [ "${1:-}" = "--reconcile" ]; then
         # bound mirrors lib/caps.sh's CAPS_MAX_CR and exists for the same
         # measured reason: an unbounded loop on one 1 MiB line of CRs had not
         # finished after 300s. This file cannot source that lib — it installs
-        # standalone into .operator/bin/ — so the rule is hand-copied, and
-        # check_guard_parity pins the copies equal.
+        # standalone into .operator/bin/ — so the rule is hand-copied.
+        #
+        # THE THREE COPIES ARE UNPINNED, and saying so is the point. An earlier
+        # draft of this comment claimed `check_guard_parity` pinned them; it
+        # does not — that check only compares check_bare_name/check_owner_name
+        # across the three CLIs and has no notion of a CR strip. Measured:
+        # reverting this whole loop to a single `${row%$'\r'}` leaves
+        # `validate_plugin: all contracts hold`. The bash suite catches it
+        # (each copy has its own case, each red on its own mutation); the
+        # VALIDATOR does not, and #146 carries the gap. Naming the wrong gate
+        # is the #111 defect — a maintainer trusting the claim would skip the
+        # one suite that actually covers this.
+        #
+        # `_cr` cannot be `local` here: this block is at TOP LEVEL (the
+        # `--reconcile` branch), and bash refuses `local` outside a function.
+        # It is reset per row, immediately below. Do not "fix" the asymmetry
+        # with caps.sh/ops-reverify.sh by adding one — that is a hard error,
+        # not a style difference.
         _cr=0
         while [ "$_cr" -lt 16 ]; do
           case "$row" in *$'\r') row="${row%$'\r'}"; _cr=$((_cr + 1)) ;; *) break ;; esac
         done
+        # PAST THE BOUND this file needs NO arm of its own, and that is a
+        # measured fact rather than an omission (PR #144 review). The residual
+        # CR lands in the verdict cell, `row_is_conformant`'s PASS/FAIL enum
+        # misses, and the row is refused and NAMED on stderr with a skipped
+        # count — verified at 17 CRs: "skipping non-conformant line in 002.md",
+        # 1 restored of 2. That is already this file's polarity. caps.sh stops
+        # the scan and ops-reverify.sh skips-and-says because neither has a
+        # schema test downstream to catch it; adding a third arm here would
+        # duplicate a refusal that already fires.
         [ -n "$row" ] || continue
         # Reconcile WRITES the ledger, so it enforces the same 4-cell
         # schema. COUNT the cells — a glob's `*` happily consumes ` | `.

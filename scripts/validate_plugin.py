@@ -1047,6 +1047,81 @@ def check_scripts(root, problems):
             problems.append(f"scripts/{name}: bash syntax error — {r.stderr.strip()}")
 
 
+def check_cr_strip_parity(root, problems):
+    """The bounded trailing-CR strip is hand-copied into three parsers (#139).
+
+    `lib/caps.sh` owns the rule; `ops-reverify.sh` and `ops-verdict.sh`'s
+    `--reconcile` loop carry hand-copies because neither may source a lib —
+    ops-verdict.sh installs standalone into `.operator/bin/`, and ops-reverify
+    sources nothing. So the three can drift, and drift here is silent in the
+    direction that matters: one copy reverted to a single `${row%$'\r'}` reads
+    a `\r\r\n` ledger differently from the other two, which is exactly the
+    fail-open #139 item 1 closed.
+
+    This check exists because a comment CLAIMED `check_guard_parity` covered
+    it and nothing did (PR #144 review). Measured before writing this:
+    reverting ops-reverify.sh's whole loop to a single strip left
+    `validate_plugin: all contracts hold`. The bash suite caught it; the
+    validator did not, and a comment naming the wrong gate is the #111 defect.
+
+    Two claims, and they fail independently: every site must HAVE the loop,
+    and every site's bound must equal `CAPS_MAX_CR`. Equality alone is
+    satisfied by three identically-gutted copies (F30), so the bound is also
+    pinned to its canonical value.
+    """
+    lib = root / "scripts" / "lib" / "caps.sh"
+    if not lib.is_file():
+        return  # check_caps reports the absence; one finding is enough
+    m = re.search(r"^CAPS_MAX_CR=(\d+)\s*$", shell_code(lib), re.M)
+    if not m:
+        problems.append(
+            "scripts/lib/caps.sh: no `CAPS_MAX_CR=<n>` declaration — it is the "
+            "bound the three hand-copied CR strips are held to (#139), and a "
+            "renamed constant makes this parity check compare nothing")
+        return
+    bound = m.group(1)
+    # Whitespace-insensitive: reflowing a copy is free, changing its bound is
+    # not. The `16` in the two hand-copies is the literal CAPS_MAX_CR value —
+    # they cannot read the constant, which is the whole reason they are copies.
+    sites = {
+        "lib/caps.sh": (lib, r'while\s*\[\s*"\$_cr"\s*-lt\s*"\$CAPS_MAX_CR"\s*\]'),
+        "ops-reverify.sh": (root / "scripts" / "ops-reverify.sh",
+                            r'while\s*\[\s*"\$_cr"\s*-lt\s*' + bound + r'\s*\]'),
+        "ops-verdict.sh": (root / "scripts" / "ops-verdict.sh",
+                           r'while\s*\[\s*"\$_cr"\s*-lt\s*' + bound + r'\s*\]'),
+    }
+    for rel, (path, pat) in sites.items():
+        if not path.is_file():
+            continue
+        code = shell_code(path)
+        # A file with NO `_cr` strip at all is not drift — the fixture trees
+        # carry minimal stubs with no reconcile path, and reporting those would
+        # make this check fire on every good-tree test rather than on the
+        # divergence it exists for. What is refused is a site that HAS the
+        # mechanism and disagrees about it: a `_cr` counter with no conforming
+        # loop is a copy that drifted, which is the reachable failure.
+        if "_cr" not in code:
+            continue
+        if not re.search(pat, code):
+            problems.append(
+                f"scripts/{rel}: no bounded trailing-CR strip loop bounded by "
+                f"{bound} (#139 item 1). All three 4-cell row parsers strip the "
+                f"whole trailing RUN — one removal leaves a `\\r\\r\\n` row "
+                f"still carrying a CR and that parser fails OPEN, silently, "
+                f"while the other two do not. If the bound moved, move it in "
+                f"ALL THREE: caps.sh cannot be sourced by the other two")
+        # The strip must also be a RUN, not a single removal wearing a loop:
+        # pin the body's removal alongside the counter increment.
+        if not re.search(r"""row="\$\{row%\$'\\r'\}"\s*;\s*_cr=\$\(\(_cr \+ 1\)\)""",
+                         code):
+            problems.append(
+                f"scripts/{rel}: the CR strip does not remove-and-count in one "
+                f"step (#139). The counter is what makes caps.sh's byte "
+                f"accounting exact and what proves the loop strips a RUN; a "
+                f"loop that removes without counting reads as bounded and is "
+                f"not")
+
+
 def check_reader_bounds(root, problems):
     """
     Every reader of a sentinel/fragment must bound its reads in BYTES —
@@ -4328,8 +4403,17 @@ def check_line_citations(root, problems):
     # resolve is NOT reported — the prose quotes other repos' files too, and a
     # check that cries wolf on those is a check people route around.
     _SEARCH = ("", "scripts/", "scripts/lib/", "workflows/", "tests/", "hooks/")
-    for rel in sorted(p.relative_to(root).as_posix()
-                      for p in root.glob("docs/**/*.md")):
+    # EVERY tracked markdown, not just docs/. The first cut globbed `docs/**`
+    # only, and a reviewer found a live rot it could not see: CHANGELOG.md
+    # cited `statusline.sh:84` for the `$PWD` fallback, which at HEAD is a
+    # `stat -c %Y` probe — the fallback moved to the PROJ resolution. A check
+    # that looks in one directory reports green about the files it never read,
+    # which is the _tool_loops shape this file already carries a floor against.
+    _roots = ["docs/**/*.md", "*.md", "templates/*.md", "agents/*.md",
+              "commands/*.md", "skills/**/*.md"]
+    _files = sorted({p.relative_to(root).as_posix()
+                     for pat in _roots for p in root.glob(pat) if p.is_file()})
+    for rel in _files:
         text = (root / rel).read_text(encoding="utf-8", errors="replace")
         for m in _CITE.finditer(text):
             name, num = m.group(1), int(m.group(2))
@@ -4343,10 +4427,17 @@ def check_line_citations(root, problems):
                 continue  # not ours to judge
             lines = target.read_text(encoding="utf-8",
                                      errors="replace").splitlines()
-            if num > len(lines):
+            # `num < 1` is not pedantry: `lines[0 - 1]` is Python's LAST line,
+            # so a `:0` citation read the end of the file and reported nothing
+            # whenever that line was non-blank. Measured on a synthetic fixture
+            # while reviewing this check — a silent accept in the one branch
+            # written to refuse (PR #144 review).
+            if num < 1 or num > len(lines):
+                _why = ("line numbers start at 1" if num < 1
+                        else f"{name} has only {len(lines)} lines")
                 problems.append(
-                    f"{rel}: cites `{name}:{num}` but {name} has only "
-                    f"{len(lines)} lines — the citation rotted (#139 item 4). "
+                    f"{rel}: cites `{name}:{num}` — {_why}; the citation "
+                    f"cannot resolve (#139 item 4). "
                     f"Cite the SYMBOL (the function or the literal) instead: a "
                     f"line number has no guard and shifts under any edit above "
                     f"it")
@@ -4577,6 +4668,7 @@ CHECKS = (
     check_permission_guards,
     check_scripts,
     check_reader_bounds,
+    check_cr_strip_parity,
     check_guard_parity,
     check_autobar,
     check_caps,

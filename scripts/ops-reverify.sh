@@ -110,6 +110,20 @@ scan_ledger() {
     while [ "$_cr" -lt 16 ]; do
       case "$row" in *$'\r') row="${row%$'\r'}"; _cr=$((_cr + 1)) ;; *) break ;; esac
     done
+    # PAST THE BOUND, and each of the three copies answers differently ON
+    # PURPOSE (PR #144 review). caps.sh sets caps_truncated and stops — it is a
+    # detector, and a partial count is worse than none. This file REPORTS rows,
+    # so stopping would hide every later row; instead the residual CR is named
+    # and the row is skipped, because passing it through reintroduces exactly
+    # the defect this strip exists to fix: measured at 17 CRs, the report grew a
+    # spurious empty cell (`| T-y | FAIL | ^M | no-commit | …`), which is the
+    # #128 shape one bound over. A row carrying 17 trailing CRs is planted or
+    # corrupt, never a line ending, so a visible refusal is the honest answer —
+    # this file's own polarity (count it as skipped, never drop it silently).
+    case "$row" in *$'\r')
+      echo "ops-reverify: skipping a row that still carries a carriage return after 16 strips — planted or corrupt, not a line ending: ${row%%$'\r'*}" >&2
+      SKIPPED=$((SKIPPED+1)); continue ;;
+    esac
     case "$row" in "| "*) ;; *) continue ;; esac
     # The header is matched WHOLE, not by prefix (#128). `"| Gate | Criterion |"*`
     # discards any row whose id is `Gate` and whose criterion is `Criterion`, and

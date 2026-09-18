@@ -183,7 +183,9 @@ CAPS_MAX_STEPS=100000
 # Sets: caps_tripped (count of targets at or over the cap), caps_rows (one
 # "<n> FAIL rounds: <id> | <criterion>" line each — the CALLER sanitizes and
 # truncates them; they are untrusted project data), caps_truncated (1 = a
-# bound stopped the scan early), caps_scan_failed (1 = no readable ledger).
+# bound stopped the scan early), caps_truncated_reason ("" when the bound
+# cannot name itself; the caller enumerates the size bounds then),
+# caps_scan_failed (1 = no readable ledger).
 scan_caps() { # scan_caps <verdicts-path>
   local f="$1" row body id crit ev verdict key r1 r2 i n=0 bytes=0 found steps=0 _cr=0
   # The key table is INTERNAL state, and it must be local (PR #126 review,
@@ -203,6 +205,11 @@ scan_caps() { # scan_caps <verdicts-path>
   caps_tripped=0
   caps_rows=""
   caps_truncated=0
+  # Set ONLY by a bound that can name itself (today: the CR-residue break). The
+  # size bounds leave it empty and the caller falls back to enumerating them —
+  # an empty reason must never read as "no truncation", which is what
+  # caps_truncated is for.
+  caps_truncated_reason=""
   caps_scan_failed=0
   # Absent or symlinked ledger: nothing to report. Report-only, so there is no
   # fail-closed direction to choose here — a missing ledger is a scaffold
@@ -287,7 +294,21 @@ scan_caps() { # scan_caps <verdicts-path>
     # artifact; it is a planted line. Refusing to guess is the same polarity as
     # every other bound here: say the scan is incomplete rather than report a
     # confident zero over input we did not parse.
-    case "$row" in *$'\r') caps_truncated=1; break ;; esac
+    #
+    # IT SETS A REASON, and that is not decoration (PR #144 review). This break
+    # abandons the rest of the ledger, so ONE planted row anywhere suppresses a
+    # real trip elsewhere — measured: a ledger with two genuine FAIL rounds plus
+    # one 20-CR row reports tripped=0 where the same ledger without it reports
+    # 1. That is the right polarity for a report-only gate, but the hook's
+    # truncation notice enumerates four SIZE bounds, so without a reason the
+    # operator is told their ledger is too big and goes looking for rows that
+    # are not the problem. A message describing a different bound than the one
+    # that fired is the #99 defect, one file over.
+    case "$row" in *$'\r')
+      caps_truncated=1
+      caps_truncated_reason="a row still carries a carriage return after $CAPS_MAX_CR strips — that is a planted or corrupt line, not a line ending; find it with: grep -n \$'\\\\r' <ledger>"
+      break ;;
+    esac
     n=$((n + 1))
     if [ "$n" -gt "$CAPS_MAX_LINES" ]; then caps_truncated=1; break; fi
     # `+ _cr` is what makes the byte cap EXACT (#139 item 3). The strip runs

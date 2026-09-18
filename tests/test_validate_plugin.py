@@ -5317,6 +5317,79 @@ class BaseGateTest(unittest.TestCase):
             shutil.rmtree(empty, ignore_errors=True)
 
 
+class CrStripParityTest(unittest.TestCase):
+    """check_cr_strip_parity: the three hand-copied CR strips cannot drift (#139).
+
+    Written because a comment in ops-verdict.sh CLAIMED check_guard_parity
+    covered this and nothing did (PR #144 review). Measured before the check
+    existed: reverting ops-reverify.sh's whole loop to a single
+    `${row%$'\r'}` left `validate_plugin: all contracts hold`.
+    """
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        (self.dir / "scripts" / "lib").mkdir(parents=True)
+        for rel in ("scripts/lib/caps.sh", "scripts/ops-reverify.sh",
+                    "scripts/ops-verdict.sh"):
+            shutil.copy(ROOT / rel, self.dir / rel)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _probs(self):
+        probs = []
+        vp.check_cr_strip_parity(self.dir, probs)
+        return probs
+
+    def _edit(self, rel, old, new):
+        p = self.dir / rel
+        t = p.read_text(encoding="utf-8")
+        self.assertIn(old, t, f"{rel}: mutation target not found — the pin "
+                              f"would be vacuous")
+        p.write_text(t.replace(old, new), encoding="utf-8")
+
+    def test_the_real_tree_passes(self):
+        self.assertEqual(self._probs(), [])
+
+    def test_a_copy_reverted_to_a_single_strip_fires(self):
+        # The exact drift: one parser back to #136's behaviour, two ahead of it.
+        self._edit("scripts/ops-reverify.sh",
+                   '    while [ "$_cr" -lt 16 ]; do',
+                   '    while [ "$_cr" -lt 0 ]; do')
+        probs = self._probs()
+        self.assertTrue(probs, "a reverted copy must fire")
+        self.assertTrue(any("ops-reverify.sh" in p for p in probs))
+
+    def test_a_drifted_bound_in_one_copy_fires(self):
+        self._edit("scripts/ops-verdict.sh",
+                   'while [ "$_cr" -lt 16 ]; do',
+                   'while [ "$_cr" -lt 8 ]; do')
+        self.assertTrue(any("ops-verdict.sh" in p for p in self._probs()))
+
+    def test_moving_the_constant_without_the_copies_fires(self):
+        # CAPS_MAX_CR is the canonical bound; the two copies hard-code its
+        # VALUE because they cannot source the lib. Moving one without the
+        # others is the drift, whichever side moves.
+        self._edit("scripts/lib/caps.sh", "CAPS_MAX_CR=16", "CAPS_MAX_CR=8")
+        probs = self._probs()
+        self.assertEqual(len(probs), 2, f"both copies must fire, got: {probs}")
+
+    def test_a_renamed_constant_is_reported_not_skipped(self):
+        # A parity check that cannot find its canonical value must SAY so —
+        # silently comparing nothing is how a pin goes vacuous (#111).
+        self._edit("scripts/lib/caps.sh", "CAPS_MAX_CR=16", "CAPS_MAX_CRS=16")
+        probs = self._probs()
+        self.assertTrue(probs and "CAPS_MAX_CR" in probs[0])
+
+    def test_a_gutted_loop_that_keeps_its_shape_fires(self):
+        # F30: equality alone is satisfied by identically-broken copies. A loop
+        # that removes without counting reads as bounded and is not.
+        self._edit("scripts/lib/caps.sh",
+                   """row="${row%$'\\r'}"; _cr=$((_cr + 1))""",
+                   """row="${row%$'\\r'}"; :""")
+        self.assertTrue(any("remove-and-count" in p for p in self._probs()))
+
+
 class LineCitationTest(unittest.TestCase):
     """check_line_citations: a `file.sh:NNN` in prose must still resolve (#139 item 4).
 
@@ -5359,6 +5432,15 @@ class LineCitationTest(unittest.TestCase):
         probs = self._probs("see `thing.sh:3` for the rule\n")
         self.assertTrue(probs, "a citation onto a blank line must fire")
         self.assertIn("BLANK", probs[0])
+
+    def test_a_zero_line_citation_fires(self):
+        # `lines[0 - 1]` is Python's LAST line, so `:0` read the end of the
+        # file and reported nothing whenever that line was non-blank — a silent
+        # accept in the one branch written to refuse (PR #144 review, measured
+        # on this fixture before the `num < 1` guard existed).
+        probs = self._probs("see `thing.sh:0` for the rule\n")
+        self.assertTrue(probs, "a `:0` citation must fire, not wrap to lines[-1]")
+        self.assertIn("line numbers start at 1", probs[0])
 
     def test_a_live_citation_stays_green(self):
         self.assertEqual(self._probs("see `thing.sh:2` for the rule\n"), [])

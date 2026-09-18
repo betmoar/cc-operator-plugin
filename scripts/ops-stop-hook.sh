@@ -564,7 +564,21 @@ if [ "$caps_scan_failed" = 0 ] && [ "$caps_truncated" = 1 ]; then
   # claims "at least this many"; a prefix cannot claim even that. So the lib
   # reports nothing on a truncated scan and this line says the state is
   # unknown, which is the one description that is true.
-  caps_say "operator: the cap scan of $opdir/VERDICTS.md hit a bound (>$CAPS_MAX_LINES rows, >$CAPS_MAX_BYTES bytes, >$CAPS_MAX_KEYS distinct failing targets, or >$CAPS_MAX_STEPS lookup steps) — it read only a PREFIX, so the cap state is UNKNOWN, not clean: a later PASS in the unread tail can clear a target the prefix counted. Read the ledger yourself if a rework cap matters here."
+  # THE BOUND NAMES ITSELF WHEN IT CAN (PR #144 review). Six sites set
+  # caps_truncated and this line described only four of them — the size bounds
+  # — so a scan stopped by a planted CR row told the operator their ledger was
+  # too big. They then go looking for length in a ledger whose real problem is
+  # one corrupt row, which is the same message-describes-a-different-gate
+  # defect #99 exists to prevent. A reason-less truncation still enumerates the
+  # size bounds: that is the honest description when the site cannot name
+  # itself, and an empty reason is never allowed to read as "not truncated".
+  # shellcheck disable=SC2154  # assigned by the sourced lib/caps.sh
+  if [ -n "${caps_truncated_reason:-}" ]; then
+    _caps_bound="$caps_truncated_reason"
+  else
+    _caps_bound="it hit a size bound (>$CAPS_MAX_LINES rows, >$CAPS_MAX_BYTES bytes, >$CAPS_MAX_KEYS distinct failing targets, or >$CAPS_MAX_STEPS lookup steps)"
+  fi
+  caps_say "operator: the cap scan of $opdir/VERDICTS.md stopped early — $_caps_bound. It read only a PREFIX, so the cap state is UNKNOWN, not clean: a later PASS in the unread tail can clear a target the prefix counted. Read the ledger yourself if a rework cap matters here."
 fi
 
 # --- deviation gate: unpresented decisions block Stop (stage 2) ---------------

@@ -71,9 +71,37 @@ recomputed the accounting inside the test and asserted its own arithmetic — gr
 a `caps.sh` with the addend deleted. A test that reimplements the rule it tests, tests the
 reimplementation.
 
-Gates: shell 1087@1087, python 390@390, workflows 384@384, compress 161@161, validator
+Gates: shell 1101@1101, python 397@397, workflows 384@384, compress 161@161, validator
 all contracts hold, shellcheck clean (one pre-existing SC2329 in `ops-verdict.sh`, present
 on `main` and unknown to CI's pinned 0.10.0).
+
+### Fixed in review (PR #144, four panels)
+
+- **A comment claimed a guard that did not exist.** `ops-verdict.sh` said
+  `check_guard_parity` pinned the three hand-copied CR strips equal. It does not — that
+  check only compares `check_bare_name`/`check_owner_name` and has no notion of a CR.
+  Measured: reverting `ops-reverify.sh`'s whole loop to a single strip left
+  `validate_plugin: all contracts hold`. Naming the wrong gate is the #111 defect, so the
+  gap is now closed rather than documented: **`check_cr_strip_parity`** holds all three
+  sites to `CAPS_MAX_CR` and refuses a loop that removes without counting (F30 — equality
+  alone is satisfied by three identically-gutted copies). Three mutations red in it.
+- **One planted row suppressed the whole cap report, and the operator was told the wrong
+  thing.** The CR-residue break abandons the rest of the ledger — measured: two genuine
+  FAIL rounds plus one 20-CR row reports `tripped=0` where the same ledger without that
+  row reports 1. The polarity is right for a report-only gate; the message was not. The
+  hook's notice enumerated four SIZE bounds, so the operator went hunting for length.
+  `caps_truncated_reason` now lets a bound name itself, and a size bound leaves it empty
+  so the hook still enumerates.
+- **Past the bound, `ops-reverify.sh` rebuilt the defect it exists to fix.** At 17 CRs the
+  report grew a broken cell — `| 3 | T-y | FAIL | ^M | no-commit | … |`. It now skips the
+  row, says why, and counts it. `--reconcile` needs no such arm and the case records why:
+  the residual CR lands in the verdict cell and `row_is_conformant`'s enum already refuses
+  it, named on stderr.
+- **`check_line_citations` looked in one directory.** Scoped to `docs/**` it reported green
+  about every file it never read; a reviewer found a live rot it could not see
+  (`CHANGELOG.md` citing `statusline.sh:84` for a fallback that has moved). Scope widened to
+  all tracked markdown, and that citation converted to a symbol. Also: `:0` was silently
+  accepted — `lines[0 - 1]` is Python's LAST line — now refused with its own message.
 
 ### Known, unchanged by this release
 
@@ -2218,10 +2246,10 @@ graph work now computes the answer that issue needs.
 - **Three statusline assertions were measuring the maintainer's desk.** They
   claimed *"degenerate stdin renders nothing"* while running with cwd = this
   repository. An unparseable payload leaves no cwd to read, so
-  `statusline.sh:84` falls back to `$PWD` — an explicit
+  `statusline.sh`'s `PROJ` resolution falls back to `$PWD` — an explicit
   `${CLAUDE_PROJECT_DIR:-$PWD}` default, so intended, though the file gives no
-  rationale for it (`:49-50` documents the preference *order*, payload first,
-  which is a different claim); the repo had simply never had
+  rationale for it (the comment above it documents the preference *order*,
+  payload first, which is a different claim); the repo had simply never had
   `.operator/` scaffolded in it, so the fallback found no ledger and all three
   passed for a reason unrelated to what they name.
 
