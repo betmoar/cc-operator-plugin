@@ -915,6 +915,25 @@ check "#138 UPGRADE: the operator's own hand-written lines survive byte-for-byte
      && grep -q '^# hand-edited by the project$' "$UPG/.operator/.gitattributes" && echo 0 || echo 1)"
 check "#138 UPGRADE: the merge=union rules are not duplicated" \
   "$([ "$(grep -c 'VERDICTS.md merge=union' "$UPG/.operator/.gitattributes")" -eq 1 ] && echo 0 || echo 1)"
+# NO TRAILING NEWLINE is the ordinary case, not an exotic one — plenty of
+# editors strip it. `>>` appends at the byte offset the file ends at, so the
+# first appended rule FUSES with the last existing one. Measured on the first
+# cut of this upgrade: a file holding exactly `VERDICTS.md merge=union` (no
+# newline) became `VERDICTS.md merge=unionVERDICTS.md text eol=lf` — git
+# accepts it silently as an attribute nobody wrote, AND the original
+# merge=union rule is destroyed. The upgrade would have eaten the rule it was
+# meant to sit beside. Found by the review panel, not by a mutation.
+UPGN="$(newproj)"
+mkdir -p "$UPGN/.operator"
+printf 'VERDICTS.md merge=union' > "$UPGN/.operator/.gitattributes"   # no \n
+( cd "$UPGN" && bash "$INIT" >/dev/null 2>&1 )
+check "#138 UPGRADE: a file with NO trailing newline does not fuse its last rule" \
+  "$(grep -q '^VERDICTS.md merge=union$' "$UPGN/.operator/.gitattributes" && echo 0 || echo 1)"
+check "#138 UPGRADE: …and no fused garbage attribute is produced" \
+  "$(grep -q 'merge=unionVERDICTS' "$UPGN/.operator/.gitattributes" && echo 1 || echo 0)"
+check "#138 UPGRADE: …and all three eol=lf rules still land, one per line" \
+  "$([ "$(grep -c '^[A-Za-z_.*/]* text eol=lf$' "$UPGN/.operator/.gitattributes")" -eq 3 ] && echo 0 || echo 1)"
+rm -rf "$UPGN"
 # IDEMPOTENT. ops-init.sh runs on every /cc-operator:start, so an upgrade that
 # appends unconditionally grows the file without bound — a rule repeated 40
 # times still works, which is exactly why nothing would ever report it.
@@ -5613,8 +5632,8 @@ check "#140 SETUP: the base CI LISTING really fails now (tree object gone, not t
   "$(if git -C "$BGRT_D" ls-tree -r --name-only "$BGRT_BASE" -- .github/workflows/validate.yml >/dev/null 2>&1; then echo 1; else echo 0; fi)"
 BG_OUT="$(bash "$BG" --base "$BGRT_BASE" --pr rungdrop --repo "$BGRT_D" 2>&1)"; BG_RC=$?
 # HONESTY NOTE — this pair asserts the POLARITY, not the arm, and the reason is
-# measured: a missing TREE object is refused EARLIER, at arm 4's `git diff
-# base...pr` ("could not read the base...pr diff"), so arm 3b's own listing
+# measured: a missing TREE object is refused EARLIER, by the CHANGE-LIST `git diff
+# base...pr` ("git diff base...pr failed"), so arm 3b's own listing
 # guard never runs on this fixture and no fixture in this repo shape reaches
 # it. Asserting that its message appears would be asserting something false.
 #

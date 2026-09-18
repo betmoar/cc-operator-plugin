@@ -61,7 +61,7 @@ Closes #139 (item 2), #138 (the gitattributes half), #134, #140.
 
 ### Notes
 
-- `FLOOR_shell` 1013 → 1054. Forty-one cases; twelve mutations, each red in the case
+- `FLOOR_shell` 1013 → 1057. Forty-four cases; twelve mutations, each red in the case
   written for it. Two of those cases exist only because a mutation found nothing: the
   #139 message revert, and #140's PR-side case, which accepted arm 5's message as
   standing in for arm 3b until it was made to name the arm — the interlock masks BOTH
@@ -74,11 +74,17 @@ Closes #139 (item 2), #138 (the gitattributes half), #134, #140.
   because the `[ ! -f ]` guard meant #138's rule never reached an existing project —
   their own mutations are drop the `grep -qF` guard → 1 red (idempotence), rewrite
   instead of append → 1 red (hand-edits destroyed), append the inert `eol=lf` shape with
-  no `text` → 2 red. Measured macOS uid 501, isolated rung runs; not measured under root.
+  no `text` → 2 red. Three more came from the review panel rather than from either:
+  `>>` appends at the byte offset a file ends at, so on a `.gitattributes` with no
+  trailing newline the first appended rule FUSED with the last existing one —
+  `VERDICTS.md merge=unionVERDICTS.md text eol=lf`, which git accepts silently and which
+  destroys the original `merge=union` rule. Every fixture until then ended in a newline.
+  Measured macOS uid 501, isolated rung runs; not measured under root.
 - One #140 guard is deliberately unasserted and says so in an `HONESTY NOTE`: the
   base-side `ls-tree` presence probe. A missing TREE object is what makes `ls-tree`
   fail (deleting the BLOB leaves it at rc 0; only `git show` fails), and that
-  corruption is refused EARLIER by arm 4's diff, so no fixture in this repo shape
+  corruption is refused EARLIER by the change-list `git diff base...pr` that runs
+  BEFORE arm 1, so no fixture in this repo shape
   reaches the guard. Its pair asserts the polarity instead — the #133 situation one
   arm over, recorded rather than faked.
 - **`base-gate.sh` arm 3b no longer fails open on an unreadable CI file (#140).** The

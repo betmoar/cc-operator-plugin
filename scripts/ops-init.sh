@@ -147,6 +147,20 @@ else
   # migration step — and is also why it must be IDEMPOTENT: an unconditional
   # append grows the file on every session, and a rule repeated forty times
   # still works, so nothing would ever report it.
+  # TERMINATE THE LAST LINE FIRST. `>>` appends at the byte offset the file
+  # ends at, so an existing .gitattributes with no trailing newline FUSES its
+  # last rule with the first appended one: measured, a file containing exactly
+  # `VERDICTS.md merge=union` (no newline) became
+  # `VERDICTS.md merge=unionVERDICTS.md text eol=lf`. git accepts that silently
+  # as an attribute nobody wrote, and the ORIGINAL merge=union rule is gone —
+  # so the upgrade would destroy the very rule it was meant to sit beside.
+  # An editor that strips the final newline is ordinary, not exotic.
+  if [ -s "$OPDIR/.gitattributes" ] \
+     && [ -n "$(tail -c 1 "$OPDIR/.gitattributes")" ]; then
+    # `$( )` strips trailing newlines, so non-empty output means the last byte
+    # is NOT one — the portable spelling of "does this file end in a newline".
+    printf '\n' >> "$OPDIR/.gitattributes" || true
+  fi
   _ga_added=0
   for _ga_path in 'VERDICTS.md' 'DECISIONS.md' 'verdicts.d/*.md'; do
     # -F: `verdicts.d/*.md` is a literal here, not a pattern.

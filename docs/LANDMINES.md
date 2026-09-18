@@ -1505,7 +1505,9 @@ guard cannot share a fixture, which is how the second one was found: reverting i
 alone left the whole suite green, because every case corrupted the blob.
 
 That guard then turned out to be **unreachable in this repo shape** — a missing tree
-object is refused earlier still, by arm 4's `git diff base...pr`. Its case pair asserts
+object is refused earlier still, by the CHANGE-LIST `git diff base...pr` that runs before
+arm 1 (not by arm 4, which makes no git call at all — the first draft of this paragraph
+said arm 4, and a review pass caught it). Its case pair asserts
 the POLARITY with an `HONESTY NOTE` rather than asserting a message that never appears.
 The guard stays: unreachable today is not unreachable after the next arm moves, and that
 is the whole failure this section is about.
