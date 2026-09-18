@@ -11,7 +11,9 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [0.11.14] - 2026-09-18
 
-Closes #139 (item 2), #138 (the gitattributes half), #134, #140.
+Closes #134 and #140. Delivers **part** of #139 (item 2, the writer-side CR refusal) and
+part of #138 (the `.gitattributes` complement); both issues stay open — #139's items 1, 3
+and 4 are untouched, and #138's priced omission (the six unpinned CR sites) is unchanged.
 
 ### Fixed
 
