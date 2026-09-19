@@ -167,6 +167,10 @@ The three repos in this system, and what each owns:
 | `betmoar/cc-skills-plugin` | the `forge-run` skill — pushing to `lokaal`, reading what CI actually did |
 | `betmoar/local-ci` | the Forgejo/act/Woodpecker stacks the runs happen on |
 
+**Never clone `ci-admin/cc-operator-holdout` (lokaal)** — the #112 holdout; its
+independence is structural, not enforced, and reading it makes your next check a mirror.
+Dispatch, read the marker. Detail: LANDMINES (0.11.16).
+
 
 ## Procedure
 

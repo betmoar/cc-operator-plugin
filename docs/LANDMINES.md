@@ -1659,3 +1659,79 @@ accepted, because `lines[0 - 1]` is Python's LAST line and that line is usually 
 and the message for an out-of-range citation said "has only N lines", which is nonsense
 for `:0`. A guard whose refusal path has its own bug refuses nothing, and reads as
 coverage.
+
+## The first check written by something that could not read the code (0.11.16, #112)
+
+Everything gating this repo was written by the agent that writes the code, and readable
+by it. #112 called that what it is: given enough attempts a builder optimises against
+checks it can read, and that is not a claim about hostility, it is what iteration is.
+
+The holdout lives in `ci-admin/cc-operator-holdout` on `lokaal`, and the property that
+matters is that **a session working here never clones it**. The sibling project this
+argument came from keeps its holdout inside the repo, protected by a prompt-level denial
+to the builder plus a guard auto-rejecting any PR that touches it — two mechanisms to
+simulate a property that a separate repo simply has. Structural beats enforced: there is
+no instruction to forget and no guard to bypass.
+
+**The derivation is the expensive half, and the tempting shortcut destroys the point.**
+`holdout.sh` was written by a `claude -p` process in an empty directory with every file
+tool denied — no Read, no Bash, no Grep. Not "an agent told not to look at `scripts/`":
+an agent that had no way to look at anything, whose entire context was
+`templates/OPERATOR.md` plus a black-box interface block naming how to invoke the
+installer, the CLIs and the two hooks. When two of its checks failed, the repair was
+dispatched BACK to a denied-context process with the measured system output as evidence.
+Hand-editing those two checks here would have taken ten minutes and produced a mirror —
+the artifact would still be called a holdout and would no longer be one.
+
+**What it found on the first run that all 1101 in-repo shell cases missed.** The charter
+prescribed `ops-claims.sh --claimed "<paths>"`. The shipped CLI has required a mandatory
+`--since <sha>` since CR2 and exits 2 without it, so an operator following the charter
+verbatim got a usage error. Every in-repo test passed throughout — they were written
+against the CLI, so every one of them passed `--since`, and nothing in the repo compared
+the charter's prescription to the CLI's contract. That is precisely the defect class an
+in-scope check cannot see: both sides were individually correct and nobody read them
+against each other.
+
+**Three derivation rounds, and the cap stopped the fourth.** Round 1: 27 passed, 4
+failed. Round 2: 31/2. Round 3, after another prompt tweak: 21/10 — it regressed checks
+round 2 passed and shipped a comparator printing `expected == got` as FAIL. That is the
+same-target-rework cap at 2, logged in DECISIONS.md, and the escalation was to a
+different mechanism (a repair dispatch carrying measured evidence) rather than a third
+guess at the prompt. Round 4 from that repair: 33/0.
+
+**The two failures that survived to round 2 were over-assertions, not defects**, and
+both are worth recognising because they are what an independent writer gets wrong. It
+required the SessionStart banner to enumerate every open task, which the charter never
+promises (the banner names the adopt CLI and the new id; enumerating is the operator's
+job). And it grepped for the literal word "warn" where the charter says the CLI "warns"
+— the system says `opened X UNOWNED — blocks every session's Stop; pass --owner <sid>`,
+which keeps the promise in full without the word. A check measuring vocabulary instead
+of behaviour fails a correct system, and a holdout that cries wolf gets ignored, which
+is the only way this mechanism dies.
+
+**Absence fails closed, and on this forge that is not optional.** A queued Forgejo job
+has no row in `actions/tasks` at all, and `conclusion` is always `null` on Forgejo 16 —
+so "the holdout did not run" and "the holdout found nothing" are the same silence unless
+something insists on a positive marker. `run-holdout.sh` demands
+`HOLDOUT_PASSED sha=<the sha it was asked to test>` and a check-count floor, separating
+six failures by exit code: absent suite 4, ran-but-reported-nothing 4, wrong sha 5,
+shrunken suite 6, bad sha 2, no sha named 2. Each measured with a crafted stub. The
+floor is `tests/floors.env`'s lesson one repo over: a suite that silently stopped
+emitting checks exits 0 with everything it still runs green.
+
+**Proof it can go red.** Four mutations against the gate CLIs, each restored
+byte-identical: the Stop gate's `exit 2` → `exit 0` (4 red), the `+dirty` branch deleted
+(2 red), `ops-claims.sh` examining only the first changed path (1 red), the ledger row's
+verdict word hardcoded to `PASS` (1 red). The third is the `LIMIT 1` shape the
+exact-values rule exists for — a suite asserting "some violation is reported" passes it;
+one asserting the named file passes it too, as long as that file is first. The first
+attempt at that mutation was a syntax error, which drove the suite red for the wrong
+reason and proved nothing; a mutation that makes the target unparseable is not a
+mutation test.
+
+**The asymmetry to keep in mind when reading the shipped suite.** `holdout.sh` is
+derived from the CORRECTED charter, so it no longer re-finds the `--since` defect — it
+asserts the fixed contract and passes. The suite that found it is kept as
+`derivation/derived-round2.sh` in the holdout repo. A holdout that has been run once
+against a fixed system tells you nothing about what it caught; the derivation record is
+the evidence, not the current green.

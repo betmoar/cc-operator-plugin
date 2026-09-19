@@ -9,6 +9,36 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.16] - 2026-09-19
+
+Closes #112 — the first check in this project written by an agent that could not read
+`scripts/`, and the defect it found on its first run.
+
+### Fixed
+
+- **The charter prescribed an `ops-claims.sh` invocation the shipped CLI refuses
+  (#112).** `templates/OPERATOR.md` § EVIDENCE GATE said
+  `ops-claims.sh --claimed "<paths>"`; the CLI has required a mandatory
+  `--since <sha>` since CR2 (a HEAD default hides a trespass the worker committed)
+  and exits 2 without it. An operator following the charter verbatim got a usage
+  error. Every in-repo test passed throughout — they were written against the CLI,
+  so they all passed `--since`, and nothing compared the charter's prescription to
+  the CLI's contract. Found by the holdout below, which is the first check in this
+  project written by an agent that could not read `scripts/`.
+
+### Added
+
+- **A holdout, outside this repo (#112).** `ci-admin/cc-operator-holdout` on
+  `lokaal` — 33 checks derived from `templates/OPERATOR.md` alone by an agent with
+  no file tools and no shell, run against an `ops-init.sh`-produced `.operator/` as
+  a black box. Independence is structural: a cc-operator session never clones that
+  repo, so there is no denial to forget and no guard to bypass. Its runner demands a
+  positive marker naming the sha (`HOLDOUT_PASSED sha=<sha>`) and a check-count
+  floor, so an absent, silent, shrunken or wrong-sha run all fail — measured on the
+  forge both ways: run 1455 `HOLDOUT_VERIFIED sha=7057dcf7f2f6 checks=33`, run 1456
+  red on a nonexistent sha. Four mutations against the gate CLIs each drove it red
+  and were restored byte-identical.
+
 ## [0.11.15] - 2026-09-18
 
 Finishes #139 — items 1, 3 and 4, the residue 0.11.14 left open. #139 can close with
