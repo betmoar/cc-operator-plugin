@@ -9,6 +9,138 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.17] - 2026-09-19
+
+Closes #149 and #148 — both found while reviewing the holdout's work in PR #146, and
+both the same shape: v0.11.16 fixed the INSTANCE and left the CLASS unmechanized.
+
+### Added
+
+- **A validator check comparing prose prescriptions to the CLIs' contracts
+  (#149).** v0.11.16 corrected three copies of a charter line prescribing
+  `ops-claims.sh --claimed "<paths>"` for a CLI that has required a mandatory
+  `--since <sha>` since CR2 and exits 2 without it. Correcting them by hand left
+  nothing that would catch the fourth. `check_prose_invocations` extracts every
+  `ops-*.sh --flag` prescription from tracked prose and asserts the CLI would
+  accept it: an unknown flag, a mandatory flag omitted, or a mandatory flag
+  wrapped in `[…]` — the `docs/PLAYBOOK.md` shape, where a presence test reads
+  the flag as prescribed while the brackets tell the operator it is optional.
+  Both flag sets are read off each CLI's **own parser and `usage:` forms**, never
+  catalogued in the validator: a table here would be a second copy of the
+  contract, drifting the moment the parser changes, with nothing comparing the
+  two — the defect the check exists to catch, one layer up. Mandatory is judged
+  **per form** (`--owner` is required by `--mark-handoff` and optional in the
+  verdict form; `--expect-clean` is a complete form needing no `--since`).
+  Verified against the real defect three ways — the charter, README and PLAYBOOK
+  copies each reverted and each driving it red at its own file and line, restored
+  byte-identical — plus ten mutations of the check itself, each named with the
+  case it drove red (#111). **Four defects in the check were found by RUNNING it
+  on the correct tree before any mutation**, each of which would have condemned a
+  correct line; a pin that only ever ran against its own mutation would have
+  shipped all four.
+
+### Fixed
+
+- **Thirteen shell-suite assertions could pass about a file that was not there
+  (#148).** Each proved a writer had appended nothing by comparing two reads of
+  the same file. With that file ABSENT both reads are the empty string and
+  `[ "" = "" ]` is true, so each certified a refusal about a ledger that was
+  never there — a passing value indistinguishable from never-having-measured.
+  Measured in isolated trees, pre-fix and post-fix: `ops-init.sh` mutated to
+  skip the `VERDICTS.md` copy (still exit 0) gives 991/110 with NINE of the
+  thirteen among the PASSES, 997/119 after; a second mutation (no
+  `DECISIONS.md`) gives 1085/16 with three more, 1097/19 after. The thirteenth
+  passes under that mutation both before and after, and does so honestly —
+  an earlier case's append creates the file first. A fourteenth site takes the
+  same guard without belonging to the count: it byte-compares an installed CLI,
+  not a ledger, and was never vacuous. Replaced with four helpers that assert the precondition and compare with
+  `-eq`, which errors on an empty operand where `=` succeeds — the same property
+  that made the two pre-existing `-eq` sites fail closed for free. An absent
+  precondition is a FAILED check that NAMES the missing file on stderr. Each
+  helper carries BOTH controls: refuse the absent file AND accept the present
+  unchanged one, since a helper that refused everything would pass a
+  refusal-only control set while failing every real call site.
+
+### Review round (PR #146, five reviewers)
+
+Six findings in this release's own work, each reproduced before it was believed and
+each now carrying a mutation. Four were in `check_prose_invocations` itself, and three
+of those were the check performing its own defect class:
+
+- **It condemned correct prose.** `re.finditer` yields non-overlapping matches, so the
+  citation regex's greedy tail swallowed the next invocation whole: `Run ops-verdict.sh
+  and ops-claims.sh --since <sha> --claimed "<paths>"` reported ops-verdict.sh for flags
+  it never took, while ops-claims.sh went unexamined. Fixing it exposed a second — a span
+  of bare filenames reads as each entry arguing the next, so the flagless arm fired on a
+  list.
+- **The negative-control exemption suppressed its neighbours.** Keyed on the paragraph,
+  it exempted every invocation in it; a genuinely broken `ops-claims.sh --claimed "x"`
+  appended to REPLAY-CHARTER.md's `--ownr` paragraph was reported by nothing. The
+  paragraph now supplies the marker, the line must supply the subject.
+- **The root globs were unpinned** — narrowing them to `["*.md", "docs/**/*.md"]` stops
+  reading `templates/OPERATOR.md`, the file the defect shipped in, with every case and
+  the real tree green. The `_MIN` floor counts invocations, not which files produced
+  them: a count is not a selection.
+- **A flagless prescription was invisible.** The check keyed on the presence of a flag to
+  decide something had been prescribed, so `ops-adopt.sh <task-id>` — which exits 2 with
+  `missing --owner` — read as nothing to check.
+- Also pinned, each confirmed unpinned by mutation first: the no-readable-CLIs guard, the
+  `docs/dev/` exemption, a CLI with no parseable usage form, and the per-form selection
+  arm (whose only coverage was the real-tree case).
+- **`delta_is` committed #148's own defect one level down.** `${2:-0}` substituted 0 for
+  an empty count, so `0 - 0 -eq 0` passed on a file that exists — worse than the
+  absent-file case, because nothing looks wrong. #148 guarded the file and left the
+  values unguarded.
+- **Two counts written beside the code had drifted from it.** The #148 site count said
+  eleven in four files: that was the tally from the first substitution batch, three more
+  were converted afterwards, and nothing re-derived it — the measured figure is thirteen
+  ledger sites plus one non-ledger site. `check_prose_invocations`'s own comment claimed
+  21 flagged invocations against a measured 33. Neither was gated by anything; both are
+  the F30 rule applied to prose, and both are now stated with the measurement that
+  produced them.
+
+### Changed
+
+- `FLOOR_shell` 1101 → 1116 and `FLOOR_python` 397 → 423, with the measurements
+  in `tests/floors.env`.
+- CLAUDE.md gained two coupling rows and lost its `## Procedure` section, whose
+  two pointers duplicated what `## Provenance` and `## Landmines` already said.
+
+## [0.11.16] - 2026-09-19
+
+Closes #112 — the first check in this project written by an agent that could not read
+`scripts/`, and the defect it found on its first run.
+
+### Fixed
+
+- **The charter prescribed an `ops-claims.sh` invocation the shipped CLI refuses
+  (#112).** `templates/OPERATOR.md` § EVIDENCE GATE said
+  `ops-claims.sh --claimed "<paths>"`; the CLI has required a mandatory
+  `--since <sha>` since CR2 (a HEAD default hides a trespass the worker committed)
+  and exits 2 without it. An operator following the charter verbatim got a usage
+  error. Every in-repo test passed throughout — they were written against the CLI,
+  so they all passed `--since`, and nothing compared the charter's prescription to
+  the CLI's contract. Found by the holdout below, which is the first check in this
+  project written by an agent that could not read `scripts/`.
+
+### Added
+
+- **A holdout, outside this repo (#112).** `ci-admin/cc-operator-holdout` on
+  `lokaal` — 41 checks derived from `templates/OPERATOR.md` alone by an agent with
+  no file tools and no shell, run against an `ops-init.sh`-produced `.operator/` as
+  a black box. Independence is structural: a cc-operator session never clones that
+  repo, so there is no denial to forget and no guard to bypass. Its runner demands a
+  positive marker naming the sha (`HOLDOUT_PASSED sha=<sha>`) and a check-count
+  floor, so an absent, silent, shrunken or wrong-sha run all fail — measured on the
+  forge both ways: run 1458 `HOLDOUT_VERIFIED sha=7057dcf7f2f6 checks=41`, run 1456
+  red on a nonexistent sha. Eight mutations against the gate CLIs each drove it red
+  and were restored byte-identical. It is not tied to this forge: `run-holdout.sh`
+  contains no Forgejo and is verified against a plain GitHub URL; the repo's
+  `PORTING.md` prices the alternatives for anyone without a private forge. **That count is a point-in-time figure**: the
+  holdout is a separate repo on its own history, so this line records what was
+  measured at v0.11.16 and is not kept in sync. Its own README carries the live
+  number; `HOLDOUT_MIN_CHECKS` there is the ratchet.
+
 ## [0.11.15] - 2026-09-18
 
 Finishes #139 — items 1, 3 and 4, the residue 0.11.14 left open. #139 can close with

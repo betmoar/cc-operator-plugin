@@ -562,7 +562,9 @@ the evidence gate verify claims mechanically, and the dispatch packet's REPORT
 line now carries `CHANGED:` for it to check. Procedures when you dispatch:
 
 1. **The packet's REPORT carries `CHANGED: <paths>|none`.** On a DONE report,
-   run `.operator/bin/ops-claims.sh --claimed "<paths>" [--since <dispatch-sha>]`.
+   run `.operator/bin/ops-claims.sh --since <dispatch-sha> --claimed "<paths>"`.
+   `--since` is MANDATORY with `--claimed` (CR2: a HEAD default makes a worker
+   that COMMITS its gate-trespass invisible); the CLI exits 2 without it.
    It emits one evidence line per check (C1 unclaimed-change, C2 phantom-claim,
    C3 gate-trespass) and the PASS verdict row cites the green output. A row
    without the claims check is, like a row without evidence, FAIL by definition.

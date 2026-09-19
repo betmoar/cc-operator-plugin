@@ -1659,3 +1659,243 @@ accepted, because `lines[0 - 1]` is Python's LAST line and that line is usually 
 and the message for an out-of-range citation said "has only N lines", which is nonsense
 for `:0`. A guard whose refusal path has its own bug refuses nothing, and reads as
 coverage.
+
+## The first check written by something that could not read the code (0.11.16, #112)
+
+Everything gating this repo was written by the agent that writes the code, and readable
+by it. #112 called that what it is: given enough attempts a builder optimises against
+checks it can read, and that is not a claim about hostility, it is what iteration is.
+
+The holdout lives in `ci-admin/cc-operator-holdout` on `lokaal`, and the property that
+matters is that **a session working here never clones it**. The sibling project this
+argument came from keeps its holdout inside the repo, protected by a prompt-level denial
+to the builder plus a guard auto-rejecting any PR that touches it — two mechanisms to
+simulate a property that a separate repo simply has. Structural beats enforced: there is
+no instruction to forget and no guard to bypass.
+
+**The derivation is the expensive half, and the tempting shortcut destroys the point.**
+`holdout.sh` was written by a `claude -p` process in an empty directory with every file
+tool denied — no Read, no Bash, no Grep. Not "an agent told not to look at `scripts/`":
+an agent that had no way to look at anything, whose entire context was
+`templates/OPERATOR.md` plus a black-box interface block naming how to invoke the
+installer, the CLIs and the two hooks. When two of its checks failed, the repair was
+dispatched BACK to a denied-context process with the measured system output as evidence.
+Hand-editing those two checks here would have taken ten minutes and produced a mirror —
+the artifact would still be called a holdout and would no longer be one.
+
+**What it found on the first run that all 1101 in-repo shell cases missed.** The charter
+prescribed `ops-claims.sh --claimed "<paths>"`. The shipped CLI has required a mandatory
+`--since <sha>` since CR2 and exits 2 without it, so an operator following the charter
+verbatim got a usage error. Every in-repo test passed throughout — they were written
+against the CLI, so every one of them passed `--since`, and nothing in the repo compared
+the charter's prescription to the CLI's contract. That is precisely the defect class an
+in-scope check cannot see: both sides were individually correct and nobody read them
+against each other.
+
+**And the first fix for it was itself the F30 shape.** The charter was one of THREE
+places prescribing that invocation: `README.md`'s CLI cheat-sheet carried the same
+broken form, and `docs/PLAYBOOK.md`'s dispatch procedure had `[--since <dispatch-sha>]`
+in square brackets — marked OPTIONAL for a flag the CLI refuses to run without. Fixing
+the charter alone left two copies saying the thing the holdout had just proved wrong.
+The holdout cannot catch that: it tests the SYSTEM, and every one of those copies is
+prose. Grep the invocation, not the file you happened to be reading.
+
+**And the fix for THAT was still one instance, not the class (0.11.17, #149).** Three
+copies corrected by hand leaves nothing that would catch the fourth. `check_prose_invocations`
+is the mechanism: it extracts every `ops-*.sh --flag` prescription from tracked prose and
+asserts the CLI would accept it — an unknown flag, or a mandatory flag omitted, or (the
+PLAYBOOK shape) a mandatory flag wrapped in `[…]`, which a presence test reads as
+prescribed while the brackets tell the reader it is optional. All three of the drifted
+copies were reverted and each drove it red at its own file and line, restored
+byte-identical.
+
+Two things about how it is built are the reusable lesson. **The flag sets are read off
+each CLI's own parser**, never catalogued in the validator — a table here would be a
+second copy of the contract, correct when written, drifting the moment the parser
+changes, with nothing comparing the two. That is the defect this check exists to catch,
+reintroduced one layer up. **And a flag is mandatory PER FORM**: `--owner` is required by
+`ops-verdict.sh --mark-handoff` and optional in its verdict form; `--expect-clean` is a
+complete form of `ops-claims.sh` needing no `--since`. The CLI already declares its forms
+in its own `usage:` alternation, so that is what is read.
+
+The order mattered more than the mutations. **Four defects in the check were found by
+RUNNING it on the correct tree before mutating anything**, each of which would have
+condemned a correct line: a line-anchored scan missed `ops-render.sh`'s two-arms-per-line
+`;;` packing (`--revert` read as unknown); mandatory flags treated globally rather than
+per form; `break` after the first `usage:` string read `--mark-handoff`'s requirements
+onto the verdict form, condemning five correct lines including the charter's own; and a
+line-only scan for the deliberate-negative-control marker condemned REPLAY-CHARTER.md's
+`--ownr` probe, whose teaching sentence sits in the paragraph ABOVE it. Ten mutations
+afterwards all went red. A pin that had only ever run against its own mutation would have
+shipped all four — the mutation proves the check catches the defect, not that it leaves
+correct work alone, and only one of those two is what a maintainer feels.
+
+What it CANNOT see is the same limitation `check_line_citations` carries: a prescription
+that still parses and no longer means what the prose claims. That needs a human.
+
+**And then a five-reviewer panel found six more, four of them in the check itself.** Worth
+recording because of WHERE they were: not in the hard part (reading a shell parser) but in
+the suppression logic and the scan boundaries — the places a guard is least examined
+because they are what makes it quiet.
+
+Three were the check performing its own defect class:
+
+- **It condemned correct prose.** `re.finditer` yields non-overlapping matches, so the
+  citation regex's greedy tail swallowed the NEXT invocation whole. `Run ops-verdict.sh and
+  ops-claims.sh --since <sha> --claimed "<paths>"` — entirely correct — reported
+  ops-verdict.sh for `--claimed --since`, flags it never took, while ops-claims.sh was
+  never examined at all because the scan position had already passed it. One regex, a false
+  positive on one CLI and a false negative on the next. Bounding the tail at the next CLI
+  name fixed both and immediately exposed a second: a span of BARE FILENAMES (the install
+  set) has each entry reading as the next one's argument, so the flagless arm fired twice
+  on a list. An argument that is itself a CLI name means the span is an enumeration.
+- **The negative-control exemption suppressed its neighbours.** Keyed on the paragraph, it
+  exempted every invocation in that paragraph. Reproduced on the real tree: a genuinely
+  broken `ops-claims.sh --claimed "x"` appended to REPLAY-CHARTER.md's `--ownr` teaching
+  paragraph was reported by nothing. The general rule: **an exemption must attach to the
+  thing it excuses, not to its neighbourhood.** The paragraph supplies the marker; the line
+  must supply the subject.
+- **A helper committed the very defect it was written to remove, one level down.**
+  `delta_is`'s `${2:-0}` substituted 0 for an EMPTY count, so `0 - 0 -eq 0` passed on a file
+  that EXISTS — strictly worse than the absent-file case, because nothing looks wrong. #148
+  guarded the FILE and left the VALUES unguarded.
+
+The fourth is the one to remember when writing any scanning check. **The root globs were
+unpinned, and the floor could not have caught them.** Narrowing `_roots` to `["*.md",
+"docs/**/*.md"]` — the plausible "the `*.md` glob already covers everything" edit — stops
+reading `templates/OPERATOR.md`, the file #149's defect shipped in, and every case plus the
+real tree stayed green. The `_MIN` floor counts INVOCATIONS, not which files produced them,
+and the reduced set still cleared 15. A count is not a selection. Assert which files are
+read, the way `check_coupling_case_refs` asserts its own: a checker that is perfectly
+correct about the wrong bytes reads exactly like a working one.
+
+**Three derivation rounds, and the cap stopped the fourth.** Round 1: 27 passed, 4
+failed. Round 2: 31/2. Round 3, after another prompt tweak: 21/10 — it regressed checks
+round 2 passed and shipped a comparator printing `expected == got` as FAIL. That is the
+same-target-rework cap at 2, logged in DECISIONS.md, and the escalation was to a
+different mechanism (a repair dispatch carrying measured evidence) rather than a third
+guess at the prompt. Round 4 from that repair: 33/0.
+
+**And 33/0 was itself a false green, found by reviewing the suite rather than running
+it.** A coverage review observed that `ops-adopt.sh` appeared in the holdout only as a
+string the SessionStart guidance must MENTION — never as a CLI the suite INVOKES.
+Measured rather than argued: `ops-adopt.sh` replaced by a body of `exit 0`, and the
+suite reported 33 passed, 0 failed. The entire re-claim mechanism RECOVERY PROTOCOL
+step 6 depends on could be deleted and the holdout would have certified the release.
+A fifth repair dispatch (denied-context, carrying the mutation as evidence and the
+explicit bar that a no-op must not pass) took it to 41 checks; the same mutation now
+drives 6 red. The review also flagged two checks as possibly vacuous — mutations proved
+both real: `--defer` writing its row without clearing the sentinel drives
+`defer_clears_sentinel` red alone, and an auto-bar that blocks and prints "autobar"
+while arming no sentinel drives `autobar_blocks_two_file_change` red alone. Two of
+three suspicions wrong, one right, and only mutation could tell them apart.
+
+The floor moved with it: `HOLDOUT_MIN_CHECKS` 30 → 41, because a floor below the true
+count is slack a deletion hides in — `tests/floors.env`'s lesson, one repo over.
+
+**Then the holdout was caught committing the defect it exists to refuse.** A
+silent-failure audit found three checks reporting `ok` having measured nothing, all the
+same arithmetic: `$(( $(wc -c < absent) ))` is `0`, so a before/after byte comparison
+was `0 == 0`; `sed -n "1,p"` on a missing file twice, compared, is equal, so the guard
+on the ledger's append-only-ness compared nothing to nothing; and `grep -c` yields `0`
+for "correctly absent" and "file not there" alike. Measured with `ops-init.sh` mutated
+to create no ledger: 27 passed / 14 failed, **and all three were among the passes** —
+fourteen other checks caught the condition while these three reported success about it.
+After a fourth denied-context repair, the same mutation gives 24 / 17, each naming its
+precondition. The shape to carry away: **a check whose PASS condition is `0`, or an
+empty string, or an equality between two reads of the same absent file, cannot tell
+success from never-having-measured.** It is `cmd > log; echo $?` again, in a test
+harness costume, and writing the harness that refuses it does not immunise you.
+
+**None of this needs the forge.** Property 1 is "outside the builder's read scope";
+`lokaal` is one way to buy it and a second GitHub repo is another, for free — the
+holdout repo's `PORTING.md` prices the alternatives (orphan branch and local directory
+both weaker, and it says how). `run-holdout.sh` contains no Forgejo: verified against a
+plain GitHub URL, `HOLDOUT_VERIFIED sha=7057dcf7f2f6 checks=41`. The two Forgejo facts
+that shaped it (a queued job has no task row, `conclusion` is always `null`) explain why
+it gates on a marker, but "never gate on job status" is equally right on GitHub Actions,
+where a skipped job and a successful one are both green at the API.
+
+**The two failures that survived to round 2 were over-assertions, not defects**, and
+both are worth recognising because they are what an independent writer gets wrong. It
+required the SessionStart banner to enumerate every open task, which the charter never
+promises (the banner names the adopt CLI and the new id; enumerating is the operator's
+job). And it grepped for the literal word "warn" where the charter says the CLI "warns"
+— the system says `opened X UNOWNED — blocks every session's Stop; pass --owner <sid>`,
+which keeps the promise in full without the word. A check measuring vocabulary instead
+of behaviour fails a correct system, and a holdout that cries wolf gets ignored, which
+is the only way this mechanism dies.
+
+**Absence fails closed, and on this forge that is not optional.** A queued Forgejo job
+has no row in `actions/tasks` at all, and `conclusion` is always `null` on Forgejo 16 —
+so "the holdout did not run" and "the holdout found nothing" are the same silence unless
+something insists on a positive marker. `run-holdout.sh` demands
+`HOLDOUT_PASSED sha=<the sha it was asked to test>` and a check-count floor, separating
+six failures by exit code: absent suite 4, ran-but-reported-nothing 4, wrong sha 5,
+shrunken suite 6, bad sha 2, no sha named 2. Each measured with a crafted stub. The
+floor is `tests/floors.env`'s lesson one repo over: a suite that silently stopped
+emitting checks exits 0 with everything it still runs green.
+
+**Proof it can go red.** Seven mutations against the gate CLIs, each restored
+byte-identical: the Stop gate's `exit 2` → `exit 0` (4 red), the `+dirty` branch deleted
+(2 red), `ops-claims.sh` examining only the first changed path (1 red), the ledger row's
+verdict word hardcoded to `PASS` (1 red), `--defer` writing its row without clearing the
+sentinel (1 red), an auto-bar that blocks without arming (1 red), `ops-adopt.sh`
+replaced by `exit 0` (6 red — 0 red before the review), and an installer that creates no
+ledger (17 red — 14 before the vacuity fix). The third is the `LIMIT 1` shape the
+exact-values rule exists for — a suite asserting "some violation is reported" passes it;
+one asserting the named file passes it too, as long as that file is first. The first
+attempt at that mutation was a syntax error, which drove the suite red for the wrong
+reason and proved nothing; a mutation that makes the target unparseable is not a
+mutation test.
+
+**The asymmetry to keep in mind when reading the shipped suite.** `holdout.sh` is
+derived from the CORRECTED charter, so it no longer re-finds the `--since` defect — it
+asserts the fixed contract and passes. The suite that found it is kept as
+`derivation/derived-round2.sh` in the holdout repo. A holdout that has been run once
+against a fixed system tells you nothing about what it caught; the derivation record is
+the evidence, not the current green.
+
+## A refusal test that passes when there is nothing to refuse (0.11.17, #148)
+
+Thirteen assertions in the shell suite proved a writer had appended nothing by comparing
+two reads of the same file. With that file ABSENT both reads are the empty string and
+`[ "" = "" ]` is true, so each certified a refusal about a ledger that was never there.
+Nothing was mis-reporting — with a working `ops-init.sh` the file always exists — but
+their passing value was indistinguishable from never-having-measured. They were carried
+by the rest of the suite, not by their own logic.
+
+Measured rather than argued, in isolated `git archive` trees, pre-fix and post-fix:
+`ops-init.sh` mutated to skip the `VERDICTS.md` copy (still exit 0) took the suite to
+991/110 with NINE of the thirteen among the PASSES, and to 997/119 after the fix with
+all nine red. A second mutation (no `DECISIONS.md`) gives 1085/16 with three more, and
+1097/19 after. The thirteenth passes under that mutation both before and after, and does
+so HONESTLY — an earlier case's `>> "$DECISIONS"` creates the file before it reads it,
+which is worth knowing before calling it a survivor. 9 + 3 + 1 = 13.
+
+The two sibling sites that already used integer `-eq` failed closed for free, and bash
+said exactly why: `[: : integer expression expected`. That is the whole difference —
+`[ "" -eq "" ]` errors where `[ "" = "" ]` succeeds.
+
+**The count itself was wrong in four files until a reviewer re-derived it**, and the
+shape of that error is the point: "eleven" was the tally from the first substitution
+batch, three more sites were converted afterwards, and nothing re-counted. A number
+written beside the code is a second copy of the code, and it drifts exactly like any
+other copy — the F30 rule, applied to prose. Re-derive a count from the thing it
+describes, or do not write it.
+
+The fix is four helpers that assert the precondition and then compare with `-eq`, and
+the absent case is a FAILED check that NAMES the missing file on stderr. Naming it is
+not decoration: a refusal that says nothing reads as an ordinary red and gets
+re-diagnosed from scratch.
+
+**The controls matter as much as the refusals.** Each helper is driven through BOTH
+states — refuse the absent file, ACCEPT the present unchanged one. A helper that refused
+everything would pass a suite of refusal-only controls while failing every real call
+site, and the suite total is what would tell you, ten minutes later.
+
+The general shape, which is worth recognising anywhere: **a check whose PASS condition
+is `0`, an empty string, or an equality between two reads of the same absent file cannot
+tell success from never-having-measured.** It is `cmd > log; echo $?` in test-harness
+costume. `gate-suite.sh`'s marker-plus-floor design exists to refuse it one level up;
+this is the same rule applied inside a case.
