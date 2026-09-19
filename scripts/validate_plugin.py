@@ -4766,7 +4766,13 @@ def check_prose_invocations(root, problems):
                         f"itself at v0.11.16, with every in-repo test green")
     # A shrinking scan is itself a finding, the _tool_loops rule: if the
     # citation shape changes, this finds nothing and reports a perfect result
-    # about a set it never read. Measured when written: 21 flagged invocations.
+    # about a set it never read. Measured: 33 flagged invocations
+    # (REPLAY-CHARTER 10, README 6, tiers.md 5, PLAYBOOK 4, OPERATOR 4,
+    # handoff.md 1, HANDOUT 1, UNKNOWNS 1). An earlier revision of this comment
+    # said 21 — a number beside the code is a second copy, and this one was
+    # never re-measured against the code it sits on (review of 5ab2597). The
+    # floor stays well below the count on purpose: it catches a COLLAPSE, not
+    # ordinary prose edits.
     #
     # The floor applies to a REPO, not to a fixture tree — the same escape
     # check_claude_md_size and check_coupling_case_refs take, and for the same

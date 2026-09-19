@@ -41,16 +41,19 @@ both the same shape: v0.11.16 fixed the INSTANCE and left the CLASS unmechanized
 
 ### Fixed
 
-- **Eleven shell-suite assertions could pass about a file that was not there
+- **Thirteen shell-suite assertions could pass about a file that was not there
   (#148).** Each proved a writer had appended nothing by comparing two reads of
   the same file. With that file ABSENT both reads are the empty string and
   `[ "" = "" ]` is true, so each certified a refusal about a ledger that was
   never there — a passing value indistinguishable from never-having-measured.
-  Measured in an isolated tree: `ops-init.sh` mutated to skip the `VERDICTS.md`
-  copy (still exit 0) took the suite to 991/110 with eight of the eleven among
-  the PASSES; a second mutation (no `DECISIONS.md`) covers two more, and the
-  eleventh passes there honestly because an earlier case's append creates the
-  file. Replaced with four helpers that assert the precondition and compare with
+  Measured in isolated trees, pre-fix and post-fix: `ops-init.sh` mutated to
+  skip the `VERDICTS.md` copy (still exit 0) gives 991/110 with NINE of the
+  thirteen among the PASSES, 997/119 after; a second mutation (no
+  `DECISIONS.md`) gives 1085/16 with three more, 1097/19 after. The thirteenth
+  passes under that mutation both before and after, and does so honestly —
+  an earlier case's append creates the file first. A fourteenth site takes the
+  same guard without belonging to the count: it byte-compares an installed CLI,
+  not a ledger, and was never vacuous. Replaced with four helpers that assert the precondition and compare with
   `-eq`, which errors on an empty operand where `=` succeeds — the same property
   that made the two pre-existing `-eq` sites fail closed for free. An absent
   precondition is a FAILED check that NAMES the missing file on stderr. Each
@@ -88,6 +91,13 @@ of those were the check performing its own defect class:
   an empty count, so `0 - 0 -eq 0` passed on a file that exists — worse than the
   absent-file case, because nothing looks wrong. #148 guarded the file and left the
   values unguarded.
+- **Two counts written beside the code had drifted from it.** The #148 site count said
+  eleven in four files: that was the tally from the first substitution batch, three more
+  were converted afterwards, and nothing re-derived it — the measured figure is thirteen
+  ledger sites plus one non-ledger site. `check_prose_invocations`'s own comment claimed
+  21 flagged invocations against a measured 33. Neither was gated by anything; both are
+  the F30 rule applied to prose, and both are now stated with the measurement that
+  produced them.
 
 ### Changed
 

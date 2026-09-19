@@ -1858,21 +1858,31 @@ the evidence, not the current green.
 
 ## A refusal test that passes when there is nothing to refuse (0.11.17, #148)
 
-Eleven assertions in the shell suite proved a writer had appended nothing by comparing
+Thirteen assertions in the shell suite proved a writer had appended nothing by comparing
 two reads of the same file. With that file ABSENT both reads are the empty string and
 `[ "" = "" ]` is true, so each certified a refusal about a ledger that was never there.
 Nothing was mis-reporting — with a working `ops-init.sh` the file always exists — but
 their passing value was indistinguishable from never-having-measured. They were carried
 by the rest of the suite, not by their own logic.
 
-Measured rather than argued, in an isolated `git archive HEAD` tree: `ops-init.sh`
-mutated to skip the `VERDICTS.md` copy (still exit 0) took the suite to 991/110, with
-eight of the eleven among the PASSES. The two sibling sites that already used integer
-`-eq` failed closed for free, and bash said exactly why: `[: : integer expression
-expected`. That is the whole difference — `[ "" -eq "" ]` errors where `[ "" = "" ]`
-succeeds. A second mutation (no `DECISIONS.md`) covers two more of the eleven; the
-eleventh passes there HONESTLY, because an earlier case's `>> "$DECISIONS"` creates the
-file before it reads it, which is worth knowing before calling it a survivor.
+Measured rather than argued, in isolated `git archive` trees, pre-fix and post-fix:
+`ops-init.sh` mutated to skip the `VERDICTS.md` copy (still exit 0) took the suite to
+991/110 with NINE of the thirteen among the PASSES, and to 997/119 after the fix with
+all nine red. A second mutation (no `DECISIONS.md`) gives 1085/16 with three more, and
+1097/19 after. The thirteenth passes under that mutation both before and after, and does
+so HONESTLY — an earlier case's `>> "$DECISIONS"` creates the file before it reads it,
+which is worth knowing before calling it a survivor. 9 + 3 + 1 = 13.
+
+The two sibling sites that already used integer `-eq` failed closed for free, and bash
+said exactly why: `[: : integer expression expected`. That is the whole difference —
+`[ "" -eq "" ]` errors where `[ "" = "" ]` succeeds.
+
+**The count itself was wrong in four files until a reviewer re-derived it**, and the
+shape of that error is the point: "eleven" was the tally from the first substitution
+batch, three more sites were converted afterwards, and nothing re-counted. A number
+written beside the code is a second copy of the code, and it drifts exactly like any
+other copy — the F30 rule, applied to prose. Re-derive a count from the thing it
+describes, or do not write it.
 
 The fix is four helpers that assert the precondition and then compare with `-eq`, and
 the absent case is a FAILED check that NAMES the missing file on stderr. Naming it is
@@ -1881,8 +1891,8 @@ re-diagnosed from scratch.
 
 **The controls matter as much as the refusals.** Each helper is driven through BOTH
 states — refuse the absent file, ACCEPT the present unchanged one. A helper that refused
-everything would pass a suite of refusal-only controls while failing all eleven real
-call sites, and the suite total is what would tell you, ten minutes later.
+everything would pass a suite of refusal-only controls while failing every real call
+site, and the suite total is what would tell you, ten minutes later.
 
 The general shape, which is worth recognising anywhere: **a check whose PASS condition
 is `0`, an empty string, or an equality between two reads of the same absent file cannot

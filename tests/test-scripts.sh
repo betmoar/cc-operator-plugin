@@ -64,10 +64,13 @@ newproj() { local d; d="$(mktemp -d "${TMPDIR:-/tmp}/opstest.XXXXXX")" && (cd -P
 # never there. Its passing value is indistinguishable from never-having-
 # measured, which is the `cmd > log; echo $?` shape in test-harness costume.
 #
-# Measured, not imagined: ops-init.sh mutated to skip the VERDICTS.md copy
-# (still exit 0) takes the suite to 991 passed / 110 failed, and eleven of
-# these comparisons are among the PASSES. The two sibling sites already using
-# integer `-eq` failed closed instead, with bash saying so
+# Measured, not imagined. ops-init.sh mutated to skip the VERDICTS.md copy
+# (still exit 0) takes the suite to 991 passed / 110 failed with NINE of these
+# comparisons among the PASSES; a second mutation (no DECISIONS.md) gives
+# 1085/16 with THREE more. Thirteen ledger sites, plus one non-ledger site
+# (the sessionstart byte-compare) that uses these helpers for the same reason
+# without belonging to that count. The two sibling sites already using integer
+# `-eq` failed closed instead, with bash saying so
 # (`[: : integer expression expected`). That is the whole difference.
 #
 # Both halves fail closed here: the file must EXIST, and the counts compare
@@ -7195,12 +7198,12 @@ rm -rf "$CAPD"
 
 ########################################################################
 echo "-- Case: #148 an unchanged-file assertion cannot pass about a file that is not there"
-# The helpers above are the fix for eleven assertions that reported `ok` under a
-# mutation which deleted the thing they measure. A fix with no red run is a
+# The helpers above are the fix for thirteen assertions that reported `ok`
+# under a mutation deleting the thing they measure. A fix with no red run is a
 # hypothesis, so this block drives each helper through BOTH states: the absent
 # file (must refuse) and the present-and-unchanged file (must accept). The
-# accept half is not ceremony — a helper that refuses everything would make the
-# eleven call sites pass their controls while failing every real run, and the
+# accept half is not ceremony — a helper that refuses everything would make
+# every call site pass its controls while failing every real run, and the
 # suite total is what would tell us, ten minutes later.
 _V148="$(newproj)"
 printf 'a\nb\nc\n' > "$_V148/ledger.md"
