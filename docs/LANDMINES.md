@@ -1724,6 +1724,29 @@ three suspicions wrong, one right, and only mutation could tell them apart.
 The floor moved with it: `HOLDOUT_MIN_CHECKS` 30 → 41, because a floor below the true
 count is slack a deletion hides in — `tests/floors.env`'s lesson, one repo over.
 
+**Then the holdout was caught committing the defect it exists to refuse.** A
+silent-failure audit found three checks reporting `ok` having measured nothing, all the
+same arithmetic: `$(( $(wc -c < absent) ))` is `0`, so a before/after byte comparison
+was `0 == 0`; `sed -n "1,p"` on a missing file twice, compared, is equal, so the guard
+on the ledger's append-only-ness compared nothing to nothing; and `grep -c` yields `0`
+for "correctly absent" and "file not there" alike. Measured with `ops-init.sh` mutated
+to create no ledger: 27 passed / 14 failed, **and all three were among the passes** —
+fourteen other checks caught the condition while these three reported success about it.
+After a fourth denied-context repair, the same mutation gives 24 / 17, each naming its
+precondition. The shape to carry away: **a check whose PASS condition is `0`, or an
+empty string, or an equality between two reads of the same absent file, cannot tell
+success from never-having-measured.** It is `cmd > log; echo $?` again, in a test
+harness costume, and writing the harness that refuses it does not immunise you.
+
+**None of this needs the forge.** Property 1 is "outside the builder's read scope";
+`lokaal` is one way to buy it and a second GitHub repo is another, for free — the
+holdout repo's `PORTING.md` prices the alternatives (orphan branch and local directory
+both weaker, and it says how). `run-holdout.sh` contains no Forgejo: verified against a
+plain GitHub URL, `HOLDOUT_VERIFIED sha=7057dcf7f2f6 checks=41`. The two Forgejo facts
+that shaped it (a queued job has no task row, `conclusion` is always `null`) explain why
+it gates on a marker, but "never gate on job status" is equally right on GitHub Actions,
+where a skipped job and a successful one are both green at the API.
+
 **The two failures that survived to round 2 were over-assertions, not defects**, and
 both are worth recognising because they are what an independent writer gets wrong. It
 required the SessionStart banner to enumerate every open task, which the charter never
@@ -1748,8 +1771,9 @@ emitting checks exits 0 with everything it still runs green.
 byte-identical: the Stop gate's `exit 2` → `exit 0` (4 red), the `+dirty` branch deleted
 (2 red), `ops-claims.sh` examining only the first changed path (1 red), the ledger row's
 verdict word hardcoded to `PASS` (1 red), `--defer` writing its row without clearing the
-sentinel (1 red), an auto-bar that blocks without arming (1 red), and `ops-adopt.sh`
-replaced by `exit 0` (6 red — 0 red before the review). The third is the `LIMIT 1` shape the
+sentinel (1 red), an auto-bar that blocks without arming (1 red), `ops-adopt.sh`
+replaced by `exit 0` (6 red — 0 red before the review), and an installer that creates no
+ledger (17 red — 14 before the vacuity fix). The third is the `LIMIT 1` shape the
 exact-values rule exists for — a suite asserting "some violation is reported" passes it;
 one asserting the named file passes it too, as long as that file is first. The first
 attempt at that mutation was a syntax error, which drove the suite red for the wrong

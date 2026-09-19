@@ -36,8 +36,10 @@ Closes #112 — the first check in this project written by an agent that could n
   positive marker naming the sha (`HOLDOUT_PASSED sha=<sha>`) and a check-count
   floor, so an absent, silent, shrunken or wrong-sha run all fail — measured on the
   forge both ways: run 1458 `HOLDOUT_VERIFIED sha=7057dcf7f2f6 checks=41`, run 1456
-  red on a nonexistent sha. Seven mutations against the gate CLIs each drove it red
-  and were restored byte-identical. **That count is a point-in-time figure**: the
+  red on a nonexistent sha. Eight mutations against the gate CLIs each drove it red
+  and were restored byte-identical. It is not tied to this forge: `run-holdout.sh`
+  contains no Forgejo and is verified against a plain GitHub URL; the repo's
+  `PORTING.md` prices the alternatives for anyone without a private forge. **That count is a point-in-time figure**: the
   holdout is a separate repo on its own history, so this line records what was
   measured at v0.11.16 and is not kept in sync. Its own README carries the live
   number; `HOLDOUT_MIN_CHECKS` there is the ratchet.
