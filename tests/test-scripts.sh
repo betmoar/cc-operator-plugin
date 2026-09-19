@@ -58,6 +58,44 @@ check() { # check <desc> <0|1 condition-result>
 # /private/var/folders/..., so an unresolved path here makes a correct banner look wrong (F102).
 newproj() { local d; d="$(mktemp -d "${TMPDIR:-/tmp}/opstest.XXXXXX")" && (cd -P "$d" && pwd -P); }
 
+# #148: a "nothing was written" assertion compares two reads of the SAME file.
+# When that file is ABSENT both reads are the empty string and `[ "" = "" ]` is
+# TRUE — the assertion certifies that no row was appended to a ledger that was
+# never there. Its passing value is indistinguishable from never-having-
+# measured, which is the `cmd > log; echo $?` shape in test-harness costume.
+#
+# Measured, not imagined: ops-init.sh mutated to skip the VERDICTS.md copy
+# (still exit 0) takes the suite to 991 passed / 110 failed, and eleven of
+# these comparisons are among the PASSES. The two sibling sites already using
+# integer `-eq` failed closed instead, with bash saying so
+# (`[: : integer expression expected`). That is the whole difference.
+#
+# Both halves fail closed here: the file must EXIST, and the counts compare
+# with `-eq`, which errors on an empty operand where `=` succeeds. The absent
+# case is a FAILED check naming its precondition on stderr, never a pass.
+_precondition_absent() { printf '  !! precondition: %s does not exist — the assertion below measured nothing (#148)\n' "$1" >&2; }
+unchanged_lines() { # unchanged_lines <file> <before-count> → 0 iff <file> exists AND its line count still equals <before-count>
+  [ -f "$1" ] || { _precondition_absent "$1"; return 1; }
+  [ "$(wc -l < "$1" | tr -d ' ')" -eq "$2" ] 2>/dev/null
+}
+unchanged_bytes() { # unchanged_bytes <file> <before-count> → 0 iff <file> exists AND its byte count still equals <before-count>
+  [ -f "$1" ] || { _precondition_absent "$1"; return 1; }
+  [ "$(wc -c < "$1" | tr -d ' ')" -eq "$2" ] 2>/dev/null
+}
+# The count side of the same rule: a `grep -c` delta over a file that does not
+# exist is 0 - 0 = 0, so an assertion that "no new line was written" holds
+# vacuously. The file must exist before the delta means anything.
+delta_is() { # delta_is <file> <after> <before> <expected> → 0 iff <file> exists AND after-before == expected
+  [ -f "$1" ] || { _precondition_absent "$1"; return 1; }
+  [ "$(( ${2:-0} - ${3:-0} ))" -eq "$4" ] 2>/dev/null
+}
+# Same rule for a comparison between two files' contents: `tail -1` of an
+# absent file is empty, so two absent files compare byte-identical.
+both_present() { # both_present <file> <file> → 0 iff both exist
+  [ -f "$1" ] || { _precondition_absent "$1"; return 1; }
+  [ -f "$2" ] || { _precondition_absent "$2"; return 1; }
+}
+
 # Ownership lives in the sentinel's NAME (<owner>__<task>, or bare <task> when unowned); one helper for the convention.
 sentinel_any() { # sentinel_any <proj> <task> → 0 when a sentinel exists under any owner
   local _f
@@ -496,7 +534,7 @@ ROWS_BEFORE="$(wc -l < "$P/.operator/VERDICTS.md")"
 : > "$P/.operator/pending/T-P"
 ( cd "$P" && bash "$VERDICT" T-P "crit" "out: 3 | 0 failed" PASS >/dev/null 2>&1 ); PRC=$?
 check "pipe in evidence → refused (exit != 0)" "$([ "$PRC" -ne 0 ] && echo 0 || echo 1)"
-check "pipe in evidence → no row, sentinel intact" "$([ "$(wc -l < "$P/.operator/VERDICTS.md")" = "$ROWS_BEFORE" ] && sentinel_any "$P" T-P && echo 0 || echo 1)"
+check "pipe in evidence → no row, sentinel intact" "$(unchanged_lines "$P/.operator/VERDICTS.md" "$ROWS_BEFORE" && sentinel_any "$P" T-P && echo 0 || echo 1)"
 ( cd "$P" && bash "$VERDICT" T-P "crit" "$(printf 'l1\nl2')" PASS >/dev/null 2>&1 ); NRC=$?
 check "newline in evidence → refused" "$([ "$NRC" -ne 0 ] && echo 0 || echo 1)"
 ( cd "$P" && bash "$VERDICT" T-P "crit" "evidence" MAYBE >/dev/null 2>&1 ); MRC=$?
@@ -542,12 +580,12 @@ check "newline/pipe in defer reason → refused" "$([ "$DRC2" -ne 0 ] && echo 0 
 check "#139 CR in criterion → refused (a CR inside a cell is a byte no reader can see)" \
   "$([ "$CRRC" -ne 0 ] && echo 0 || echo 1)"
 check "#139 CR in criterion → no row written, sentinel intact" \
-  "$([ "$(wc -l < "$P/.operator/VERDICTS.md")" = "$ROWS_BEFORE" ] && sentinel_any "$P" T-P && echo 0 || echo 1)"
+  "$(unchanged_lines "$P/.operator/VERDICTS.md" "$ROWS_BEFORE" && sentinel_any "$P" T-P && echo 0 || echo 1)"
 : > "$P/.operator/pending/T-P"
 ( cd "$P" && bash "$VERDICT" T-P "crit" "$(printf 'ev\rid')" PASS >/dev/null 2>&1 ); CRRC2=$?
 check "#139 CR in evidence → refused" "$([ "$CRRC2" -ne 0 ] && echo 0 || echo 1)"
 check "#139 CR in evidence → no row written (the refusal precedes the append)" \
-  "$([ "$(wc -l < "$P/.operator/VERDICTS.md")" = "$ROWS_BEFORE" ] && echo 0 || echo 1)"
+  "$(unchanged_lines "$P/.operator/VERDICTS.md" "$ROWS_BEFORE" && echo 0 || echo 1)"
 : > "$P/.operator/pending/T-P"
 ( cd "$P" && bash "$VERDICT" T-P --defer "$(printf 'blo\rcked')" >/dev/null 2>&1 ); CRRC3=$?
 check "#139 CR in defer reason → refused (--defer writes a DECISIONS line, same schema)" \
@@ -689,7 +727,7 @@ check "sessionstart upgrade installs the new ops-claims.sh" \
 _pre="$(wc -c < "$UP/.operator/bin/ops-verdict.sh")"
 sed "s|<tmp>|$UP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
 check "sessionstart is a no-op when the version matches (steady-state)" \
-  "$( [ "$(wc -c < "$UP/.operator/bin/ops-verdict.sh")" = "$_pre" ] && echo 0 || echo 1)"
+  "$(unchanged_bytes "$UP/.operator/bin/ops-verdict.sh" "$_pre" && echo 0 || echo 1)"
 # CR3: a failed copy must not advance the stamp (or a truncated CLI + "current" stamp would never retry). Induced by
 # replacing bin/ with a regular file, not chmod 000 — root ignores mode bits, so that induces nothing under root (#20).
 printf '0.1.0-old\n' > "$UP/.operator/.version"   # force an upgrade attempt
@@ -740,7 +778,7 @@ P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
 ROWS_BEFORE="$(wc -l < "$P/.operator/VERDICTS.md")"
 ( cd "$P" && bash "$VERDICT" T-A "crit" "evidence" PASS --owner SESS-B >/dev/null 2>&1 ); XRC=$?
 check "foreign --owner → verdict refused" "$([ "$XRC" -ne 0 ] && echo 0 || echo 1)"
-check "foreign --owner → no row, sentinel intact" "$([ "$(wc -l < "$P/.operator/VERDICTS.md")" = "$ROWS_BEFORE" ] && sentinel_any "$P" T-A && echo 0 || echo 1)"
+check "foreign --owner → no row, sentinel intact" "$(unchanged_lines "$P/.operator/VERDICTS.md" "$ROWS_BEFORE" && sentinel_any "$P" T-A && echo 0 || echo 1)"
 ( cd "$P" && bash "$VERDICT" T-A --defer "not mine" --owner SESS-B >/dev/null 2>&1 ); DXRC=$?
 check "foreign --owner → --defer also refused" "$([ "$DXRC" -ne 0 ] && sentinel_any "$P" T-A && echo 0 || echo 1)"
 # the owner itself closes fine
@@ -810,7 +848,7 @@ P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
 ROWS_BEFORE="$(wc -l < "$P/.operator/VERDICTS.md")"
 ( cd "$P" && bash "$VERDICT" T-TYPO "crit" "evid" PASS --ownr SESS-B junk >/dev/null 2>&1 ); TYRC=$?
 check "typo'd --owner on a foreign task is refused, not warned" "$([ "$TYRC" -ne 0 ] && echo 0 || echo 1)"
-check "typo'd --owner writes no row and leaves the sentinel" "$([ "$(wc -l < "$P/.operator/VERDICTS.md")" = "$ROWS_BEFORE" ] && sentinel_any "$P" T-TYPO && echo 0 || echo 1)"
+check "typo'd --owner writes no row and leaves the sentinel" "$(unchanged_lines "$P/.operator/VERDICTS.md" "$ROWS_BEFORE" && sentinel_any "$P" T-TYPO && echo 0 || echo 1)"
 # The worse half, measured: the typo'd flag was also written into the ledger as the evidence cell.
 ( cd "$P" && bash "$VERDICT" T-TYPO "crit" --ownr=SESS-B PASS >/dev/null 2>&1 ); TYRC2=$?
 check "a typo'd flag never lands in the ledger as evidence" "$([ "$TYRC2" -ne 0 ] && ! grep -q -- '--ownr=' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
@@ -823,7 +861,7 @@ check "a surplus positional is refused" "$([ "$SPRC" -ne 0 ] && echo 0 || echo 1
 DLBEFORE="$(wc -l < "$P/.operator/DECISIONS.md")"
 ( cd "$P" && bash "$VERDICT" T-DEFX --defer "a real reason" STRAY --owner SESS-A >/dev/null 2>&1 ); DFXRC=$?
 check "a surplus positional on the DEFER form is refused too" "$([ "$DFXRC" -ne 0 ] && echo 0 || echo 1)"
-check "the refused defer writes no DECISIONS line and leaves the sentinel" "$([ "$(wc -l < "$P/.operator/DECISIONS.md")" = "$DLBEFORE" ] && sentinel_any "$P" T-DEFX && echo 0 || echo 1)"
+check "the refused defer writes no DECISIONS line and leaves the sentinel" "$(unchanged_lines "$P/.operator/DECISIONS.md" "$DLBEFORE" && sentinel_any "$P" T-DEFX && echo 0 || echo 1)"
 # CONTROL: the legitimate three-positional defer form still works.
 ( cd "$P" && bash "$VERDICT" T-DEFX --defer "a real reason" --owner SESS-A >/dev/null 2>&1 ); DFOKRC=$?
 check "the legitimate defer form still works under the per-form ceiling" "$([ "$DFOKRC" -eq 0 ] && [ ! -e "$P/.operator/pending/T-DEFX" ] && echo 0 || echo 1)"
@@ -1128,7 +1166,7 @@ printf 'not a valid row\n| broken | only | three |\n| T-INJ | c | e | MAYBE |\n'
 RB="$(wc -l < "$P/.operator/VERDICTS.md")"
 ROUT="$( cd "$P" && bash "$VERDICT" --reconcile 2>&1 )"; RRC2=$?
 check "--reconcile exits 0 despite corrupt fragment lines" "$([ "$RRC2" -eq 0 ] && echo 0 || echo 1)"
-check "--reconcile refuses non-conformant lines (ledger unchanged)" "$([ "$(wc -l < "$P/.operator/VERDICTS.md")" = "$RB" ] && echo 0 || echo 1)"
+check "--reconcile refuses non-conformant lines (ledger unchanged)" "$(unchanged_lines "$P/.operator/VERDICTS.md" "$RB" && echo 0 || echo 1)"
 check "--reconcile reports what it skipped" "$(printf '%s' "$ROUT" | grep -qi 'non-conformant' && echo 0 || echo 1)"
 check "--reconcile did not inject the MAYBE verdict" "$(! grep -q 'T-INJ' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
 # A row with EXTRA cells is what a glob-based check waves through (Codex review) — the check must COUNT.
@@ -1136,7 +1174,7 @@ RB2="$(wc -l < "$P/.operator/VERDICTS.md")"
 printf '| a | b | c | injected | PASS |\n| a | b | c | d | e | f | FAIL |\n' >> "$P/.operator/verdicts.d/SESS-A.md"
 ( cd "$P" && bash "$VERDICT" --reconcile >/dev/null 2>&1 )
 check "--reconcile refuses a 5-cell row (counts cells, not globs)" "$(! grep -q 'injected' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
-check "--reconcile refuses any over-celled row" "$([ "$(wc -l < "$P/.operator/VERDICTS.md")" = "$RB2" ] && echo 0 || echo 1)"
+check "--reconcile refuses any over-celled row" "$(unchanged_lines "$P/.operator/VERDICTS.md" "$RB2" && echo 0 || echo 1)"
 rm -rf "$P"
 
 ########################################################################
@@ -3285,7 +3323,7 @@ DEC_BEFORE="$(wc -c < "$P/.operator/DECISIONS.md" | tr -d ' ')"
 ( cd "$P" && bash "$VERDICT" g1t1 crit ev PASS --owner "$S" >/dev/null 2>&1 ); G11=$?
 check "G1.1 armed verdict exits 0" "$([ "$G11" -eq 0 ] && echo 0 || echo 1)"
 check "G1.1 armed verdict writes zero GATE-EXCEPTION lines" \
-  "$([ "$(wc -c < "$P/.operator/DECISIONS.md" | tr -d ' ')" = "$DEC_BEFORE" ] && echo 0 || echo 1)"
+  "$(unchanged_bytes "$P/.operator/DECISIONS.md" "$DEC_BEFORE" && echo 0 || echo 1)"
 
 # G1.2 — never-armed verdict with --owner: row appended, one GATE-EXCEPTION tagged [sid:$S].
 DEC_BEFORE="$(grep -c 'GATE-EXCEPTION' "$P/.operator/DECISIONS.md" 2>/dev/null || echo 0)"
@@ -3305,14 +3343,14 @@ check "G1.3 stderr names duplicate/amending" \
   "$(printf '%s' "$G13OUT" | grep -qi 'duplicate\|amending' && echo 0 || echo 1)"
 DEC_AFTER="$(grep -c 'GATE-EXCEPTION' "$P/.operator/DECISIONS.md" 2>/dev/null || echo 0)"
 check "G1.3 writes no second GATE-EXCEPTION" \
-  "$([ $((DEC_AFTER - DEC_BEFORE)) -eq 0 ] && echo 0 || echo 1)"
+  "$(delta_is "$P/.operator/DECISIONS.md" "$DEC_AFTER" "$DEC_BEFORE" 0 && echo 0 || echo 1)"
 
 # G1.4 — never-armed verdict with no --owner: refused, VERDICTS.md unchanged.
 V_BEFORE="$(wc -c < "$P/.operator/VERDICTS.md" | tr -d ' ')"
 ( cd "$P" && bash "$VERDICT" na-g14 crit ev PASS 2>/dev/null ); G14=$?
 check "G1.4 never-armed without --owner exits non-zero" "$([ "$G14" -ne 0 ] && echo 0 || echo 1)"
 check "G1.4 VERDICTS.md unchanged (byte-compare)" \
-  "$([ "$(wc -c < "$P/.operator/VERDICTS.md" | tr -d ' ')" = "$V_BEFORE" ] && echo 0 || echo 1)"
+  "$(unchanged_bytes "$P/.operator/VERDICTS.md" "$V_BEFORE" && echo 0 || echo 1)"
 
 # G1.5 — armed verdict with no --owner: still exits 0 (sentinel supplies owner).
 ( cd "$P" && bash "$TASK" g1t5 --owner "$S" >/dev/null 2>&1 )
@@ -3338,7 +3376,7 @@ DEC_BEFORE="$(grep -cE '^[0-9]{4}.*GATE-EXCEPTION' "$P/.operator/DECISIONS.md" |
 ( cd "$P" && bash "$VERDICT" g1t7 crit2 short PASS --owner "$S7" 2>&1 ) | grep -qi 'duplicate\|amending' && DUP17=0 || DUP17=1
 DEC_AFTER="$(grep -cE '^[0-9]{4}.*GATE-EXCEPTION' "$P/.operator/DECISIONS.md" || true)"
 check "G1.7 long-evidence duplicate is duplicate, not never-armed (no spurious GATE-EXCEPTION)" \
-  "$([ "${DEC_AFTER:-0}" = "${DEC_BEFORE:-0}" ] && [ "$DUP17" -eq 0 ] && echo 0 || echo 1)"
+  "$(delta_is "$P/.operator/DECISIONS.md" "$DEC_AFTER" "$DEC_BEFORE" 0 && [ "$DUP17" -eq 0 ] && echo 0 || echo 1)"
 
 # G1.8 — a never-armed verdict writes EXACTLY ONE GATE-EXCEPTION however many times it's amended, or the gate
 # cries wolf and gets waved through (issue #9's failure mode again). The crash-window residual is closed by
@@ -3447,7 +3485,7 @@ check "S1.2 stamped row is still exactly 4 cells" \
 LROW="$(tail -1 "$P/.operator/VERDICTS.md")"
 FROW="$(tail -1 "$P/.operator/verdicts.d/SESS-S1.md")"
 check "S1.3 fragment row and ledger row are byte-identical" \
-  "$([ "$LROW" = "$FROW" ] && echo 0 || echo 1)"
+  "$(both_present "$P/.operator/VERDICTS.md" "$P/.operator/verdicts.d/SESS-S1.md" && [ "$LROW" = "$FROW" ] && echo 0 || echo 1)"
 
 # Dirty source → the stamp says so. This is the U10 experiment's first class.
 printf 'def add(a,b):\n    return a*b\n' > "$P/src.py"
@@ -7143,6 +7181,51 @@ check "caps.sh names neighbor-regressing as UNCOVERED (a PASS→FAIL flip is not
 check "scan_caps declares LC_ALL local — no collation leak to the sourcing script" \
   "$(grep -q 'local LC_ALL=C' "$SCRIPTS/lib/caps.sh" && echo 0 || echo 1)"
 rm -rf "$CAPD"
+
+
+########################################################################
+echo "-- Case: #148 an unchanged-file assertion cannot pass about a file that is not there"
+# The helpers above are the fix for eleven assertions that reported `ok` under a
+# mutation which deleted the thing they measure. A fix with no red run is a
+# hypothesis, so this block drives each helper through BOTH states: the absent
+# file (must refuse) and the present-and-unchanged file (must accept). The
+# accept half is not ceremony — a helper that refuses everything would make the
+# eleven call sites pass their controls while failing every real run, and the
+# suite total is what would tell us, ten minutes later.
+_V148="$(newproj)"
+printf 'a\nb\nc\n' > "$_V148/ledger.md"
+_L148="$(wc -l < "$_V148/ledger.md" | tr -d ' ')"
+_B148="$(wc -c < "$_V148/ledger.md" | tr -d ' ')"
+check "#148 unchanged_lines ACCEPTS an existing file whose line count is unchanged" \
+  "$(unchanged_lines "$_V148/ledger.md" "$_L148" && echo 0 || echo 1)"
+check "#148 unchanged_lines REFUSES a file that changed (the assertion's real job)" \
+  "$(printf 'd\n' >> "$_V148/ledger.md"; unchanged_lines "$_V148/ledger.md" "$_L148" && echo 1 || echo 0)"
+check "#148 unchanged_lines REFUSES an ABSENT file — the bare \`[ \"\" = \"\" ]\` accepted it" \
+  "$(unchanged_lines "$_V148/never-existed.md" "" 2>/dev/null && echo 1 || echo 0)"
+check "#148 unchanged_bytes ACCEPTS an existing file whose byte count is unchanged" \
+  "$(printf 'a\nb\nc\n' > "$_V148/ledger.md"; unchanged_bytes "$_V148/ledger.md" "$_B148" && echo 0 || echo 1)"
+check "#148 unchanged_bytes REFUSES an ABSENT file" \
+  "$(unchanged_bytes "$_V148/never-existed.md" "" 2>/dev/null && echo 1 || echo 0)"
+check "#148 delta_is ACCEPTS a zero delta over a file that exists" \
+  "$(delta_is "$_V148/ledger.md" 4 4 0 && echo 0 || echo 1)"
+check "#148 delta_is REFUSES an ABSENT file — 0 minus 0 is 0, which is the expected delta" \
+  "$(delta_is "$_V148/never-existed.md" 0 0 0 2>/dev/null && echo 1 || echo 0)"
+check "#148 both_present ACCEPTS two files that exist" \
+  "$(cp "$_V148/ledger.md" "$_V148/fragment.md"; both_present "$_V148/ledger.md" "$_V148/fragment.md" && echo 0 || echo 1)"
+check "#148 both_present REFUSES when EITHER is absent (two absent files compare byte-identical)" \
+  "$(both_present "$_V148/ledger.md" "$_V148/never-existed.md" 2>/dev/null && echo 1 || echo 0)"
+# THE PRECONDITION IS ANNOUNCED, not merely failed. A refusal that says nothing
+# is read as an ordinary red and re-diagnosed from scratch; the line naming the
+# missing file is what routes the next maintainer to the cause in one step.
+check "#148 an absent precondition NAMES the file on stderr" \
+  "$(unchanged_lines "$_V148/never-existed.md" "" 2>&1 >/dev/null | grep -q 'never-existed.md' && echo 0 || echo 1)"
+# The two sibling sites that already used integer `-eq` failed closed for free,
+# with bash saying so. That property is the whole reason `-eq` is the house
+# idiom here, so it is pinned rather than remembered.
+_e148=""   # what `$(wc -l < <absent>)` yields — an EMPTY operand, not a zero
+check "#148 \`[ \"\$x\" -eq \"\$y\" ]\` errors on an empty operand where \`=\` succeeds" \
+  "$([ "$_e148" = "$_e148" ] 2>/dev/null && ! [ "$_e148" -eq "$_e148" ] 2>/dev/null && echo 0 || echo 1)"
+rm -rf "$_V148"
 
 
 if [ "$FAIL" -ne 0 ]; then

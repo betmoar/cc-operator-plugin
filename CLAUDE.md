@@ -5,18 +5,18 @@ the couplings that break silently; the landmine narratives (the _why_ behind eac
 already-hit failure class) live in `docs/LANDMINES.md`, read on demand. For the
 design rationale behind every decision, read `docs/TAGS.md` (the in-tree
 spec index; the spec dir emptied in 0.11.9 — rationale now lives in `docs/`
-and git history). The build ledger, plans, pilot runbook/findings, and
-prior-project evidence left the tree in 0.3.0 — see git history (tree ≤
-v0.2.0) or the maintainer's local `.archive/dev/` (untracked).
+and git history). The build ledger, plans, pilot runbook/findings and prior-project evidence
+left the tree in 0.3.0 — see git history (tree ≤ v0.2.0) or the maintainer's
+local `.archive/dev/` (untracked).
 
 ## The load-bearing map
 
 - **`templates/OPERATOR.md` is the product.** Everything else exists to
-  materialize, gate, or route to it. It is capped at 150 lines / 9000 bytes /
+  materialize, gate, or route to it. Capped at 150 lines / 9000 bytes /
   100 chars per non-table line (the byte bounds keep the line cap honest — F19),
   with a fixed section order and citation tags (validator floor: ≥1 per section;
-  the every-rule-line convention is maintained by hand). When you edit it,
-  re-run the validator — the caps are a hard gate, not a target.
+  the every-rule-line convention is hand-maintained). Re-run the validator when
+  you edit it — the caps are a hard gate, not a target.
 - **The evidence gate is six scripts that must agree**: `ops-init.sh` scaffolds
   `.operator/` and installs the manifest's CLIs (`scripts/ops-install-set.sh` —
   the ONE declaration, five entries today) into `.operator/bin/` (refreshed on
@@ -28,9 +28,8 @@ v0.2.0) or the maintainer's local `.archive/dev/` (untracked).
   ownership mechanism keys on. The sentinel filename `<id>` is the shared key;
   change the convention in one place and you break the gate.
 - **Sentinel ownership is what makes the gate concurrency-safe** (0.4.0 spec
-  `concurrent-sessions.md`, never committed — its shipped invariants are
-  indexed in `docs/TAGS.md`; 0.9.0 moved the stamp from body to
-  filename). The sentinel filename carries the owner — `pending/<sid>__<task>`
+  `concurrent-sessions.md`, never committed — invariants indexed in
+  `docs/TAGS.md`; 0.9.0 moved the stamp from body to filename). The sentinel filename carries the owner — `pending/<sid>__<task>`
   is owned, `pending/<task>` is unowned; `ops-stop-hook.sh` blocks on
   _mine + unowned_ and merely reports _foreign_.
   Unowned fails **closed** — that is what keeps pre-0.4 empty sentinels gating,
@@ -103,8 +102,10 @@ v0.2.0) or the maintainer's local `.archive/dev/` (untracked).
 | the auto-arm rule in `scripts/lib/autobar.sh` (#85) | ONE implementation, sourced by `ops-stop-hook.sh` AFTER `partition.sh` — the order holds because `autobar_decide` runs BEFORE `scan_pending`, so an armed sentinel is read by the existing mine-pending branch in the SAME fire. Cases: the _"auto-arm (#85)"_ block. Why (both removed suppression rules, why no third is possible, and the priced trade): `docs/LANDMINES.md` _"The auto-arm cannot tell a dead session from a busy one"_ (0.11.9). |
 | the cap detector in `scripts/lib/caps.sh` (#107) | REPORT-ONLY — `check_caps` refuses an `exit` in any `caps_*` branch of `ops-stop-hook.sh`; the report sits ABOVE every exit. Key `(id, criterion)`; a PASS RESETS. Covers same-target-rework ×2 ONLY; the pin reads BOTH uncovered cap names back and EXECUTES `scan_caps` **with its `CAPS_*` constants**. Scans the WHOLE ledger every Stop (~1.2s at 3000 rows); `CAPS_MAX_STEPS` bounds that cost, does not remove it — **#127** (a tail window is refused: a clearing PASS sits anywhere). Cases: _"the cap detector (#107)"_ + `CapsTest`. Detail: docs/LANDMINES.md (0.11.12). |
 | a NUL probe (`read -r -d '' -n N`) in ANY reader | it makes that file's byte cap REAL: `read` DISCARDS NUL, so a row loop counts what survived, not what it consumed. `check_reader_bounds` counts probes (floors 2/2/4); its regex must keep the `-d ''` alternative or every probe is deletable green (#126). Case: _"a NUL-filled ledger over CAPS_MAX_BYTES"_ + 2 CONTROLs. Its 4096×512 ceiling IS `CAPS_MAX_BYTES`, so it refuses first and the row loop's byte cap is a second line of defence (#139). |
-| the trailing-CR strip in ANY of the three 4-cell row parsers | strip the whole trailing RUN, bounded (`CAPS_MAX_CR`, 16) — hand-copied in `lib/caps.sh` + `ops-reverify.sh` + `ops-verdict.sh`'s reconcile loop; the latter two source no lib. `check_cr_strip_parity` holds all three to the bound AND refuses a loop that removes without counting (F30); `check_guard_parity` does NOT cover this — a comment once said it did. PAST the bound each answers differently ON PURPOSE: caps.sh stops the scan and NAMES the cause via `caps_truncated_reason` (one planted row suppresses the whole report, so a size-bound message would misdirect); ops-reverify skips-and-says; reconcile needs no arm (`row_is_conformant` already refuses it). `caps.sh` charges `+ _cr` so accounted == on-disk. Cases: the _"#139 item 1"_ block + `CrStripParityTest`. Detail: LANDMINES (0.11.15). |
+| the trailing-CR strip in ANY of the three 4-cell row parsers | strip the whole trailing RUN, bounded (`CAPS_MAX_CR`, 16) — hand-copied in `lib/caps.sh` + `ops-reverify.sh` + `ops-verdict.sh`'s reconcile loop; the latter two source no lib. `check_cr_strip_parity` holds all three to the bound AND refuses a loop that removes without counting (F30); `check_guard_parity` does NOT cover this — a comment once said it did. PAST the bound each answers differently ON PURPOSE: caps.sh stops and NAMES the cause via `caps_truncated_reason` (one planted row suppresses the whole report, so a size-bound message would misdirect); ops-reverify skips-and-says; reconcile needs no arm (`row_is_conformant` refuses it). `caps.sh` charges `+ _cr` so accounted == on-disk. Cases: the _"#139 item 1"_ block + `CrStripParityTest`. Detail: LANDMINES (0.11.15). |
 | a `file.sh:NNN` citation in tracked prose | `check_line_citations` refuses past-EOF, `:0` (`lines[-1]` wraps) or a BLANK line, across ALL tracked markdown — scoped to `docs/**` it reported green about the files it never read. It CANNOT see a line that still exists and no longer says what the prose claims — cite the SYMBOL (#139 item 4). Case: `LineCitationTest`. |
+| a CLI's FLAGS prescribed in tracked prose | `check_prose_invocations` reads accepted+mandatory off the CLI's OWN parser and `usage:` forms — a table here is the second copy it catches. Mandatory is PER FORM; `[--since]` = ABSENT. Cases: `ProseInvocationTest`. Detail: LANDMINES (0.11.17, #149). |
+| an "X was not written" assertion in `tests/test-scripts.sh` | use `unchanged_lines`/`unchanged_bytes`/`delta_is`/`both_present`, never a bare `=` between two reads of one file — ABSENT both are `""` and `[ "" = "" ]` is TRUE. Each needs BOTH controls. Cases: the _"#148"_ block. Detail: LANDMINES (0.11.17). |
 | the seat bindings or round structure in `workflows/debate.js` | `check_workflow_agent_types` proves the agentType NAMES a shipped agent; nothing in the validator says which call site gets which seat, so a debater prompt handed to `op-author` (Write + Edit — able to edit the artifact it argues about) ships green. Cases: _"debate.js runs three rounds"_ + _"dead-seat accounting"_. Detail: LANDMINES (0.11.9). |
 | `args.isolate` / `args.isolateCheckout` in `workflows/review.js` (#74) | the runtime's `isolation: "worktree"` takes NO commit — the worktree is created at the DEFAULT BRANCH (measured twice). Cases: _"#74"_. Why: `docs/LANDMINES.md` _"Isolation buys a clean tree, not a commit"_ (0.11.9). |
 | `args.isolate` / the adversarial seat's prompt in `workflows/review.js` (#23) | keep the two branches EXCLUSIVE: un-isolated ships F-A1 (`git status --porcelain`), isolated ships F-A2 (`git rev-parse HEAD` vs the named sha) and F-A1 must NOT also ship — a fresh worktree is clean by construction, so porcelain there is a control that cannot fail. Cases: the _"adversarial isolation"_ cases (the stub runtime captures `opts.isolation`). Detail: LANDMINES (0.11.9). |
@@ -115,7 +116,7 @@ v0.2.0) or the maintainer's local `.archive/dev/` (untracked).
 | `northStar` in `workflows/plan.js` (#58) | read WITHOUT a fallback, keep the `Missed if:` requirement, keep `${northStar}` interpolated exactly once — into decompose, never a vet packet (6/6 feasibility seats raised goal findings against the control column when it went to the packets). Load-bearing guard: the node suite's captured-prompt assertion, which covers concatenation forms a count cannot see |
 | the write ORDER in `ops-verdict.sh`'s verdict path (#14) | the GATE-EXCEPTION goes BEFORE the row, the fragment before the ledger, the sentinel clear last. Order is the whole fix for U2: row-first leaves a row with no exception, which the retry reads as an amendment and the bypass keeps its PASS while losing its audit line. Do NOT re-add the reverted guard (downgrade only when an exception exists) — an ARMED first verdict also leaves a row with no exception, and G1.7 catches the spurious firing. Case: _"G1.10"_, which asserts relative position in the source — red in that bash case, mutation-checked |
 
-| `commands/handoff.md`'s section list or its `--mark-handoff` line | the six sections are asserted against **both** the command and `templates/OPERATOR.md § HANDOFF` — parity alone passes when the charter lost the section (HANDOUT_PACKET_SPINE's lesson). The counter is `^[0-9]\+\. \*\*`, never `^[1-6]`: a bounded class counts at most six and is blind to a seventh — how it first shipped green. Cases: _"/cc-operator:handoff carries the six-section contract"_. **The grant must cover the prescription** (#104): an ABSOLUTE path never matches `Bash(.operator/bin/ops-verdict.sh:*)`, so the body prescribes `bash '<absolute path>' --mark-handoff …` under `Bash(bash:*)` — interpreter is the prefix, path an argument — both halves pinned. The #100 pin matches `.operator/bin/ops-` in ANY markup (the backtick-anchored form passed a fenced copy). The fallback names the WALK-UP rule and `@no-vcs`. |
+| `commands/handoff.md`'s section list or its `--mark-handoff` line | the six sections are asserted against **both** the command and `templates/OPERATOR.md § HANDOFF` — parity alone passes when the charter lost it (HANDOUT_PACKET_SPINE's lesson). The counter is `^[0-9]\+\. \*\*`, never `^[1-6]`: a bounded class counts at most six, blind to a seventh — how it first shipped green. Cases: _"/cc-operator:handoff carries the six-section contract"_. **The grant must cover the prescription** (#104): an ABSOLUTE path never matches `Bash(.operator/bin/ops-verdict.sh:*)`, so the body prescribes `bash '<abs>' --mark-handoff …` under `Bash(bash:*)` — interpreter is the prefix, path an argument — both halves pinned. The #100 pin matches `.operator/bin/ops-` in ANY markup. The fallback names the WALK-UP rule and `@no-vcs`. |
 | `commands/start.md`'s steps or its `allowed-tools` | the case asserts the tools GRANT the steps the prose prescribes (`Bash(bash:*)` for step 1, `Write` for step 2) and that `ops-init.sh` is reached through `${CLAUDE_PLUGIN_ROOT}` — a bare `scripts/` path resolves only inside this repo (the v0.2.0 bug). Both grep-guards are pinned to the tokens they actually append; the `--inline` pattern matches the heading's backticks as `.` because shellcheck reads a backtick inside single quotes as command substitution (SC2016, CI-red 0.10) |
 | a dead-agent guard in `brainstorm.js` / `crawl.js` (`== null` returns) | removing one makes the workflow THROW on the next property read rather than return, and an uncaught throw kills the node suite before its summary — the regression is caught either way, but the case that caught it becomes invisible. The dead-agent cases wrap `run()` in try/catch and convert the throw into their own failure. Keep that wrapping when adding one |
 
@@ -172,28 +173,16 @@ independence is structural, not enforced, and reading it makes your next check a
 Dispatch, read the marker. Detail: LANDMINES (0.11.16).
 
 
-## Procedure
-
-Before your first change read **`docs/PLAYBOOK.md`** — what to do when adding a
-guard, adding a reader, or touching the lock, each derived from a bug that
-actually happened here. Audit trails: the F01–F66 writeups live in the
-maintainer's local `.archive/dev/` and were never committed — no clone at any
-commit resolves them; the first audit file that ships in-tree is
-`docs/audit-2026-08-09-handoff.md` (F67+), whose provenance section restates
-this rule.
-
-Two couplings below are now enforced by `validate_plugin.py` (`check_reader_bounds`,
-`check_guard_parity`) rather than by remembering them: a missed byte bound or a
-guard applied to only one of the three CLIs fails the build.
-
 ## Landmines (already hit — do not re-hit)
 
-The narrative register moved to **`docs/LANDMINES.md`** — the _why_ behind each
-already-hit failure class, read on demand instead of loading into every session.
-What stays here is the always-on summary: the load-bearing map above and the
-coupling table, whose invariants are enforced by `validate_plugin.py`
-(`check_reader_bounds`, `check_guard_parity`, `check_lock_parity`). Before
-touching the Stop hook or a sentinel reader, read the landmine file first.
+The narrative register lives in **`docs/LANDMINES.md`** — the _why_ behind each
+already-hit failure class, read on demand rather than loaded into every session.
+What stays here is the always-on summary: the map above and the coupling table,
+whose invariants `validate_plugin.py` enforces rather than asking you to
+remember (`check_reader_bounds`, `check_guard_parity`, `check_lock_parity` — a
+missed byte bound, or a guard applied to only one of the three CLIs, fails the
+build). Before touching the Stop hook or a sentinel reader, read the landmine
+file first.
 
 ## Provenance
 
@@ -210,6 +199,9 @@ this is the always-on summary.
   0.11.9 (backlog-charter removed; see git history).
 - **`docs/PLAYBOOK.md`** holds the executable procedures (adding a guard, a
   reader, touching the lock), each derived from a bug that happened here.
+  **Read it before your first change.** The F01–F66 audit writeups it refers
+  to are maintainer-local (`.archive/dev/`) and were never committed — no
+  clone at any commit resolves them.
 - **`docs/REPLAY-CHARTER.md`** is the live-session replay protocol (R0–R8),
   hand-maintained prose with no validator pin — a message change in
   `ops-stop-hook.sh` or `ops-init.sh` means updating its quoted strings by

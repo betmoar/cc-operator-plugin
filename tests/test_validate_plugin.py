@@ -5511,3 +5511,189 @@ class ClaudeMdSizeTest(unittest.TestCase):
         # ever rises above it, the pin guards nothing the harness does not
         # already warn about — and a cap above the clip is a contradiction.
         self.assertLess(vp.CLAUDE_MD_MAX_CHARS, 40000)
+
+
+class ProseInvocationTest(unittest.TestCase):
+    """check_prose_invocations: prose must prescribe a command the CLI accepts (#149).
+
+    THE DEFECT IS REAL AND SHIPPED. v0.11.16's charter said
+    `ops-claims.sh --claimed "<paths>"`; the CLI has required a mandatory
+    `--since <sha>` since CR2 and exits 2 without it, so an operator following
+    `templates/OPERATOR.md` — which CLAUDE.md calls THE PRODUCT — got a usage
+    error. All 1101 shell cases passed throughout: every one of them is written
+    AGAINST the CLI, so every one passes `--since`. It took an agent that could
+    not read `scripts/` to find it (#112).
+
+    The fix then turned out to be one copy of three (the F30 shape). All three
+    were run red against this check before it was believed, each restored
+    byte-identical (`shasum -c` OK):
+
+      templates/OPERATOR.md  --since removed        -> OPERATOR.md:109 fires
+      README.md              --since removed        -> README.md:109 fires
+      docs/PLAYBOOK.md       [--since] bracketed    -> PLAYBOOK.md:565 fires
+
+    The third is the one a presence test misses: the flag is NAMED, so it reads
+    as prescribed, while the brackets tell the reader it is optional for a flag
+    the CLI refuses to run without. Prose using the CLI's own notation to say
+    the opposite of what the CLI does.
+
+    Four defects in the check itself were found by running it on the correct
+    tree, before any mutation — each would have condemned a correct line:
+      1. `^--flag)` missed ops-render.sh's two-arms-per-line `;;` packing, so
+         `--revert` read as unknown.
+      2. Mandatory flags treated as global rather than per-form: `--expect-clean`
+         is a complete form of ops-claims.sh and needs no `--since`.
+      3. `break` after the first usage string read --mark-handoff's requirements
+         onto the verdict form, condemning five correct lines including the
+         charter's own.
+      4. The deliberate `--ownr` negative control in REPLAY-CHARTER.md announces
+         itself in the sentence ABOVE, which a line-only marker scan cannot see.
+    """
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        (self.dir / "scripts").mkdir()
+        (self.dir / "docs").mkdir()
+        # A miniature ops-claims.sh carrying the real contract shape: two
+        # forms, one of which needs two flags the other does not.
+        (self.dir / "scripts" / "ops-thing.sh").write_text(
+            '#!/usr/bin/env bash\n'
+            'while [ $# -gt 0 ]; do\n'
+            '  case "$1" in\n'
+            '    --claimed) CLAIMED="$2"; shift 2 ;;\n'
+            '    --since) SINCE="$2"; shift 2 ;;\n'
+            '    --expect-clean) EXPECT=1; shift ;;\n'
+            '    -*) die "unknown option \'$1\' (usage: ops-thing.sh --since <sha>'
+            ' --claimed \\"<paths>|none\\" [--gate-task] | --expect-clean)" ;;\n'
+            '  esac\n'
+            'done\n',
+            encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _probs(self, prose, name="docs/N.md"):
+        p = self.dir / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(prose, encoding="utf-8")
+        probs = []
+        vp.check_prose_invocations(self.dir, probs)
+        # The fixture carries one flagged invocation, far under the real
+        # tree's floor; drop that one report so the case reads the finding.
+        return [x for x in probs if "examined only" not in x]
+
+    def test_the_shipped_charter_defect_fires(self):
+        # The v0.11.16 line, verbatim in shape: --claimed without --since.
+        probs = self._probs('run `ops-thing.sh --claimed "<paths>"` to verify\n')
+        self.assertTrue(probs, "a mandatory flag omitted must fire")
+        self.assertIn("--since", probs[0])
+        self.assertIn("omits", probs[0])
+
+    def test_a_bracketed_mandatory_flag_fires(self):
+        # PLAYBOOK.md's shape: the flag is named, and marked optional. A
+        # presence test passes this, which is why it needs its own arm.
+        probs = self._probs(
+            'run `ops-thing.sh [--since <sha>] --claimed "<paths>"`\n')
+        self.assertTrue(probs, "a mandatory flag marked OPTIONAL must fire")
+        self.assertIn("OPTIONAL", probs[0])
+
+    def test_an_unknown_flag_fires(self):
+        probs = self._probs('run `ops-thing.sh --ownr S --claimed "x" --since Y`\n')
+        self.assertTrue(probs, "a flag the parser has no arm for must fire")
+        self.assertIn("--ownr", probs[0])
+
+    def test_a_correct_invocation_stays_green(self):
+        self.assertEqual(
+            self._probs('run `ops-thing.sh --since <sha> --claimed "<paths>"`\n'),
+            [])
+
+    def test_a_second_form_is_judged_on_its_own_requirements(self):
+        # `--expect-clean` is a complete form. Demanding --since of it is
+        # demanding a flag the CLI exits 0 without — defect 2 above.
+        self.assertEqual(self._probs('then `ops-thing.sh --expect-clean`\n'), [])
+
+    def test_a_deliberate_negative_control_is_exempt_by_paragraph(self):
+        # REPLAY-CHARTER.md's shape: the teaching sentence sits ABOVE the
+        # command. A line-only scan condemned it (defect 4).
+        self.assertEqual(self._probs(
+            "**Also verify the parser refuses a mistyped flag** — the gate's\n"
+            "own control:\n"
+            '`ops-thing.sh --ownr S` must exit non-zero.\n'), [])
+
+    def test_the_exemption_does_not_leak_across_a_blank_line(self):
+        # The exemption is bounded by the PARAGRAPH, not a fixed window: a
+        # teaching sentence must not license an unrelated block below it.
+        probs = self._probs(
+            "**Verify the parser refuses a mistyped flag.**\n"
+            "\n"
+            '`ops-thing.sh --ownr S --claimed "x" --since Y` is how you verify.\n')
+        self.assertTrue(probs, "the exemption must not reach past a blank line")
+        self.assertIn("--ownr", probs[0])
+
+    def test_history_files_are_exempt(self):
+        # CHANGELOG.md quotes OLD forms on purpose — that is what a changelog
+        # is for, and a check that reports them is one people route around.
+        self.assertEqual(
+            self._probs('fixed `ops-thing.sh --claimed "<paths>"` (#112)\n',
+                        name="CHANGELOG.md"),
+            [])
+
+    def test_an_unreadable_parser_is_reported_where_it_matters(self):
+        # A parser we cannot read is a pin that proves nothing. It is NOT
+        # reported for a CLI nobody prescribes flags for (ops-init.sh takes
+        # none, and reporting it failed the correct tree) — it is reported at
+        # the line that depends on it. Same polarity as _run_probe's rule:
+        # never a silent skip.
+        (self.dir / "scripts" / "ops-mute.sh").write_text(
+            "#!/usr/bin/env bash\necho hi\n", encoding="utf-8")
+        self.assertEqual(self._probs("nothing prescribed here\n"), [])
+        probs = self._probs("run `ops-mute.sh --flag`\n")
+        self.assertTrue(probs, "an unreadable parser must be reported at the "
+                               "prescription that depends on it")
+        self.assertIn("cannot read", probs[0])
+
+    def test_a_shrinking_scan_is_itself_a_finding(self):
+        # The _tool_loops rule: if the citation shape changes, the check finds
+        # nothing and reports a perfect result about a set it never read.
+        # The floor is keyed on a repo (a CLAUDE.md present), so the fixture
+        # gets one — without it this case would pass through the fixture-tree
+        # escape and assert nothing, which is the exact shape #148 is about.
+        (self.dir / "CLAUDE.md").write_text("# handoff\n", encoding="utf-8")
+        probs = []
+        vp.check_prose_invocations(self.dir, probs)
+        self.assertTrue(any("examined only" in x for x in probs),
+                        "a scan below the floor must report, not pass quietly")
+
+    def test_the_floor_does_not_apply_to_a_fixture_tree(self):
+        # The escape's OTHER half. The validator's own synthetic trees carry a
+        # stub charter and no cheat-sheets; a floor over them measures the
+        # fixture, not the prose, and failed ValidatorTest's good tree when
+        # this check first shipped. Same escape check_claude_md_size takes.
+        self.assertFalse((self.dir / "CLAUDE.md").exists())
+        probs = []
+        vp.check_prose_invocations(self.dir, probs)
+        self.assertEqual([x for x in probs if "examined only" in x], [])
+
+    def test_the_real_tree_is_above_the_floor(self):
+        # The escape must not become the way the floor goes quiet: assert the
+        # real tree carries enough prescriptions to be measured at all.
+        probs = []
+        vp.check_prose_invocations(ROOT, probs)
+        self.assertEqual([x for x in probs if "examined only" in x], [])
+        self.assertTrue((ROOT / "CLAUDE.md").is_file())
+
+    def test_the_real_tree_passes(self):
+        # Ran RED three ways on this tree before this case was believed — see
+        # the class docstring's table. Restored byte-identical each time.
+        probs = []
+        vp.check_prose_invocations(ROOT, probs)
+        self.assertEqual(probs, [])
+
+    def test_the_real_charter_prescribes_since(self):
+        # The instance, not just the class: the line the holdout found. A
+        # check that is perfectly correct about the wrong bytes reads exactly
+        # like a working one, so assert the SELECTION too.
+        charter = (ROOT / "templates" / "OPERATOR.md").read_text(encoding="utf-8")
+        line = [l for l in charter.split("\n") if "ops-claims.sh" in l]
+        self.assertTrue(line, "the charter must still prescribe ops-claims.sh")
+        self.assertIn("--since", line[0])

@@ -1700,6 +1700,39 @@ the charter alone left two copies saying the thing the holdout had just proved w
 The holdout cannot catch that: it tests the SYSTEM, and every one of those copies is
 prose. Grep the invocation, not the file you happened to be reading.
 
+**And the fix for THAT was still one instance, not the class (0.11.17, #149).** Three
+copies corrected by hand leaves nothing that would catch the fourth. `check_prose_invocations`
+is the mechanism: it extracts every `ops-*.sh --flag` prescription from tracked prose and
+asserts the CLI would accept it — an unknown flag, or a mandatory flag omitted, or (the
+PLAYBOOK shape) a mandatory flag wrapped in `[…]`, which a presence test reads as
+prescribed while the brackets tell the reader it is optional. All three of the drifted
+copies were reverted and each drove it red at its own file and line, restored
+byte-identical.
+
+Two things about how it is built are the reusable lesson. **The flag sets are read off
+each CLI's own parser**, never catalogued in the validator — a table here would be a
+second copy of the contract, correct when written, drifting the moment the parser
+changes, with nothing comparing the two. That is the defect this check exists to catch,
+reintroduced one layer up. **And a flag is mandatory PER FORM**: `--owner` is required by
+`ops-verdict.sh --mark-handoff` and optional in its verdict form; `--expect-clean` is a
+complete form of `ops-claims.sh` needing no `--since`. The CLI already declares its forms
+in its own `usage:` alternation, so that is what is read.
+
+The order mattered more than the mutations. **Four defects in the check were found by
+RUNNING it on the correct tree before mutating anything**, each of which would have
+condemned a correct line: a line-anchored scan missed `ops-render.sh`'s two-arms-per-line
+`;;` packing (`--revert` read as unknown); mandatory flags treated globally rather than
+per form; `break` after the first `usage:` string read `--mark-handoff`'s requirements
+onto the verdict form, condemning five correct lines including the charter's own; and a
+line-only scan for the deliberate-negative-control marker condemned REPLAY-CHARTER.md's
+`--ownr` probe, whose teaching sentence sits in the paragraph ABOVE it. Ten mutations
+afterwards all went red. A pin that had only ever run against its own mutation would have
+shipped all four — the mutation proves the check catches the defect, not that it leaves
+correct work alone, and only one of those two is what a maintainer feels.
+
+What it CANNOT see is the same limitation `check_line_citations` carries: a prescription
+that still parses and no longer means what the prose claims. That needs a human.
+
 **Three derivation rounds, and the cap stopped the fourth.** Round 1: 27 passed, 4
 failed. Round 2: 31/2. Round 3, after another prompt tweak: 21/10 — it regressed checks
 round 2 passed and shipped a comparator printing `expected == got` as FAIL. That is the
@@ -1786,3 +1819,37 @@ asserts the fixed contract and passes. The suite that found it is kept as
 `derivation/derived-round2.sh` in the holdout repo. A holdout that has been run once
 against a fixed system tells you nothing about what it caught; the derivation record is
 the evidence, not the current green.
+
+## A refusal test that passes when there is nothing to refuse (0.11.17, #148)
+
+Eleven assertions in the shell suite proved a writer had appended nothing by comparing
+two reads of the same file. With that file ABSENT both reads are the empty string and
+`[ "" = "" ]` is true, so each certified a refusal about a ledger that was never there.
+Nothing was mis-reporting — with a working `ops-init.sh` the file always exists — but
+their passing value was indistinguishable from never-having-measured. They were carried
+by the rest of the suite, not by their own logic.
+
+Measured rather than argued, in an isolated `git archive HEAD` tree: `ops-init.sh`
+mutated to skip the `VERDICTS.md` copy (still exit 0) took the suite to 991/110, with
+eight of the eleven among the PASSES. The two sibling sites that already used integer
+`-eq` failed closed for free, and bash said exactly why: `[: : integer expression
+expected`. That is the whole difference — `[ "" -eq "" ]` errors where `[ "" = "" ]`
+succeeds. A second mutation (no `DECISIONS.md`) covers two more of the eleven; the
+eleventh passes there HONESTLY, because an earlier case's `>> "$DECISIONS"` creates the
+file before it reads it, which is worth knowing before calling it a survivor.
+
+The fix is four helpers that assert the precondition and then compare with `-eq`, and
+the absent case is a FAILED check that NAMES the missing file on stderr. Naming it is
+not decoration: a refusal that says nothing reads as an ordinary red and gets
+re-diagnosed from scratch.
+
+**The controls matter as much as the refusals.** Each helper is driven through BOTH
+states — refuse the absent file, ACCEPT the present unchanged one. A helper that refused
+everything would pass a suite of refusal-only controls while failing all eleven real
+call sites, and the suite total is what would tell you, ten minutes later.
+
+The general shape, which is worth recognising anywhere: **a check whose PASS condition
+is `0`, an empty string, or an equality between two reads of the same absent file cannot
+tell success from never-having-measured.** It is `cmd > log; echo $?` in test-harness
+costume. `gate-suite.sh`'s marker-plus-floor design exists to refuse it one level up;
+this is the same rule applied inside a case.

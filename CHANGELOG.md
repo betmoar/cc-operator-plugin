@@ -9,6 +9,62 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.17] - 2026-09-19
+
+Closes #149 and #148 — both found while reviewing the holdout's work in PR #146, and
+both the same shape: v0.11.16 fixed the INSTANCE and left the CLASS unmechanized.
+
+### Added
+
+- **A validator check comparing prose prescriptions to the CLIs' contracts
+  (#149).** v0.11.16 corrected three copies of a charter line prescribing
+  `ops-claims.sh --claimed "<paths>"` for a CLI that has required a mandatory
+  `--since <sha>` since CR2 and exits 2 without it. Correcting them by hand left
+  nothing that would catch the fourth. `check_prose_invocations` extracts every
+  `ops-*.sh --flag` prescription from tracked prose and asserts the CLI would
+  accept it: an unknown flag, a mandatory flag omitted, or a mandatory flag
+  wrapped in `[…]` — the `docs/PLAYBOOK.md` shape, where a presence test reads
+  the flag as prescribed while the brackets tell the operator it is optional.
+  Both flag sets are read off each CLI's **own parser and `usage:` forms**, never
+  catalogued in the validator: a table here would be a second copy of the
+  contract, drifting the moment the parser changes, with nothing comparing the
+  two — the defect the check exists to catch, one layer up. Mandatory is judged
+  **per form** (`--owner` is required by `--mark-handoff` and optional in the
+  verdict form; `--expect-clean` is a complete form needing no `--since`).
+  Verified against the real defect three ways — the charter, README and PLAYBOOK
+  copies each reverted and each driving it red at its own file and line, restored
+  byte-identical — plus ten mutations of the check itself, each named with the
+  case it drove red (#111). **Four defects in the check were found by RUNNING it
+  on the correct tree before any mutation**, each of which would have condemned a
+  correct line; a pin that only ever ran against its own mutation would have
+  shipped all four.
+
+### Fixed
+
+- **Eleven shell-suite assertions could pass about a file that was not there
+  (#148).** Each proved a writer had appended nothing by comparing two reads of
+  the same file. With that file ABSENT both reads are the empty string and
+  `[ "" = "" ]` is true, so each certified a refusal about a ledger that was
+  never there — a passing value indistinguishable from never-having-measured.
+  Measured in an isolated tree: `ops-init.sh` mutated to skip the `VERDICTS.md`
+  copy (still exit 0) took the suite to 991/110 with eight of the eleven among
+  the PASSES; a second mutation (no `DECISIONS.md`) covers two more, and the
+  eleventh passes there honestly because an earlier case's append creates the
+  file. Replaced with four helpers that assert the precondition and compare with
+  `-eq`, which errors on an empty operand where `=` succeeds — the same property
+  that made the two pre-existing `-eq` sites fail closed for free. An absent
+  precondition is a FAILED check that NAMES the missing file on stderr. Each
+  helper carries BOTH controls: refuse the absent file AND accept the present
+  unchanged one, since a helper that refused everything would pass a
+  refusal-only control set while failing every real call site.
+
+### Changed
+
+- `FLOOR_shell` 1101 → 1112 and `FLOOR_python` 397 → 411, with the measurements
+  in `tests/floors.env`.
+- CLAUDE.md gained two coupling rows and lost its `## Procedure` section, whose
+  two pointers duplicated what `## Provenance` and `## Landmines` already said.
+
 ## [0.11.16] - 2026-09-19
 
 Closes #112 — the first check in this project written by an agent that could not read
