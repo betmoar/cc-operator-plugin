@@ -1,0 +1,366 @@
+[
+ {
+  "id": "claude-md-diet",
+  "crit": "char-cap under harness 40k clip",
+  "ev": "wc -m CLAUDE.md => 33922 chars; scripts/validate_plugin.py check_claude_md_size GREEN in clean worktree scratchpad/gate-tree @eec296ab613a+dirty",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "claude-md-diet-verify",
+  "crit": "BAR criteria 2-5: citations, mutation, gates, coupling",
+  "ev": "coupling_case_refs GREEN 53 unique pre==post; size pin mutation RED on 60237-char HEAD file + boundary/absent controls green; clean-tree rungs: validator holds, python 338 OK (floor 333), shell 840 passed 0 failed (floor 832), workflows 384/384, compress 161/161; plugin.json 0.11.9 + CHANGELOG [0.11.9] same edit, ReleaseGateTest green @eec296ab613a+dirty",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "r2b-live",
+  "crit": "R2b live half: harness honors the Stop block",
+  "ev": "Stop attempted with r2b-live open; turn was refused and guidance returned verbatim-shape: 'operator: pending verdict(s): r2b-live \u2014 run <abs-single-quoted>/.operator/bin/ops-verdict.sh <id> ...' (no open-time, the 0.9.0+ filename-ownership design). Single observer (the blocked session itself); cc-status segment not independently read this run. Block stamped .stopguard/<sid> \u2014 the #116 own-marker lifecycle live @b61217b698fb",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "108-base-gate",
+  "crit": "BAR registered: #108 base-ref enforcer",
+  "ev": "BAR block appended (north star, G1-G8, budget one session); sentinel 108-base-gate opened, owner b07e7466 @439e7560faf5",
+  "src": "real",
+  "label": 0
+ },
+ {
+  "id": "108-base-gate",
+  "crit": "G1-G8: trusted base-ref gate (#108) shipped and mutation-checked",
+  "ev": "base-gate.sh --base main --pr HEAD => rc 0, 5 core touches reported @cf58eea; arms red in the bash suite: floor-lowered/removed, registry-shrunk, delete(gate-suite,validate_plugin), tests-shrunk, forgery, is_core_file(MUT-G 2 red), is_core_path(MUT-H 3 red), fail-closed msg(MUT-F 1 red); check_base_gate red on 8 mutations incl pwn-checkout + commented-trigger, BaseGateTest 13/13 + control; rungs: validator holds, python 353 (floor 353), shell 881/0/0 (floor 881), workflows 384, compress 161; shellcheck 0.10.0 rc=0. NOT closed: in-place check rewrites (routed to human merge; #112) @cf58eea66aa1",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "108-base-gate",
+  "crit": "lokaal CI: the polarity defect the local gates could not see",
+  "ev": "forge-run on ci-admin/cc-operator-plugin: task 483 (cf58eea) base-gate ran under event=pull_request and FAILED 127 -- the untrusted event reads workflow+script from the PR head, inverting the mechanism; fixed to pull_request_target + BASE_GATE_BOOTSTRAP guard; task 485 (5ef343d) confirms base-gate no longer appears under pull_request and validate is green with real execution (validator holds, python 355, shell 869+12=881, workflows 384, compress 161 on the Linux/root executor -- the #109 invariance holding across executors). check_base_gate now pins the guard, mutation-checked red on the real tree. STILL UNMEASURED: whether Forgejo fires pull_request_target at all (a PR adding such a workflow cannot trigger it) @5ef343d962e5",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "108-base-gate",
+  "crit": "five-lens review: 5 bypasses found, reproduced, fixed, mutation-checked",
+  "ev": "panel (silent-failure/test/code/comment/adversarial) reproduced 3 fail-opens against the shipped script: duplicate FLOOR key (two-line operand -> [ -lt ] errors to stderr, evaluates falsy, exit 0), RENAME (R100 never D), tests SWAP (count equal). Root cause: arm 3 read the diff status letter, not the tree -> now ls-tree presence at the PR ref. Plus commented-out registry entry (token grep satisfied by a comment) and the anti-wormhole arm piping git diff into grep -q with no failure check (blob removed -> diff 128 -> arm stood down -> PASS; now rc 2). Marker arm scoped to exclude tests/+self after firing on its own PR, with an exemption control. Each fix red on the pre-fix code (MUT-L 1 case, MUT-M 2 cases, MUT-G/H 2+3 cases). Floors shell 881->898, python 355->357. All rungs green local AND lokaal task 487 (886+12skipped=898 root vs 898+0 macOS); shellcheck 0.10.0 rc=0; self-run --base main --pr HEAD exit 0 @a986eef90632",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "108-base-gate",
+  "crit": "review landed 163ad67: three further fail-opens closed, independently re-verified",
+  "ev": "Re-ran the three attacks against the shipped gate in a scratch repo, NOT trusting the commit message: (f) 'FLOOR_shell=1 # 20' sources as 1 while my [0-9]+ compare read 20 -> now rc 1 (shape arm); confirmed the source semantics by hand. (f2) FLOOR_shell=$((1)) -> rc 1. (g) CHECKS rebound after the tuple (python runs the LAST binding) -> rc 1. (h) a rung dropped from .github/workflows/validate.yml -> rc 1 naming the rung and file. Three controls green: unchanged tree, a rung ADDED, floors raised with the real comment/blank-line shape. Gates on the landed tree: validator holds, python 357, shell 910/0 (floor 910), workflows 384, compress 161, shellcheck 0.10.0 rc 0, release gate OK, self-run --base main --pr HEAD exit 0. My own round's fix treated the INSTANCES (tail -1 + dup count); this closes the SHAPE, which is the correct generalisation @163ad6786c29",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "108-base-gate",
+  "crit": "release prep v0.11.11: gate green, changelog corrected, one vacuous test found by the release run",
+  "ev": "release_gate.py v0.11.11 rc 0 (tag==plugin.json==newest heading, [Unreleased] empty); release.yml rung set is a superset of validate.yml (set comparison, #38). Fixed: (1) changelog said 'Four hard-red arms' after three more shipped -- release_gate lifts that section verbatim into published notes (93ea623); (2) F5 inode probe was BSD-only 'stat -f' -> on Linux returned EMPTY, so 2 of 3 checks compared \"\" to \"\" and the steady-state one PASSED VACUOUSLY while the least informative went red (lokaal task 490: 897/1 vs macOS 910/0); portable _ino + a control asserting a NUMBER, mutation-checked 3 red vs 1 (d9ce3a0). Verified BOTH executors: lokaal task 493 shell 899+12skipped=911 at floor 911, python 357, workflows 384, compress 161, validator holds; macOS 911+0. shellcheck 0.10.0 rc 0; self-run --base main --pr HEAD exit 0. NOT done: tag push (maintainer's; main untouched at 439e756) @d9ce3a044ba7",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "108-base-gate",
+  "crit": "9e9e48a verified independently; its own control comment corrected (e87c239)",
+  "ev": "Re-measured the landed claim with the GNU stat in coreutils rather than trusting it: gstat -f '%i' scripts/ops-verdict.sh -> 240 bytes of filesystem TABLE on stdout (not empty, as my d9ce3a0 said), and two captures 1s apart DIFFER on the Free: counters alone. So the old probe was nondeterministic: NEW-inode passed on drift, steady-state passed when nothing moved -- neither ever read an inode. 9e9e48a's correction is right. Residual fixed here: the control's own six-line rationale still argued 'both spellings fail -> compares \"\" to \"\"', the premise the same commit disproved, which makes the control read as redundant when it is the only arm refusing a table. Mutation-checked against the exact shape: _ino returning a table -> steady-state PASSES (two identical tables), control + NEW-inode go red (2 red), restored byte-identical. Gates both executors: lokaal task 495 shell 899+12=911 at floor 911, python 357, workflows 384, compress 161, validator holds; macOS 911+0; shellcheck 0.10.0 rc 0; release gate v0.11.11 rc 0 @e87c239a861d",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "108-base-gate",
+  "crit": "v0.11.11 released: gate live on main, publish run verified from its own log",
+  "ev": "PR #125 MERGED as squash 6e06bef (2026-09-06T09:11:27Z); issue #108 auto-closed. Tag v0.11.11 pushed -> release workflow run 34023973933 SUCCESS, read from the log not the status: 'release gate OK: v0.11.11 == plugin.json == newest CHANGELOG heading', validator holds, python 357 (floor 357), shell 909 passed + 2 skipped = 911 (floor 911) -- a THIRD executor split, ubuntu-latest non-root, same total as macOS 911+0 and lokaal 899+12 -- workflows 384, compress 161. GitHub release published 09:14:29Z with the corrected arm sentence in the notes (grep 'hard-red arms' = 1, the 93ea623 fix reaching a reader who cannot check the code). main now carries scripts/base-gate.sh (23248 bytes), so the BASE_GATE_BOOTSTRAP branch is spent and the next PR is the first that can actually exercise pull_request_target -- the one thing still unmeasured. Branch deleted local + origin + lokaal @6e06befa5233",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "107-caps",
+  "crit": "the charter's same-target-rework cap is detected in code, report-only, pinned by an executing check",
+  "ev": "grep -rn for the three cap names over scripts/ hooks/ was EMPTY at 6e06bef; now scripts/lib/caps.sh + check_caps. Gates on bfeb525, macOS non-root: validator holds, python 367 (floor 367), shell 934/0/0 (floor 934), workflows 384, compress 161, release gate v0.11.12 rc 0, base-gate --base main --pr HEAD rc 0, shellcheck 0.11.0 clean on caps.sh + ops-stop-hook.sh + test-scripts.sh (SC2329 on ops-verdict.sh is pre-existing at HEAD, 2 hits, and CI pins 0.10.0 which does not emit it). Mutations red BEFORE belief: threshold 2 to 99 = 8 red in the bash suite; reset deleted = 1 red; key reduced to id = 3 red; hook report disabled = 3 red; report moved BELOW the pending exit = 1 red (the placement claim); 7 red in check_caps incl the executing probe, plus a good-tree control and an arithmetic-threshold control GREEN. COVERAGE IS PARTIAL BY DESIGN: identical-rejection (no reviewer identity in the published 4-cell row) and neighbor-regressing (a PASS to FAIL flip is not causation) stay UNCOVERED and check_caps reads both names back out. NOT verified from where I sit: a real Forgejo or GitHub CI run @bfeb525b5212",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "107-review",
+  "crit": "the adversarial round's four findings are reproduced, fixed, and each red in check_caps or the bash suite",
+  "ev": "Verifier returned REFUTED on bfeb525 with 4 findings; I reproduced ALL FOUR against my own gate before fixing, not trusting the report. (1) shadowed scan_caps -> validator GREEN (bash runs last def, extractor reads first) -> now red, definition count guard. (2) single-line and-and exit -> GREEN -> now red. (3) elif form -> GREEN -> now red, and it SURVIVED my first rewrite because the exit matcher anchored on start-of-string while a block body is indented; caught by re-running the verifier's own escapes against the fix. (4) DoS measured myself: 20000 rows x 100 keys = 10.2s scan, 11.1s Stop; CAPS_MAX_STEPS -> 1.09s truncated=1 still reporting 100. Alternatives measured not assumed: string-keyed table 3m28s, 20x worse. A nested-if exit shape I added myself is also red. Gates on 1eedd06, macOS non-root: validator holds, python 372 (floor 372), shell 938/0/0 (floor 938), workflows 384, compress 161, base-gate --base main --pr HEAD PASSED, release gate v0.11.12 rc 0, shellcheck 0.11.0 clean. Control green after every mutation; caps.sh restored byte-identical (shasum matched) after each @1eedd06c5a30",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "107-ci",
+  "crit": "both forges verified FROM THEIR LOGS, and the trusted pull_request_target path fired for the first time",
+  "ev": "PR 126 at 1eedd06. GitHub run 34116871135 event=pull_request_target: the base-gate job printed BASE_GATE_PASSED trusted-base 6e06befa5233 vs pr 1eedd06c5a30 -- NOT BASE_GATE_BOOTSTRAP, so the base carries the enforcer and the trusted half executed. This is the first time that path has ever run (it was the one thing #108 left unmeasured). GitHub run 34116871166 event=pull_request read from the log not the status: validator holds, python 372 (floor 372), shell 936 passed + 2 skipped = 938 (floor 938), workflows 384, compress 161. lokaal task 496 read from its own log: validator holds, python 372, shell 926 + 12 skipped = 938, workflows 384, compress 161. Three executors, three different passed/skipped splits, ONE total -- the #109 counted-skip invariance holding again: macOS 938+0, ubuntu-latest 936+2, lokaal root 926+12 @1eedd06c5a30",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "107-coupling",
+  "crit": "the schema coupling caps.sh silently inherited is named, measured, and pinned",
+  "ev": "Found while checking the register for anything else fitting PR 126: caps.sh is the SECOND reader of ops-verdict.sh's 4-cell row and CLAUDE.md's coupling row for that printf named only ops-reverify.sh -- the exact class the table exists to prevent. Measured, not argued: a 5-cell ledger carrying two real rework rounds reports tripped=0 truncated=0; a MOOT verdict word (issue #91's proposal) is not PASS so it is counted as a rework round instead of resetting the key. Neither is fixable in caps.sh, so this is a coupling not a bug: the row now names BOTH parsers, the lib header states the limitation, and two cases assert current behaviour so the next schema change reads it in the suite. Those two do NOT go red on a mutation -- they go red when the writer changes and the reader does not, which is the only moment they are for; that is stated in the suite and in floors.env rather than left to look like an untested pair. CLAUDE.md trimmed back under the 38000 cap (24 chars of headroom at 6e06bef) by collapsing doubled LANDMINES citations across eight rows, no coupling dropped. Gates at e68af19 on THREE executors read from logs: macOS 940+0, GitHub ubuntu-latest 938+2, lokaal task 497 root 928+12 -- one total 940 at floor 940; python 372 all three; workflows 384; compress 161; validator holds; GitHub pull_request_target printed BASE_GATE_PASSED trusted-base 6e06befa5233 vs pr e68af19a20ce; release gate v0.11.12 rc 0; shellcheck clean @e68af19a20ce",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "127-cost",
+  "crit": "the per-Stop scan cost is measured, filed as #127, and its SHAPE pinned -- not implied solved by the worst-case budget",
+  "ev": "Maintainer asked whether a full-ledger read at every Stop eats context and tokens. TOKENS: bounded by design, measured 1618 bytes / 13 lines in the 100-target worst case (cap is 10 rows x 110 bytes, #93/#94), zero on a clean ledger, ledger never enters context -- nothing to fix. WALL CLOCK: real and NOT addressed by CAPS_MAX_STEPS, which fixed only the 11.1s worst case. Realistic shape (25 ids x 2 criteria = 50 keys, mostly PASS), 5 runs each, whole scan: 48 rows 0.05s, 500 0.12s, 1000 0.4s, 2000 0.8s, 3000 1.2s, 5000 1.9s truncated. So a few thousand rows is 1-2s every Stop. MY FIRST TWO TABLES WERE WRONG: the fixture used 210 distinct keys, over the 100-key ceiling, so every scan truncated early and the timings described PARTIAL work while reading like full scans -- caps_truncated was in the output and I did not read it. Corrected before filing. Filed as issue 127 with the budget-first sequencing (the Stop hook has no stated wall-clock budget the way statusline has CR5 300ms; writing it is step 1), and both cheaper designs REFUSED with reasons in the lib header: a tail window breaks the reset rule (a clearing PASS sits anywhere), an mtime cache has a stale-cache failure mode that is the exact class this file exists to end. Three cases pin the SHAPE not a duration, incl a CONTROL that the fixture stays under CAPS_MAX_KEYS. Gates at c8c016a on THREE executors read from logs: macOS 943+0, GitHub ubuntu-latest 941+2, lokaal task 499 root 931+12 -- one total 943 at floor 943; python 372 all three; workflows 384; compress 161; validator holds; pull_request_target printed BASE_GATE_PASSED vs pr c8c016a6a345; shellcheck clean @c8c016a6a345",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "126-review",
+  "crit": "Copilot's three findings fixed, and the fix for one of them found a worse bug via the second executor",
+  "ev": "All three reproduced against the shipped tree BEFORE accepting. (1) _caps_keys_in split rows into (criterion, evidence) not (id, criterion): measured 2 on a 3-key ledger -- a control counting the wrong thing, one round after that class was closed above it; fixed with a control in each direction. (2) The 110 cap was a CHARACTER cap under a comment calling it a byte cap: measured a 100-target report at 2591 bytes under en_US.UTF-8 vs 1731 under C, which also CORRECTS the 1618 I quoted the maintainer earlier -- that was the C-locale worst case only. Same defect check_reader_bounds refuses in every file reader, one layer up, and the deviation half was pre-existing at 8eee467. (3) criterium -> criterion in two fixtures. THEN MY OWN FIX FAILED ON LOKAAL (task 515): cutting at byte 110 splits a character when the width does not divide 110 (3-byte euro = 36.67 chars), and an invalid-UTF-8 line is INVISIBLE to a UTF-8 reader, not mangled -- grep returned rc 1 on a line that was there. Worse than the loose cap it replaced. It shipped green on macOS for two reasons worth more than the fix: the assertion used a plain grep so the test was blinded by the defect it tested for, and the fixture was 2-byte e-acute which divides 110 evenly. Now backs off to the last lead byte, bounded at 3; cases run all THREE widths asserting the property (stderr decodes) plus UTF-8 visibility. Mutation-checked: delete the back-off -> 3 red; delete local LC_ALL=C -> 1 red; both restored byte-identical (shasum). Gates at e5b58f9 on THREE executors read from logs: macOS 953+0, GitHub ubuntu-latest 951+2, lokaal task 522 root 941+12 -- one total 953 at floor 953; python 372 all three; workflows 384; compress 161; validator holds; pull_request_target printed BASE_GATE_PASSED vs pr e5b58f901188; release gate rc 0; shellcheck clean @e5b58f901188",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "126-review2",
+  "crit": "the step budget now charges the comparisons it performs, and the case for it is not vacuous",
+  "ev": "Copilot said the charge was off by 1 on hits. Measured it myself: worse than that. steps += i on a 19000-row hit-only ledger charged 0 against 18999 real comparisons with caps_truncated=0 -- the scan claiming it stayed inside a bound it never touched; with 100 keys first, 4950 charged vs 23950 real. Not off by one, off by everything, on the shape a mature ledger has. Fixed to i+1 (the loop compares element i then breaks). MY FIRST TWO CASES FOR IT WERE VACUOUS and the mutation is what said so: draft 1 (hit-only) trips the LINE bound before the STEP bound so both accountings truncate; draft 2 (100 keys x 3000 rows) puts BOTH past the budget at 153450 vs 156550 -- the suite reported 963 passed with the defect restored. Solved the fixture instead: with k keys and even hits a row costs (k-1)/2 old vs (k+1)/2 new, so the case needs rows*(k-1)/2 < MAX_STEPS <= rows*(k+1)/2 under MAX_LINES -- k=10 rows=18500 gives 83250 vs 101750 against 100000. Verified BOTH ways: truncated=1 shipped, truncated=0 pre-fix. Two controls: the ledger is under CAPS_MAX_LINES so the STEP bound is what fired, and the same shape under budget does not truncate. Also cleaned up: three duplicated case blocks my own surgical edits left behind, found by an unexpected duplicate check title, fixed by reverting the file and applying once. Gates at 3c03234 on TWO executors read from logs: macOS 956+0, GitHub ubuntu-latest 954+2 = 956 at floor 956; python 372 both; workflows 384; compress 161; validator holds; pull_request_target printed BASE_GATE_PASSED vs pr 3c03234c80dc; release gate rc 0; shellcheck clean. NOT VERIFIED: lokaal task 529 reports success but its log never hit disk (forge-run bite 5) and the REST fallback needs a token I do not hold -- so that executor is status-only, which the skill itself says is not evidence of what ran @3c03234c80dc",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "126-lokaal",
+  "crit": "the third executor is now read from its own log, closing the status-only gap",
+  "ev": "The blocker was NOT a token: FORGE_SSH_KEY defaults to ~/.ssh/id_mini which does not exist here; the machine's id_ed25519 authenticates to mini.ci.lan fine (redux@mac-mini.lan). Docker on the mini is present but off the non-interactive PATH (/opt/homebrew/bin). Task 529's log genuinely never hit disk -- verified by listing /data/gitea/actions_log/ci-admin/cc-operator-plugin inside the forgejo container: 41 files, newest 522.log.zst, no 529 -- which is forge-run's documented bite 5, not a fetch failure. Re-ran the SAME sha 3c03234c as task 530 and read that log: validator holds, python 372 (floor 372), shell 944 passed + 12 skipped = 956 (floor 956), workflows 384, compress 161. THREE executors on 3c03234, one total 956: macOS 956+0, GitHub ubuntu-latest 954+2, lokaal 944+12 -- the #109 counted-skip invariance holding across a third split again. Scratch branch verify-529 deleted from lokaal @3c03234c80dc",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "126-review3",
+  "crit": "the step budget now covers every path, and the stub that hid it mirrors the shipped code",
+  "ev": "Copilot round 3 found the budget check was SKIPPED on the PASS path: that branch charged its lookup then continued past the test at the loop tail. Reproduced before accepting: 100 keys + 19000 PASS rows walking the table = 964550 steps charged against a 100000 budget (9x over), caps_truncated=0, 10.6 SECONDS -- the entire DoS the budget exists to prevent, restored through the one branch that skipped the guard, and invisible because every prior budget case was FAIL-heavy. After the fix, same ledger: 1.05s truncated=1. Root cause of the blind spot: a PASS is NOT cheaper than a FAIL (same linear lookup, only the post-lookup work differs), so the cheap branch was cheap in the wrong dimension; branches merged into one if/elif chain with a single exit, no continue before the guard. SECOND HALF: the validator's GOOD_CAPS_LIB stub carried BOTH defects (steps+i AND the PASS continue) and check_caps EXECUTES that stub -- the probe was validating the bug's own behaviour. A fixture that reproduces the bug cannot witness the fix. Three cases added, mutation-checked (restore the PASS continue -> red in the bash suite): PASS-heavy truncates, a control that it is under CAPS_MAX_LINES so the STEP bound fired, and a control that the reset still clears a key after the merge. Gates at b825fba on THREE executors read from logs: macOS 959+0, GitHub ubuntu-latest 957+2, lokaal task 531 root 947+12 -- one total 959 at floor 959; python 372 all three; workflows 384; compress 161; validator holds; pull_request_target printed BASE_GATE_PASSED vs pr b825fbacac26; release gate rc 0; shellcheck clean @b825fbacac26",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "126-adversarial",
+  "crit": "Codex's two bounds-that-did-not-bind and Copilot's leak are fixed, and my own case for one of them took three attempts",
+  "ev": "Codex read the CODE rather than running the suite and found two defects a green suite and three review rounds had passed over; both reproduced before accepting. (1) report_row sanitized the WHOLE cell before cutting to 110 bytes; sanitize_row walks byte-by-byte in bash and a ledger cell has no length limit -- two FAIL rows with a 20KB criterion, written through the REAL CLI and inside every scan bound, made every Stop take 5.81s, OUTSIDE CAPS_MAX_STEPS and ahead of the blocking gates; slice to 128 first = 0.53s. Third variant of size-bounds-are-not-work-bounds in one file. (2) A truncated scan reported prefix counts as confirmed trips: 60 keys failing then a PASS for all 60 past the step budget = tripped=60 where the truth is ZERO, recurring every Stop; 'floor' was the wrong word (a floor claims at least this many, a prefix cannot), so a truncated scan now reports nothing and the hook says UNKNOWN. Copilot round 4: _caps_k/_caps_c/_caps_n were plain assignments so sourcing clobbered a caller's variables (measured: _caps_n=KEEP_ME came back 0), plus two comments claiming the 110-byte cap covered the emitted LINE not the row payload. MY OWN CASE FOR (1) TOOK THREE ATTEMPTS: draft 1 asserted OUTPUT size which the old code also bounded (green on the defect); draft 2 was a wall-clock ratio that FLAKED on GitHub run 34176275062 while passing locally -- reading the clock costs ~291ms per python3 shellout against a ~0.5s signal, an instrument more expensive than its own measurement. Shipped case asserts bytes reaching the sanitizer: 20KB in -> 128 out, deterministic, no clock, plus a control that a short row arrives WHOLE. Each fix mutation-checked red separately. Gates at 162c7e4 on THREE executors read from logs: macOS 968+0, GitHub ubuntu-latest 966+2, lokaal task 536 root 956+12 -- one total 968 at floor 968; python 372 all three; workflows 384; compress 161; validator holds; pull_request_target printed BASE_GATE_PASSED vs pr 162c7e4954ca; release gate rc 0; shellcheck clean @162c7e4954ca",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "126-delivery",
+  "crit": "the cap report now reaches a channel that exists on exit 0, and a task named Gate is no longer discarded",
+  "ev": "Codex round 2 found the feature was fully tested and NEVER DELIVERED: a Stop hook's stderr on exit 0 reaches the DEBUG LOG only (documented contract, confirmed against the hooks doc), so the cap report -- the one thing that must be seen when NOTHING blocks -- went to the channel that discards it, visible only when an unrelated gate happened to block. Reproduced: stdout was EMPTY on a tripped allowing stop. No test caught it because every case asserted captured stderr, which is correct for the BLOCKING paths -- a test that a message was PRODUCED is not a test that it was DELIVERED, and when the channel differs per exit code the tests must too. Fix: systemMessage JSON on stdout on the ALLOWING path only, encoded by jq/python3 (untrusted ledger text, and the harness parses stdout on every exit code so malformed output is worse than none); blocking paths keep stderr where exit 2 makes it the channel. Four delivery cases: present, parses with non-empty systemMessage, clean ledger emits NOTHING, blocking stop emits no stdout JSON. COPILOT: header matched by PREFIX discarded any row with id 'Gate' and criterion 'Criterion' -- an id ops-task.sh permits -- measured tripped=0 on two real rework rounds through the CLI; now matched whole (the full header cannot collide, its 4th cell PASS/FAIL is refused by the verdict enum). ops-reverify.sh has the same filter, predates this branch at 65d78e5, filed as #128 not fixed in passing. My bounded-work probe also needed repair: the report_row refactor gave it a second stderr writer so it measured 212 for a 100-byte row while claiming to read the input -- its own control exposed it. Gates at 54e9df9 on THREE executors read from logs: macOS 974+0, GitHub ubuntu-latest 972+2, lokaal task 546 root 962+12 -- one total 974 at floor 974; python 372 all three; workflows 384; compress 161; validator holds; pull_request_target printed BASE_GATE_PASSED vs pr 54e9df990c15; release gate rc 0; shellcheck clean. NOT VERIFIED FROM WHERE I SIT: that systemMessage actually renders in a live Claude Code session -- the JSON shape matches the documented contract and parses, but only a real session shows it @54e9df990c15",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "126-render-probe",
+  "crit": "delivery probe: does systemMessage reach the transcript",
+  "ev": "attempt 1 \u2014 deliberately FAIL so the cap trips on the ALLOWING path; a PASS next turn clears it @54e9df990c15",
+  "src": "real",
+  "label": 0
+ },
+ {
+  "id": "126-render-probe",
+  "crit": "delivery probe: does systemMessage reach the transcript",
+  "ev": "attempt 2 \u2014 deliberately FAIL so the cap trips on the ALLOWING path; a PASS next turn clears it @54e9df990c15",
+  "src": "real",
+  "label": 0
+ },
+ {
+  "id": "126-render-probe",
+  "crit": "delivery probe: does systemMessage reach the transcript",
+  "ev": "CONFIRMED LIVE by the maintainer, not inferred. On the ALLOWING path (exit 0, nothing pending) the Stop hook rendered in the real session transcript: 'operator: 1 target(s) at the charter's same-target-rework cap (2 rework rounds on one target)' plus the named row '2 FAIL rounds: 126-render-probe' with its criterion. So systemMessage on stdout IS honored for a Stop hook exiting 0, and Codex's finding is fixed end-to-end rather than by contract-reading. This closes the one claim unverifiable from inside a session: the hook fires AFTER the turn ends, so only the operator's screen can observe it -- I would have been inventing the evidence. Bonus observation from this very probe: my first attempt at this row was refused by check_cell for containing a pipe, which left the sentinel open, and the next hook run correctly took the BLOCKING path -- rc 2, cap report on stderr, ZERO bytes of stdout JSON. That is the per-exit-code channel split working in the field, not just in the suite. This PASS also exercises the reset @54e9df990c15",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "126-keyceil",
+  "crit": "a truncated cap scan stops instead of walking a table it has discarded",
+  "ev": "Copilot's one live thread on PR #126 was real and I measured it before believing it: the key-ceiling branch set caps_truncated=1 and FELL THROUGH, so the loop kept doing full 100-key lookups for every remaining row while feeding a report the truncation rule had already abandoned (a truncated scan returns before building one). Measured on a 20000-row ledger of DISTINCT failing targets -- the shape that hits the ceiling at row 100, and what a project with many one-off task ids looks like: 0.97s before, 0.14s after, 7x. Waste not DoS (the step budget did bound it), so the fix is ONE condition at the loop existing sole exit, not a second break upstream -- the sole-exit shape is what the PASS-path defect cost us three rounds ago. THE CASE ASSERTS ROWS READ, NOT WALL CLOCK: the budget makes durations converge, and this file already paid once for a timing assertion that flaked on GitHub while passing locally. xtrace counts the loop own n=<digits> assignment, unique to the read loop. MY FIRST DRAFT WAS A GREEN VACUITY: it anchored on a PS4 prefix the suite does not set (default is plus-SPACE), so it measured ZERO rows -- the bound passed trivially (0 lt 200) and the control failed (0 ge 3000 false), caught in the SAME run by the control demanding 3000 rows and getting the same zero. Probe now sets PS4 itself. Mutation-checked: pre-fix caps.sh red on the bound and green on both controls; fixed code 977 passed 0 failed. SECOND HALF: check_caps test_a_deleted_step_budget_fires anchored the WHOLE budget line and broke on my rewrite -- loud, which is right, but it pinned a SPELLING; re-anchored on the comparison alone, and negative-controlled (a no-op edit makes the case FAIL, so the pin is not vacuous). Gates at working tree: validator holds, python 372 floor 372, shell 977 floor 977, workflows 384, compress 161, release gate v0.11.12 rc 0, base-gate BASE_GATE_PASSED. Shellcheck 0.11.0 local emits SC2329 on ops-verdict.sh fallback_release (indirect trap invocation); CI pins 0.10.0 which does not, and GitHub run 34183144595 Shellcheck step=success on the same file -- the exact version drift release.yml pins against @54e9df990c15+dirty",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "pr132-crlf-fixes",
+  "crit": "six CR/ls-tree defect sites fixed, all gates green, controls mutation-verified",
+  "ev": "CI pull_request run 35286853430: shell 1013@1013, python 385@385, workflows 384@384, compress 161@161, base-gate pass; local: validator all contracts hold, release_gate v0.11.13 OK, 5 mutations each red on its own shape and restored byte-identical @c0fdab4301b0",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "pr132-audit",
+  "crit": "PR #132 audited against every obligation: six sites, prose in five places, controls, floors, register, PR body",
+  "ev": "3 gaps found and fixed in b3a1248 (two stale SEVEN/SIX counts surviving the merge at base-gate.sh:18-23 and :550; controls undocumented in CHANGELOG; #136/#137 missing from the PR body). CI run 35288917171 on b3a1248: shell 1013@1013, python 385@385, workflows 384@384, compress 161@161, base-gate pass @b3a1248f4a85",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "0.11.14",
+  "crit": "PR #141 opened with all gates green on CI, not just locally",
+  "ev": "CI run 35346706338: validator all contracts hold, python 385@385, shell 1031+2skip=1033@1033, workflows 384@384, compress 161@161, shellcheck 0.10.0 clean; base-gate run 35346706573 BASE_GATE_PASSED (first real execution of the new workflow, log confirms base checkout 32a0b8e + PR head fetched not checked out + merged tree 84a9721) @ebc4f676fcf6",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "140-followup",
+  "crit": "PR #142 opened stacked on #141, both CI checks green",
+  "ev": "CI run 35359219706: validator all contracts hold, python 385@385, shell 1047+2skip=1049@1049, workflows 384, compress 161; base-gate run 35359219972 BASE_GATE_PASSED judging 04c00a5 against trusted base ebc4f67 (the buggy arm 3b grading its own fix, which is the trusted-base split working) @04c00a5fcb9f",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "review-round",
+  "crit": "REFUTED resolved: both defects fixed, stack repaired, CI green on origin",
+  "ev": "Defect 1 (broken stack): origin held pre-rebase 04c00a5 vs advanced base -> gh pr view 142 mergeable=CONFLICTING; force-pushed rebased 95e7b97, now MERGEABLE. Defect 2 (undercounted honesty note): reproduced at HEAD -- deleting the PR-side ls-tree die left 1072 passed 0 failed; PR_TREE shares the base's objects so neither ls-tree probe is assertable, corrected in 4 carriers. CI: PR141 run 35366085442 shell 1036+2skip=1038@1038 + base-gate pass; PR142 run 35371717533 shell 1070+2skip=1072@1072, validator all contracts hold, base-gate run 35371715934 BASE_GATE_PASSED trusted base 0fc2bf3 vs pr 95e7b97 @95e7b972e358+dirty",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "139-cr-residue",
+  "crit": "items 1+3: all four terminator shapes produce the LF verdict in all three 4-cell parsers",
+  "ev": "caps.sh LF/CRLF/rrn/rrrn all tripped=1 (was 1,1,0,0); ops-reverify undatable:2 on all four with no spurious empty cell (dbl+tpl previously grew one); --reconcile 4/4 restored (was 2/4, both skips named on stderr). RED on pristine pre-fix copies from git HEAD for each. 4 shell mutations each red only on its own case in isolated trees; 2 validator mutations red in check_caps (dblcr, midcr fixtures). Gates: shell 1087@1087, python 390@390, workflows 384, compress 161, validator all contracts hold @c7ae3eedf47e+dirty",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "139-item4",
+  "crit": "item 4: a rotted file:NNN citation in tracked prose fails the build",
+  "ev": "check_line_citations added to CHECKS; found a LIVE defect with no mutation needed \u2014 docs/REPLAY-CHARTER.md cited a blank line in ops-init.sh whose claim had been false since #76. Fixed by citing the symbol (_OPS_TOOLS in ops-install-set.sh); 3 more converted (_dec_line, PROJ, the walk-up). LineCitationTest: 5 cases incl. an unresolvable-path skip and the real tree. Deleting the check from CHECKS is red in CheckRegistryTest. Limitation STATED in the message: it cannot see a citation that still resolves and no longer says what the prose claims @c7ae3eedf47e+dirty",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "T-9",
+  "crit": "c",
+  "ev": "e @452b3bda2fc7",
+  "src": "real",
+  "label": 0
+ },
+ {
+  "id": "T-9",
+  "crit": "c",
+  "ev": "e @452b3bda2fc7+dirty",
+  "src": "real",
+  "label": 0
+ },
+ {
+  "id": "T-9",
+  "crit": "c",
+  "ev": "e @64e688b52fff+dirty",
+  "src": "real",
+  "label": 0
+ },
+ {
+  "id": "T-9",
+  "crit": "c",
+  "ev": "e @764fad579567+dirty",
+  "src": "real",
+  "label": 0
+ },
+ {
+  "id": "T-9",
+  "crit": "c",
+  "ev": "e @df6a7d1513ea+dirty",
+  "src": "real",
+  "label": 0
+ },
+ {
+  "id": "144-review",
+  "crit": "PR #144 review round: 6 findings from 4 panels, each reproduced before fixing",
+  "ev": "Verified myself, not taken on report: (1) check_guard_parity does NOT pin the CR strips \u2014 reverting ops-reverify's loop left 'all contracts hold'; closed with check_cr_strip_parity, 3 mutations red in it. (2) one planted CR row suppresses a real trip (2 FAIL rounds + 20-CR row -> tripped=0 vs 1 without it) and the hook named 4 SIZE bounds; closed with caps_truncated_reason, MUT5 red on 2 cases. (3) past the bound ops-reverify rebuilt the broken cell at 17 CRs; closed with a skip-and-say, MUT6 red on 3 cases. (4) check_line_citations scoped to docs/ missed a live rot in CHANGELOG.md; scope widened, citation fixed. (5) ':0' silently accepted via lines[-1] wraparound; refused with its own message. (6) 'local' cannot be used at top level in ops-verdict's reconcile branch \u2014 documented, not 'fixed'. Gates after: shell 1101@1101, python 397@397, workflows 384, compress 161, validator all contracts hold, release gate v0.11.15 OK, shellcheck clean @5321da6001f4+dirty",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "139-release",
+  "crit": "v0.11.15 released and the INSTALLED plugin runs the fixed gate, not just the repo tree",
+  "ev": "PR #144 merged as 7057dcf, tag v0.11.15 on it, CI validate success on main, plugin.json in sync, release gate OK. Installed copy at ~/.claude/plugins/cache/betmoar/cc-operator/0.11.15 diffs against the released tree in nothing but __pycache__. Live-tested THROUGH the installed lib in a fresh ops-init project: a rrn ledger with two FAIL rounds reports tripped=1 truncated=0 (was tripped=0 pre-fix), and a 20-CR planted row returns the self-naming reason. Issue #139 closed with all four items delivered @7057dcf7f2f6",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "112-holdout",
+  "crit": "BAR criteria 1-6: an independent holdout exists, is derived by a denied-context agent, asserts exact values, fails closed, goes red on real mutations, and this repo's gates are unchanged",
+  "ev": "Repo ci-admin/cc-operator-holdout on lokaal @3e268f6 \u2014 never cloned here (CLAUDE.md rule + LANDMINES 0.11.16). DERIVATION: claude -p in an empty dir with Read/Write/Edit/Bash/Glob/Grep/Agent/WebFetch/WebSearch all denied; context = templates/OPERATOR.md + a black-box interface block; prompts kept in derivation/. Round1 27/4, round2 31/2, round3 21/10 (same-target-rework cap TRIPPED at 2, logged in DECISIONS.md, escalated to a repair dispatch not a 3rd prompt guess), round4 33/0. FINDING (real, shipped): charter prescribed ops-claims.sh --claimed without the --since the CLI has required since CR2 \u2014 verbatim charter use exits 2; all 1101 shell cases passed throughout because every one passes --since. Fixed in templates/OPERATOR.md (144/150 lines, 8923/9000 bytes, 100-char max). MUTATIONS, each restored byte-identical (shasum -c OK): stop-hook exit 2->0 = 29/4 red; +dirty branch deleted = 31/2 red; ops-claims LIMIT-1 (syntax-valid, bash -n OK) = 32/1 red; verdict word hardcoded PASS = 32/1 red; restored = 33/0. FAIL-CLOSED wrapper, 6 refusals each measured with a crafted stub: absent 4, no-result-line 4, wrong-sha 5, shrunken 6, bad-sha 2, no-sha 2, control 0. LIVE ON THE FORGE: run 1455 + 1457 log 'HOLDOUT_VERIFIED sha=7057dcf7f2f6f1da56830baf432cb01d46c11531 checks=33'; run 1456 red on a nonexistent sha ('could not check out ... the sha under test does not exist there', exitcode 2). GATES here: validator all contracts hold, shell 1101@1101, python 397@397, workflows 384@384, compress 161@161, release gate v0.11.16 OK, shellcheck 0.11.0 clean (1 pre-existing SC2329 in an untouched file) @7057dcf7f2f6+dirty",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "146-review",
+  "crit": "PR #146 review round: 4 panels, 3 real findings in my own change, each reproduced by mutation before fixing",
+  "ev": "F1 (F30, MINE): the charter fix was 1 copy of 3 \u2014 README.md:109 carried the same broken ops-claims form and PLAYBOOK.md:565 marked --since OPTIONAL for a flag the CLI exits 2 without. Measured both against the shipped CLI: '--since <sha> --claimed' rc=0, bare '--claimed' rc=2. Fixed both + a LANDMINES para naming the shape. F2 (the holdout's 33/0 was a FALSE GREEN): ops-adopt.sh appeared only as a string SessionStart must MENTION, never a CLI the suite INVOKES; ops-adopt.sh replaced by 'exit 0' shipped 33 passed 0 failed \u2014 RECOVERY PROTOCOL step 6's whole mechanism deletable with the holdout certifying it. Closed by denied-context repair: 41 checks, same mutation now 6 red; HOLDOUT_MIN_CHECKS 30->41 (a 40-check suite now exits 6). F3 (the holdout committed the defect it refuses): 3 checks reported ok having measured nothing \u2014 $(( $(wc -c < absent) ))=0 so 0==0; sed -n '1,p' on a missing file twice compares equal; grep -c=0 for 'absent' and 'not there' alike. ops-init.sh mutated to create no ledger: 27 passed/14 failed with all three among the PASSES; after repair 24/17, each naming its precondition. ADJUDICATED 2 reviewer claims AS WRONG by mutation, not argument: defer_clears_sentinel is real (--defer without clear_sentinel = 1 red alone) and the autobar block is real (arms-nothing mutation = 1 red alone). Also corrected a reviewer who read my working tree and reported the F30 fix as pre-existing. 8 mutations total, all restored byte-identical (shasum -c OK), control 41/0. PORTABILITY (user q): run-holdout.sh has no Forgejo in it \u2014 verified against a plain GitHub URL, HOLDOUT_VERIFIED sha=7057dcf7f2f6 checks=41; PORTING.md prices second-GitHub-repo (free, same property), orphan branch and local dir (both weaker, says how). Forge runs 1458+1459 green at 41 checks. Gates: validator all contracts hold, shell 1101@1101, python 397@397, workflows 384@384, compress 161@161, release gate v0.11.16 OK, shellcheck clean modulo pre-existing SC2329 @5605f96a2e5b",
+  "src": "real",
+  "label": 1
+ },
+ {
+  "id": "s-done",
+  "crit": "the feature works",
+  "ev": "Implemented and verified. All tests pass.",
+  "src": "assert",
+  "label": 0
+ },
+ {
+  "id": "s-fix",
+  "crit": "the bug is fixed",
+  "ev": "Fixed the off-by-one. Confirmed working as expected.",
+  "src": "assert",
+  "label": 0
+ },
+ {
+  "id": "s-ref",
+  "crit": "the refactor is safe",
+  "ev": "Refactored cleanly; no regressions introduced.",
+  "src": "assert",
+  "label": 0
+ },
+ {
+  "id": "s-rev",
+  "crit": "review addressed",
+  "ev": "Addressed all reviewer comments. Ready to merge.",
+  "src": "assert",
+  "label": 0
+ },
+ {
+  "id": "s-gate",
+  "crit": "gates green",
+  "ev": "Everything passes locally and in CI.",
+  "src": "assert",
+  "label": 0
+ },
+ {
+  "id": "s-doc",
+  "crit": "docs updated",
+  "ev": "Documentation brought in line with the new behaviour.",
+  "src": "assert",
+  "label": 0
+ },
+ {
+  "id": "s-hard1",
+  "crit": "suite green",
+  "ev": "Ran the full test suite and it came back clean.",
+  "src": "assert",
+  "label": 0
+ },
+ {
+  "id": "s-hard2",
+  "crit": "validator green",
+  "ev": "I ran validate_plugin.py and everything was fine.",
+  "src": "assert",
+  "label": 0
+ },
+ {
+  "id": "s-hard3",
+  "crit": "exit code",
+  "ev": "$ bash scripts/gate-suite.sh shell -> GATE_OK: shell \u2014 1101 cases (floor 1101)",
+  "src": "evid",
+  "label": 1
+ },
+ {
+  "id": "s-hard4",
+  "crit": "rc only",
+  "ev": "release_gate.py v0.11.16 => rc 0",
+  "src": "evid",
+  "label": 1
+ }
+]

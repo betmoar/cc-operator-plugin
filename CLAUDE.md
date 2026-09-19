@@ -214,6 +214,8 @@ this is the always-on summary.
   hand-maintained prose with no validator pin — a message change in
   `ops-stop-hook.sh` or `ops-init.sh` means updating its quoted strings by
   hand.
+- **`docs/DECISION-ENGINE-PROBES.md`** — read BEFORE implementing #151/#152:
+  five surfaces probed live, the filter that decided them, the constraints.
 - **Audit handoffs are maintainer-local and never committed**, with one
   exception: `docs/audit-2026-08-09-handoff.md` (F67+) ships in-tree.
   `docs/audit-2026-07-31-handoff.md` has an empty `git log --all` despite
