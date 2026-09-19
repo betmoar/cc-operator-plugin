@@ -4475,6 +4475,17 @@ def check_claude_md_size(root, problems):
             f"in the row")
 
 
+# Where check_prose_invocations looks. A MODULE CONSTANT so a case can assert
+# the SELECTION and not merely the count: narrowing this to ["*.md",
+# "docs/**/*.md"] — the plausible "the *.md glob already covers everything"
+# edit — stops reading templates/OPERATOR.md, the file #149's defect shipped
+# in, and every case plus the real tree stayed green (measured). The `_MIN`
+# floor cannot catch it; it counts invocations, not which files produced them,
+# and the reduced set still cleared 15.
+_PROSE_ROOTS = ("*.md", "docs/**/*.md", "templates/*.md", "commands/*.md",
+                "agents/*.md", "skills/**/*.md")
+
+
 def _cli_flag_contract(path):
     """The flags a gate CLI ACCEPTS and the ones it REFUSES to run without,
     read off that CLI's own parser rather than catalogued here.
@@ -4593,10 +4604,18 @@ def check_prose_invocations(root, problems):
             "check_prose_invocations found NO readable CLI contracts — it is "
             "reporting green about a set it never read (#149)")
         return
-    _CITE = re.compile(r'(ops-[a-z-]+\.sh)([^`\n]*)')
+    # The tail stops at the NEXT CLI name, not just at a backtick. `finditer`
+    # yields non-overlapping matches, so a greedy tail swallowed the following
+    # invocation whole and broke BOTH halves at once (review of 5ab2597,
+    # reproduced): in `Run ops-verdict.sh and ops-claims.sh --since <sha>
+    # --claimed "<paths>"` — prose that is entirely correct — ops-verdict.sh
+    # was condemned for `--claimed --since`, flags it never took, while
+    # ops-claims.sh's own invocation was never examined at all because the scan
+    # position had already passed it. A false positive on one CLI and a false
+    # negative on the next, from one regex.
+    _CITE = re.compile(r'(ops-[a-z-]+\.sh)((?:(?!ops-[a-z-]+\.sh)[^`\n])*)')
     _FLAG = re.compile(r'--[a-z][a-z-]*')
-    _roots = ["*.md", "docs/**/*.md", "templates/*.md", "commands/*.md",
-              "agents/*.md", "skills/**/*.md"]
+    _roots = _PROSE_ROOTS
     files = sorted({p.relative_to(root).as_posix()
                     for pat in _roots for p in root.glob(pat) if p.is_file()})
     seen = 0
@@ -4632,6 +4651,43 @@ def check_prose_invocations(root, problems):
                 accepted, forms = contracts[cli]
                 flags = set(_FLAG.findall(m.group(2)))
                 if not flags:
+                    # A FLAGLESS prescription is still a prescription when the
+                    # CLI has no flagless form at all: `ops-adopt.sh <task-id>`
+                    # exits 2 with `missing --owner`, and the first cut of this
+                    # check was silent on it — it keyed on the presence of a
+                    # flag to decide something had been prescribed, which reads
+                    # "no flags named" as "nothing to check" rather than as the
+                    # omission it is. Found by running the check against every
+                    # form of every CLI rather than only the ones prose already
+                    # uses (#149, review round).
+                    #
+                    # Bounded three ways, because a bare CLI NAME in prose is
+                    # not a command line and this table is full of them (149 on
+                    # this tree): every form must require a flag; the mention
+                    # must sit in a CODE SPAN; and it must carry an ARGUMENT
+                    # after the name. Measured on the real tree: 126 flagless
+                    # code spans, 3 of them argument-bearing, 0 false positives.
+                    if not (forms and all(f[1] for f in forms)):
+                        continue
+                    # A LIST of filenames is not a command line, and the
+                    # argument bound alone cannot tell them apart: the span
+                    # `ops-verdict.sh ops-task.sh ops-adopt.sh …` in
+                    # REPLAY-CHARTER.md names the install set, and each entry
+                    # reads as the next one's argument (2 false positives,
+                    # measured — exposed once the tail regex stopped swallowing
+                    # the following CLI). An argument that is itself a CLI name
+                    # means the span is an enumeration.
+                    _arg = re.search(r'`[^`\n]*' + re.escape(cli)
+                                     + r'\s+([<"\'\w./$-]\S*)', line)
+                    if not _arg or re.match(r'ops-[a-z-]+\.sh', _arg.group(1)):
+                        continue
+                    seen += 1
+                    problems.append(
+                        f"{rel}:{lineno}: prescribes `{cli}` with NO flag — "
+                        f"every form of this CLI requires one "
+                        f"({' | '.join(' '.join(sorted(f[1])) for f in forms)}"
+                        f"), so an operator following this prose verbatim gets "
+                        f"a usage error and exit 2 (#149)")
                     continue
                 seen += 1
                 # A DELIBERATE negative control — prose teaching that a
@@ -4639,8 +4695,24 @@ def check_prose_invocations(root, problems):
                 # marker is the words the prose already uses; inventing a
                 # comment directive would be a convention followed in one file
                 # and stated nowhere, which this repo calls a hypothesis.
-                if re.search(r'mistyped|unknown option|typo',
-                             _para.get(lineno - 1, line), re.I):
+                #
+                # THE EXEMPTION ATTACHES TO THE FLAG, NOT TO THE NEIGHBOURHOOD.
+                # Keying it on the paragraph alone exempted EVERY invocation in
+                # that paragraph, which is a suppression far wider than the one
+                # thing it excuses — reproduced on the real tree (PR #146
+                # review): a genuinely broken `ops-claims.sh --claimed "x"`
+                # appended to REPLAY-CHARTER.md's `--ownr` teaching paragraph
+                # was reported by nothing. That is this check's own defect
+                # class, relocated into its suppression logic and therefore
+                # harder to see, because the guard reports success.
+                #
+                # So the paragraph supplies the MARKER and the line supplies
+                # the SUBJECT: at least one flag on this line must be one the
+                # CLI does not accept. A correct invocation sitting beside a
+                # typo lesson is judged normally.
+                if (re.search(r'mistyped|unknown option|typo',
+                              _para.get(lineno - 1, line), re.I)
+                        and flags - accepted):
                     continue
                 if not accepted:
                     problems.append(

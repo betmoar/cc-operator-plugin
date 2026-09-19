@@ -74,6 +74,7 @@ newproj() { local d; d="$(mktemp -d "${TMPDIR:-/tmp}/opstest.XXXXXX")" && (cd -P
 # with `-eq`, which errors on an empty operand where `=` succeeds. The absent
 # case is a FAILED check naming its precondition on stderr, never a pass.
 _precondition_absent() { printf '  !! precondition: %s does not exist — the assertion below measured nothing (#148)\n' "$1" >&2; }
+_precondition_count_absent() { printf '  !! precondition: %s exists but its %s count is not a number (%s) — the assertion below measured nothing (#148)\n' "$1" "$2" "${3:-<empty>}" >&2; }
 unchanged_lines() { # unchanged_lines <file> <before-count> → 0 iff <file> exists AND its line count still equals <before-count>
   [ -f "$1" ] || { _precondition_absent "$1"; return 1; }
   [ "$(wc -l < "$1" | tr -d ' ')" -eq "$2" ] 2>/dev/null
@@ -85,9 +86,18 @@ unchanged_bytes() { # unchanged_bytes <file> <before-count> → 0 iff <file> exi
 # The count side of the same rule: a `grep -c` delta over a file that does not
 # exist is 0 - 0 = 0, so an assertion that "no new line was written" holds
 # vacuously. The file must exist before the delta means anything.
-delta_is() { # delta_is <file> <after> <before> <expected> → 0 iff <file> exists AND after-before == expected
+delta_is() { # delta_is <file> <after> <before> <expected> → 0 iff <file> exists AND both counts were really measured AND after-before == expected
   [ -f "$1" ] || { _precondition_absent "$1"; return 1; }
-  [ "$(( ${2:-0} - ${3:-0} ))" -eq "$4" ] 2>/dev/null
+  # `${2:-0}` was this helper committing the very defect it was written to
+  # remove, one level down (PR #146 review, reproduced): the file-existence
+  # guard covers `$1` only, so an EMPTY after/before — a grep whose `|| echo 0`
+  # fallback was dropped, a caller typo losing a variable — substituted 0 for
+  # both and `0 - 0 -eq 0` passed having measured nothing. Refuse an empty
+  # operand and say which: the file was there, so the silence would otherwise
+  # be indistinguishable from a real zero delta.
+  case "${2-}" in ''|*[!0-9]*) _precondition_count_absent "$1" after "${2-}"; return 1 ;; esac
+  case "${3-}" in ''|*[!0-9]*) _precondition_count_absent "$1" before "${3-}"; return 1 ;; esac
+  [ "$(( $2 - $3 ))" -eq "$4" ] 2>/dev/null
 }
 # Same rule for a comparison between two files' contents: `tail -1` of an
 # absent file is empty, so two absent files compare byte-identical.
@@ -7210,6 +7220,19 @@ check "#148 delta_is ACCEPTS a zero delta over a file that exists" \
   "$(delta_is "$_V148/ledger.md" 4 4 0 && echo 0 || echo 1)"
 check "#148 delta_is REFUSES an ABSENT file — 0 minus 0 is 0, which is the expected delta" \
   "$(delta_is "$_V148/never-existed.md" 0 0 0 2>/dev/null && echo 1 || echo 0)"
+# The helper's OWN version of the defect, found in review and reproduced: the
+# file-existence guard covers $1 only, so `${2:-0}` substituted 0 for an EMPTY
+# count and `0 - 0 -eq 0` passed on a file that exists — measured rc=0. That is
+# #148's shape one level down, and the present file makes it WORSE than the
+# absent-file case: nothing looks wrong.
+check "#148 delta_is REFUSES an EMPTY count even when the file EXISTS (\`\${2:-0}\` substituted 0)" \
+  "$(delta_is "$_V148/ledger.md" "" "" 0 2>/dev/null && echo 1 || echo 0)"
+check "#148 delta_is REFUSES a NON-NUMERIC count (a grep that printed a message)" \
+  "$(delta_is "$_V148/ledger.md" "no matches" 0 0 2>/dev/null && echo 1 || echo 0)"
+check "#148 delta_is names WHICH count was unmeasured (after vs before)" \
+  "$(delta_is "$_V148/ledger.md" 4 "" 0 2>&1 >/dev/null | grep -q 'before count is not a number' && echo 0 || echo 1)"
+check "#148 delta_is still ACCEPTS a real non-zero delta (the arm is not just refusing)" \
+  "$(delta_is "$_V148/ledger.md" 7 4 3 && echo 0 || echo 1)"
 check "#148 both_present ACCEPTS two files that exist" \
   "$(cp "$_V148/ledger.md" "$_V148/fragment.md"; both_present "$_V148/ledger.md" "$_V148/fragment.md" && echo 0 || echo 1)"
 check "#148 both_present REFUSES when EITHER is absent (two absent files compare byte-identical)" \

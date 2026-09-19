@@ -58,9 +58,40 @@ both the same shape: v0.11.16 fixed the INSTANCE and left the CLASS unmechanized
   unchanged one, since a helper that refused everything would pass a
   refusal-only control set while failing every real call site.
 
+### Review round (PR #146, five reviewers)
+
+Six findings in this release's own work, each reproduced before it was believed and
+each now carrying a mutation. Four were in `check_prose_invocations` itself, and three
+of those were the check performing its own defect class:
+
+- **It condemned correct prose.** `re.finditer` yields non-overlapping matches, so the
+  citation regex's greedy tail swallowed the next invocation whole: `Run ops-verdict.sh
+  and ops-claims.sh --since <sha> --claimed "<paths>"` reported ops-verdict.sh for flags
+  it never took, while ops-claims.sh went unexamined. Fixing it exposed a second — a span
+  of bare filenames reads as each entry arguing the next, so the flagless arm fired on a
+  list.
+- **The negative-control exemption suppressed its neighbours.** Keyed on the paragraph,
+  it exempted every invocation in it; a genuinely broken `ops-claims.sh --claimed "x"`
+  appended to REPLAY-CHARTER.md's `--ownr` paragraph was reported by nothing. The
+  paragraph now supplies the marker, the line must supply the subject.
+- **The root globs were unpinned** — narrowing them to `["*.md", "docs/**/*.md"]` stops
+  reading `templates/OPERATOR.md`, the file the defect shipped in, with every case and
+  the real tree green. The `_MIN` floor counts invocations, not which files produced
+  them: a count is not a selection.
+- **A flagless prescription was invisible.** The check keyed on the presence of a flag to
+  decide something had been prescribed, so `ops-adopt.sh <task-id>` — which exits 2 with
+  `missing --owner` — read as nothing to check.
+- Also pinned, each confirmed unpinned by mutation first: the no-readable-CLIs guard, the
+  `docs/dev/` exemption, a CLI with no parseable usage form, and the per-form selection
+  arm (whose only coverage was the real-tree case).
+- **`delta_is` committed #148's own defect one level down.** `${2:-0}` substituted 0 for
+  an empty count, so `0 - 0 -eq 0` passed on a file that exists — worse than the
+  absent-file case, because nothing looks wrong. #148 guarded the file and left the
+  values unguarded.
+
 ### Changed
 
-- `FLOOR_shell` 1101 → 1112 and `FLOOR_python` 397 → 411, with the measurements
+- `FLOOR_shell` 1101 → 1116 and `FLOOR_python` 397 → 423, with the measurements
   in `tests/floors.env`.
 - CLAUDE.md gained two coupling rows and lost its `## Procedure` section, whose
   two pointers duplicated what `## Provenance` and `## Landmines` already said.

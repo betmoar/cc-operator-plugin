@@ -104,8 +104,8 @@ local `.archive/dev/` (untracked).
 | a NUL probe (`read -r -d '' -n N`) in ANY reader | it makes that file's byte cap REAL: `read` DISCARDS NUL, so a row loop counts what survived, not what it consumed. `check_reader_bounds` counts probes (floors 2/2/4); its regex must keep the `-d ''` alternative or every probe is deletable green (#126). Case: _"a NUL-filled ledger over CAPS_MAX_BYTES"_ + 2 CONTROLs. Its 4096×512 ceiling IS `CAPS_MAX_BYTES`, so it refuses first and the row loop's byte cap is a second line of defence (#139). |
 | the trailing-CR strip in ANY of the three 4-cell row parsers | strip the whole trailing RUN, bounded (`CAPS_MAX_CR`, 16) — hand-copied in `lib/caps.sh` + `ops-reverify.sh` + `ops-verdict.sh`'s reconcile loop; the latter two source no lib. `check_cr_strip_parity` holds all three to the bound AND refuses a loop that removes without counting (F30); `check_guard_parity` does NOT cover this — a comment once said it did. PAST the bound each answers differently ON PURPOSE: caps.sh stops and NAMES the cause via `caps_truncated_reason` (one planted row suppresses the whole report, so a size-bound message would misdirect); ops-reverify skips-and-says; reconcile needs no arm (`row_is_conformant` refuses it). `caps.sh` charges `+ _cr` so accounted == on-disk. Cases: the _"#139 item 1"_ block + `CrStripParityTest`. Detail: LANDMINES (0.11.15). |
 | a `file.sh:NNN` citation in tracked prose | `check_line_citations` refuses past-EOF, `:0` (`lines[-1]` wraps) or a BLANK line, across ALL tracked markdown — scoped to `docs/**` it reported green about the files it never read. It CANNOT see a line that still exists and no longer says what the prose claims — cite the SYMBOL (#139 item 4). Case: `LineCitationTest`. |
-| a CLI's FLAGS prescribed in tracked prose | `check_prose_invocations` reads accepted+mandatory off the CLI's OWN parser and `usage:` forms — a table here is the second copy it catches. Mandatory is PER FORM; `[--since]` = ABSENT. Cases: `ProseInvocationTest`. Detail: LANDMINES (0.11.17, #149). |
-| an "X was not written" assertion in `tests/test-scripts.sh` | use `unchanged_lines`/`unchanged_bytes`/`delta_is`/`both_present`, never a bare `=` between two reads of one file — ABSENT both are `""` and `[ "" = "" ]` is TRUE. Each needs BOTH controls. Cases: the _"#148"_ block. Detail: LANDMINES (0.11.17). |
+| a CLI's FLAGS prescribed in tracked prose | `check_prose_invocations` reads accepted+mandatory off the CLI's OWN parser and `usage:` forms — a table here is the second copy it catches. Mandatory is PER FORM; `[--since]` = ABSENT; a FLAGLESS span is judged when no form is flagless. The citation tail stops at the NEXT CLI name; an exemption attaches to the FLAG, not the paragraph; `_PROSE_ROOTS` is asserted by SELECTION (the `_MIN` floor counts invocations, so dropping `templates/` ships green). Cases: `ProseInvocationTest`. Detail: LANDMINES (0.11.17, #149). |
+| an "X was not written" assertion in `tests/test-scripts.sh` | use `unchanged_lines`/`unchanged_bytes`/`delta_is`/`both_present`, never a bare `=` between two reads of one file — ABSENT both are `""` and `[ "" = "" ]` is TRUE. Guard the VALUES too: `${2:-0}` on an empty count passed `0-0 -eq 0` on a file that EXISTS. Each needs BOTH controls. Cases: the _"#148"_ block. Detail: LANDMINES (0.11.17). |
 | the seat bindings or round structure in `workflows/debate.js` | `check_workflow_agent_types` proves the agentType NAMES a shipped agent; nothing in the validator says which call site gets which seat, so a debater prompt handed to `op-author` (Write + Edit — able to edit the artifact it argues about) ships green. Cases: _"debate.js runs three rounds"_ + _"dead-seat accounting"_. Detail: LANDMINES (0.11.9). |
 | `args.isolate` / `args.isolateCheckout` in `workflows/review.js` (#74) | the runtime's `isolation: "worktree"` takes NO commit — the worktree is created at the DEFAULT BRANCH (measured twice). Cases: _"#74"_. Why: `docs/LANDMINES.md` _"Isolation buys a clean tree, not a commit"_ (0.11.9). |
 | `args.isolate` / the adversarial seat's prompt in `workflows/review.js` (#23) | keep the two branches EXCLUSIVE: un-isolated ships F-A1 (`git status --porcelain`), isolated ships F-A2 (`git rev-parse HEAD` vs the named sha) and F-A1 must NOT also ship — a fresh worktree is clean by construction, so porcelain there is a control that cannot fail. Cases: the _"adversarial isolation"_ cases (the stub runtime captures `opts.isolation`). Detail: LANDMINES (0.11.9). |
@@ -192,38 +192,31 @@ way. None of it is loaded by the plugin at runtime; the validator reads only
 narrative behind each item below moved to `docs/LANDMINES.md` (0.11.9);
 this is the always-on summary.
 
-- **`docs/TAGS.md`** is the in-tree resolution index for every charter
-  `[DOC:spec-*]` tag; `check_charter` fails the build on a tag with no
-  `### spec-<key>` entry, so the index cannot fall behind. Orphan entries (a
-  retired tag's survivor) are allowed on purpose. The spec dir emptied in
-  0.11.9 (backlog-charter removed; see git history).
+- **`docs/TAGS.md`** resolves every charter `[DOC:spec-*]` tag; `check_charter`
+  fails the build on a tag with no `### spec-<key>` entry, so the index cannot
+  fall behind. Orphan entries (a retired tag's survivor) are fine. The spec dir
+  emptied in 0.11.9 (backlog-charter removed; see git history).
 - **`docs/PLAYBOOK.md`** holds the executable procedures (adding a guard, a
   reader, touching the lock), each derived from a bug that happened here.
-  **Read it before your first change.** The F01–F66 audit writeups it refers
-  to are maintainer-local (`.archive/dev/`) and were never committed — no
-  clone at any commit resolves them.
+  **Read it before your first change.** Its F01–F66 audit writeups are
+  maintainer-local (`.archive/dev/`) — no clone resolves them.
 - **`docs/REPLAY-CHARTER.md`** is the live-session replay protocol (R0–R8),
-  hand-maintained prose with no validator pin — a message change in
-  `ops-stop-hook.sh` or `ops-init.sh` means updating its quoted strings by
-  hand.
-- **`docs/DECISION-ENGINE-PROBES.md`** — read BEFORE implementing #151/#152:
-  five surfaces probed live, the filter that decided them, the constraints.
-- **Audit handoffs are maintainer-local and never committed**, with one
-  exception: `docs/audit-2026-08-09-handoff.md` (F67+) ships in-tree.
-  `docs/audit-2026-07-31-handoff.md` has an empty `git log --all` despite
-  earlier revisions citing it as shipped; `docs/audits/audit-2026-07-27-*`
-  are the same maintainer-local shape (F01–F06). All three survive only as
-  code, comments, and CHANGELOG entries.
-- **Everything else** (build ledger, plans, pilot runbook/findings,
-  prior-project evidence) was removed from the tree in 0.3.0: see git
-  history (tree ≤ v0.2.0) or the maintainer's local `.archive/dev/`.
+  hand-maintained, unpinned: a message change in `ops-stop-hook.sh` or
+  `ops-init.sh` means updating its quoted strings by hand.
+- **`docs/DECISION-ENGINE-PROBES.md`** — read BEFORE #151/#152: five surfaces
+  probed live, the filter that decided them, the constraints.
+- **Audit handoffs are maintainer-local and never committed**, except
+  `docs/audit-2026-08-09-handoff.md` (F67+). The 2026-07-31 and
+  `docs/audits/audit-2026-07-27-*` files are cited by earlier revisions as
+  shipped but have an empty `git log --all` (F01–F06): they survive only as
+  code, comments and CHANGELOG entries. Everything else (build ledger, plans,
+  pilot runbook/findings, prior-project evidence) left the tree in 0.3.0 —
+  git history (tree ≤ v0.2.0) or the maintainer's local `.archive/dev/`.
 - **The evidence-gate opt-in gap is CLOSED in #85** (`scripts/lib/autobar.sh`):
   the Stop hook auto-arms an owned sentinel on a >=2-path delta, enforcing
   ENGAGEMENT CONTRACT clause (1) in code. Coverage is deliberately partial:
-  clauses (2) multi-session and (3) user-named done-state stay UNCOVERED, a
-  non-git project arms nothing, a shared worktree suppresses the armer
-  entirely, and a session can still satisfy it with one throwaway task it
-  defers.
+  clauses (2) and (3) stay UNCOVERED, a non-git project arms nothing, a shared
+  worktree suppresses the armer, and one throwaway deferred task satisfies it.
 
 ## Operator
 

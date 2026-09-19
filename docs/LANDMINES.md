@@ -1733,6 +1733,42 @@ correct work alone, and only one of those two is what a maintainer feels.
 What it CANNOT see is the same limitation `check_line_citations` carries: a prescription
 that still parses and no longer means what the prose claims. That needs a human.
 
+**And then a five-reviewer panel found six more, four of them in the check itself.** Worth
+recording because of WHERE they were: not in the hard part (reading a shell parser) but in
+the suppression logic and the scan boundaries — the places a guard is least examined
+because they are what makes it quiet.
+
+Three were the check performing its own defect class:
+
+- **It condemned correct prose.** `re.finditer` yields non-overlapping matches, so the
+  citation regex's greedy tail swallowed the NEXT invocation whole. `Run ops-verdict.sh and
+  ops-claims.sh --since <sha> --claimed "<paths>"` — entirely correct — reported
+  ops-verdict.sh for `--claimed --since`, flags it never took, while ops-claims.sh was
+  never examined at all because the scan position had already passed it. One regex, a false
+  positive on one CLI and a false negative on the next. Bounding the tail at the next CLI
+  name fixed both and immediately exposed a second: a span of BARE FILENAMES (the install
+  set) has each entry reading as the next one's argument, so the flagless arm fired twice
+  on a list. An argument that is itself a CLI name means the span is an enumeration.
+- **The negative-control exemption suppressed its neighbours.** Keyed on the paragraph, it
+  exempted every invocation in that paragraph. Reproduced on the real tree: a genuinely
+  broken `ops-claims.sh --claimed "x"` appended to REPLAY-CHARTER.md's `--ownr` teaching
+  paragraph was reported by nothing. The general rule: **an exemption must attach to the
+  thing it excuses, not to its neighbourhood.** The paragraph supplies the marker; the line
+  must supply the subject.
+- **A helper committed the very defect it was written to remove, one level down.**
+  `delta_is`'s `${2:-0}` substituted 0 for an EMPTY count, so `0 - 0 -eq 0` passed on a file
+  that EXISTS — strictly worse than the absent-file case, because nothing looks wrong. #148
+  guarded the FILE and left the VALUES unguarded.
+
+The fourth is the one to remember when writing any scanning check. **The root globs were
+unpinned, and the floor could not have caught them.** Narrowing `_roots` to `["*.md",
+"docs/**/*.md"]` — the plausible "the `*.md` glob already covers everything" edit — stops
+reading `templates/OPERATOR.md`, the file #149's defect shipped in, and every case plus the
+real tree stayed green. The `_MIN` floor counts INVOCATIONS, not which files produced them,
+and the reduced set still cleared 15. A count is not a selection. Assert which files are
+read, the way `check_coupling_case_refs` asserts its own: a checker that is perfectly
+correct about the wrong bytes reads exactly like a working one.
+
 **Three derivation rounds, and the cap stopped the fourth.** Round 1: 27 passed, 4
 failed. Round 2: 31/2. Round 3, after another prompt tweak: 21/10 — it regressed checks
 round 2 passed and shipped a comparator printing `expected == got` as FAIL. That is the
