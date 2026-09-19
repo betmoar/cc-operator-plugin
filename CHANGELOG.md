@@ -29,15 +29,18 @@ Closes #112 — the first check in this project written by an agent that could n
 ### Added
 
 - **A holdout, outside this repo (#112).** `ci-admin/cc-operator-holdout` on
-  `lokaal` — 33 checks derived from `templates/OPERATOR.md` alone by an agent with
+  `lokaal` — 41 checks derived from `templates/OPERATOR.md` alone by an agent with
   no file tools and no shell, run against an `ops-init.sh`-produced `.operator/` as
   a black box. Independence is structural: a cc-operator session never clones that
   repo, so there is no denial to forget and no guard to bypass. Its runner demands a
   positive marker naming the sha (`HOLDOUT_PASSED sha=<sha>`) and a check-count
   floor, so an absent, silent, shrunken or wrong-sha run all fail — measured on the
-  forge both ways: run 1455 `HOLDOUT_VERIFIED sha=7057dcf7f2f6 checks=33`, run 1456
-  red on a nonexistent sha. Four mutations against the gate CLIs each drove it red
-  and were restored byte-identical.
+  forge both ways: run 1458 `HOLDOUT_VERIFIED sha=7057dcf7f2f6 checks=41`, run 1456
+  red on a nonexistent sha. Seven mutations against the gate CLIs each drove it red
+  and were restored byte-identical. **That count is a point-in-time figure**: the
+  holdout is a separate repo on its own history, so this line records what was
+  measured at v0.11.16 and is not kept in sync. Its own README carries the live
+  number; `HOLDOUT_MIN_CHECKS` there is the ratchet.
 
 ## [0.11.15] - 2026-09-18
 

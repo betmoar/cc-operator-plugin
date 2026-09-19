@@ -1692,12 +1692,37 @@ the charter's prescription to the CLI's contract. That is precisely the defect c
 in-scope check cannot see: both sides were individually correct and nobody read them
 against each other.
 
+**And the first fix for it was itself the F30 shape.** The charter was one of THREE
+places prescribing that invocation: `README.md`'s CLI cheat-sheet carried the same
+broken form, and `docs/PLAYBOOK.md`'s dispatch procedure had `[--since <dispatch-sha>]`
+in square brackets — marked OPTIONAL for a flag the CLI refuses to run without. Fixing
+the charter alone left two copies saying the thing the holdout had just proved wrong.
+The holdout cannot catch that: it tests the SYSTEM, and every one of those copies is
+prose. Grep the invocation, not the file you happened to be reading.
+
 **Three derivation rounds, and the cap stopped the fourth.** Round 1: 27 passed, 4
 failed. Round 2: 31/2. Round 3, after another prompt tweak: 21/10 — it regressed checks
 round 2 passed and shipped a comparator printing `expected == got` as FAIL. That is the
 same-target-rework cap at 2, logged in DECISIONS.md, and the escalation was to a
 different mechanism (a repair dispatch carrying measured evidence) rather than a third
 guess at the prompt. Round 4 from that repair: 33/0.
+
+**And 33/0 was itself a false green, found by reviewing the suite rather than running
+it.** A coverage review observed that `ops-adopt.sh` appeared in the holdout only as a
+string the SessionStart guidance must MENTION — never as a CLI the suite INVOKES.
+Measured rather than argued: `ops-adopt.sh` replaced by a body of `exit 0`, and the
+suite reported 33 passed, 0 failed. The entire re-claim mechanism RECOVERY PROTOCOL
+step 6 depends on could be deleted and the holdout would have certified the release.
+A fifth repair dispatch (denied-context, carrying the mutation as evidence and the
+explicit bar that a no-op must not pass) took it to 41 checks; the same mutation now
+drives 6 red. The review also flagged two checks as possibly vacuous — mutations proved
+both real: `--defer` writing its row without clearing the sentinel drives
+`defer_clears_sentinel` red alone, and an auto-bar that blocks and prints "autobar"
+while arming no sentinel drives `autobar_blocks_two_file_change` red alone. Two of
+three suspicions wrong, one right, and only mutation could tell them apart.
+
+The floor moved with it: `HOLDOUT_MIN_CHECKS` 30 → 41, because a floor below the true
+count is slack a deletion hides in — `tests/floors.env`'s lesson, one repo over.
 
 **The two failures that survived to round 2 were over-assertions, not defects**, and
 both are worth recognising because they are what an independent writer gets wrong. It
@@ -1719,10 +1744,12 @@ shrunken suite 6, bad sha 2, no sha named 2. Each measured with a crafted stub. 
 floor is `tests/floors.env`'s lesson one repo over: a suite that silently stopped
 emitting checks exits 0 with everything it still runs green.
 
-**Proof it can go red.** Four mutations against the gate CLIs, each restored
+**Proof it can go red.** Seven mutations against the gate CLIs, each restored
 byte-identical: the Stop gate's `exit 2` → `exit 0` (4 red), the `+dirty` branch deleted
 (2 red), `ops-claims.sh` examining only the first changed path (1 red), the ledger row's
-verdict word hardcoded to `PASS` (1 red). The third is the `LIMIT 1` shape the
+verdict word hardcoded to `PASS` (1 red), `--defer` writing its row without clearing the
+sentinel (1 red), an auto-bar that blocks without arming (1 red), and `ops-adopt.sh`
+replaced by `exit 0` (6 red — 0 red before the review). The third is the `LIMIT 1` shape the
 exact-values rule exists for — a suite asserting "some violation is reported" passes it;
 one asserting the named file passes it too, as long as that file is first. The first
 attempt at that mutation was a syntax error, which drove the suite red for the wrong
