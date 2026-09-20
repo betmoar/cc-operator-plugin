@@ -3127,6 +3127,131 @@ def check_workflow_agent_types(root, problems):
 COMMAND_REQUIRED_KEYS = ("description", "argument-hint", "allowed-tools")
 
 
+# The implement stage's packet (#158) — a FOURTH hand-copy of the charter's
+# dispatch packet, so it is pinned rather than trusted (F30: copy-pasted
+# blocks drift uniformly, and identically-broken copies are trivially "in
+# parity"). The other three are templates/OPERATOR.md, docs/HANDOUT.md and
+# HANDOUT_PACKET_SPINE above; this one is CODE, and a field dropped here is a
+# field the implementer seat is never given.
+IMPLEMENT_PACKET_FIELDS = ("TASK", "TEXT", "SCENE", "INPUTS", "FORBIDDEN", "DONE", "REACH")
+# The charter's four-status protocol, which implement.js hands the seat as a
+# schema enum. A status the workflow cannot return is a route the operator's
+# protocol has and the workflow does not.
+IMPLEMENT_STATUSES = ("DONE", "DONE_WITH_CONCERNS", "NEEDS_CONTEXT", "BLOCKED")
+
+
+def check_implement_packet(root, problems):
+    """workflows/implement.js carries the charter's packet, and APPLIES it.
+
+    Three failures, each one a shipped-green defect in the absence of this pin:
+
+    1. A field dropped from `PACKET_FIELDS` — the refusal stops requiring it
+       and the seat stops receiving it, with every other gate green.
+    2. A field required but never SENT (validated, then dropped on the way to
+       the prompt). That is worse than one never required, because the refusal
+       implies the field was used.
+    3. A field dropped from the CHARTER while the code keeps it, or the
+       reverse. The packet is a contract between the two.
+
+    Absence of the file is a FINDING, not a skip (#114's lesson): the
+    implement stage running as a workflow is the contract, and a check that
+    silently passes when its subject is deleted is not a check.
+    """
+    wf_dir = root / "workflows"
+    files = sorted(wf_dir.glob("*.js")) if wf_dir.is_dir() else []
+    if not files:
+        return  # workflows/ is optional as a whole; check_workflows says so too
+    f = wf_dir / "implement.js"
+    if not f.is_file():
+        problems.append(
+            "workflows/implement.js: missing — the implement stage runs as a "
+            "workflow (#158). Every stage of the cycle that only READS is a "
+            "workflow with a tier map; the stage that WRITES CODE must not go "
+            "back to a plain Agent call on a hardcoded frontmatter alias, "
+            "which is how the IMPLEMENT tier came to be dispatched by nothing")
+        return
+    text = f.read_text(encoding="utf-8")
+    # Comment-stripped for the APPLICATION checks, exactly as check_workflows
+    # does (F48/F57): a call site moved into a comment must not satisfy them.
+    code = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    code = "\n".join(ln for ln in code.split("\n")
+                     if not ln.lstrip().startswith("//"))
+
+    m = re.search(r"const\s+PACKET_FIELDS\s*=\s*\[([^\]]*)\]", code)
+    if not m:
+        problems.append(
+            "workflows/implement.js: no `const PACKET_FIELDS = [...]` found — "
+            "a reshape must update this locator, not silence the packet pin "
+            "(#114: no-candidate is a finding, never a pass)")
+    else:
+        listed = [v.lower() for v in re.findall(r'"([^"]+)"', m.group(1))]
+        for field in IMPLEMENT_PACKET_FIELDS:
+            if field.lower() not in listed:
+                problems.append(
+                    f"workflows/implement.js: PACKET_FIELDS is missing "
+                    f"{field!r} — the charter's dispatch packet requires it, so "
+                    f"the refusal stops demanding it and the seat stops "
+                    f"receiving it")
+        for got in listed:
+            if got.upper() not in IMPLEMENT_PACKET_FIELDS:
+                problems.append(
+                    f"workflows/implement.js: PACKET_FIELDS carries "
+                    f"{got!r}, which the charter's packet does not — add it to "
+                    f"templates/OPERATOR.md and docs/HANDOUT.md first, or the "
+                    f"code is asking for a clause the contract never defined")
+        rest = code.replace(m.group(0), "", 1)
+        if rest.count("PACKET_FIELDS") < 2:
+            problems.append(
+                "workflows/implement.js: PACKET_FIELDS is declared but barely "
+                "used — it must drive BOTH the refusal and the prompt")
+        # The SENT half, pinned at its own call site: a field validated and
+        # then dropped on the way to the seat is the defect the refusal hides.
+        if "PACKET_FIELDS.map(" not in rest:
+            problems.append(
+                "workflows/implement.js: no `PACKET_FIELDS.map(` — the packet "
+                "must be built into the seat's prompt FROM the same list the "
+                "refusal validates, or a required field is validated and then "
+                "never sent (which reads as used)")
+
+    em = re.search(r"enum:\s*\[([^\]]*)\]", code)
+    if not em:
+        problems.append(
+            "workflows/implement.js: no status `enum: [...]` found — the "
+            "charter's four-status protocol reaches the seat as a schema, and "
+            "a reshape must update this locator rather than silence it")
+    else:
+        got = [v for v in re.findall(r'"([^"]+)"', em.group(1))]
+        for status in IMPLEMENT_STATUSES:
+            if status not in got:
+                problems.append(
+                    f"workflows/implement.js: the status enum is missing "
+                    f"{status!r} — the operator routes on the four-status "
+                    f"protocol, so a status the seat cannot return is a route "
+                    f"the workflow silently removes")
+
+    charter = root / "templates" / "OPERATOR.md"
+    if charter.is_file():
+        ctext = charter.read_text(encoding="utf-8")
+        # _packet_block returns EVERY fence that claims to be the packet, and
+        # the caller appends per block — a decoy example ahead of the real one
+        # made first-match selection read the wrong fence (#113/#124). Same
+        # contract here: every such fence must teach every field.
+        for block in _packet_block(ctext):
+            for field in IMPLEMENT_PACKET_FIELDS:
+                if field not in block:
+                    problems.append(
+                        f"templates/OPERATOR.md: the dispatch packet lost "
+                        f"{field!r}, which workflows/implement.js still "
+                        f"requires — the packet is a contract between the "
+                        f"charter and the workflow that sends it")
+        for status in IMPLEMENT_STATUSES:
+            if status not in ctext:
+                problems.append(
+                    f"templates/OPERATOR.md: the four-status protocol lost "
+                    f"{status!r}, which workflows/implement.js still offers "
+                    f"the seat as a schema enum")
+
+
 def check_commands(root, problems):
     r"""Every commands/*.md must carry the frontmatter the harness registers it
     by (description / argument-hint / allowed-tools), and must reference scripts
@@ -5138,6 +5263,7 @@ CHECKS = (
     check_workflow_parity,
     check_workflow_default_tiers,
     check_workflow_agent_types,
+    check_implement_packet,
     check_commands,
     check_release_gates_cover_validate,
     check_release_notes_outside_tree,

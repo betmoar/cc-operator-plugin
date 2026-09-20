@@ -45,7 +45,7 @@ function makeRuntime(agentReturns = {}) {
     // — so a workflow handing a debater's prompt to an implementer seat (one
     // with Write/Edit, able to change the artifact it is arguing about) passes
     // that checker. The per-call-site binding only has an assertion here.
-    calls.push({ label, model: opts.model, prompt, isolation: opts.isolation, agentType: opts.agentType });
+    calls.push({ label, model: opts.model, prompt, isolation: opts.isolation, agentType: opts.agentType, schema: opts.schema, hasModelKey: "model" in opts });
     return agentReturns[label] ?? null;
   };
   const parallel = async (thunks) => {
@@ -2136,6 +2136,162 @@ for (const [label, weird] of [['"none"', "none"], ["{}", {}]]) {
     `review/F107: the adversarial seat still runs after findings:${label}`);
   ok((f107?.deadLenses ?? []).includes("quality"),
     `review/F107: a malformed lens is reported DEAD — lost coverage, never full coverage`);
+}
+
+
+// ── implement: the stage that writes, as a workflow (#158) ──────────────────
+console.log("-- Case: implement.js dispatches the IMPLEMENT tier, serially, on a complete packet");
+// Until this file, `grep -rn IMPLEMENT workflows/` returned NOTHING: the tier
+// ops-render.sh binds the implementer to was dispatched by no workflow, so a
+// tiers.env binding reached a seat only through `render` plus a session
+// restart. Every stage of the cycle that only READS ran as a workflow with a
+// tier map; the one stage that WRITES CODE was a plain Agent call against a
+// hardcoded frontmatter alias.
+const PKT = (over = {}) => ({
+  task: "add the guard", text: "the full task text", scene: "where this sits",
+  inputs: "a.js, b.js", forbidden: "the gate files", done: "tests pass",
+  reach: "cli.js:main -> guard()", ...over,
+});
+const IMPL_OK = (status = "DONE", changed = ["a.js"]) => ({ status, summary: "did it", changed, evidence: "out" });
+
+// REFUSAL FIRST, and the assertion that matters is what it SPENT. #84 measured
+// what a deficient packet costs when the fan-out runs first: 7 agents, 123,935
+// tokens, every seat answering that it could not proceed.
+{
+  let spent = null, msg = "";
+  try { await run(WF("implement.js"), {}, {}); }
+  catch (e) { spent = e.rt?.calls?.length; msg = String(e?.message ?? e); }
+  ok(spent === 0, "implement: an absent args.tasks refuses having dispatched ZERO agents");
+  ok(/args\.tasks is required/.test(msg), "implement: the refusal names the missing argument");
+}
+{
+  let spent = null, msg = "";
+  try { await run(WF("implement.js"), { tasks: [PKT({ done: "", reach: undefined })] }, {}); }
+  catch (e) { spent = e.rt?.calls?.length; msg = String(e?.message ?? e); }
+  ok(spent === 0, "implement: an INCOMPLETE packet refuses before a seat is paid for (#152's point, one level in)");
+  // EVERY defect at once: a refusal naming one field per round costs the
+  // operator a round per field.
+  ok(/DONE is missing/.test(msg) && /REACH is missing/.test(msg),
+    "implement: the refusal names EVERY missing field, not just the first");
+  ok(/2 defect\(s\)/.test(msg), "implement: the refusal counts the defects it found");
+}
+// A bare packet object is a legal single task (the common case is one dispatch).
+{
+  const { result: r1, rt: rt1 } = await run(WF("implement.js"),
+    { tasks: PKT({ id: "solo" }) }, { "implement:solo": IMPL_OK() });
+  ok(r1?.dispatched === 1 && rt1.calls.length === 1,
+    "implement: a bare packet object is taken as a single task, not refused");
+}
+
+// Serial, in packet order, one label per task.
+const { result: iOk, rt: iRt } = await run(WF("implement.js"),
+  { tasks: [PKT({ id: "one" }), PKT({ id: "two", task: "second" })] },
+  { "implement:one": IMPL_OK("DONE", ["a.js"]), "implement:two": IMPL_OK("DONE", ["b.js", "a.js"]) });
+ok(iRt.calls.map((c) => c.label).join(",") === "implement:one,implement:two",
+  "implement: tasks are dispatched in packet order, one label each");
+ok(iRt.calls.every((c) => c.agentType === "cc-operator:op-mechanic"),
+  "implement: the default seat is the mechanic — the IMPLEMENT-tier implementer");
+ok(iOk?.serial === true && iOk?.dispatched === 2 && iOk?.requested === 2,
+  "implement: the return states the run was serial and how many of how many ran");
+// CHANGED is unioned and deduped — it is what the operator hands ops-claims.sh.
+ok(JSON.stringify(iOk?.changed) === JSON.stringify(["a.js", "b.js"]),
+  "implement: CHANGED paths are unioned across tasks and deduped, in first-seen order");
+ok(/ops-claims\.sh/.test(iOk?.changedIsUnverified ?? ""),
+  "implement: the return says CHANGED is the seats' CLAIM, and names the CLI that checks it");
+// The packet must REACH the seat — a field validated and then dropped is worse
+// than one never required, because the refusal implies it was used.
+for (const f of ["SCENE", "FORBIDDEN", "REACH", "DONE"]) {
+  ok(new RegExp(`${f}:`).test(iRt.calls[0].prompt),
+    `implement: the packet's ${f} clause reaches the seat's prompt`);
+}
+// The four-status protocol arrives as a SCHEMA, not a prose request: the
+// operator routes on status, and a free-text status is one it must parse.
+const iEnum = iRt.calls[0]?.schema?.properties?.status?.enum ?? [];
+ok(["DONE", "DONE_WITH_CONCERNS", "NEEDS_CONTEXT", "BLOCKED"].every((s) => iEnum.includes(s)),
+  "implement: the seat is given the charter's four-status protocol as a schema enum");
+ok(iRt.calls[0]?.schema?.properties?.changed?.type === "array",
+  "implement: `changed` is an ARRAY of paths — a prose CHANGED line cannot be checked against a diff");
+
+// SERIALIZATION. The stub's parallel() runs thunks sequentially, so a
+// concurrency counter here would pass for a parallel implementation too — a
+// vacuous pin, which is the one thing this repo refuses to ship. What IS
+// enforceable is that the file contains no parallel() call at all: the
+// charter's one-implementer-at-a-time rule [D:CHART-r6] is a property of the
+// script, not a promise in a comment.
+{
+  const fs = await import("node:fs");
+  const src = fs.readFileSync(new URL(WF("implement.js")), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  ok(!/\bparallel\s*\(/.test(src),
+    "implement: NO parallel() call in the file (serialization is structural)");
+  // CONTROL: the same scan against a workflow that DOES fan out must find one,
+  // or the assertion above passes on a broken regex.
+  const bs = fs.readFileSync(new URL(WF("brainstorm.js")), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  ok(/\bparallel\s*\(/.test(bs),
+    "implement: CONTROL — the scan finds parallel() in brainstorm.js");
+}
+
+// THE TIER. mechanic defaults to IMPLEMENT, author to JUDGMENT — what
+// ops-render.sh's seat_add lines say. args.tiers supplies the id behind it.
+const { result: iTier, rt: iTierRt } = await run(WF("implement.js"),
+  { tasks: PKT({ id: "t" }), tiers: { IMPLEMENT: "deepseek:deepseek-v4-flash" } },
+  { "implement:t": IMPL_OK() });
+ok(iTierRt.calls[0]?.model === "deepseek:deepseek-v4-flash" && iTier?.modelSource === "args.tier:IMPLEMENT",
+  "implement: the mechanic seat resolves the IMPLEMENT binding out of args.tiers (the #158 point)");
+const { result: iBare, rt: iBareRt } = await run(WF("implement.js"),
+  { tasks: PKT({ id: "t" }) }, { "implement:t": IMPL_OK() });
+ok(iBareRt.calls[0]?.model === "sonnet" && iBare?.modelSource === "args.tier:IMPLEMENT",
+  "implement: with no args.tiers the IMPLEMENT default alias stands — never the JUDGMENT one");
+const { result: iAuth, rt: iAuthRt } = await run(WF("implement.js"),
+  { tasks: PKT({ id: "t" }), seat: "author" }, { "implement:t": IMPL_OK() });
+ok(iAuthRt.calls[0]?.agentType === "cc-operator:op-author" && iAuth?.modelSource === "args.tier:JUDGMENT",
+  "implement: the author seat defaults to JUDGMENT, its own tier");
+const { rt: iModelRt } = await run(WF("implement.js"),
+  { tasks: PKT({ id: "t" }), model: "glm-5-turbo", tiers: { IMPLEMENT: "x" } },
+  { "implement:t": IMPL_OK() });
+ok(iModelRt.calls[0]?.model === "glm-5-turbo",
+  "implement: an explicit args.model wins over the seat's tier");
+await throws(() => run(WF("implement.js"),
+  { tasks: PKT({ id: "t" }), model: "not routable" }, {}),
+  "implement: a charset-bad args.model is refused", "outside the");
+// READ-ONLY SEATS ARE NOT DISPATCHABLE HERE. Serializing a scout buys nothing,
+// and the charter's rule is about implementers specifically.
+for (const s of ["scout", "crawler", "verifier", "reviewer", "__proto__"]) {
+  await throws(() => run(WF("implement.js"), { tasks: PKT({ id: "t" }), seat: s }, {}),
+    `implement: the read-only/non-implementer seat ${JSON.stringify(s)} is refused`, "unknown seat");
+}
+// `op-` prefix optional, as everywhere else in this project.
+{
+  const { rt } = await run(WF("implement.js"),
+    { tasks: PKT({ id: "t" }), seat: "op-author" }, { "implement:t": IMPL_OK() });
+  ok(rt.calls[0]?.agentType === "cc-operator:op-author",
+    "implement: the 'op-' prefix is optional on args.seat");
+}
+
+// A DEAD SEAT STOPS THE RUN. The next task may depend on this one's output, so
+// stepping over a death produces a tree half-built by a seat that never ran.
+{
+  const { result: iDead, rt: iDeadRt } = await run(WF("implement.js"),
+    { tasks: [PKT({ id: "a" }), PKT({ id: "b" }), PKT({ id: "c" })] },
+    { "implement:a": IMPL_OK() });  // b dies
+  ok(iDeadRt.calls.length === 2 && iDead?.stoppedAt === "b",
+    "implement: a dead seat STOPS the serial run at that task, leaving the rest undispatched");
+  ok(iDead?.dispatched === 2 && iDead?.requested === 3,
+    "implement: the return states how many of how many ran, so a short run cannot read as complete");
+  ok(iDead?.results?.[1]?.dead === true && /NOT an empty report/.test(iDead?.results?.[1]?.error ?? ""),
+    "implement: the dead task is reported as DEAD, never as an empty report");
+  ok(iDead?.results?.[0]?.report?.status === "DONE",
+    "implement: the work completed before the death is kept — it is real work");
+}
+// The args normalizer: the Workflow tool stringifies args in transit (#92).
+{
+  const { result: iStr } = await run(WF("implement.js"),
+    JSON.stringify({ tasks: PKT({ id: "s" }) }), { "implement:s": IMPL_OK() });
+  ok(iStr?.dispatched === 1,
+    "implement: a JSON-STRING args (how the tool sends it) is parsed, not refused as empty");
 }
 
 console.log(`\n== summary: ${pass} passed, ${fail} failed ==`);

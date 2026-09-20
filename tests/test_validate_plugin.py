@@ -30,10 +30,16 @@ _PACKET_SENTENCE = (
     "point + the proof) / REPORT (status, SHA, CHANGED: <paths>|none)\n```"
 )
 
+# The four-status protocol (#158, check_implement_packet): implement.js hands
+# the seat these as a schema enum, so the charter must still define them.
+_STATUS_SENTENCE = (
+    "\n\nDONE / DONE_WITH_CONCERNS / NEEDS_CONTEXT / BLOCKED [D:CHART-status]"
+)
+
 GOOD_CHARTER = "# OPERATOR.md\n\n" + "\n".join(
     f"## {sec}\n\nrule [D:tag-{i}] body"
     + (_CLI_SENTENCE if sec == "EVIDENCE GATE" else ".")
-    + (_PACKET_SENTENCE if sec == "ORCHESTRATED MODE" else "")
+    + (_PACKET_SENTENCE + _STATUS_SENTENCE if sec == "ORCHESTRATED MODE" else "")
     + "\n"
     for i, sec in enumerate(vp.CHARTER_SECTION_ORDER)
 )
@@ -639,6 +645,18 @@ def make_good_tree(root):
     for wname in ("review", "brainstorm"):
         write(root / "workflows" / f"{wname}.js",
               f'export const meta = {{ name: "{wname}", description: "d" }};\n' + WF_SHARED)
+    # implement.js is separate because check_implement_packet REPORTS a missing
+    # one (#158): the implement stage running as a workflow IS the contract, so
+    # a check that passes when its subject is deleted is not a check. The stub
+    # carries the packet list, its two application sites, and the status enum.
+    write(root / "workflows" / "implement.js",
+          'export const meta = { name: "implement", description: "d" };\n' + WF_SHARED +
+          'const PACKET_FIELDS = ["task", "text", "scene", "inputs", "forbidden", "done", "reach"];\n'
+          'for (const f of PACKET_FIELDS) { if (!A.tasks?.[0]?.[f]) throw new Error(`${f} missing`); }\n'
+          'const prompt = PACKET_FIELDS.map((f) => `${f.toUpperCase()}:\\n${A.tasks[0][f]}`).join("\\n");\n'
+          'const REPORT = { properties: { status: {\n'
+          '  enum: ["DONE", "DONE_WITH_CONCERNS", "NEEDS_CONTEXT", "BLOCKED"],\n'
+          '} } };\n')
     # plan.js is separate because check_northstar REPORTS a missing plan.js
     # rather than skipping (#58): read without a fallback, refused when absent
     # or missing `Missed if:`, interpolated into exactly one prompt.
@@ -1002,6 +1020,106 @@ class ValidatorTest(unittest.TestCase):
         # Not-found must be a reported problem, never a silent skip.
         self._mutate_verdict("# --- Verdict path ---", "# --- verdict stuff ---")
         self.assertFires("Verdict path")
+
+    # --- #158: the implement stage's packet (check_implement_packet) ---
+    # A FOURTH hand-copy of the charter's dispatch packet, this one in CODE.
+    # Every case below drives check_implement_packet red; the fixture is
+    # clean-by-construction, so a fixture edited only to go green would
+    # disable the check with the suite passing (F30's shape).
+    _IMPLEMENT_EXPECTED_FIELDS = ("TASK", "TEXT", "SCENE", "INPUTS",
+                                  "FORBIDDEN", "DONE", "REACH")
+    _IMPLEMENT_EXPECTED_STATUSES = ("DONE", "DONE_WITH_CONCERNS",
+                                    "NEEDS_CONTEXT", "BLOCKED")
+
+    def _implement(self):
+        return self.dir / "workflows" / "implement.js"
+
+    def test_implement_fields_match_expected(self):
+        # The one place the two copies are compared. Deriving the cases below
+        # from the module under test would assert self-consistency, not
+        # correctness — _EXPECTED_SPINE's lesson, applied to this pin.
+        self.assertEqual(tuple(vp.IMPLEMENT_PACKET_FIELDS),
+                         self._IMPLEMENT_EXPECTED_FIELDS,
+                         "IMPLEMENT_PACKET_FIELDS changed — update the "
+                         "independent copy here, templates/OPERATOR.md, "
+                         "docs/HANDOUT.md and workflows/implement.js")
+        self.assertEqual(tuple(vp.IMPLEMENT_STATUSES),
+                         self._IMPLEMENT_EXPECTED_STATUSES,
+                         "IMPLEMENT_STATUSES changed — update the independent "
+                         "copy here and the charter's four-status protocol")
+
+    def test_implement_packet_dropped_field_fires(self):
+        # The realistic mutation: a field quietly dropped from the list. The
+        # refusal stops demanding REACH and the seat stops receiving it.
+        p = self._implement()
+        p.write_text(p.read_text(encoding="utf-8").replace(', "reach"', ""),
+                     encoding="utf-8")
+        self.assertFires("PACKET_FIELDS is missing 'REACH'")
+
+    def test_implement_packet_extra_field_fires(self):
+        # The mirror: code asking for a clause the contract never defined.
+        p = self._implement()
+        p.write_text(p.read_text(encoding="utf-8").replace(
+            '"reach"]', '"reach", "budget"]'), encoding="utf-8")
+        self.assertFires("PACKET_FIELDS carries 'budget'")
+
+    def test_implement_packet_validated_then_dropped_fires(self):
+        # Validated and then NEVER SENT — worse than never required, because
+        # the refusal implies the field was used. The list keeps every field;
+        # only the prompt-building site goes.
+        p = self._implement()
+        src = p.read_text(encoding="utf-8")
+        src = src.replace('const prompt = PACKET_FIELDS.map((f) => `${f.toUpperCase()}:\\n${A.tasks[0][f]}`).join("\\n");',
+                          'const prompt = "hardcoded task text only";')
+        p.write_text(src, encoding="utf-8")
+        self.assertFires("no `PACKET_FIELDS.map(`")
+
+    def test_implement_packet_application_in_a_comment_does_not_count(self):
+        # F48/F57's shape on this pin: a call site moved into a comment must
+        # not satisfy the application check.
+        p = self._implement()
+        src = p.read_text(encoding="utf-8")
+        src = src.replace("const prompt = PACKET_FIELDS.map(",
+                          "// const prompt = PACKET_FIELDS.map(")
+        p.write_text(src, encoding="utf-8")
+        self.assertFires("no `PACKET_FIELDS.map(`")
+
+    def test_implement_status_enum_dropped_fires(self):
+        # A status the seat cannot return is a route the operator's protocol
+        # has and the workflow silently removes.
+        p = self._implement()
+        p.write_text(p.read_text(encoding="utf-8").replace(', "BLOCKED"', ""),
+                     encoding="utf-8")
+        self.assertFires("status enum is missing 'BLOCKED'")
+
+    def test_implement_charter_losing_a_packet_field_fires(self):
+        # The contract's other end. check_handout_packet fires too — this
+        # needle is the one that names the workflow still requiring it.
+        c = self.dir / "templates" / "OPERATOR.md"
+        c.write_text(c.read_text(encoding="utf-8").replace(
+            "FORBIDDEN / DONE", "DONE"), encoding="utf-8")
+        self.assertFires("the dispatch packet lost 'FORBIDDEN', which "
+                         "workflows/implement.js still requires")
+
+    def test_implement_charter_losing_a_status_fires(self):
+        c = self.dir / "templates" / "OPERATOR.md"
+        c.write_text(c.read_text(encoding="utf-8").replace(
+            "NEEDS_CONTEXT / ", ""), encoding="utf-8")
+        self.assertFires("four-status protocol lost 'NEEDS_CONTEXT'")
+
+    def test_implement_missing_file_fires(self):
+        # Absence is a FINDING, never a skip (#114): a check that passes when
+        # its subject is deleted is not a check.
+        self._implement().unlink()
+        self.assertFires("workflows/implement.js: missing")
+
+    def test_implement_packet_locator_reshape_fires(self):
+        # A reshape must update the locator, not silence the pin.
+        p = self._implement()
+        p.write_text(p.read_text(encoding="utf-8").replace(
+            "const PACKET_FIELDS = [", "const PACKET_SPEC = ["),
+            encoding="utf-8")
+        self.assertFires("no `const PACKET_FIELDS = [...]` found")
 
     # --- the handout packet pin (check_handout_packet, F69 + #57) ---
     # The full packet spine, written once rather than derived from

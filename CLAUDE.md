@@ -106,6 +106,7 @@ local `.archive/dev/` (untracked).
 | a `file.sh:NNN` citation in tracked prose | `check_line_citations` refuses past-EOF, `:0` (`lines[-1]` wraps) or a BLANK line, across ALL tracked markdown — scoped to `docs/**` it reported green about the files it never read. It CANNOT see a line that still exists and no longer says what the prose claims — cite the SYMBOL (#139 item 4). Case: `LineCitationTest`. |
 | a CLI's FLAGS prescribed in tracked prose | `check_prose_invocations` reads accepted+mandatory off the CLI's OWN parser, `usage:` strings AND `# Usage:` blocks (#161) — a table here is the second copy it catches. Mandatory is PER FORM; `[--since]` = ABSENT; a FLAGLESS span is judged when no form is. The citation tail stops at the NEXT CLI name; an exemption excuses ONE typo per paragraph (#164); a fenced `\` continuation is one line (#162); `_PROSE_ROOTS` is asserted by SELECTION (the `_MIN` floor counts invocations, so dropping `templates/` ships green). Cases: `ProseInvocationTest`, _"test_the_shipped_charter_defect_fires"_. Detail: LANDMINES (0.11.17, #149). |
 | an "X was not written" assertion in `tests/test-scripts.sh` | use `unchanged_lines`/`unchanged_bytes`/`delta_is`/`both_present`, never a bare `=` between two reads of one file — ABSENT both are `""` and `[ "" = "" ]` is TRUE. Guard the VALUES too: `${2:-0}` on an empty count passed `0-0 -eq 0` on a file that EXISTS. Each needs BOTH controls. Cases: the _"#148"_ block. Detail: LANDMINES (0.11.17). |
+| `PACKET_FIELDS` or the serial loop in `workflows/implement.js` (#158) | `check_implement_packet` pins the packet copy both ways, its `.map(` application, the four statuses, an ABSENT file; the loop keeps NO `parallel(`. Cases: _"test_implement_packet_validated_then_dropped_fires"_ + _"implement: NO parallel() call in the file (serialization is structural)"_. Detail: LANDMINES (#158). |
 | the seat bindings or round structure in `workflows/debate.js` | `check_workflow_agent_types` proves the agentType NAMES a shipped agent; nothing in the validator says which call site gets which seat, so a debater prompt handed to `op-author` (Write + Edit — able to edit the artifact it argues about) ships green. Cases: _"debate.js runs three rounds"_ + _"dead-seat accounting"_. Detail: LANDMINES (0.11.9). |
 | `args.isolate` / `args.isolateCheckout` in `workflows/review.js` (#74) | the runtime's `isolation: "worktree"` takes NO commit — the worktree is created at the DEFAULT BRANCH (measured twice). Cases: _"#74"_. Why: `docs/LANDMINES.md` _"Isolation buys a clean tree, not a commit"_ (0.11.9). |
 | `args.isolate` / the adversarial seat's prompt in `workflows/review.js` (#23) | keep the two branches EXCLUSIVE: un-isolated ships F-A1 (`git status --porcelain`), isolated ships F-A2 (`git rev-parse HEAD` vs the named sha) and F-A1 must NOT also ship — a fresh worktree is clean by construction, so porcelain there is a control that cannot fail. Cases: the _"adversarial isolation"_ cases (the stub runtime captures `opts.isolation`). Detail: LANDMINES (0.11.9). |
@@ -194,11 +195,8 @@ manifests. The narrative behind each item moved to `docs/LANDMINES.md` (0.11.9).
   fails the build on a tag with no `### spec-<key>` entry, so the index cannot
   fall behind. Orphan entries (a retired tag's survivor) are fine. The spec dir
   emptied in 0.11.9 (backlog-charter removed; see git history).
-- **`docs/CYCLE.md`** specifies the engagement cycle's missing spec stage —
-  the spec artifact's location/schema, its approval stamp, the plan gate that
-  reads it, and the derived-stage rule. Design only: nothing in it is built,
-  and it prices the `.operator/.gitignore` v2->v3 migration a tracked spec
-  directory would require before anyone starts.
+- **`docs/CYCLE.md`** specifies the cycle's two missing stages: the spec
+  artifact/stamp/plan gate (unbuilt) and the implement workflow (#158, built).
 - **`docs/PLAYBOOK.md`** holds the executable procedures (adding a guard, a
   reader, touching the lock), each derived from a bug that happened here.
   **Read it before your first change.** Its F01–F66 audit writeups are

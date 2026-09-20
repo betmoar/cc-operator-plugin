@@ -43,7 +43,7 @@ safe default, and what pre-0.4 sentinels degrade to.
 
 ## Orchestration layer (0.5.0)
 
-Six **workflows** are the operator's dispatch primitives — deterministic
+Seven **workflows** are the operator's dispatch primitives — deterministic
 scripts that fan agent seats across model tiers and converge on judgment:
 
 | Workflow | Shape | Use |
@@ -53,6 +53,7 @@ scripts that fan agent seats across model tiers and converge on judgment:
 | `cc-operator:plan` | decompose an approved spec into TDD tasks → parallel feasibility/testability vetting | after a spec is approved |
 | `cc-operator:crawl` | one cheap crawler per shard → judgment-tier merge | digesting a large corpus fast |
 | `cc-operator:debate` | 2–5 caller-named models argue blind over three rounds → reviewer synthesis, `chose` always null | a decision worth paying rival flagships to disagree about |
+| `cc-operator:implement` | one implementer seat per task, STRICTLY SERIAL, on the IMPLEMENT tier; refuses an incomplete dispatch packet before spending a seat | the implement stage — every other stage of the cycle was already a workflow (#158) |
 | `cc-operator:dispatch` | one seat, on a caller-supplied id or a named tier; with neither, no model override at all | running a seat on its configured tier without rendering (#55, #158) |
 
 **Tier system.** Seats are pinned to tiers (`JUDGMENT`, `IMPLEMENT`,
@@ -186,7 +187,7 @@ directly:
 templates/OPERATOR.md             # the charter (materialized by /cc-operator:start)
 templates/{VERDICTS,DECISIONS}-header.md   # ledger schemas (byte-identical to the proven originals)
 commands/{start,handoff,tiers}.md # the three slash commands
-workflows/{review,brainstorm,plan,crawl,dispatch,debate}.js  # the orchestration primitives
+workflows/{review,brainstorm,plan,crawl,dispatch,debate,implement}.js  # the orchestration primitives
 agents/op-*.md                    # tier-aliased seats: author, mechanic, reviewer, scout, verifier, brainstorm, crawler, debater
 skills/chief-operator/SKILL.md    # thin router (front door only)
 scripts/ops-{init,task,verdict,adopt,claims,backlog}.sh  # the evidence-gate mechanism

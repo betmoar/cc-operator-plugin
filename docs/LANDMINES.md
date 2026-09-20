@@ -1899,3 +1899,65 @@ is `0`, an empty string, or an equality between two reads of the same absent fil
 tell success from never-having-measured.** It is `cmd > log; echo $?` in test-harness
 costume. `gate-suite.sh`'s marker-plus-floor design exists to refuse it one level up;
 this is the same rule applied inside a case.
+## The tier nothing dispatched, and the fallback that hid it (#158)
+
+`grep -rn IMPLEMENT workflows/` returned **nothing**. IMPLEMENT is one of the four
+canonical tiers — declared in `ops-tiers.sh`'s `TIER_NAMES`, given a baked default,
+documented in the README and in `commands/tiers.md` — and it is the tier
+`ops-render.sh` binds the implementer to (`seat_add mechanic IMPLEMENT default`). The
+one seat on the tier was the one seat no workflow could reach on it.
+
+What made that invisible for so long is the shape of the workaround. Two routes existed
+and each looked like an answer. `ops-render.sh` writes the binding into project-layer
+agent files — correct, but global and only after a session restart, which mid-engagement
+is the event the RECOVERY PROTOCOL exists to survive. And `dispatch.js` resolved
+`model || JUDGMENT` with only JUDGMENT in its `DEFAULT_TIERS`, so a `mechanic` dispatched
+without an explicit `args.model` ran on the judgment default and **said so in the log**.
+That log line is why it read as a design: a fallback that announces itself feels honest.
+It was honest and wrong — a silent tier PROMOTION in the one direction that costs money,
+the class #153 measures, reached by a different door.
+
+The fix is not a better default. A workflow cannot read `tiers.env` (no filesystem in the
+sandbox), so every default it could pick is a guess about a binding it cannot see. The
+honest move is to DECLINE TO CHOOSE: omit `model` from the `agent()` options entirely and
+let the layers that already own the decision answer — the seat's frontmatter, a rendered
+project-layer agent, `$CLAUDE_CODE_SUBAGENT_MODEL`. Renderer and dispatcher stop
+competing: render sets the standing default, dispatch overrides per call, and an absent
+override no longer overwrites that default with a third answer.
+
+One measurement is still owed and is recorded in the code rather than assumed away: what
+this repo has measured is the CONVERSE — `opts.model` overrides the agent file's
+frontmatter (2026-07-29). That an OMITTED `opts.model` leaves the frontmatter in effect
+is the expected complement, not a measurement. The returned `modelSource` is what a live
+run reads it off.
+
+Making four tiers nameable had a second-order cost that is easy to miss: the eager
+`for (const [name, id] of Object.entries(TIERS))` validation loop was sound only while
+JUDGMENT was the sole dispatchable tier, because then every key was reachable on every
+call. With four tiers nameable and at most one reached per call, the same loop resurrects
+what PR #78 removed — a malformed value on a tier THIS CALL never touches failing the
+run, which makes "forward the resolver's whole map" unsafe the moment any single
+`tiers.env` binding is malformed. Validation moved to the id that actually reaches
+`agent()`. The guard did not weaken; its subject narrowed.
+
+## Serialization is a property of the script, or it is nothing (#158)
+
+The charter says one implementer at a time, read-only workers in parallel on disjoint
+inputs [D:CHART-r6]. Until `workflows/implement.js` that was prose the operator had to
+obey while dispatching implementers by hand.
+
+The tempting test is a concurrency counter in the stub runtime. It is vacuous: the node
+suite's `parallel()` runs its thunks sequentially, so a workflow that fanned implementers
+out in parallel would score max-concurrency 1 and pass. The assertion that actually holds
+is a source scan — the file contains no `parallel(` call at all — paired with a CONTROL
+that runs the same scan against `brainstorm.js` and finds one. Without the control the
+scan passes on a broken regex, which is the same vacuity one level up.
+
+The packet took the mirror treatment. `implement.js` carries the charter's dispatch
+packet as `PACKET_FIELDS`, which is the FOURTH hand-copy of that contract, and the first
+one in code. `check_implement_packet` pins it in both directions (a field missing from
+the list, and a field in the list the charter never defined) — but the pin that matters
+most is the application one: a field can be REQUIRED by the refusal and then dropped on
+the way to the prompt, which is worse than never requiring it, because the refusal
+implies the field was used. That is why the check demands `PACKET_FIELDS.map(` at a real
+call site and not merely two mentions of the name.
