@@ -4317,6 +4317,58 @@ check "ops-verdict.sh actually implements --mark-handoff" \
   "$(grep -q -- '--mark-handoff' "$SCRIPTS/ops-verdict.sh" && echo 0 || echo 1)"
 
 ########################################################################
+echo "-- Case: the workflow commands resolve tiers before dispatching (#75, #55)"
+# Six workflows shipped with no command surface at all: the operator hand-built
+# `Workflow({name, args})` calls and hand-pasted a model id resolved by a
+# separate script. That hand-paste IS #55 at the call site — skip it and every
+# seat runs on a harness alias while tiers.env says otherwise, silently. A
+# command that forgets step 1 reproduces exactly that, so the resolution is
+# pinned per command rather than trusted to the prose around it.
+#
+# COVERAGE, not equality: every workflow except dispatch must have a command
+# (deleting one fires), and any command named after a workflow must carry the
+# contract (adding commands/dispatch.md later is legal and automatically
+# checked). dispatch.js is the low-level escape hatch `/cc-operator:tiers`
+# documents; it takes a resolved id by construction.
+WFDIR="$REPO/workflows"
+CMDDIR="$REPO/commands"
+_wf_commanded=0
+for _wf in "$WFDIR"/*.js; do
+  _n="${_wf##*/}"; _n="${_n%.js}"
+  [ "$_n" = "dispatch" ] && continue
+  check "commands/$_n.md exists — the workflow has an entry point (#75)" \
+    "$([ -f "$CMDDIR/$_n.md" ] && echo 0 || echo 1)"
+  [ -f "$CMDDIR/$_n.md" ] || continue
+  _wf_commanded=$((_wf_commanded + 1))
+  # 1. The tier resolution itself. --json is the machine-readable form whose
+  #    own comment says it exists for Workflow({args:{tiers:...}}).
+  check "commands/$_n.md resolves the tier bindings with ops-tiers.sh --json" \
+    "$(grep -q 'ops-tiers.sh --json' "$CMDDIR/$_n.md" && echo 0 || echo 1)"
+  # 2. THE GRANT MUST COVER THE PRESCRIPTION (#104's rule, applied here): a
+  #    body that prescribes a Bash invocation and a Workflow call needs both in
+  #    allowed-tools, or the command it exists to make frictionless opens with
+  #    two permission prompts.
+  _fm="$(awk 'BEGIN{n=0} /^---$/{n++; if(n==2) exit; next} n==1' "$CMDDIR/$_n.md")"
+  check "commands/$_n.md's allowed-tools grants the ops-tiers.sh it prescribes" \
+    "$(printf '%s' "$_fm" | grep -q 'allowed-tools:.*ops-tiers.sh' && echo 0 || echo 1)"
+  check "commands/$_n.md's allowed-tools grants the Workflow tool it dispatches with" \
+    "$(printf '%s' "$_fm" | grep -q 'allowed-tools:.*Workflow' && echo 0 || echo 1)"
+  # 3. It must name ITS OWN workflow. A command that dispatches a different one
+  #    is a mis-wire no other check can see: check_commands reads frontmatter
+  #    and paths, and knows nothing about which workflow a body invokes.
+  check "commands/$_n.md dispatches cc-operator:$_n, not another workflow" \
+    "$(grep -q "cc-operator:$_n" "$CMDDIR/$_n.md" && echo 0 || echo 1)"
+done
+# The loop itself must have run: a glob that matched nothing would pass every
+# check above by never executing one (the vacuity this repo keeps re-finding).
+check "the workflow-command loop actually ran (>=5 commanded workflows)" \
+  "$([ "$_wf_commanded" -ge 5 ] && echo 0 || echo 1)"
+# CONTROL: the same three greps against a command that is NOT a workflow entry
+# point must come back negative, or the greps match anything.
+check "CONTROL — commands/start.md does not resolve tiers (the greps can fail)" \
+  "$(grep -q 'ops-tiers.sh --json' "$CMDDIR/start.md" && echo 1 || echo 0)"
+
+########################################################################
 echo "-- Case: skills/chief-operator/SKILL.md — the front door resolves"
 # #80: until 0.10 nothing read skills/ at all — not the validator, not this suite — so a rename following
 # CLAUDE.md's own coupling row ("update the /cc-operator: command refs in OPERATOR.md + SKILL.md") was caught

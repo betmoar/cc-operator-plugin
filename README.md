@@ -79,11 +79,21 @@ ignored by default.
 
 ## Commands
 
+Every workflow command resolves the tier bindings itself (`ops-tiers.sh --json`)
+and passes them through, so a configured `tiers.env` reaches the seats without
+the operator pasting a model id by hand (#55 at the call site).
+
 | Command | Purpose |
 |---|---|
 | `/cc-operator:start [--inline]` | Initialize the ledger + materialize the charter |
 | `/cc-operator:handoff` | Produce the six-section operator→human handoff |
 | `/cc-operator:tiers` | Resolve tier→model bindings, apply overrides, render project-layer agents |
+| `/cc-operator:brainstorm` | Diverge before a spec exists, then interview one question at a time |
+| `/cc-operator:plan` | Decompose an approved spec into vetted TDD tasks |
+| `/cc-operator:implement` | One implementer seat per task, serially, on the IMPLEMENT tier |
+| `/cc-operator:review` | The two-stage review panel over an artifact |
+| `/cc-operator:crawl` | Digest a large corpus by shard, cheaply |
+| `/cc-operator:debate` | 2–5 rival models argue a judgment call; you decide |
 
 ## Install
 
@@ -186,7 +196,7 @@ directly:
 .claude-plugin/marketplace.json   # standalone install path (source "./")
 templates/OPERATOR.md             # the charter (materialized by /cc-operator:start)
 templates/{VERDICTS,DECISIONS}-header.md   # ledger schemas (byte-identical to the proven originals)
-commands/{start,handoff,tiers}.md # the three slash commands
+commands/*.md                     # slash commands: start, handoff, tiers + one per workflow
 workflows/{review,brainstorm,plan,crawl,dispatch,debate,implement}.js  # the orchestration primitives
 agents/op-*.md                    # tier-aliased seats: author, mechanic, reviewer, scout, verifier, brainstorm, crawler, debater
 skills/chief-operator/SKILL.md    # thin router (front door only)
