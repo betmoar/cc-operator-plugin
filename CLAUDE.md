@@ -194,6 +194,11 @@ manifests. The narrative behind each item moved to `docs/LANDMINES.md` (0.11.9).
   fails the build on a tag with no `### spec-<key>` entry, so the index cannot
   fall behind. Orphan entries (a retired tag's survivor) are fine. The spec dir
   emptied in 0.11.9 (backlog-charter removed; see git history).
+- **`docs/CYCLE.md`** specifies the engagement cycle's missing spec stage —
+  the spec artifact's location/schema, its approval stamp, the plan gate that
+  reads it, and the derived-stage rule. Design only: nothing in it is built,
+  and it prices the `.operator/.gitignore` v2->v3 migration a tracked spec
+  directory would require before anyone starts.
 - **`docs/PLAYBOOK.md`** holds the executable procedures (adding a guard, a
   reader, touching the lock), each derived from a bug that happened here.
   **Read it before your first change.** Its F01–F66 audit writeups are

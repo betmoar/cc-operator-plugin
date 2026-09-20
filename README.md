@@ -219,8 +219,10 @@ node tests/test_compress.mjs
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for conventions and
 [CLAUDE.md](CLAUDE.md) for the maintainer handoff (the "if you touch X, update
-Y" couplings). The design spec lives under `docs/spec/`; build and pilot
-history lives in the git history (tree ≤ v0.2.0).
+Y" couplings). Design rationale lives under `docs/` — `TAGS.md` resolves the
+charter's `[DOC:spec-*]` tags, `LANDMINES.md` holds the already-hit failure
+classes, `CYCLE.md` specifies the engagement cycle's missing spec stage; build
+and pilot history lives in the git history (tree ≤ v0.2.0).
 
 ## License
 
