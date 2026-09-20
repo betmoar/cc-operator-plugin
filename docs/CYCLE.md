@@ -1,9 +1,14 @@
-# CYCLE — the engagement cycle, and the spec stage that is missing from it
+# CYCLE — the engagement cycle, and the two stages missing from it
 
 Read-only rationale, like everything under `docs/`. Nothing here is loaded at
 runtime and nothing here is implemented yet: this file specifies the **spec
-artifact**, its **approval stamp**, and the **derived-stage rule**, so the three
-issues that build them argue from one document instead of three descriptions.
+artifact**, its **approval stamp**, the **implement workflow** that makes the
+IMPLEMENT tier reachable at all, and the **derived-stage rule**, so the issues
+that build them argue from one document instead of four descriptions.
+
+Two stages are missing, not one. The spec stage has no artifact (§2, §3). The
+implement stage has an artifact but no workflow, which is why the one tier
+bound to the implementer is dispatched by nothing (§5).
 
 Scope discipline, stated once: `templates/OPERATOR.md` is at 143/150 lines and
 8873/9000 bytes. Nothing proposed here goes in the charter, and if something
@@ -17,7 +22,7 @@ kept.
 | diverge | `workflows/brainstorm.js` → `{ranked, sharedConstraints, openQuestions}` | operator hand-builds `args` |
 | **spec** | **nothing** | — |
 | plan | `workflows/plan.js`, refuses without `args.spec` **and** `args.northStar` | operator retypes both |
-| implement | `workflows/dispatch.js`, or a plain `Agent` call | operator |
+| implement | a plain `Agent` call, or `workflows/dispatch.js` per call | operator; the tier system cannot reach it (§5) |
 | review | `workflows/review.js` | operator |
 | gate | `ops-task.sh` → `ops-verdict.sh` | operator, by hand |
 | handoff | `/cc-operator:handoff` | the one stage with a command |
@@ -82,7 +87,7 @@ state.
 
 An implementation that cannot pay that cost should put specs in the project's
 own `docs/` rather than weaken the allowlist — but then the spec leaves the root
-every other engagement artifact lives under, and `ops-stage.sh` (§5) gains a
+every other engagement artifact lives under, and `ops-stage.sh` (§6) gains a
 configurable path, which is a worse trade.
 
 ### 3.2 Schema
@@ -197,7 +202,90 @@ The same shape applies to `/cc-operator:{brainstorm,review,debate,crawl}`, which
 is issue #75's first half. A command per workflow is the largest
 user-friendliness gain per line in this design, and it needs no new mechanism.
 
-## 5. The derived stage — `ops-stage.sh`
+## 5. The implement stage: the only stage that writes, and the only one that is not a workflow
+
+### 5.1 Measured
+
+1. **`IMPLEMENT` appears in no workflow file.** `grep -rn IMPLEMENT workflows/`
+   returns nothing across all six. The tier is declared in `ops-tiers.sh`'s
+   `TIER_NAMES`, carries a baked default, and is documented in `README.md` and
+   `commands/tiers.md` as one of the four tiers — and nothing dispatches it.
+2. **It is the tier the implementer is bound to.** `ops-render.sh` declares
+   `seat_add mechanic IMPLEMENT default`. The one seat on the tier is the one
+   seat no workflow can reach on it.
+3. **A plain `Agent` dispatch cannot carry a configured id.** The agent files
+   pin an alias in frontmatter (`op-mechanic: sonnet`, `op-author: opus`), read
+   at session start rather than per call, and the harness's `Agent` tool locks
+   its `model` parameter to the enum `sonnet | opus | haiku | fable` —
+   re-measured against this session's own tool schema on 2026-09-20, the
+   re-check `commands/tiers.md` asks for after a Claude Code upgrade. A
+   cc-proxy id is refused before dispatch. That is issue #55, still true.
+4. **`dispatch.js` falls back one tier too high.** Its `DEFAULT_TIERS` holds
+   only `JUDGMENT`, and the resolution is `model || JUDGMENT`. So a mechanic
+   dispatched without an explicit `args.model` — the IMPLEMENT-tier seat —
+   runs on the judgment default. The log line says which happened, which makes
+   it honest, not correct: the failure is a silent tier PROMOTION, and issue
+   #153 already measures what a mis-bound tier costs.
+
+So a `tiers.env` binding for `IMPLEMENT` reaches an implementer through exactly
+one route: `ops-render.sh` writing project-layer agent files, followed by a
+**session restart**. Mid-engagement, that restart is the event the RECOVERY
+PROTOCOL exists to survive — and the binding it applies is global, not
+per-task.
+
+### 5.2 The asymmetry that names the defect
+
+Every stage of this cycle that only READS runs as a workflow with its own tier
+map: `review.js`, `plan.js`, `brainstorm.js`, `crawl.js`, `debate.js`. The one
+stage that WRITES CODE is a plain `Agent` call against a hardcoded alias.
+
+The stage with the highest blast radius is the only one the tier system cannot
+route, and the only one with no deterministic script around it.
+
+### 5.3 `workflows/implement.js`
+
+- **It is the first workflow to dispatch `IMPLEMENT`**, which is the whole
+  point: the tier becomes reachable without a render and without a restart.
+- **It takes the dispatch packet as structured args** — TASK, TEXT, SCENE,
+  INPUTS, FORBIDDEN, DONE, REACH, REPORT — and **refuses an incomplete one
+  before spending a seat**. That is issue #152 landing where it belongs: the
+  packet is validated at the one call site that constructs a dispatch, not
+  after a fan-out has been paid for.
+- **It serializes.** The charter says one implementer at a time, read-only
+  workers in parallel on disjoint inputs. Today that is prose the operator must
+  obey. In a workflow it is a mechanism: implementer dispatches run
+  sequentially and a parallel fan-out over implementer seats is not expressible
+  in the script. The same conversion `scripts/lib/autobar.sh` performed for the
+  ENGAGEMENT CONTRACT's first clause.
+- **The seat comes from a literal map**, for `dispatch.js`'s two stated
+  reasons: a computed `agentType` is invisible to the validator's shipped-agent
+  check, and a literal table bounds what caller input can dispatch.
+- **It returns the REPORT and the CHANGED paths, and stops there.** The
+  workflow sandbox has no filesystem and no tools, so it cannot run
+  `ops-claims.sh` and cannot write a ledger row. Verifying CHANGED against the
+  diff and recording the verdict stay with the operator — the same boundary
+  issue #75 identified and did not fight.
+
+### 5.4 The smaller fix, shippable first
+
+`dispatch.js`'s fallback is wrong independently of whether an implement
+workflow ever exists. Two candidate repairs:
+
+- **Refuse** when `args.model` is absent and the seat is not a JUDGMENT seat —
+  honest, and it breaks callers who rely on the current fallback.
+- **Accept `args.tier`**, naming which entry of the caller-supplied `TIERS` map
+  to resolve when `args.model` is absent, with `IMPLEMENT` and `MECHANICAL`
+  added to `DEFAULT_TIERS`. The command layer (§4) supplies it, so the common
+  path stops being hand-resolved.
+
+The second is preferred, with one constraint: **the seat→tier binding must not
+gain a second declaration.** It lives in `ops-render.sh`'s `seat_add` lines,
+and a copy inside a workflow is the uniform-drift class the repo already pays
+for elsewhere — identically-broken copies are trivially "in parity". The tier
+map reaches a workflow the way every other resolved value does: through
+`args.tiers`, resolved outside.
+
+## 6. The derived stage — `ops-stage.sh`
 
 The autonomy lever is not a scheduler. It is making the cycle able to say where
 it is and what comes next, without anyone storing that answer.
@@ -233,7 +321,7 @@ Four constraints on the implementation:
   unparseable, prints `STAGE unknown` and why. Guessing a stage is how a
   derived field becomes a stored one.
 
-## 6. What this design deliberately does not do
+## 7. What this design deliberately does not do
 
 - **No charter edit.** 127 bytes and 7 lines of headroom; a destination
   preference is the wrong altitude for the charter anyway.
@@ -249,7 +337,7 @@ Four constraints on the implementation:
   lenses' job, and issue #79 still stands: only the review workflow has ever run
   against a live model.
 
-## 7. Build order
+## 8. Build order
 
 Each step is independently shippable and independently useful.
 
@@ -257,8 +345,10 @@ Each step is independently shippable and independently useful.
    new mechanism, no gate surface, closes the #55 call-site footgun.
 2. **`ops-spec.sh` + `/cc-operator:spec` + the plan gate** (§3, §4). The
    allowlist migration is the long pole; price it before starting.
-3. **`ops-stage.sh`** (§5), then the status-bar segment once the CLI is proven.
-4. **Pre-dispatch triage** (issue #152) in front of the spec→plan fan-out, so a
+3. **`dispatch.js`'s fallback** (§5.4), then **`workflows/implement.js`**
+   (§5.3) — the tier system's one unreachable tier, made reachable.
+4. **`ops-stage.sh`** (§6), then the status-bar segment once the CLI is proven.
+5. **Pre-dispatch triage** (issue #152) in front of the spec→plan fan-out, so a
    thin spec is refused at roughly one agent instead of after a seven-seat run.
-5. **`/cc-operator:tutorial`** (issue #75 second half), whose acceptance
+6. **`/cc-operator:tutorial`** (issue #75 second half), whose acceptance
    criterion is a Stop that visibly blocks and is then cleared by a verdict row.
