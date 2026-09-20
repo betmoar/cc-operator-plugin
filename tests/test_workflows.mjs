@@ -165,8 +165,13 @@ ok(implOk, "brainstorm tier: IMPLEMENT accepted (F07 — resolver-map forwarding
 // "accepted, unused" and threw on it one line later (Copilot, PR #78). A tier
 // this workflow does not dispatch must not be able to fail its run at all —
 // otherwise "accepted" is a lie and forwarding the resolver's map is unsafe
-// the moment any tier in it is malformed. dispatch.js is the sharpest case:
-// it dispatches JUDGMENT alone, so every other key is unused by construction.
+// the moment any tier in it is malformed.
+//
+// #158 MOVED THE SUBJECT, not the property. dispatch.js used to dispatch
+// JUDGMENT alone, so every other key was unused by construction; now all four
+// tiers are NAMEABLE (args.tier) and at most ONE is reached per call. So the
+// property is enforced one level down — per CALL, not per workflow — and the
+// unused key here is a MECHANICAL binding on a call that names no tier at all.
 {
   let unusedOk = true;
   try {
@@ -176,15 +181,28 @@ ok(implOk, "brainstorm tier: IMPLEMENT accepted (F07 — resolver-map forwarding
       { "dispatch:scout": "ok" });
   } catch { unusedOk = false; }
   ok(unusedOk,
-    "dispatch tier: a malformed value on an UNDISPATCHED tier does not throw (logged unused means unused)");
+    "dispatch tier: a malformed value on a tier THIS CALL never reaches does not throw (logged unused means unused)");
 }
-// ...and the converse control: the same malformed value on a tier the
-// workflow DOES dispatch must still throw, or the filter above has simply
-// disabled the guard.
+// A key no tier table knows is the other half of F07: forwarding a resolver
+// map from a NEWER operator must stay free, malformed value and all.
+{
+  let futureOk = true;
+  try {
+    await run(WF("dispatch.js"),
+      { seat: "scout", prompt: "x", model: "glm-5-turbo",
+        tiers: { FUTURE_TIER: "glm 5 with spaces" } },
+      { "dispatch:scout": "ok" });
+  } catch { futureOk = false; }
+  ok(futureOk,
+    "dispatch tier: an UNKNOWN tier key is accepted-and-unused even when malformed (F07 survives #158)");
+}
+// ...and the converse control: the same malformed value on the tier the call
+// DOES reach must still throw, or lazy validation has simply disabled the
+// guard. `args.tier` is what makes it reachable.
 await throws(() => run(WF("dispatch.js"),
-  { seat: "scout", prompt: "x", model: "glm-5-turbo",
+  { seat: "scout", prompt: "x", tier: "JUDGMENT",
     tiers: { JUDGMENT: "glm 5 with spaces" } }, {}),
-  "dispatch tier: a malformed value on a DISPATCHED tier still throws (the filter did not neuter the guard)",
+  "dispatch tier: a malformed value on the tier THIS CALL reaches still throws (lazy validation did not neuter the guard)",
   "outside the");
 
 // ── review: bucket + threshold filter ───────────────────────────────────────
@@ -1460,18 +1478,71 @@ await throws(() => run(WF("dispatch.js"), { seat: "mechanic", model: "glm-5-turb
   "dispatch: an empty prompt is refused (a paid seat with no task)",
   "must be a non-empty string");
 
-// No args.model: falls back to a tier default rather than throwing, and SAYS
-// SO — a silent fallback hides a caller's mistaken binding.
+// ── #158: the resolution ladder ────────────────────────────────────────────
+// RUNG 3 IS THE DEFECT FIX. `model || JUDGMENT` dispatched the IMPLEMENT-tier
+// seat (mechanic, per ops-render.sh's seat_add) on the judgment default and
+// logged that it had — honest, not correct. A workflow cannot read tiers.env,
+// so the only honest answer to "no binding named" is to send NO model key and
+// let the seat's own configured default stand.
 const { result: dFall, rt: dFallRt } = await run(WF("dispatch.js"),
   { seat: "mechanic", prompt: "p" }, DISPATCH_OK);
-ok(dFall?.model === "opus",
-  "dispatch: no args.model falls back to the JUDGMENT default — a harness ALIAS since #76 step 2, never a vendor id");
-// The fallback command must be one a user can actually type — it used to name
-// `ops-render.sh --model <seat>`, neither installed nor reachable via
-// ${CLAUDE_PLUGIN_ROOT} (#62, caught by Copilot review).
-ok(dFallRt.logs.some((m) => /no args\.model given/.test(m)
+const dFallCall = dFallRt.calls.find((c) => c.label === "dispatch:mechanic");
+// The load-bearing assertion: the key is ABSENT from the agent() options.
+// `=== undefined` alone would also pass for `model: undefined`, which is a key
+// the harness still sees, so ask the options object whether it HAS the key —
+// the stub records it as a property either way.
+ok(dFallCall && !("model" in dFallCall && dFallCall.model !== undefined),
+  "dispatch: no args.model and no args.tier sends NO model override — the seat's default stands (#158)");
+ok(dFall?.model === null && dFall?.modelSource === "seat-default",
+  "dispatch: the return says seat-default rather than naming a model it did not choose (#158)");
+// NEGATIVE CONTROL for the assertion above: the same shape WITH a model must
+// put the key back, or the check passes because the stub records nothing.
+const { rt: dFallCtl } = await run(WF("dispatch.js"),
+  { seat: "mechanic", prompt: "p", model: "glm-5-turbo" }, DISPATCH_OK);
+ok(dFallCtl.calls.find((c) => c.label === "dispatch:mechanic")?.model === "glm-5-turbo",
+  "dispatch: CONTROL — with args.model the key IS present (the absence check can fail)");
+// It must SAY so: a caller who meant to pass a binding finds out, and the log
+// names commands a user can actually type — it once named `ops-render.sh
+// --model <seat>`, neither installed nor reachable via ${CLAUDE_PLUGIN_ROOT}
+// (#62, caught by Copilot review).
+ok(dFallRt.logs.some((m) => /NO model override/.test(m)
     && /\/cc-operator:tiers/.test(m) && /mechanic/.test(m)),
-  "dispatch: the fallback is LOGGED and names a command a user can actually run");
+  "dispatch: the no-override rung is LOGGED and names a command a user can actually run");
+
+// RUNG 2: args.tier resolves against the caller's map.
+const { result: dTier, rt: dTierRt } = await run(WF("dispatch.js"),
+  { seat: "mechanic", prompt: "p", tier: "IMPLEMENT",
+    tiers: { IMPLEMENT: "deepseek:deepseek-v4-flash" } }, DISPATCH_OK);
+ok(dTierRt.calls.find((c) => c.label === "dispatch:mechanic")?.model === "deepseek:deepseek-v4-flash",
+  "dispatch: args.tier resolves the id out of args.tiers and reaches agent() (#158 rung 2)");
+ok(dTier?.modelSource === "args.tier:IMPLEMENT",
+  "dispatch: the return names WHICH rung supplied the model");
+// IMPLEMENT is the tier that no workflow could dispatch before #158 — the
+// whole reason this rung exists. Without args.tiers it resolves to the harness
+// alias in DEFAULT_TIERS, never to JUDGMENT's.
+const { rt: dTierBare } = await run(WF("dispatch.js"),
+  { seat: "mechanic", prompt: "p", tier: "IMPLEMENT" }, DISPATCH_OK);
+ok(dTierBare.calls.find((c) => c.label === "dispatch:mechanic")?.model === "sonnet",
+  "dispatch: a bare args.tier=IMPLEMENT resolves to its own default alias, not the JUDGMENT one");
+// Case-insensitive: tiers.env writes them upper, a caller may not.
+const { result: dTierLower } = await run(WF("dispatch.js"),
+  { seat: "scout", prompt: "p", tier: "recon" }, { "dispatch:scout": { ok: true } });
+ok(dTierLower?.modelSource === "args.tier:RECON",
+  "dispatch: args.tier is case-insensitive (tiers.env writes upper; a caller may not)");
+// An unknown tier name REFUSES — a typo resolving silently is the same class
+// of substitution this change removes.
+await throws(() => run(WF("dispatch.js"),
+  { seat: "mechanic", prompt: "p", tier: "IMPLEMENTT" }, DISPATCH_OK),
+  "dispatch: an unknown args.tier is refused, never defaulted", "unknown tier");
+// RUNG 1 beats rung 2, and says so rather than silently dropping one.
+const { result: dBoth, rt: dBothRt } = await run(WF("dispatch.js"),
+  { seat: "mechanic", prompt: "p", model: "glm-5-turbo", tier: "IMPLEMENT",
+    tiers: { IMPLEMENT: "deepseek:deepseek-v4-flash" } }, DISPATCH_OK);
+ok(dBoth?.modelSource === "args.model"
+    && dBothRt.calls.find((c) => c.label === "dispatch:mechanic")?.model === "glm-5-turbo",
+  "dispatch: args.model wins over args.tier (rung 1 before rung 2)");
+ok(dBothRt.logs.some((m) => /both args\.model and args\.tier/.test(m)),
+  "dispatch: the shadowed args.tier is LOGGED, not silently dropped");
 
 // A dead agent returns null; reporting that as a result would let a caller
 // read "ran and said nothing" from "never ran".
@@ -1481,6 +1552,8 @@ ok(dDead?.dead === true && /agent died/.test(dDead?.error ?? ""),
   "dispatch: a dead agent is reported as dead, not as an empty result");
 ok(dDead?.result === undefined,
   "dispatch: a dead agent carries no `result` key a caller could read as output");
+ok(dDead?.modelSource === "args.model",
+  "dispatch: a dead agent still reports WHICH rung chose the model (the id is the likeliest cause)");
 
 // ── brainstorm: fan-out shape + the dead-agent paths ────────────────────────
 // Until the 2026-08-22 replay, brainstorm had ONE case (tier validation). Its

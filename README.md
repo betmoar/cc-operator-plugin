@@ -53,7 +53,7 @@ scripts that fan agent seats across model tiers and converge on judgment:
 | `cc-operator:plan` | decompose an approved spec into TDD tasks → parallel feasibility/testability vetting | after a spec is approved |
 | `cc-operator:crawl` | one cheap crawler per shard → judgment-tier merge | digesting a large corpus fast |
 | `cc-operator:debate` | 2–5 caller-named models argue blind over three rounds → reviewer synthesis, `chose` always null | a decision worth paying rival flagships to disagree about |
-| `cc-operator:dispatch` | one seat, one caller-supplied model id | running a seat on its configured tier without rendering (#55) |
+| `cc-operator:dispatch` | one seat, on a caller-supplied id or a named tier; with neither, no model override at all | running a seat on its configured tier without rendering (#55, #158) |
 
 **Tier system.** Seats are pinned to tiers (`JUDGMENT`, `IMPLEMENT`,
 `MECHANICAL`, `RECON`) in each workflow; what a tier *resolves to* is layered
