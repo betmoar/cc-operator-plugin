@@ -266,24 +266,48 @@ route, and the only one with no deterministic script around it.
   diff and recording the verdict stay with the operator — the same boundary
   issue #75 identified and did not fight.
 
-### 5.4 The smaller fix, shippable first
+### 5.4 The smaller fix, shippable first — DECIDED
 
 `dispatch.js`'s fallback is wrong independently of whether an implement
-workflow ever exists. Two candidate repairs:
+workflow ever exists, and the repair is settled: **accept `args.tier`, and when
+neither a model nor a tier is named, dispatch with no `model` at all.**
 
-- **Refuse** when `args.model` is absent and the seat is not a JUDGMENT seat —
-  honest, and it breaks callers who rely on the current fallback.
-- **Accept `args.tier`**, naming which entry of the caller-supplied `TIERS` map
-  to resolve when `args.model` is absent, with `IMPLEMENT` and `MECHANICAL`
-  added to `DEFAULT_TIERS`. The command layer (§4) supplies it, so the common
-  path stops being hand-resolved.
+The resolution ladder, in order:
 
-The second is preferred, with one constraint: **the seat→tier binding must not
-gain a second declaration.** It lives in `ops-render.sh`'s `seat_add` lines,
-and a copy inside a workflow is the uniform-drift class the repo already pays
-for elsewhere — identically-broken copies are trivially "in parity". The tier
-map reaches a workflow the way every other resolved value does: through
-`args.tiers`, resolved outside.
+1. **`args.model`** — an explicit id from the caller, under the same charset
+   guard a `tiers.env` binding gets. Unchanged.
+2. **`args.tier`** — a tier NAME resolved against the caller-supplied `TIERS`
+   map, with `IMPLEMENT` and `MECHANICAL` added to `DEFAULT_TIERS` so a bare
+   invocation still resolves. An unknown tier name is refused, not defaulted.
+3. **Neither** — the `model` key is **omitted from the `agent()` options**, and
+   the seat runs on whatever the layers outside this workflow already decide:
+   the agent file's `model:` frontmatter, a project-layer agent written by
+   `ops-render.sh`, `$CLAUDE_CODE_SUBAGENT_MODEL`, or a CLAUDE.md instruction.
+   The log names which rung won.
+
+Rung 3 is the substantive change. The current `model || JUDGMENT` **invents a
+choice** — it promotes an IMPLEMENT-tier seat to the judgment default and calls
+it a defensible fallback. Omitting the key declines to choose instead, which is
+the only honest thing a workflow with no filesystem can do about a binding it
+cannot read. It also makes the renderer and the dispatcher complementary rather
+than competing: `ops-render.sh` sets the standing default, `dispatch` overrides
+it per call, and an absent override no longer overwrites the default with a
+third answer.
+
+**One assumption the builder must measure before shipping rung 3.** What is
+recorded is the converse: `opts.model` OVERRIDES the agent file's `model:`
+frontmatter (measured 2026-07-29, cited in `workflows/review.js`). That an
+OMITTED `opts.model` leaves the frontmatter in effect is the expected
+complement, not something this repo has measured. A live dispatch with the key
+omitted, against a seat whose frontmatter names a distinguishable model, is the
+evidence — and if it comes back otherwise, rung 3 becomes an explicit refusal
+rather than a silent promotion.
+
+One constraint on every rung: **the seat→tier binding must not gain a second
+declaration.** It lives in `ops-render.sh`'s `seat_add` lines, and a copy inside
+a workflow is the uniform-drift class the repo already pays for elsewhere —
+identically-broken copies are trivially "in parity". `args.tier` is named by the
+caller precisely so the workflow never has to hold that map.
 
 ## 6. The derived stage — `ops-stage.sh`
 
