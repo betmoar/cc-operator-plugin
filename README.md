@@ -74,8 +74,11 @@ verbatim (pre-scrub) and cited, so evidence stays recoverable byte-for-byte — 
 spilled" rather than writing somewhere the user never asked for (0.10 removed the
 tempdir fallback). The spill root carries its own `*` ignore, and
 `.operator/.gitignore` is an allowlist: the two ledgers, the `verdicts.d/`
-fragments and `tiers.env` are tracked; everything else the plugin creates is
-ignored by default.
+fragments, `tiers.env` and `specs/` are tracked; everything else the plugin
+creates is ignored by default. The scheme is versioned — a v1 blocklist is
+REPLACED behind a verified backup (the two contradict), while a v2 allowlist
+is APPENDED to, because v3 only adds lines and a rewrite would delete allow
+lines you added by hand (#156).
 
 ## Commands
 

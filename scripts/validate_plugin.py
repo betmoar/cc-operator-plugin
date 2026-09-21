@@ -2330,13 +2330,26 @@ def check_gitignore_parity(root, problems):
     reachable (exit-status-tested, non-regular .v1.bak refused); the hook
     re-stamps only after replacement and reports the refusal.
     """
-    MARK = "# cc-operator gitignore v2 (allowlist)"
+    MARK = "# cc-operator gitignore v3 (allowlist)"
+    # The PREVIOUS marker, which both writers must still RECOGNISE: v2 -> v3 is
+    # additive, so a v2 file is APPENDED to rather than replaced (#156). A
+    # writer that stopped recognising v2 would fall through to the destructive
+    # v1 arm and delete every allow line the user added by hand — the exact
+    # outcome the additive arm exists to prevent, reached by deleting a grep.
+    MARK_V2 = "# cc-operator gitignore v2 (allowlist)"
+    # The temp suffix, ONE declaration. It was hardcoded `.v2.tmp` in three
+    # regexes below, so the v3 bump unpinned the atomic write in all three at
+    # once and the validator reported the absence as three failures rather
+    # than as a silent pass — loud, but only because the suffix moved. Derive
+    # it from the marker so the next bump cannot leave a regex behind.
+    TMP_SUFFIX = ".v" + MARK.split(" gitignore v", 1)[1].split(" ", 1)[0] + ".tmp"
     IGNORE_ALL = "*"
     # `handoff-*.md` is evidence (the HANDOFF section's artifact), not machine
-    # state (#28).
+    # state (#28). `specs/` is the spec artifact's home (#155/#156) — an input
+    # to later work, so it is tracked, not machine state.
     ALLOW = ("!.gitignore", "!.gitattributes", "!VERDICTS.md", "!DECISIONS.md",
              "!tiers.env", "!verdicts.d/", "!verdicts.d/*.md",
-             "!handoff-*.md")
+             "!handoff-*.md", "!specs/", "!specs/*.md")
     sets = {}
     for name in ("ops-init.sh", "ops-sessionstart-hook.sh"):
         p = root / "scripts" / name
@@ -2344,12 +2357,26 @@ def check_gitignore_parity(root, problems):
             problems.append(f"scripts/{name}: missing — cannot check gitignore parity")
             continue
         text = p.read_text(encoding="utf-8")
+        if MARK_V2 not in text:
+            problems.append(
+                f"scripts/{name}: does not carry the PREVIOUS marker "
+                f"{MARK_V2!r} — v2 -> v3 is additive, so both writers must "
+                f"RECOGNISE a v2 file and append to it. A writer that stops "
+                f"recognising v2 falls through to the destructive v1 arm and "
+                f"deletes every allow line the user added by hand (#156)")
+        # The additive arm must APPEND, not rewrite: `>>` on the live
+        # .gitignore is the whole claim, and a `>` there is the destructive
+        # variant wearing the additive arm's comment.
+        if ">> \"$OPDIR/.gitignore\"" not in text and '>> "$_gi"' not in text:
+            problems.append(
+                f"scripts/{name}: the v2 -> v3 arm does not APPEND (`>>`) to "
+                f"the live .gitignore — an additive scheme change written as a "
+                f"rewrite loses the user's own allow lines (#156)")
         if MARK not in text:
             problems.append(
-                f"scripts/{name}: does not carry the v2 gitignore marker "
-                f"{MARK!r} — both writers must emit it AND grep for it, or a v1 "
-                f"blocklist is never migrated (it would be appended to instead, "
-                f"and the two schemes contradict)")
+                f"scripts/{name}: does not carry the CURRENT gitignore marker "
+                f"{MARK!r} — both writers must emit it AND grep for it, or an "
+                f"older file is never migrated at all)")
         # Emitting the marker and DETECTING it are two claims; assert the
         # detection grep separately (either spelling: init greps the variable,
         # the standalone hook greps the literal).
@@ -2384,19 +2411,32 @@ def check_gitignore_parity(root, problems):
         # invert the test: the target must BE the live path — a bare variable
         # expansion, or a literal ending in `/.gitignore`. Everything derived
         # from it (`$_gi.v2.tmp`, `$_gi.v1.bak`, any future suffix) is not.
-        elif not any(re.fullmatch(r"\$\{?\w+\}?", _target)
-                     or _target.endswith("/.gitignore")
-                     for _target in re.findall(
+        # TWO live reads, not one (#156). Since the additive v2 -> v3 arm
+        # landed, each writer greps the CURRENT marker against the live file
+        # TWICE: once to decide "is this already v3?" ahead of the append, and
+        # once for the destructive arm's own detection. `any()` over live
+        # targets is then satisfied by the additive arm alone — so deleting the
+        # destructive arm's detection, after which a v1 blocklist is never
+        # replaced, shipped green the moment that arm was added (measured:
+        # test_removing_only_the_DETECTION_grep_fires went from red to green
+        # with no change to the pin). A pin whose subject gained a second
+        # satisfier is vacuous for the first one; counting is what separates
+        # them, because BOTH arms genuinely need their own live read.
+        elif len([_target for _target in re.findall(
                 r"grep\s+-qF\s+(?:\"\$_GI_MARK\"|'" + re.escape(MARK) +
-                r"')\s+\"([^\"]+)\"", text)):
+                r"')\s+\"([^\"]+)\"", text)
+                  if re.fullmatch(r"\$\{?\w+\}?", _target)
+                  or _target.endswith("/.gitignore")]) < 2:
             problems.append(
-                f"scripts/{name}: emits the v2 marker but never greps for it on "
-                f"the LIVE .gitignore — without that read the writer cannot tell "
-                f"a v1 file from a v2 one, so an existing v1 blocklist is never "
-                f"migrated (it is appended to, and the two schemes contradict). "
-                f"A grep against the `.v2.tmp` path is the post-write "
-                f"CONFIRMATION, a different claim: it proves the new body "
-                f"landed, never that the old one needed replacing (#102)")
+                f"scripts/{name}: emits the current marker but does not grep "
+                f"for it on the LIVE .gitignore TWICE — the additive v2 -> v3 "
+                f"arm and the destructive v1 arm each need their OWN live read "
+                f"(#156). Without the destructive arm's, a v1 blocklist is "
+                f"never replaced at all; without the additive arm's, a v2 file "
+                f"falls through to the destructive arm and the user's own allow "
+                f"lines are deleted. A grep against the temp path is the "
+                f"post-write CONFIRMATION, a different claim: it proves the new "
+                f"body landed, never that the old one needed replacing (#102)")
         # Allow lines are line-anchored: a '!VERDICTS.md' inside prose is not a
         # heredoc body line, and would make this check vacuous.
         lines = {ln.strip() for ln in text.splitlines()}
@@ -2497,10 +2537,10 @@ def check_gitignore_parity(root, problems):
         # is one edit from vacuous. This one keys on the mechanism itself: the
         # same-dir `mv -f` from the temp onto the live path is what makes the
         # live file always either the intact v1 or the complete v2.
-        if not re.search(r'mv\s+-f\s+"\$_gi\.v2\.tmp"\s+"\$_gi"', text):
+        if not re.search(r'mv\s+-f\s+"\$_gi' + re.escape(TMP_SUFFIX) + r'"\s+"\$_gi"', text):
             problems.append(
                 "scripts/ops-sessionstart-hook.sh: the v2 gitignore write is "
-                "not ATOMIC — no `mv -f \"$_gi.v2.tmp\" \"$_gi\"` swaps a complete "
+                "not ATOMIC — no `mv -f \"$_gi" + TMP_SUFFIX + "\" \"$_gi\"` swaps a complete "
                 "temp onto the live path. Writing the heredoc straight onto "
                 ".gitignore means a `cat` that dies mid-write (ENOSPC, EIO) "
                 "leaves a truncated allowlist whose marker makes every LATER "
@@ -2514,11 +2554,11 @@ def check_gitignore_parity(root, problems):
         # argument tells them apart, so one pattern cannot stand for both.
         # UNCONDITIONAL — the `".v2.tmp" in text` gate is gone (see above).
         if not re.search(
-                r"grep\s+-qF\s+'" + re.escape(MARK) + r"'\s+\"[^\"]*\.v2\.tmp\"",
+                r"grep\s+-qF\s+'" + re.escape(MARK) + r"'\s+\"[^\"]*" + re.escape(TMP_SUFFIX) + r"\"",
                 text):
             problems.append(
                 "scripts/ops-sessionstart-hook.sh: the v2 gitignore write is "
-                "not confirmed by grepping the marker in the `.v2.tmp` temp "
+                "not confirmed by grepping the marker in the `" + TMP_SUFFIX + "` temp "
                 "before the mv — without it a heredoc that died mid-write "
                 "(ENOSPC, EIO) is moved over the live file, and the partial "
                 "body's marker makes every LATER session skip the migration "
@@ -2531,11 +2571,11 @@ def check_gitignore_parity(root, problems):
     # contracts hold" on a scratch copy of 0.11.5. Same-shape pin, init's paths.
     p = root / "scripts" / "ops-init.sh"
     if p.is_file() and not re.search(
-            r'mv\s+-f\s+"\$OPDIR/\.gitignore\.v2\.tmp"\s+"\$OPDIR/\.gitignore"',
+            r'mv\s+-f\s+"\$OPDIR/\.gitignore' + re.escape(TMP_SUFFIX) + r'"\s+"\$OPDIR/\.gitignore"',
             shell_code(p)):
         problems.append(
             "scripts/ops-init.sh: the v2 gitignore write is not ATOMIC — no "
-            "`mv -f \"$OPDIR/.gitignore.v2.tmp\" \"$OPDIR/.gitignore\"` swaps a "
+            "`mv -f \"$OPDIR/.gitignore" + TMP_SUFFIX + "\" \"$OPDIR/.gitignore\"` swaps a "
             "complete temp onto the live path. Under set -e a cat dying "
             "mid-write leaves a truncated, marker-less .gitignore, and the "
             "re-run's migration backs THAT up over the good .v1.bak (F119's "

@@ -369,15 +369,33 @@ def make_good_tree(root):
     write(root / ".claude-plugin" / "statusline.json", json.dumps({
         "name": "cc-operator", "render": "scripts/statusline.sh", "order": 30,
     }))
-    # Both .operator/.gitignore writers must carry the v2 allowlist body,
+    # Both .operator/.gitignore writers must carry the CURRENT allowlist body,
     # byte-equal (check_gitignore_parity).
-    gitignore_v2 = ("# cc-operator gitignore v2 (allowlist)\n"
+    gitignore_v2 = ("# cc-operator gitignore v3 (allowlist)\n"
                     "*\n"
                     "!.gitignore\n!.gitattributes\n"
                     "!VERDICTS.md\n!DECISIONS.md\n!tiers.env\n"
                     "!verdicts.d/\n!verdicts.d/*.md\n"
                     # Evidence, not machine state (#30).
-                    "!handoff-*.md\n")
+                    "!handoff-*.md\n"
+                    # The spec artifact's home — an input to later work (#155).
+                    "!specs/\n!specs/*.md\n")
+    # The ADDITIVE v2 -> v3 arm both writers must carry (#156): a v2 file is
+    # APPENDED to, never replaced, so the user's own allow lines survive. The
+    # stub does the real thing — recognise v2, append, mark last.
+    _v3_append_init = (
+        "_GI_MARK_V2='# cc-operator gitignore v2 (allowlist)'\n"
+        "if ! grep -qF \"$_GI_MARK\" \"$OPDIR/.gitignore\" 2>/dev/null \\\n"
+        "   && grep -qF \"$_GI_MARK_V2\" \"$OPDIR/.gitignore\" 2>/dev/null; then\n"
+        "  printf '%s\\n' '!specs/' '!specs/*.md' \"$_GI_MARK\" "
+        ">> \"$OPDIR/.gitignore\" 2>/dev/null\n"
+        "fi\n")
+    _v3_append_hook = (
+        "if ! grep -qF '# cc-operator gitignore v3 (allowlist)' \"$_gi\" 2>/dev/null \\\n"
+        "   && grep -qF '# cc-operator gitignore v2 (allowlist)' \"$_gi\" 2>/dev/null; then\n"
+        "  printf '%s\\n' '!specs/' '!specs/*.md' "
+        "'# cc-operator gitignore v3 (allowlist)' >> \"$_gi\" 2>/dev/null\n"
+        "fi\n")
     # Both writers must detect a v1 file, emit the v2 body, and refuse to
     # overwrite without a verified backup. The install set lives in one
     # manifest (#76 step 3); check_install_set_parity pins both writers
@@ -395,7 +413,7 @@ def make_good_tree(root):
                      "done\n")
     write(root / "scripts" / "ops-init.sh",
           "#!/usr/bin/env bash\nset -eu\n" + _install_loop +
-          "_GI_MARK='# cc-operator gitignore v2 (allowlist)'\n"
+          "_GI_MARK='# cc-operator gitignore v3 (allowlist)'\n" + _v3_append_init +
           "if ! grep -qF \"$_GI_MARK\" \"$OPDIR/.gitignore\" 2>/dev/null; then\n"
           "  if [ -e \"$OPDIR/.gitignore.v1.bak\" ] && [ ! -f \"$OPDIR/.gitignore.v1.bak\" ]; then\n"
           "    echo refusing >&2\n"
@@ -403,8 +421,8 @@ def make_good_tree(root):
           "    echo refusing >&2\n"
           "  else\n"
           # ATOMIC: temp + same-dir mv (audit F137 pins init's swap like the hook's)
-          "cat > \"$OPDIR/.gitignore.v2.tmp\" <<'EOF'\n" + gitignore_v2 + "EOF\n"
-          "mv -f \"$OPDIR/.gitignore.v2.tmp\" \"$OPDIR/.gitignore\"\n"
+          "cat > \"$OPDIR/.gitignore.v3.tmp\" <<'EOF'\n" + gitignore_v2 + "EOF\n"
+          "mv -f \"$OPDIR/.gitignore.v3.tmp\" \"$OPDIR/.gitignore\"\n"
           "  fi\nfi\n"
           "echo ok\n")
     # SessionStart clears the compressor's session-scoped artifacts and migrates
@@ -428,7 +446,8 @@ def make_good_tree(root):
           "    *'$'* | *'`'* | *\"'\"* | *'\"'* | *\\\\*) continue ;;\n"
           "  esac\n"
           "done\n"
-          "if ! grep -qF '# cc-operator gitignore v2 (allowlist)' \"$_gi\" 2>/dev/null; then\n"
+          + _v3_append_hook +
+          "if ! grep -qF '# cc-operator gitignore v3 (allowlist)' \"$_gi\" 2>/dev/null; then\n"
           "  if [ -e \"$_gi.v1.bak\" ] && [ ! -f \"$_gi.v1.bak\" ]; then\n"
           "    _gi_backup_failed=1\n"
           "  elif ! cp \"$_gi\" \"$_gi.v1.bak\" 2>/dev/null; then\n"
@@ -438,15 +457,15 @@ def make_good_tree(root):
           # and the validator excused it, because the CONFIRMATION pin was gated
           # on `".v2.tmp" in text` — the exact vacuity PR #104's review found.
           # With the atomic pin unconditional, a good tree must BE atomic.
-          "  elif cat > \"$_gi.v2.tmp\" 2>/dev/null <<'EOF'\n" + gitignore_v2 + "EOF\n"
+          "  elif cat > \"$_gi.v3.tmp\" 2>/dev/null <<'EOF'\n" + gitignore_v2 + "EOF\n"
           # The THIRD state: backup written, overwrite failed. Two flags cannot
           # express three outcomes, and the missing one reported nothing at all.
           "  then\n"
-          "    if grep -qF '# cc-operator gitignore v2 (allowlist)' \"$_gi.v2.tmp\" 2>/dev/null \\\n"
-          "       && mv -f \"$_gi.v2.tmp\" \"$_gi\" 2>/dev/null; then\n"
+          "    if grep -qF '# cc-operator gitignore v3 (allowlist)' \"$_gi.v3.tmp\" 2>/dev/null \\\n"
+          "       && mv -f \"$_gi.v3.tmp\" \"$_gi\" 2>/dev/null; then\n"
           "      _gi_migrated=1\n"
           "    else\n"
-          "      rm -f \"$_gi.v2.tmp\" 2>/dev/null\n"
+          "      rm -f \"$_gi.v3.tmp\" 2>/dev/null\n"
           "      _gi_write_failed=1\n"
           "    fi\n"
           "  else\n"
@@ -3185,12 +3204,21 @@ class GitignoreParityTest(unittest.TestCase):
                 write(self.dir / "scripts" / name, real)   # restore for the next subTest
         self.assertEqual(self._probs(), [])
 
-    def test_losing_the_v2_marker_fires(self):
-        # Without the marker neither writer can detect a v1 file, so a blocklist
-        # is appended to instead of replaced.
+    def test_losing_the_CURRENT_marker_fires(self):
+        # Without the current marker neither writer can detect an older file,
+        # so a blocklist is appended to instead of replaced.
         write(self.dir / "scripts" / "ops-init.sh",
-              self._real_init.replace("# cc-operator gitignore v2 (allowlist)", "# v2", 1))
-        self.assertTrue(any("v2 gitignore marker" in p for p in self._probs()),
+              self._real_init.replace("# cc-operator gitignore v3 (allowlist)", "# v3", 1))
+        self.assertTrue(any("CURRENT gitignore marker" in p for p in self._probs()),
+                        self._probs())
+
+    def test_losing_the_PREVIOUS_marker_fires(self):
+        # #156's other half: a writer that stops RECOGNISING v2 sends every v2
+        # file down the destructive arm, deleting the user's own allow lines.
+        # Separate message, separate case — the two markers are two claims.
+        write(self.dir / "scripts" / "ops-init.sh",
+              self._real_init.replace("# cc-operator gitignore v2 (allowlist)", "# v2"))
+        self.assertTrue(any("PREVIOUS marker" in p for p in self._probs()),
                         self._probs())
 
     def test_losing_EVERY_marker_grep_fires(self):
@@ -3212,14 +3240,19 @@ class GitignoreParityTest(unittest.TestCase):
                  'elif false; then'),
                 # the anchor is the grep PREFIX shared by both hook greps;
                 # `false` ignores the dangling path argument.
+                # Since #156 the hook greps TWO markers on the live file —
+                # v3 (both arms) and v2 (the additive arm's recognition). This
+                # case knocks out the v3 greps only: the v2 RECOGNITION grep
+                # must survive, or the MARK_V2 pin fires and the failure under
+                # test is masked by a different one.
                 ("ops-sessionstart-hook.sh", self._real_ssh,
-                 "grep -qF '# cc-operator gitignore v2 (allowlist)'",
+                 "grep -qF '# cc-operator gitignore v3 (allowlist)'",
                  "false")):
             with self.subTest(writer=name):
                 self.assertIn(detect, real, f"{name}: detection anchor moved")
                 write(self.dir / "scripts" / name, real.replace(detect, replacement))
                 probs = self._probs()
-                self.assertTrue(any("never greps for it on the LIVE" in p
+                self.assertTrue(any("on the LIVE .gitignore TWICE" in p
                                     for p in probs), probs)
                 write(self.dir / "scripts" / name, real)
         self.assertEqual(self._probs(), [])
@@ -3233,17 +3266,17 @@ class GitignoreParityTest(unittest.TestCase):
         # detection a v1 blocklist is never replaced at all — reported green.
         # The confirmation grep is left INTACT on purpose: that is precisely
         # the shape that satisfied the old pin.
-        detect = ("if [ -f \"$_gi\" ] && ! grep -qF "
-                  "'# cc-operator gitignore v2 (allowlist)' \"$_gi\" 2>/dev/null; then")
+        detect = ("elif [ -f \"$_gi\" ] && ! grep -qF "
+                  "'# cc-operator gitignore v3 (allowlist)' \"$_gi\" 2>/dev/null; then")
         self.assertIn(detect, self._real_ssh, "detection anchor moved")
-        mutated = self._real_ssh.replace(detect, 'if [ -f "$_gi" ] && false; then', 1)
+        mutated = self._real_ssh.replace(detect, 'elif [ -f "$_gi" ] && false; then', 1)
         # Control on the mutation itself: the confirmation grep must survive it,
         # or this is just the both-greps mutation the case above already runs.
-        self.assertIn("grep -qF '# cc-operator gitignore v2 (allowlist)' "
-                      "\"$_gi.v2.tmp\"", mutated)
+        self.assertIn("grep -qF '# cc-operator gitignore v3 (allowlist)' "
+                      "\"$_gi.v3.tmp\"", mutated)
         write(self.dir / "scripts" / "ops-sessionstart-hook.sh", mutated)
         probs = self._probs()
-        self.assertTrue(any("never greps for it on the LIVE" in p for p in probs),
+        self.assertTrue(any("on the LIVE .gitignore TWICE" in p for p in probs),
                         probs)
         write(self.dir / "scripts" / "ops-sessionstart-hook.sh", self._real_ssh)
         self.assertEqual(self._probs(), [])
@@ -3262,7 +3295,7 @@ class GitignoreParityTest(unittest.TestCase):
                 ("ops-init.sh", self._real_init, '"$OPDIR/.gitignore"',
                  '"$OPDIR/.gitignore.v1.bak"')):
             with self.subTest(writer=name):
-                anchor = ("grep -qF '# cc-operator gitignore v2 (allowlist)' " + live
+                anchor = ("grep -qF '# cc-operator gitignore v3 (allowlist)' " + live
                           if name == "ops-sessionstart-hook.sh"
                           else 'grep -qF "$_GI_MARK" ' + live)
                 self.assertIn(anchor, real, f"{name}: detection anchor moved")
@@ -3270,7 +3303,7 @@ class GitignoreParityTest(unittest.TestCase):
                       real.replace(anchor, anchor.replace(live, derived), 1))
                 probs = self._probs()
                 self.assertTrue(
-                    any(name in p and "never greps for it on the LIVE" in p
+                    any(name in p and "on the LIVE .gitignore TWICE" in p
                         for p in probs),
                     f"{name}: a derivative detection target must fire: {probs}")
                 write(self.dir / "scripts" / name, real)  # control
@@ -3280,15 +3313,15 @@ class GitignoreParityTest(unittest.TestCase):
         # The other half of the same asymmetry (#102). Detection stays intact:
         # a pin that cannot tell the two apart is satisfied by whichever
         # survives, in either direction.
-        confirm = ("    if grep -qF '# cc-operator gitignore v2 (allowlist)' "
-                   "\"$_gi.v2.tmp\" 2>/dev/null \\\n")
+        confirm = ("    if grep -qF '# cc-operator gitignore v3 (allowlist)' "
+                   "\"$_gi.v3.tmp\" 2>/dev/null \\\n")
         self.assertIn(confirm, self._real_ssh, "confirmation anchor moved")
         mutated = self._real_ssh.replace(confirm, "    if true \\\n", 1)
-        self.assertIn("grep -qF '# cc-operator gitignore v2 (allowlist)' \"$_gi\"",
+        self.assertIn("grep -qF '# cc-operator gitignore v3 (allowlist)' \"$_gi\"",
                       mutated, "detection must survive this mutation")
         write(self.dir / "scripts" / "ops-sessionstart-hook.sh", mutated)
         probs = self._probs()
-        self.assertTrue(any("confirmed by grepping the marker in the `.v2.tmp`" in p
+        self.assertTrue(any("confirmed by grepping the marker in the `.v3.tmp`" in p
                             for p in probs), probs)
         write(self.dir / "scripts" / "ops-sessionstart-hook.sh", self._real_ssh)
         self.assertEqual(self._probs(), [])
@@ -3301,7 +3334,7 @@ class GitignoreParityTest(unittest.TestCase):
         # remaining mention of `.gitignore.v2.tmp`, which lives in user-facing
         # prose, not code.
         src = self._real_ssh
-        start = src.index('  elif [ -L "$_gi.v2.tmp" ]')
+        start = src.index('  elif [ -L "$_gi.v3.tmp" ]')
         end = src.index('    _gi_write_failed=1\n  fi\n', start) + len('    _gi_write_failed=1\n  fi\n')
         block = src[start:end]
         heredoc = block[block.index("<<'EOF'"):block.index("EOF\n  then") + 4]
@@ -3329,7 +3362,7 @@ class GitignoreParityTest(unittest.TestCase):
                 probs = self._probs()
                 self.assertTrue(any("not ATOMIC" in p for p in probs), probs)
                 # …and the confirmation pin is UNCONDITIONAL now: it fires too.
-                self.assertTrue(any("confirmed by grepping the marker in the `.v2.tmp`" in p
+                self.assertTrue(any("confirmed by grepping the marker in the `.v3.tmp`" in p
                                     for p in probs), probs)
         write(self.dir / "scripts" / "ops-sessionstart-hook.sh", self._real_ssh)
         self.assertEqual(self._probs(), [])
@@ -3341,10 +3374,10 @@ class GitignoreParityTest(unittest.TestCase):
         # hold" — measured on a scratch copy of 0.11.5. Both writers were made
         # atomic in the same review; only one got the pin.
         src = self._real_init.replace(
-            'cat > "$OPDIR/.gitignore.v2.tmp" <<EOF', 'cat > "$OPDIR/.gitignore" <<EOF', 1)
-        src = src.replace('  mv -f "$OPDIR/.gitignore.v2.tmp" "$OPDIR/.gitignore"\n', '', 1)
+            'cat > "$OPDIR/.gitignore.v3.tmp" <<EOF', 'cat > "$OPDIR/.gitignore" <<EOF', 1)
+        src = src.replace('  mv -f "$OPDIR/.gitignore.v3.tmp" "$OPDIR/.gitignore"\n', '', 1)
         self.assertNotEqual(src, self._real_init, "init anchors moved")
-        self.assertNotIn('mv -f "$OPDIR/.gitignore.v2.tmp"', src)
+        self.assertNotIn('mv -f "$OPDIR/.gitignore.v3.tmp"', src)
         write(self.dir / "scripts" / "ops-init.sh", src)
         probs = self._probs()
         self.assertTrue(any("ops-init.sh" in p and "not ATOMIC" in p for p in probs), probs)
@@ -3355,7 +3388,7 @@ class GitignoreParityTest(unittest.TestCase):
         # Control on the pin's shape: an `mv -f` from somewhere ELSE onto the
         # live path is not the same-dir temp swap. The pin must read the temp
         # name, not just "an mv exists".
-        src = self._real_ssh.replace('mv -f "$_gi.v2.tmp" "$_gi"', 'mv -f "$_gi.new" "$_gi"', 1)
+        src = self._real_ssh.replace('mv -f "$_gi.v3.tmp" "$_gi"', 'mv -f "$_gi.new" "$_gi"', 1)
         self.assertNotEqual(src, self._real_ssh, "mv anchor moved")
         write(self.dir / "scripts" / "ops-sessionstart-hook.sh", src)
         probs = self._probs()

@@ -228,7 +228,9 @@ done
 
 # v1→v2 gitignore migration, every session (this is what carries a project
 # that never re-runs /cc-operator:start). The schemes contradict, so REPLACE,
-# keeping .gitignore.v1.bak; body pinned identical to ops-init's _gi_write
+# keeping .gitignore.v1.bak; body pinned identical to ops-init's _gi_write.
+# v2 -> v3 is a separate, ADDITIVE arm above it (#156): it appends, never
+# replaces, so it needs no backup and keeps the user's own allow lines
 # (check_gitignore_parity). IT MUST SAY SO (#32): the overwrite is destructive
 # and the backup is hidden by the new `*` — the notice goes to
 # additionalContext, the hook's one channel the model sees.
@@ -236,7 +238,24 @@ _gi="$cwd/.operator/.gitignore"
 _gi_migrated=0
 _gi_backup_failed=0
 _gi_write_failed=0
-if [ -f "$_gi" ] && ! grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi" 2>/dev/null; then
+_gi_upgraded=0
+_gi_upgrade_failed=0
+# v2 -> v3 is ADDITIVE (v3 is v2 plus the two specs/ allow lines), so it
+# APPENDS. The v1 -> v2 migration below REPLACES because a blocklist and an
+# allowlist contradict; replacing a v2 file would silently delete every allow
+# line the user added by hand, which is a destructive answer to a
+# non-destructive change (#156). Nothing is removed here, so no backup is
+# needed — and the marker is appended LAST, so a die mid-append leaves the
+# file unmarked and the next session retries rather than reading a
+# half-upgraded file as done.
+if [ -f "$_gi" ] && ! grep -qF '# cc-operator gitignore v3 (allowlist)' "$_gi" 2>/dev/null \
+   && grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi" 2>/dev/null; then
+  if printf '%s\n' '!specs/' '!specs/*.md' '# cc-operator gitignore v3 (allowlist)' >> "$_gi" 2>/dev/null; then
+    _gi_upgraded=1
+  else
+    _gi_upgrade_failed=1
+  fi
+elif [ -f "$_gi" ] && ! grep -qF '# cc-operator gitignore v3 (allowlist)' "$_gi" 2>/dev/null; then
   # BACKUP FIRST, overwrite ONLY on success, set the notice flag only AFTER
   # the replacement — the old order destroyed rules with no backup while
   # reporting success (#32, one layer down). No set -e: a dying hook costs the
@@ -256,10 +275,10 @@ if [ -f "$_gi" ] && ! grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi" 2
     _gi_backup_failed=1
   elif ! cp "$_gi" "$_gi.v1.bak" 2>/dev/null; then
     _gi_backup_failed=1
-  elif [ -L "$_gi.v2.tmp" ] || { [ -e "$_gi.v2.tmp" ] && [ ! -f "$_gi.v2.tmp" ]; }; then
+  elif [ -L "$_gi.v3.tmp" ] || { [ -e "$_gi.v3.tmp" ] && [ ! -f "$_gi.v3.tmp" ]; }; then
     _gi_write_failed=1
-  elif cat > "$_gi.v2.tmp" 2>/dev/null <<'EOF'
-# cc-operator gitignore v2 (allowlist)
+  elif cat > "$_gi.v3.tmp" 2>/dev/null <<'EOF'
+# cc-operator gitignore v3 (allowlist)
 # Ignore everything under .operator/ by default, then re-admit the evidence.
 # New machine state is ignored automatically — that is the point of the
 # inversion; do not add ignore lines here, add allow lines only when a NEW file
@@ -273,23 +292,25 @@ if [ -f "$_gi" ] && ! grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi" 2
 !verdicts.d/
 !verdicts.d/*.md
 !handoff-*.md
+!specs/
+!specs/*.md
 EOF
   then
     # notice flag: only after the replacement happened and the backup exists.
     # The marker grep probes the COMPLETE temp (audit F119: `[ -s ]` was true
     # for a partial write), then the same-dir mv swaps it in atomically.
-    if grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi.v2.tmp" 2>/dev/null \
-       && mv -f "$_gi.v2.tmp" "$_gi" 2>/dev/null; then
+    if grep -qF '# cc-operator gitignore v3 (allowlist)' "$_gi.v3.tmp" 2>/dev/null \
+       && mv -f "$_gi.v3.tmp" "$_gi" 2>/dev/null; then
       _gi_migrated=1
     else
-      rm -f "$_gi.v2.tmp" 2>/dev/null
+      rm -f "$_gi.v3.tmp" 2>/dev/null
       _gi_write_failed=1
     fi
   else
     # A failed temp write is REPORTED, not silent, and under its OWN flag —
     # the backup-refusal notice would claim the backup could not be written,
     # which is false here (the backup landed; the v2 write did not).
-    rm -f "$_gi.v2.tmp" 2>/dev/null
+    rm -f "$_gi.v3.tmp" 2>/dev/null
     _gi_write_failed=1
   fi
 fi
@@ -353,7 +374,22 @@ fi
 if [ "$_gi_migrated" = 1 ]; then
   ctx="$ctx
 
-cc-operator: .operator/.gitignore was MIGRATED from the v1 blocklist to the v2 allowlist this session. The two schemes contradict, so the file was REPLACED, not appended — any rule you added by hand is gone from it. Your previous file is kept at .operator/.gitignore.v1.bak, which the new allowlist itself ignores (\`git status\` will not show it; use \`git status --ignored\`). If it carried a rule you still need, re-add it as an allow line (\`!<path>\`) in the v2 file."
+cc-operator: .operator/.gitignore was MIGRATED from the v1 blocklist to the v3 allowlist this session. The two schemes contradict, so the file was REPLACED, not appended — any rule you added by hand is gone from it. Your previous file is kept at .operator/.gitignore.v1.bak, which the new allowlist itself ignores (\`git status\` will not show it; use \`git status --ignored\`). If it carried a rule you still need, re-add it as an allow line (\`!<path>\`) in the v3 file."
+fi
+
+# The additive upgrade is reported too, and says what it did NOT do: a user
+# reading "upgraded" needs to know their own lines were kept, because the
+# neighbouring v1 notice says the opposite about its own path.
+if [ "$_gi_upgraded" = 1 ]; then
+  ctx="$ctx
+
+cc-operator: .operator/.gitignore was upgraded from the v2 allowlist to v3 this session — the two lines \`!specs/\` and \`!specs/*.md\` were APPENDED so \`.operator/specs/\` is tracked. Nothing was removed and no backup was needed: unlike the v1 migration, this change is additive, so any allow line you added by hand is still there."
+fi
+
+if [ "$_gi_upgrade_failed" = 1 ]; then
+  ctx="$ctx
+
+cc-operator: .operator/.gitignore is still the v2 allowlist — the v3 allow lines could not be appended this session (the file or directory may be read-only). Nothing was changed. Until this is resolved \`.operator/specs/\` is IGNORED by git, so a spec written there will not be committed."
 fi
 
 # The refusal is as reportable as the migration — silence is what let the
@@ -361,7 +397,7 @@ fi
 if [ "$_gi_backup_failed" = 1 ]; then
   ctx="$ctx
 
-cc-operator: .operator/.gitignore is still the v1 blocklist — migration to the v2 allowlist was REFUSED this session because the backup at .operator/.gitignore.v1.bak could not be written (the directory may be read-only, or something that is not a regular file already sits at that path). Nothing was overwritten. Until this is resolved the project keeps v1 semantics, which track machine state (bin/, pending/, .lock/) by default. Fix the path or the permissions and start a new session."
+cc-operator: .operator/.gitignore is still the v1 blocklist — migration to the v3 allowlist was REFUSED this session because the backup at .operator/.gitignore.v1.bak could not be written (the directory may be read-only, or something that is not a regular file already sits at that path). Nothing was overwritten. Until this is resolved the project keeps v1 semantics, which track machine state (bin/, pending/, .lock/) by default. Fix the path or the permissions and start a new session."
 fi
 
 # A failed v2 WRITE is its own notice (Copilot review on PR #97): the backup
@@ -371,7 +407,7 @@ fi
 if [ "$_gi_write_failed" = 1 ]; then
   ctx="$ctx
 
-cc-operator: .operator/.gitignore is still the v1 blocklist — the v2 allowlist could not be written this session (disk full, I/O error, or something that is not a regular file at .operator/.gitignore.v2.tmp). The v1 file is UNCHANGED and the backup at .operator/.gitignore.v1.bak is intact; the migration retries next session."
+cc-operator: .operator/.gitignore is still the v1 blocklist — the v3 allowlist could not be written this session (disk full, I/O error, or something that is not a regular file at .operator/.gitignore.v3.tmp). The v1 file is UNCHANGED and the backup at .operator/.gitignore.v1.bak is intact; the migration retries next session."
 fi
 
 if [ "$PARSER" = "jq" ]; then

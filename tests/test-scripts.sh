@@ -649,16 +649,17 @@ Q="$(newproj)"
 SSQ="$(sed "s|<tmp>|$Q|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"; SSQRC=$?
 check "sessionstart hook silent outside operator projects" "$([ "$SSQRC" -eq 0 ] && [ -z "$SSQ" ] && echo 0 || echo 1)"
 # F14: json_get()'s python3 branch must render true/false, not Python True/False (pinned by check_guard_parity).
-# SessionStart migrates the v1 blocklist .operator/.gitignore to the v2 allowlist; the schemes contradict, so replace.
+# SessionStart migrates the v1 blocklist .operator/.gitignore to the v3 allowlist; the schemes contradict, so replace.
+# (v2 -> v3 is a DIFFERENT, additive arm — its cases are the #156 block further down.)
 GIP="$(newproj)"; ( cd "$GIP" && bash "$INIT" >/dev/null 2>&1 )
 printf '# legacy\n.lock/\n' > "$GIP/.operator/.gitignore"
 sed "s|<tmp>|$GIP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
-check "sessionstart migrates a v1 gitignore to the v2 allowlist" \
-  "$(grep -qF '# cc-operator gitignore v2 (allowlist)' "$GIP/.operator/.gitignore" && echo 0 || echo 1)"
-check "the v2 migration keeps the user's v1 file as .v1.bak" \
+check "sessionstart migrates a v1 gitignore to the v3 allowlist" \
+  "$(grep -qF '# cc-operator gitignore v3 (allowlist)' "$GIP/.operator/.gitignore" && echo 0 || echo 1)"
+check "the v3 migration keeps the user's v1 file as .v1.bak" \
   "$(grep -q '^# legacy$' "$GIP/.operator/.gitignore.v1.bak" 2>/dev/null && echo 0 || echo 1)"
 # The load-bearing half: ledgers/fragments stay tracked, machine state does not.
-check "v2 re-admits both ledgers, tiers.env and the merge=union fragments" \
+check "v3 re-admits both ledgers, tiers.env and the merge=union fragments" \
   "$( for a in '!VERDICTS.md' '!DECISIONS.md' '!tiers.env' '!verdicts.d/*.md'; do
         grep -qF "$a" "$GIP/.operator/.gitignore" || exit 1
       done; echo 0 )"
@@ -3814,9 +3815,9 @@ echo "-- Case: a backed-up-but-FAILED gitignore write is reported (the third sta
 GIW="$(newproj)"
 mkdir -p "$GIW/.operator"
 printf '# cc-operator gitignore (v1)\nbin/\n!my-own-rule.md\n' > "$GIW/.operator/.gitignore"
-mkdir -p "$GIW/.operator/.gitignore.v2.tmp"          # a DIRECTORY at the temp path
+mkdir -p "$GIW/.operator/.gitignore.v3.tmp"          # a DIRECTORY at the temp path
 GIWOUT="$(sed "s|<tmp>|$GIW|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
-check "failed write: the hook SAYS the v2 file could not be written (silence was the defect)" \
+check "failed write: the hook SAYS the v3 file could not be written (silence was the defect)" \
   "$(printf '%s' "$GIWOUT" | grep -q 'could not be written this session' && echo 0 || echo 1)"
 check "failed write: it does NOT claim MIGRATED over a file it never replaced" \
   "$(printf '%s' "$GIWOUT" | grep -q 'was MIGRATED' && echo 1 || echo 0)"
@@ -4315,6 +4316,68 @@ done
 # --mark-handoff must exist in the CLI the command tells the operator to run, or the instruction is a dead end.
 check "ops-verdict.sh actually implements --mark-handoff" \
   "$(grep -q -- '--mark-handoff' "$SCRIPTS/ops-verdict.sh" && echo 0 || echo 1)"
+
+########################################################################
+echo "-- Case: v2 -> v3 gitignore is ADDITIVE, so it appends (#156)"
+# The v1 -> v2 migration REPLACES because a blocklist and an allowlist
+# contradict. v3 is v2 PLUS two lines, so replacing would answer a
+# non-destructive change destructively: every allow line the user added by hand
+# would be deleted from the live file (recoverable from a backup, but gone from
+# the thing git reads). The arm therefore APPENDS, and these cases are the
+# difference between the two.
+GIA="$(newproj)"; mkdir -p "$GIA/.operator"
+printf '%s\n' '# cc-operator gitignore v2 (allowlist)' '*' '!VERDICTS.md' '!my-hand-added.md' \
+  > "$GIA/.operator/.gitignore"
+( cd "$GIA" && bash "$INIT" >/dev/null 2>&1 )
+check "#156 ops-init upgrades a v2 allowlist to v3" \
+  "$(grep -qF '# cc-operator gitignore v3 (allowlist)' "$GIA/.operator/.gitignore" && echo 0 || echo 1)"
+check "#156 the specs/ allow lines are present after the upgrade" \
+  "$(grep -qxF '!specs/' "$GIA/.operator/.gitignore" && grep -qxF '!specs/*.md' "$GIA/.operator/.gitignore" && echo 0 || echo 1)"
+# THE LOAD-BEARING ONE: the user's own line is still in the LIVE file, not just
+# in a backup. A rewrite passes every check above and fails this one.
+check "#156 the user's hand-added allow line SURVIVES in the live file" \
+  "$(grep -qxF '!my-hand-added.md' "$GIA/.operator/.gitignore" && echo 0 || echo 1)"
+check "#156 an additive upgrade takes NO backup (nothing was removed)" \
+  "$([ -e "$GIA/.operator/.gitignore.v1.bak" ] || [ -e "$GIA/.operator/.gitignore.v2.bak" ] && echo 1 || echo 0)"
+# Idempotent: the marker check is what stops a second append, so a re-run must
+# not double the lines.
+( cd "$GIA" && bash "$INIT" >/dev/null 2>&1 )
+check "#156 a re-run appends nothing (one specs line, one v3 marker)" \
+  "$([ "$(grep -cxF '!specs/' "$GIA/.operator/.gitignore")" -eq 1 ] \
+     && [ "$(grep -cF '# cc-operator gitignore v3 (allowlist)' "$GIA/.operator/.gitignore")" -eq 1 ] && echo 0 || echo 1)"
+rm -rf "$GIA"
+
+# The HOOK's copy of the same arm — both writers, or a project upgrades only
+# when someone runs /cc-operator:start by hand.
+GIH="$(newproj)"; mkdir -p "$GIH/.operator"
+printf '%s\n' '# cc-operator gitignore v2 (allowlist)' '*' '!VERDICTS.md' '!hook-hand-added.md' \
+  > "$GIH/.operator/.gitignore"
+GIHOUT="$(sed "s|<tmp>|$GIH|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+check "#156 the SessionStart hook upgrades a v2 allowlist to v3 as well" \
+  "$(grep -qF '# cc-operator gitignore v3 (allowlist)' "$GIH/.operator/.gitignore" && echo 0 || echo 1)"
+check "#156 the hook's upgrade keeps the user's hand-added line" \
+  "$(grep -qxF '!hook-hand-added.md' "$GIH/.operator/.gitignore" && echo 0 || echo 1)"
+# It must SAY so, and must NOT reuse the v1 notice — that one tells the user
+# their hand-written rules are GONE, which would be false here and is exactly
+# the kind of misdirection the third-state case exists to prevent.
+check "#156 the hook REPORTS the additive upgrade" \
+  "$(printf '%s' "$GIHOUT" | grep -q 'upgraded from the v2 allowlist to v3' && echo 0 || echo 1)"
+check "#156 …and does NOT claim the destructive MIGRATED wording" \
+  "$(printf '%s' "$GIHOUT" | grep -q 'was MIGRATED' && echo 1 || echo 0)"
+rm -rf "$GIH"
+
+# CONTROL, and it is the one that proves the arms are distinct: a v1 file must
+# STILL take the destructive path, with its backup. If the additive arm
+# swallowed v1 files it would append allow lines to a blocklist — a file that
+# ignores nothing it should and tracks nothing it must.
+GIC="$(newproj)"; mkdir -p "$GIC/.operator"
+printf '%s\n' '# legacy blocklist' 'bin/' '!v1-rule.md' > "$GIC/.operator/.gitignore"
+( cd "$GIC" && bash "$INIT" >/dev/null 2>&1 )
+check "#156 CONTROL a v1 blocklist still takes the REPLACE arm" \
+  "$(grep -qxF 'bin/' "$GIC/.operator/.gitignore" && echo 1 || echo 0)"
+check "#156 CONTROL the v1 file is still recoverable at .v1.bak" \
+  "$(grep -qxF '!v1-rule.md' "$GIC/.operator/.gitignore.v1.bak" 2>/dev/null && echo 0 || echo 1)"
+rm -rf "$GIC"
 
 ########################################################################
 echo "-- Case: the derived stage (#157) — scripts/lib/stage.sh and the banner that carries it"
