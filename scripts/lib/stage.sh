@@ -1,4 +1,5 @@
 # shellcheck shell=bash
+# shellcheck disable=SC2034  # STAGE/STAGE_NEXT are consumed by the SOURCING script
 # scripts/lib/stage.sh — the DERIVED engagement stage (#157).
 #
 # WHY. Seven stages, one command (`/cc-operator:handoff`) until #75, and every
