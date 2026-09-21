@@ -1131,14 +1131,18 @@ def check_cr_strip_parity(root, problems):
         if not path.is_file():
             continue
         code = shell_code(path)
-        # A file with NO `_cr` strip at all is not drift — the fixture trees
-        # carry minimal stubs with no reconcile path, and reporting those would
-        # make this check fire on every good-tree test rather than on the
-        # divergence it exists for. What is refused is a site that HAS the
-        # mechanism and disagrees about it: a `_cr` counter with no conforming
-        # loop is a copy that drifted, which is the reachable failure.
-        if "_cr" not in code:
-            continue
+        # PRESENCE IS THE CLAIM, not "presence given a `_cr` counter" (PR #154
+        # review). The old guard skipped any file with no `_cr` in it, and
+        # `_cr` is what the realistic simplification takes with it: MEASURED on
+        # the real tree, ops-reverify.sh's loop replaced by the #139 issue's own
+        # rejected proposal `${row%%$'\r'*}` — which TRUNCATES the row at a
+        # mid-cell CR — with `_cr` dropped from its `local` line left
+        # `validate_plugin: all contracts hold`. (The narrower mutation, the
+        # loop deleted but `local … _cr=0` kept, fired even before this fix;
+        # only a copy with NO `_cr` anywhere was excused.) The trigger is now
+        # caps.sh owning the rule (CAPS_MAX_CR resolved above): if the rule
+        # exists, every site that exists carries it. Fixture stubs must carry
+        # it too — a stub that omits it IS the deletion.
         if not re.search(pat, code):
             problems.append(
                 f"scripts/{rel}: no bounded trailing-CR strip loop bounded by "

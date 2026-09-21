@@ -505,7 +505,15 @@ def make_good_tree(root):
           '[ -f "$frag" ] && [ ! -L "$frag" ] && :;\n'
           "# F17: both verdicts.d fragment scanners use the same 1MiB read bound\n"
           "while IFS= read -r -n 1048576 row; do :; done < \"$frag\"\n"
-          "while IFS= read -r -n 1048576 line; do :; done < \"$frag\"\n" +
+          "while IFS= read -r -n 1048576 line; do :; done < \"$frag\"\n"
+          # The bounded trailing-CR run strip (#139 item 1), required
+          # unconditionally since the PR #154 review: check_cr_strip_parity used
+          # to skip any file with no `_cr` in it, which is exactly what deleting
+          # the strip produces. A stub that omits it now reads as the deletion.
+          "_cr=0\n"
+          "while [ \"$_cr\" -lt 16 ]; do\n"
+          "  case \"$row\" in *$'\\r') row=\"${row%$'\\r'}\"; _cr=$((_cr + 1)) ;; *) break ;; esac\n"
+          "done\n" +
           # --mark-handoff EMITS the marker (audit F127: the pin reads a
           # printf line in code, not a mention in a comment) — in the KIND
           # CELL, cell 3 of `date | eng | kind | what`, which is the cell the
@@ -5700,6 +5708,31 @@ class CrStripParityTest(unittest.TestCase):
         self._edit("scripts/lib/caps.sh", "CAPS_MAX_CR=16", "CAPS_MAX_CRS=16")
         probs = self._probs()
         self.assertTrue(probs and "CAPS_MAX_CR" in probs[0])
+
+    def test_a_copy_that_drops_the_counter_ENTIRELY_fires(self):
+        """PR #154 review. The check skipped any file with no `_cr` in it —
+        and `_cr` is exactly what the realistic simplification removes: a copy
+        rewritten to `${row%%$'\\r'*}` (the #139 issue's own rejected proposal:
+        cheap, and it TRUNCATES the row at a mid-cell CR) carries no counter,
+        so the pin excused it. MEASURED on the real tree before the fix:
+        ops-reverify.sh's loop replaced by that single non-counting strip and
+        `_cr` gone from its `local` line left `validate_plugin: all contracts
+        hold`. Note the narrower mutation — the loop deleted but the `local
+        … _cr=0` line kept — DID fire even before the fix; the guard only
+        excused a copy with no `_cr` anywhere."""
+        self._edit("scripts/ops-reverify.sh",
+                   """    _cr=0
+    while [ "$_cr" -lt 16 ]; do
+      case "$row" in *$'\\r') row="${row%$'\\r'}"; _cr=$((_cr + 1)) ;; *) break ;; esac
+    done
+""",
+                   """    row="${row%%$'\\r'*}"
+""")
+        self._edit("scripts/ops-reverify.sh",
+                   "  local LC_ALL=C _cr=0\n", "  local LC_ALL=C\n")
+        probs = self._probs()
+        self.assertTrue(any("ops-reverify.sh" in p and "no bounded trailing-CR"
+                            in p for p in probs), probs)
 
     def test_a_gutted_loop_that_keeps_its_shape_fires(self):
         # F30: equality alone is satisfied by identically-broken copies. A loop
