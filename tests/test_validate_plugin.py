@@ -334,7 +334,7 @@ def make_good_tree(root):
           "# Decisions — append-only, one line per entry\n"
           "# <ISO-date> | <engagement.task> | <kind> | <what> | <why>\n"
           "# gated: DEVIATION | ESCALATION | GATE-EXCEPTION\n"
-          "# record: DECISION | DEFERRED-VERDICT\n"
+          "# record: DECISION | DEFERRED-VERDICT | SPEC-APPROVED\n"
           "# marker: HANDOFF-MARK\n")
     for name, model in (("op-author", "opus"),
                         ("op-mechanic", "sonnet"),
@@ -520,6 +520,11 @@ def make_good_tree(root):
           "# PREV reject-set (F15): carries *.exempt like the sentinel_owner parsers\n"
           'case "${PREV:-}" in */* | .* | *"|"* | *[[:space:]]* | *[[:cntrl:]]* | *.exempt) PREV="<invalid>" ;; esac\n'
           + GOOD_LOCK_BLOCK + GOOD_ROOT_BLOCK)
+    # ops-spec.sh: the FOURTH project-root copy (#155). It is a gate CLI —
+    # it writes DECISIONS.md and VERDICTS.md — so it resolves the project the
+    # same way the other three do, and check_root_parity holds all four equal.
+    write(root / "scripts" / "ops-spec.sh",
+          "#!/usr/bin/env bash\n" + guards + GOOD_SOURCE_STAMP + GOOD_ROOT_BLOCK)
     # ops-claims.sh: check_claims pins its PROTECTED literal and requires
     # matches_protected applied to $p.
     write(root / "scripts" / "ops-claims.sh",
@@ -1360,15 +1365,29 @@ class ValidatorTest(unittest.TestCase):
         write(self.dir / "templates" / "DECISIONS-header.md",
               "# Decisions\n"
               "# gated: DEVIATION | ESCALATION | GATE-EXCEPTION\n"
-              "# record: DECISION | DEFERRED-VERDICT\n")
+              "# record: DECISION | DEFERRED-VERDICT | SPEC-APPROVED\n")
         self.assertFires("missing 'HANDOFF-MARK'")
+
+    def test_spec_approved_must_be_a_RECORD_kind(self):
+        # #9's defect, for #155's kind: a kind in the wrong constant is a kind
+        # the gate silently mishandles. As a GATED kind, every approved spec
+        # would block Stop until the handoff presented it — an approval is not
+        # a deviation to answer for. The header is the contract both halves
+        # read, so putting it on the gated line must fire.
+        write(self.dir / "templates" / "DECISIONS-header.md",
+              "# <ISO-date> | <engagement.task> | <kind> | <what> | <why>\n"
+              "# gated: DEVIATION | ESCALATION | GATE-EXCEPTION | SPEC-APPROVED\n"
+              "# record: DECISION | DEFERRED-VERDICT\n"
+              "# marker: HANDOFF-MARK\n")
+        probs = self.problems()
+        self.assertTrue(any("SPEC-APPROVED" in p for p in probs), probs)
 
     def test_decisions_enum_missing_split_fires(self):
         # All kinds present but no gated/record split (issue #9).
         write(self.dir / "templates" / "DECISIONS-header.md",
               "# <ISO-date> | <eng> | "
               "<DEVIATION|ESCALATION|GATE-EXCEPTION|DECISION|DEFERRED-VERDICT"
-              "|HANDOFF-MARK> | <what> | <why>\n")
+              "|SPEC-APPROVED|HANDOFF-MARK> | <what> | <why>\n")
         self.assertFires("does not distinguish gated from record kinds")
 
     def test_decisions_reader_missing_handoff_mark_fires(self):
@@ -2355,7 +2374,7 @@ class LockParityTest(unittest.TestCase):
 
 
 class RootParityTest(unittest.TestCase):
-    """The three gate CLIs must resolve the project the same way, and it must
+    """The four gate CLIs must resolve the project the same way, and it must
     be the right way (#95).
 
     Until 0.11.3 OPDIR was relative to the caller's cwd, so every CLI worked
@@ -2392,7 +2411,10 @@ class RootParityTest(unittest.TestCase):
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def _write(self, **over):
-        for name in ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh"):
+        # FOUR since #155: ops-spec.sh writes DECISIONS.md and VERDICTS.md, so
+        # it resolves the project the same way. A writer left out of this list
+        # is a writer the parity mutations below never cover.
+        for name in ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh", "ops-spec.sh"):
             key = name[:-3].replace("-", "_")
             body = over.get(key, self.BLOCK.replace("TOOL:", name[:-3] + ":"))
             write(self.dir / "scripts" / name, "#!/usr/bin/env bash\n" + body)
@@ -2422,7 +2444,11 @@ class RootParityTest(unittest.TestCase):
                                    '      OPDIR="$_walk/.operator"')
         self._write(ops_task=broke.replace("TOOL:", "ops-task:"),
                     ops_verdict=broke.replace("TOOL:", "ops-verdict:"),
-                    ops_adopt=broke.replace("TOOL:", "ops-adopt:"))
+                    ops_adopt=broke.replace("TOOL:", "ops-adopt:"),
+                    # ALL FOUR since #155, or the mutation is not uniform and
+                    # these cases measure drift instead of the uniform loss
+                    # they are named for.
+                    ops_spec=broke.replace("TOOL:", "ops-spec:"))
         probs = self.problems()
         self.assertFalse(any("drifted" in p for p in probs),
                          "uniform drift IS in parity — that is the point")
@@ -2434,7 +2460,11 @@ class RootParityTest(unittest.TestCase):
         broke = self.BLOCK.replace('    [ -e "$_walk/.git" ] && break\n', "")
         self._write(ops_task=broke.replace("TOOL:", "ops-task:"),
                     ops_verdict=broke.replace("TOOL:", "ops-verdict:"),
-                    ops_adopt=broke.replace("TOOL:", "ops-adopt:"))
+                    ops_adopt=broke.replace("TOOL:", "ops-adopt:"),
+                    # ALL FOUR since #155, or the mutation is not uniform and
+                    # these cases measure drift instead of the uniform loss
+                    # they are named for.
+                    ops_spec=broke.replace("TOOL:", "ops-spec:"))
         probs = self.problems()
         self.assertTrue(any("nested repo" in p for p in probs), probs)
 
@@ -2447,7 +2477,11 @@ class RootParityTest(unittest.TestCase):
             '      # cd "$_walk" 2>/dev/null || die "TOOL: could not cd"\n      :')
         self._write(ops_task=broke.replace("TOOL:", "ops-task:"),
                     ops_verdict=broke.replace("TOOL:", "ops-verdict:"),
-                    ops_adopt=broke.replace("TOOL:", "ops-adopt:"))
+                    ops_adopt=broke.replace("TOOL:", "ops-adopt:"),
+                    # ALL FOUR since #155, or the mutation is not uniform and
+                    # these cases measure drift instead of the uniform loss
+                    # they are named for.
+                    ops_spec=broke.replace("TOOL:", "ops-spec:"))
         probs = self.problems()
         self.assertTrue(any("REPO-relative" in p for p in probs), probs)
 

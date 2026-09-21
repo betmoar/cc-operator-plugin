@@ -62,6 +62,13 @@ premise to itself.
 
 ## 3. The spec artifact
 
+**BUILT (#155/#156).** `scripts/ops-spec.sh` ships `--new` / `--check` /
+`--approve`, installed into `.operator/bin/`; `/cc-operator:spec` drives the
+interview and `/cc-operator:plan <slug>` refuses an unapproved spec. The
+allowlist took its third version additively, so `.operator/specs/` is tracked
+without any project losing a hand-added allow line. What follows is the
+design as specified; where the build differs it is noted inline.
+
 ### 3.1 Location
 
 `.operator/specs/<slug>.md`, tracked in git.

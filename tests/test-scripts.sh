@@ -4318,6 +4318,138 @@ check "ops-verdict.sh actually implements --mark-handoff" \
   "$(grep -q -- '--mark-handoff' "$SCRIPTS/ops-verdict.sh" && echo 0 || echo 1)"
 
 ########################################################################
+echo "-- Case: the spec artifact (#155) — ops-spec.sh new/check/approve"
+# The cycle went brainstorm -> ??? -> plan, and the only thing carrying a
+# design across that gap was prose the operator retyped: no file, no
+# provenance, no stamp, no ledger row, nothing surviving a compaction.
+SPECSH="$SCRIPTS/ops-spec.sh"
+SP="$(newproj)"; ( cd "$SP" && bash "$INIT" >/dev/null 2>&1 )
+( cd "$SP" && bash "$SPECSH" --new alpha >/dev/null 2>&1 )
+check "#155 --new scaffolds .operator/specs/<slug>.md" \
+  "$([ -f "$SP/.operator/specs/alpha.md" ] && echo 0 || echo 1)"
+check "#155 the skeleton carries every required section" \
+  "$( for _s in 'North star' 'Done criteria' 'In scope' 'Out of scope' 'Open questions' 'Constraints'; do
+        grep -qxF "## $_s" "$SP/.operator/specs/alpha.md" || { echo 1; break; }
+      done | grep -q 1 && echo 1 || echo 0)"
+check "#155 a fresh spec is DRAFT, never APPROVED" \
+  "$(grep -qx 'Status: DRAFT' "$SP/.operator/specs/alpha.md" && echo 0 || echo 1)"
+# O_EXCL, ops-task.sh's discipline: a second --new must not clobber work in
+# progress.
+( cd "$SP" && bash "$SPECSH" --new alpha >/dev/null 2>&1 ); SPDUP=$?
+check "#155 a second --new REFUSES rather than overwriting the spec" \
+  "$([ "$SPDUP" -ne 0 ] && echo 0 || echo 1)"
+
+# --check REFUSES the untouched skeleton: its placeholder row is not a
+# criterion, and a spec approved with the template still in it has none.
+( cd "$SP" && bash "$SPECSH" --check alpha >/dev/null 2>&1 ); SPCHK=$?
+check "#155 --check refuses the untouched skeleton (placeholder != criterion)" \
+  "$([ "$SPCHK" -eq 1 ] && echo 0 || echo 1)"
+
+# A filled spec passes. Written with printf rather than an editor so the case
+# states exactly what a valid spec is.
+spec_fill() { # spec_fill <proj> <slug> [--no-missed|--open-question]
+  local _f="$1/.operator/specs/$2.md" _mode="${3:-}"
+  {
+    printf '# SPEC — %s\n\nSlug: %s\nStatus: DRAFT\nProvenance: the suite\n\n' "$2" "$2"
+    printf '## North star\n\nThe gate refuses an unevidenced claim.\n'
+    [ "$_mode" = "--no-missed" ] || printf 'Missed if: a row lands with no command output.\n'
+    printf '\n## Done criteria\n\n| # | Criterion | Command | Expected output |\n|---|---|---|---|\n'
+    printf '| 1 | the suite passes | bash tests/test-scripts.sh | 0 failed |\n\n'
+    printf '## In scope\n\nthe gate\n\n## Out of scope\n\neverything else\n\n'
+    printf '## Open questions\n\n| Question | Resolution | Decided by |\n|---|---|---|\n'
+    if [ "$_mode" = "--open-question" ]; then
+      printf '| who decides? |  |  |\n'
+    else
+      printf '| who decides? | the operator | maintainer |\n'
+    fi
+    printf '\n## Constraints\n\nnone\n'
+  } > "$_f"
+}
+spec_fill "$SP" alpha
+( cd "$SP" && bash "$SPECSH" --check alpha >/dev/null 2>&1 )
+check "#155 --check passes a filled spec" "$?"
+# The north star's clause is what plan.js reads WITHOUT a fallback — a spec
+# missing it produces a plan workflow that refuses after the operator has
+# already approved.
+spec_fill "$SP" alpha --no-missed
+( cd "$SP" && bash "$SPECSH" --check alpha >/dev/null 2>&1 ); SPNM=$?
+check "#155 --check refuses a north star with no 'Missed if:' clause" \
+  "$([ "$SPNM" -eq 1 ] && echo 0 || echo 1)"
+# An unanswered question is the interview skipped.
+spec_fill "$SP" alpha --open-question
+( cd "$SP" && bash "$SPECSH" --check alpha >/dev/null 2>&1 ); SPOQ=$?
+check "#155 --check refuses an open question with an empty Resolution" \
+  "$([ "$SPOQ" -eq 1 ] && echo 0 || echo 1)"
+
+# --approve: the guards run BEFORE the checker reports, so a refusal about the
+# INVOCATION never arrives dressed as a verdict on the CONTENT.
+spec_fill "$SP" alpha
+SPNOOWN="$( cd "$SP" && bash "$SPECSH" --approve alpha 2>&1 )"; SPNOOWNRC=$?
+check "#155 --approve without --owner is refused" \
+  "$([ "$SPNOOWNRC" -ne 0 ] && echo 0 || echo 1)"
+check "#155 …and that refusal does NOT first print a verdict on the content" \
+  "$(printf '%s' "$SPNOOWN" | grep -q 'passes --check' && echo 1 || echo 0)"
+( cd "$SP" && bash "$SPECSH" --approve alpha --owner 'ev$il' >/dev/null 2>&1 ); SPBADO=$?
+check "#155 --approve refuses a shell-metacharacter owner" \
+  "$([ "$SPBADO" -ne 0 ] && echo 0 || echo 1)"
+
+( cd "$SP" && bash "$SPECSH" --approve alpha --owner SESS-SPEC >/dev/null 2>&1 )
+check "#155 --approve stamps Status: APPROVED with a source stamp" \
+  "$(grep -qE '^Status: APPROVED @' "$SP/.operator/specs/alpha.md" && echo 0 || echo 1)"
+check "#155 --approve logs SPEC-APPROVED to DECISIONS.md" \
+  "$(grep -q '| SPEC-APPROVED |' "$SP/.operator/DECISIONS.md" && echo 0 || echo 1)"
+check "#155 --approve appends a BAR block to VERDICTS.md" \
+  "$(grep -q '^## BAR — alpha' "$SP/.operator/VERDICTS.md" && echo 0 || echo 1)"
+# THE LINKAGE, which is the whole reason the BAR block is emitted rather than
+# hand-written: the charter's north star and the one plan.js reads are now the
+# SAME SENTENCE, because both come from this file.
+check "#155 the BAR block's north star is the SPEC's, verbatim" \
+  "$(grep -q 'North star: The gate refuses an unevidenced claim.' "$SP/.operator/VERDICTS.md" && echo 0 || echo 1)"
+check "#155 …and it carries the Missed if: clause too" \
+  "$(grep -q 'Missed if: a row lands with no command output.' "$SP/.operator/VERDICTS.md" && echo 0 || echo 1)"
+# A second approval would append a SECOND BAR block for one spec.
+( cd "$SP" && bash "$SPECSH" --approve alpha --owner SESS-SPEC >/dev/null 2>&1 ); SPTWICE=$?
+check "#155 a second --approve is refused" \
+  "$([ "$SPTWICE" -ne 0 ] && echo 0 || echo 1)"
+check "#155 …and only ONE BAR block exists for the spec" \
+  "$([ "$(grep -c '^## BAR — alpha' "$SP/.operator/VERDICTS.md")" -eq 1 ] && echo 0 || echo 1)"
+
+# THE FOURTH PROJECT ROOT BLOCK's whole point (#95): the CLI must work from a
+# SUBDIRECTORY. Without the walk-up every path resolves against the caller's
+# cwd, so the CLI works from the project root and nowhere else — and the Stop
+# hook prescribes an ABSOLUTE path, which is exactly the subdirectory case.
+mkdir -p "$SP/apps/viewer"
+( cd "$SP/apps/viewer" && bash "$SPECSH" --new fromsub >/dev/null 2>&1 )
+check "#155 ops-spec.sh resolves the project by WALKING UP from a subdirectory" \
+  "$([ -f "$SP/.operator/specs/fromsub.md" ] && echo 0 || echo 1)"
+
+# The slug becomes a FILENAME, so it takes the sentinel reject set.
+for _bad in 'a/b' '.hidden' 'a__b' 'a|b'; do
+  ( cd "$SP" && bash "$SPECSH" --new "$_bad" >/dev/null 2>&1 ); _rc=$?
+  check "#155 the slug reject set refuses $(printf '%s' "$_bad")" \
+    "$([ "$_rc" -ne 0 ] && echo 0 || echo 1)"
+done
+# A symlinked spec is refused BEFORE it is read (F65's class: the link is never
+# ours, and following it reads something the operator never wrote).
+ln -s /etc/passwd "$SP/.operator/specs/linked.md" 2>/dev/null
+( cd "$SP" && bash "$SPECSH" --check linked >/dev/null 2>&1 ); SPLNK=$?
+check "#155 a SYMLINKED spec is refused, never followed" \
+  "$([ "$SPLNK" -ne 0 ] && echo 0 || echo 1)"
+
+# #156's integration: the spec must actually be TRACKED, or the whole artifact
+# is invisible to the teammate it exists for. This is the reason the allowlist
+# took a third version at all.
+if command -v git >/dev/null 2>&1; then
+  ( cd "$SP" && git init -q . >/dev/null 2>&1 )
+  ( cd "$SP" && git check-ignore -q .operator/specs/alpha.md >/dev/null 2>&1 ); SPIGN=$?
+  check "#155/#156 an approved spec is NOT gitignored (the v3 allowlist admits it)" \
+    "$([ "$SPIGN" -ne 0 ] && echo 0 || echo 1)"
+else
+  skip "#155/#156 spec tracking (git unavailable)"
+fi
+rm -rf "$SP"
+
+########################################################################
 echo "-- Case: v2 -> v3 gitignore is ADDITIVE, so it appends (#156)"
 # The v1 -> v2 migration REPLACES because a blocklist and an allowlist
 # contradict. v3 is v2 PLUS two lines, so replacing would answer a

@@ -682,7 +682,10 @@ def check_source_stamp(root, problems):
 # HANDOFF-MARK marker. The deviation gate counts ONLY the gated kinds; the
 # schema must advertise the split (#9, F30).
 DECISIONS_GATED_KINDS = ("DEVIATION", "ESCALATION", "GATE-EXCEPTION")
-DECISIONS_RECORD_KINDS = ("DECISION", "DEFERRED-VERDICT")
+# SPEC-APPROVED is a RECORD kind, never a gated one (#9): a gated kind blocks
+# Stop until the handoff presents it, and an approved spec is not a deviation
+# to answer for — it is the input the plan gate reads (#155).
+DECISIONS_RECORD_KINDS = ("DECISION", "DEFERRED-VERDICT", "SPEC-APPROVED")
 DECISIONS_MARKER_KIND = "HANDOFF-MARK"
 # The gated kinds, in order, as the hook's case-statement literal.
 DECISIONS_GATED_LITERAL = "|".join(DECISIONS_GATED_KINDS)
@@ -711,6 +714,40 @@ def check_decisions_schema(root, problems):
             f"{DECISIONS_GATED_LITERAL!r}; DECISION/DEFERRED-VERDICT are records "
             "that never block. A reader who cannot see the split mistakes a "
             "non-gated record for a kind that should block Stop (issue #9)")
+    # …and each kind must sit on the RIGHT SIDE of that split. Presence alone
+    # was the whole test until #155 added a kind: SPEC-APPROVED written onto
+    # the `gated` line satisfied every check above, and a gated kind BLOCKS
+    # Stop until the handoff presents it — so every approved spec would have
+    # wedged the session it was approved in. That is #9's defect exactly (a
+    # kind in the wrong constant is a kind the gate mishandles), and nothing
+    # here could see it, because the constants and the header were compared
+    # for membership, never for side.
+    # Classified by the LEADING LABEL, not by any occurrence of the word: the
+    # shipped marker line reads "marker (clears the gated set)", so a naive
+    # substring scan files it under BOTH and reports HANDOFF-MARK as
+    # mis-sided. The label is what the line claims to be; prose about a
+    # neighbouring side is not a claim about this one.
+    _sides = {}
+    for _line in text.splitlines():
+        _m = re.match(r"\s*#?\s*(gated|record|marker)\b", _line, re.IGNORECASE)
+        if _m:
+            _sides.setdefault(_m.group(1).lower(), []).append(_line)
+    for _kinds, _which in ((DECISIONS_GATED_KINDS, "gated"),
+                           (DECISIONS_RECORD_KINDS, "record"),
+                           ((DECISIONS_MARKER_KIND,), "marker")):
+        for _k in _kinds:
+            _here = any(_k in _l for _l in _sides.get(_which, []))
+            _elsewhere = [_w for _w in ("gated", "record", "marker")
+                          if _w != _which and any(_k in _l for _l in _sides.get(_w, []))]
+            if not _here or _elsewhere:
+                problems.append(
+                    f"templates/DECISIONS-header.md: {_k!r} is a {_which.upper()} "
+                    f"kind in validate_plugin, but the header "
+                    f"{'also lists it as ' + '/'.join(_elsewhere) if _elsewhere else 'does not list it on the ' + _which + ' line'}"
+                    f" — a kind on the wrong side of the split is a kind the gate "
+                    f"mishandles (#9): a record listed as gated blocks Stop until "
+                    f"the handoff presents it, and a gated one listed as a record "
+                    f"never blocks at all")
     # The deviation gate's SCAN lives in scripts/lib/partition.sh (0.10: the
     # hook and the bar source ONE implementation). The gated-kind and mark
     # literals must live there; the two consumers must SOURCE the lib, or the
@@ -2691,8 +2728,13 @@ CANONICAL_ROOT = (
 
 
 def check_root_parity(root, problems):
-    """The three gate CLIs must resolve the project the SAME way, and it must be
+    """The gate CLIs must resolve the project the SAME way, and it must be
     the right way.
+
+    FOUR copies since #155 (ops-spec.sh joined them). The list is here rather
+    than a glob on purpose: a CLI that does NOT resolve the project — one that
+    never touches .operator/ — must not be silently excused for lacking the
+    block, and a glob cannot tell the two apart.
 
     OPDIR was relative to the caller's cwd until 0.11.3, so every CLI worked
     from the project root and nowhere else — including through the absolute
@@ -2701,7 +2743,7 @@ def check_root_parity(root, problems):
     drift the way the lock block would.
     """
     blocks = {}
-    for name in ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh"):
+    for name in ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh", "ops-spec.sh"):
         p = root / "scripts" / name
         if not p.is_file():
             return  # missing-file is already reported by check_scripts

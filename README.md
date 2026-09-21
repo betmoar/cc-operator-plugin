@@ -24,8 +24,9 @@ non-Anthropic model routing.
 - **`.operator/`** — the ledger: `VERDICTS.md` (append-only, one row per
   gated task), `DECISIONS.md` (append-only, one line per deviation/decision),
   `verdicts.d/` (per-session row fragments — a merge-repair backstop),
-  `pending/` (task sentinels), and `bin/` (the five gate CLIs `ops-task.sh`,
-  `ops-verdict.sh`, `ops-adopt.sh`, `ops-claims.sh` and `ops-backlog.sh`,
+  `pending/` (task sentinels), `specs/` (the spec artifacts), and `bin/` (the
+  six gate CLIs `ops-task.sh`, `ops-verdict.sh`, `ops-adopt.sh`,
+  `ops-claims.sh`, `ops-backlog.sh` and `ops-spec.sh`,
   installed so the charter's paths resolve in any project; refreshed on every
   re-run of `/cc-operator:start`).
 - A **CLAUDE.md** stanza importing the charter (`@OPERATOR.md`) so it survives
@@ -92,6 +93,7 @@ the operator pasting a model id by hand (#55 at the call site).
 | `/cc-operator:handoff` | Produce the six-section operator→human handoff |
 | `/cc-operator:tiers` | Resolve tier→model bindings, apply overrides, render project-layer agents |
 | `/cc-operator:brainstorm` | Diverge before a spec exists, then interview one question at a time |
+| `/cc-operator:spec` | Write, check and approve the spec — the artifact that survives a compaction |
 | `/cc-operator:plan` | Decompose an approved spec into vetted TDD tasks |
 | `/cc-operator:implement` | One implementer seat per task, serially, on the IMPLEMENT tier |
 | `/cc-operator:review` | The two-stage review panel over an artifact |
@@ -121,6 +123,9 @@ Or from a local checkout:
 .operator/bin/ops-adopt.sh --owner <new-id> <id>...     # re-claim your tasks after a /clear
 .operator/bin/ops-verdict.sh --reconcile                # restore rows lost to a messy merge
 .operator/bin/ops-claims.sh --since <sha> --claimed "<paths>"   # verify a DONE report against the diff
+.operator/bin/ops-spec.sh --new <slug>                          # scaffold the spec the plan stage reads
+.operator/bin/ops-spec.sh --check <slug>                        # validate its skeleton; writes nothing
+.operator/bin/ops-spec.sh --approve <slug> --owner <id>         # stamp it, log SPEC-APPROVED, emit the BAR block
 ```
 
 `ops-init.sh` (run by `/cc-operator:start`) installs those CLIs into
@@ -203,7 +208,7 @@ commands/*.md                     # slash commands: start, handoff, tiers + one 
 workflows/{review,brainstorm,plan,crawl,dispatch,debate,implement}.js  # the orchestration primitives
 agents/op-*.md                    # tier-aliased seats: author, mechanic, reviewer, scout, verifier, brainstorm, crawler, debater
 skills/chief-operator/SKILL.md    # thin router (front door only)
-scripts/ops-{init,task,verdict,adopt,claims,backlog}.sh  # the evidence-gate mechanism
+scripts/ops-{init,task,verdict,adopt,claims,backlog,spec}.sh  # the evidence-gate mechanism
 scripts/ops-install-set.sh        # the .operator/bin install manifest (both writers source it)
 scripts/ops-{stop,sessionstart}-hook.sh # completion gate + session-id injection
 scripts/lib/partition.sh          # the mine/foreign partition rule — hook + statusline share it
