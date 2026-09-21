@@ -1925,11 +1925,15 @@ project-layer agent, `$CLAUDE_CODE_SUBAGENT_MODEL`. Renderer and dispatcher stop
 competing: render sets the standing default, dispatch overrides per call, and an absent
 override no longer overwrites that default with a third answer.
 
-One measurement is still owed and is recorded in the code rather than assumed away: what
-this repo has measured is the CONVERSE — `opts.model` overrides the agent file's
-frontmatter (2026-07-29). That an OMITTED `opts.model` leaves the frontmatter in effect
-is the expected complement, not a measurement. The returned `modelSource` is what a live
-run reads it off.
+The premise that rung was reasoned from is now MEASURED (2026-09-21). What existed was
+the CONVERSE — `opts.model` overrides the agent file's frontmatter (2026-07-29) — and the
+complement was carried in the code as an admitted assumption rather than assumed away.
+A two-seat probe settled it: same `agentType` (a project-layer agent pinning
+`model: opus`), one dispatch with no `model` key and one with `model: "haiku"`; the
+runtime recorded no model key for the first and served it `claude-opus-5`, and recorded
+`"model":"haiku"` for the second and served it `claude-haiku-4-5-20251001`. Writing the
+assumption down as an assumption is what made it cheap to close — the alternative,
+phrasing it as a fact, is the class this file exists for.
 
 Making four tiers nameable had a second-order cost that is easy to miss: the eager
 `for (const [name, id] of Object.entries(TIERS))` validation loop was sound only while

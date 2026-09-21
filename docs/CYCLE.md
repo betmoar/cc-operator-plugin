@@ -294,14 +294,21 @@ than competing: `ops-render.sh` sets the standing default, `dispatch` overrides
 it per call, and an absent override no longer overwrites the default with a
 third answer.
 
-**One assumption the builder must measure before shipping rung 3.** What is
-recorded is the converse: `opts.model` OVERRIDES the agent file's `model:`
-frontmatter (measured 2026-07-29, cited in `workflows/review.js`). That an
-OMITTED `opts.model` leaves the frontmatter in effect is the expected
-complement, not something this repo has measured. A live dispatch with the key
-omitted, against a seat whose frontmatter names a distinguishable model, is the
-evidence — and if it comes back otherwise, rung 3 becomes an explicit refusal
-rather than a silent promotion.
+**Rung 3's premise is MEASURED, 2026-09-21.** What was already recorded is the
+converse: `opts.model` OVERRIDES the agent file's `model:` frontmatter
+(2026-07-29, cited in `workflows/review.js`). The complement — that an OMITTED
+`opts.model` leaves the frontmatter in effect — was an assumption until a
+two-seat probe ran it. Same `agentType`, a project-layer agent pinning
+`model: opus`; one dispatch with no `model` key, one with `model: "haiku"`. The
+runtime's per-agent metadata recorded no `model` key for the first and
+`"model":"haiku"` for the second, and the transcripts show them served by
+`claude-opus-5` and `claude-haiku-4-5-20251001` respectively. Omitting the key
+hands the decision to the agent definition, which is what the rung claims.
+
+What the probe does NOT cover: a cc-proxy id rather than a harness alias, and a
+plugin-root agent rather than a project-layer one. Neither is the mechanism
+under test — the claim is about the absent key, and the absent key is what the
+metadata shows.
 
 One constraint on every rung: **the seat→tier binding must not gain a second
 declaration.** It lives in `ops-render.sh`'s `seat_add` lines, and a copy inside

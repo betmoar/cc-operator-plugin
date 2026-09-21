@@ -184,12 +184,16 @@ if (!prompt) {
 // render`, or $CLAUDE_CODE_SUBAGENT_MODEL. Renderer and dispatcher stop
 // competing: render sets the standing default, dispatch overrides per call.
 //
-// OWED MEASUREMENT (#158): what this repo has measured is the converse —
-// opts.model OVERRIDES the agent file's frontmatter (2026-07-29, review.js).
-// That an OMITTED opts.model leaves the frontmatter in effect is the expected
-// complement, not something measured here. The `modelSource` field in the
-// return is what a live run reads it off: a dispatch that comes back
-// "seat-default" and ran on something else refutes this rung.
+// MEASURED 2026-09-21, and this rung rests on it. The converse was already
+// recorded (opts.model OVERRIDES the agent file's frontmatter, 2026-07-29);
+// the complement — that an OMITTED opts.model leaves the frontmatter in
+// effect — was an assumption until a two-seat probe ran it. Same agentType
+// (a project-layer agent pinning `model: opus`), one dispatch with no `model`
+// key and one with `model: "haiku"`. The runtime's per-agent metadata recorded
+// NO model key for the first and `"model":"haiku"` for the second, and the
+// transcripts show them served by claude-opus-5 and claude-haiku-4-5
+// respectively. Omitting the key hands the decision to the agent definition,
+// which is exactly what this rung claims.
 const rawTier = typeof A.tier === "string" && A.tier.trim() ? A.tier.trim() : "";
 const model = typeof A.model === "string" && A.model.trim() ? A.model.trim() : "";
 if (model) {
