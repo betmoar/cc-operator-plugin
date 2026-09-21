@@ -25,15 +25,25 @@
 # gate's verdict. A stage that could block would be a second gate keyed on
 # derived state, which is exactly what this is not.
 
-# stage_derive <malformed> <mine> <mine-ids> <foreign> <unpresented|->
+# stage_derive <malformed> <mine> <mine-ids> <foreign> <unpresented|-> [specs|-]
 #
 # Sets STAGE and STAGE_NEXT. `unpresented` is "-" when the caller did not scan
 # DECISIONS.md; the stage then never claims HANDOFF, because "no unpresented
 # deviations" is a fact that caller does not have. An UNKNOWN input produces a
 # narrower answer, never a guessed one.
+# The sixth argument is the SPEC summary (#155): "-" when the caller did not
+# look, "none" when .operator/specs/ does not exist or holds nothing, "draft"
+# when specs exist but none is APPROVED, "approved" when at least one is. The
+# caller computes it because this lib opens no file — the same division that
+# lets the Stop hook and SessionStart share one derivation.
+#
+# ABSENT specs/ is "none" and reports CLEAR, NOT a spec stage. A project that
+# never opted into the spec stage must not be told forever that it is in
+# DIVERGE: the derivation reports where the engagement IS, never where a
+# ceremony says it should be.
 stage_derive() {
   local _malformed="${1:-0}" _mine="${2:-0}" _mine_ids="${3:-}" \
-        _foreign="${4:-0}" _unpres="${5:--}"
+        _foreign="${4:-0}" _unpres="${5:--}" _specs="${6:--}"
   STAGE=""
   STAGE_NEXT=""
 
@@ -61,6 +71,19 @@ stage_derive() {
     STAGE_NEXT="$_unpres unpresented decision(s) block the stop — run /cc-operator:handoff, then ops-verdict.sh --mark-handoff --owner <sid>"
     return 0
   fi
+
+  # The spec rungs sit BELOW the gate's own: an open task or an unpresented
+  # decision is what this session must do next whatever the specs say.
+  case "$_specs" in
+    draft)
+      STAGE="SPEC"
+      STAGE_NEXT="a spec is DRAFT — resolve its open questions with the human, then ops-spec.sh --check <slug> and --approve <slug> --owner <sid>. The plan workflow refuses an unapproved spec"
+      return 0 ;;
+    approved)
+      STAGE="PLAN"
+      STAGE_NEXT="an APPROVED spec is waiting — run /cc-operator:plan <slug>, which takes its north star from that file so the plan is vetted against the sentence the ledger agreed to"
+      return 0 ;;
+  esac
 
   STAGE="CLEAR"
   if [ "$_unpres" = "-" ]; then

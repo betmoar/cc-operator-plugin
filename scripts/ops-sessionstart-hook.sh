@@ -361,7 +361,27 @@ if [ -f "$_ss_libdir/partition.sh" ] && [ -f "$_ss_libdir/stage.sh" ]; then
   . "$_ss_libdir/stage.sh" 2>/dev/null || true
   if command -v scan_pending >/dev/null 2>&1 && command -v stage_derive >/dev/null 2>&1; then
     scan_pending "$cwd/.operator" "$session" 2>/dev/null || true
-    stage_derive "${MALFORMED:-0}" "${MINE:-0}" "${MINE_IDS:-}" "${FOREIGN:-0}" "-" 2>/dev/null || true
+    # The SPEC summary (#155), computed HERE because stage.sh opens no file.
+    # BOUNDED: at most the first 50 specs are probed, because this runs on
+    # every session start and a directory someone filled is not a reason to
+    # stall one. Past the bound the answer stays "draft" — the conservative
+    # side, since it prescribes finishing a spec rather than planning from one
+    # that may not be approved.
+    _ss_specs="none"
+    if [ -d "$cwd/.operator/specs" ]; then
+      _ss_n=0
+      for _ss_f in "$cwd/.operator/specs"/*.md; do
+        [ -f "$_ss_f" ] || continue
+        _ss_n=$((_ss_n + 1))
+        [ "$_ss_n" -le 50 ] || break
+        _ss_specs="draft"
+        if grep -q '^Status: APPROVED' "$_ss_f" 2>/dev/null; then
+          _ss_specs="approved"
+          break
+        fi
+      done
+    fi
+    stage_derive "${MALFORMED:-0}" "${MINE:-0}" "${MINE_IDS:-}" "${FOREIGN:-0}" "-" "$_ss_specs" 2>/dev/null || true
   fi
   if [ -n "${STAGE:-}" ]; then
     ctx="$ctx

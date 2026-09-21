@@ -4526,7 +4526,7 @@ STAGELIB="$SCRIPTS/lib/stage.sh"
 check "scripts/lib/stage.sh exists" "$([ -f "$STAGELIB" ] && echo 0 || echo 1)"
 # shellcheck source=/dev/null
 . "$STAGELIB"
-_stage_of() { stage_derive "$1" "$2" "${3:-}" "${4:-0}" "${5:--}"; printf '%s' "$STAGE"; }
+_stage_of() { stage_derive "$1" "$2" "${3:-}" "${4:-0}" "${5:--}" "${6:--}"; printf '%s' "$STAGE"; }
 
 check "stage: nothing open, deviations unscanned → CLEAR" \
   "$([ "$(_stage_of 0 0 '' 0 -)" = "CLEAR" ] && echo 0 || echo 1)"
@@ -4566,6 +4566,26 @@ check "stage: but it IS reported in the next move" \
 check "stage: REPORT-ONLY — no exit/return-1 in any stage_derive branch" \
   "$(grep -nE '^\s*(exit|return 1)' "$STAGELIB" | grep -qv 'return 0' && echo 1 || echo 0)"
 
+# THE SPEC RUNGS (#155 x #157): with the spec artifact on disk, the stages
+# docs/CYCLE.md §6 listed as "waiting on #155" are derivable — and the caller
+# computes the summary because this lib opens no file.
+check "stage: a DRAFT spec → SPEC" \
+  "$([ "$(_stage_of 0 0 '' 0 0 draft)" = "SPEC" ] && echo 0 || echo 1)"
+check "stage: an APPROVED spec → PLAN" \
+  "$([ "$(_stage_of 0 0 '' 0 0 approved)" = "PLAN" ] && echo 0 || echo 1)"
+# THE OPT-OUT PROPERTY, and it is the one that keeps this honest: a project
+# that never used the spec stage must not be told forever that it is in a spec
+# stage. The derivation reports where the engagement IS, never where a
+# ceremony says it should be.
+check "stage: NO specs dir is CLEAR, never a spec stage" \
+  "$([ "$(_stage_of 0 0 '' 0 0 none)" = "CLEAR" ] && echo 0 || echo 1)"
+# The gate's own rungs still outrank them: an open task is what this session
+# must close whatever the specs say.
+check "stage: an open task outranks an APPROVED spec" \
+  "$([ "$(_stage_of 0 1 'task-a' 0 0 approved)" = "IMPLEMENT" ] && echo 0 || echo 1)"
+check "stage: an unpresented decision outranks a DRAFT spec" \
+  "$([ "$(_stage_of 0 0 '' 0 3 draft)" = "HANDOFF" ] && echo 0 || echo 1)"
+
 # THE BANNER, END TO END. The assertions above all pass against a lib nothing
 # sources: the wiring is a separate claim and needs the hook actually run. It
 # also catches the shape that bash -n accepts and nobody can read — a
@@ -4583,6 +4603,22 @@ rm -f "$SP/.operator/pending"/*
 SPOUT2="$(printf '{"session_id":"BANNER-SESS","cwd":"%s"}' "$SP" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
 check "CONTROL — with nothing open the banner reports STAGE CLEAR" \
   "$(printf '%s' "$SPOUT2" | grep -q 'STAGE CLEAR' && echo 0 || echo 1)"
+SP2="$SP"
+# The SPEC summary end to end: the hook computes it, so a banner that reports
+# the right STAGE proves both halves — the glob AND the derivation.
+mkdir -p "$SP2/.operator/specs" 2>/dev/null
+printf '# SPEC — d
+Status: DRAFT
+' > "$SP2/.operator/specs/d.md"
+SPB1="$(printf '{"session_id":"BANNER-SESS","cwd":"%s"}' "$SP2" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+check "the banner reports STAGE SPEC for a DRAFT spec (#155 x #157)"   "$(printf '%s' "$SPB1" | grep -q 'STAGE SPEC' && echo 0 || echo 1)"
+printf '# SPEC — d
+Status: APPROVED @deadbeef
+' > "$SP2/.operator/specs/d.md"
+SPB2="$(printf '{"session_id":"BANNER-SESS","cwd":"%s"}' "$SP2" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+check "the banner reports STAGE PLAN once a spec is APPROVED"   "$(printf '%s' "$SPB2" | grep -q 'STAGE PLAN' && echo 0 || echo 1)"
+rm -rf "$SP2"
+
 # FAIL-SILENT, and this polarity is the load-bearing one: the id injection is
 # the root of the entire ownership mechanism, so a missing stage lib must cost
 # the STAGE LINE and nothing else. Copy the hook and its libs to a scratch tree
