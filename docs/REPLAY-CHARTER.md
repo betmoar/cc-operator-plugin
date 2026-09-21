@@ -91,8 +91,8 @@ PR="$HOME/.claude/plugins/cache/<owner>/cc-operator/<version>"
 copy is an unrelated older install. Resolving by convention there reported 5/5
 STALE, which reads exactly like the #34 class recurring and is simply a wrong pair.
 The error is symmetric and that is what makes it dangerous: a mis-resolved `$PR`
-yields five spurious STALEs in one direction and five spurious CURRENTs in the
-other, and only the second is silent.
+yields a spurious STALE for every CLI in one direction and a spurious CURRENT for
+every one in the other, and only the second is silent.
 
 Do **not** substitute the repo's own `scripts/` here *on a cache-loaded session*.
 It is the reachable-looking fix and it silently audits the tree instead of the
@@ -110,7 +110,7 @@ was convenient.
 run is about to test, because there are two answers and they can differ:
 
 ```
-for f in ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh ops-backlog.sh; do
+for f in ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh ops-backlog.sh ops-spec.sh; do
   cmp -s ".operator/bin/$f" "$PR/scripts/$f" \
     && echo "$f CURRENT" || echo "$f STALE"
 done
@@ -119,8 +119,8 @@ done
 **Negative control (R0):** a `cmp` that can only say CURRENT proves nothing about
 staleness. Copy one CLI aside, mutate a byte in `.operator/bin/`, and confirm the
 loop reports `STALE` for exactly that file — then restore it and re-run to
-CURRENT. Without this, an `ls`-typo in `$PR` reads as five CURRENTs on a path
-that does not exist.
+CURRENT. Without this, an `ls`-typo in `$PR` reads as a CURRENT for every CLI on
+a path that does not exist.
 
 Anything `STALE` invalidates every later phase that runs through
 `.operator/bin/…` — those phases then test the installed copy, not the tree you
@@ -151,7 +151,8 @@ Open the replay's own tracking task:
   while it is working perfectly. The control only discriminates once EVERY such
   rule is gone (third run, 2026-08-16). Then: `printf '/.operator/\n' >> .gitignore`, then re-run the
   scaffold. `ops-init.sh` is **not** in the `.operator/bin/` install set — that
-  set is `ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh ops-backlog.sh`
+  set is `ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh ops-backlog.sh
+  ops-spec.sh`
   (`_OPS_TOOLS` in `scripts/ops-install-set.sh` — the ONE declaration since #76;
   this cited a line number in `ops-init.sh` until #139 item 4, by which time the
   line was blank AND the set had moved out of that file), because init is what *creates* `bin/` and would have to

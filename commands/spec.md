@@ -58,5 +58,7 @@ history for that shape is the model then reporting a PRESENT gate as absent.
    Read the stamp for what it is: it says *this spec was approved against that
    tree*, never *that tree satisfies this spec*.
 
-Then run `/cc-operator:plan <slug>`, which refuses an unapproved spec and takes
-its north star from this file.
+Then run `/cc-operator:plan <slug>`. **That command** refuses an unapproved
+spec — it reads the `Status:` line before dispatching — and takes its north star
+from this file. The plan workflow itself only refuses an EMPTY `args.spec`; the
+approval gate lives in the command, so bypassing the command bypasses the gate.

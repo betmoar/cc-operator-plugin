@@ -77,7 +77,7 @@ stage_derive() {
   case "$_specs" in
     draft)
       STAGE="SPEC"
-      STAGE_NEXT="a spec is DRAFT — resolve its open questions with the human, then ops-spec.sh --check <slug> and --approve <slug> --owner <sid>. The plan workflow refuses an unapproved spec"
+      STAGE_NEXT="a spec is DRAFT — resolve its open questions with the human, then ops-spec.sh --check <slug> and --approve <slug> --owner <sid>. /cc-operator:plan refuses an unapproved spec (the command checks Status:, the workflow itself does not)"
       return 0 ;;
     approved)
       STAGE="PLAN"

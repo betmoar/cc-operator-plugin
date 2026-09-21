@@ -4414,6 +4414,31 @@ check "#155 a second --approve is refused" \
 check "#155 …and only ONE BAR block exists for the spec" \
   "$([ "$(grep -c '^## BAR — alpha' "$SP/.operator/VERDICTS.md")" -eq 1 ] && echo 0 || echo 1)"
 
+# THE LEDGER LOCK. --approve appends to VERDICTS.md AND DECISIONS.md — the
+# files ops-verdict.sh serialises — and the BAR block is six writes in one
+# group, so a concurrent verdict row could land inside it. A third writer to a
+# locked file that does not take the lock is the case the lock cannot defend
+# against (PR #154 review).
+SPL="$(newproj)"; ( cd "$SPL" && bash "$INIT" >/dev/null 2>&1 )
+( cd "$SPL" && bash "$SPECSH" --new raced >/dev/null 2>&1 )
+spec_fill "$SPL" raced
+( cd "$SPL" && bash "$SCRIPTS/ops-task.sh" racer --owner S-RACE >/dev/null 2>&1 )
+( cd "$SPL" && bash "$SPECSH" --approve raced --owner S-RACE >/dev/null 2>&1 ) &
+( cd "$SPL" && bash "$SCRIPTS/ops-verdict.sh" racer crit "cmd output" PASS --owner S-RACE >/dev/null 2>&1 ) &
+wait
+# The verdict row must exist WHOLE and OUTSIDE the BAR block's table — a row
+# spliced between the block's lines is the interleaving under test.
+check "#155 a concurrent verdict row lands whole, never inside the BAR block" \
+  "$(awk '/^## BAR/{inbar=1;next} /^## /{inbar=0} inbar&&/\| racer \|/{print "spliced"}' \
+       "$SPL/.operator/VERDICTS.md" | grep -q spliced && echo 1 || echo 0)"
+check "#155 …and that row is still in the ledger (the lock serialised, never dropped)" \
+  "$([ "$(grep -c '^| racer |' "$SPL/.operator/VERDICTS.md")" -eq 1 ] && echo 0 || echo 1)"
+check "#155 …and the BAR block was written exactly once" \
+  "$([ "$(grep -c '^## BAR — raced' "$SPL/.operator/VERDICTS.md")" -eq 1 ] && echo 0 || echo 1)"
+check "#155 --approve releases the lock it took" \
+  "$([ -d "$SPL/.operator/.lock" ] && echo 1 || echo 0)"
+rm -rf "$SPL"
+
 # THE FOURTH PROJECT ROOT BLOCK's whole point (#95): the CLI must work from a
 # SUBDIRECTORY. Without the walk-up every path resolves against the caller's
 # cwd, so the CLI works from the project root and nowhere else — and the Stop
@@ -4478,6 +4503,38 @@ check "#156 a re-run appends nothing (one specs line, one v3 marker)" \
   "$([ "$(grep -cxF '!specs/' "$GIA/.operator/.gitignore")" -eq 1 ] \
      && [ "$(grep -cF '# cc-operator gitignore v3 (allowlist)' "$GIA/.operator/.gitignore")" -eq 1 ] && echo 0 || echo 1)"
 rm -rf "$GIA"
+
+# THE APPEND'S OWN MECHANICS, which shipped green in the first cut and destroy
+# exactly what this arm exists to protect. `>>` writes at the byte offset the
+# file ENDS at, so a v2 allowlist whose last line has no trailing newline FUSES
+# that line with the first appended one: measured, `!my-hand-added.md` became
+# `!my-hand-added.md!specs/` — the user's rule gone, `!specs/` never in effect,
+# and the v3 marker landing anyway so nothing ever retried. Every case above
+# passed throughout, because they all wrote fixtures WITH a trailing newline.
+# An editor that strips the final newline is ordinary, not exotic.
+GIN="$(newproj)"; mkdir -p "$GIN/.operator"
+printf '# cc-operator gitignore v2 (allowlist)\n*\n!VERDICTS.md\n!no-final-newline.md' \
+  > "$GIN/.operator/.gitignore"
+( cd "$GIN" && bash "$INIT" >/dev/null 2>&1 )
+check "#156 ops-init: a v2 file with NO TRAILING NEWLINE keeps its last rule" \
+  "$(grep -qxF '!no-final-newline.md' "$GIN/.operator/.gitignore" && echo 0 || echo 1)"
+check "#156 …and the appended !specs/ is a line of its own, not fused" \
+  "$(grep -qxF '!specs/' "$GIN/.operator/.gitignore" && echo 0 || echo 1)"
+check "#156 …and nothing in the file is the fused token" \
+  "$(grep -q 'no-final-newline.md!specs/' "$GIN/.operator/.gitignore" && echo 1 || echo 0)"
+rm -rf "$GIN"
+
+# The hook's copy of the same arm — and this one runs EVERY SESSION, so the
+# fusion would reach projects that never re-run /cc-operator:start.
+GINH="$(newproj)"; mkdir -p "$GINH/.operator"
+printf '# cc-operator gitignore v2 (allowlist)\n*\n!hook-no-newline.md' \
+  > "$GINH/.operator/.gitignore"
+sed "s|<tmp>|$GINH|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
+check "#156 the hook: a v2 file with NO TRAILING NEWLINE keeps its last rule" \
+  "$(grep -qxF '!hook-no-newline.md' "$GINH/.operator/.gitignore" && echo 0 || echo 1)"
+check "#156 …and its !specs/ is a line of its own" \
+  "$(grep -qxF '!specs/' "$GINH/.operator/.gitignore" && echo 0 || echo 1)"
+rm -rf "$GINH"
 
 # The HOOK's copy of the same arm — both writers, or a project upgrades only
 # when someone runs /cc-operator:start by hand.
@@ -4666,8 +4723,16 @@ for _wf in "$WFDIR"/*.js; do
   #    allowed-tools, or the command it exists to make frictionless opens with
   #    two permission prompts.
   _fm="$(awk 'BEGIN{n=0} /^---$/{n++; if(n==2) exit; next} n==1' "$CMDDIR/$_n.md")"
-  check "commands/$_n.md's allowed-tools grants the ops-tiers.sh it prescribes" \
-    "$(printf '%s' "$_fm" | grep -q 'allowed-tools:.*ops-tiers.sh' && echo 0 || echo 1)"
+  # COVERAGE, not spelling (#104's actual rule): the narrow
+  # `Bash(bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-tiers.sh:*)` and the broad
+  # `Bash(bash:*)` both cover `bash …/ops-tiers.sh --json`, because the
+  # interpreter is the prefix and the path is an argument. A command that
+  # prescribes MORE bash than the resolver (implement.md also runs the gate
+  # CLIs) legitimately takes the broad grant; demanding the literal string
+  # made this case fail a command whose grant had gotten WIDER, which is the
+  # opposite of what it is for. No bash grant at all still fires.
+  check "commands/$_n.md's allowed-tools grants the bash it prescribes" \
+    "$(printf '%s' "$_fm" | grep -qE 'allowed-tools:.*(ops-tiers\.sh|Bash\(bash:\*\))' && echo 0 || echo 1)"
   check "commands/$_n.md's allowed-tools grants the Workflow tool it dispatches with" \
     "$(printf '%s' "$_fm" | grep -q 'allowed-tools:.*Workflow' && echo 0 || echo 1)"
   # 3. It must name ITS OWN workflow. A command that dispatches a different one

@@ -19,7 +19,7 @@ local `.archive/dev/` (untracked).
   you edit it — the caps are a hard gate, not a target.
 - **The evidence gate is six scripts that must agree**: `ops-init.sh` scaffolds
   `.operator/` and installs the manifest's CLIs (`scripts/ops-install-set.sh` —
-  the ONE declaration, five entries today) into `.operator/bin/` (refreshed on
+  the ONE declaration, six entries today) into `.operator/bin/` (refreshed on
   every run — the upgrade path),
   `ops-task.sh` opens a task by dropping the sentinel, `ops-verdict.sh` is the
   _single writer_ to `VERDICTS.md`, `ops-adopt.sh` re-stamps sentinel ownership,

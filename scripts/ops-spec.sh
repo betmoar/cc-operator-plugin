@@ -17,6 +17,9 @@
 set -eu
 
 OPDIR=".operator"
+# The lock block below resolves this; ops-verdict.sh and ops-adopt.sh define it
+# at the same point, before the block that uses it.
+LOCKDIR="$OPDIR/.lock"
 
 die() { echo "ops-spec: $1" >&2; exit 2; }
 
@@ -107,6 +110,259 @@ source_stamp() {
   [ -z "$porc" ] || { printf '%s+dirty' "$sha"; return 0; }
   printf '%s' "$sha"
 }
+
+# THE LEDGER LOCK, byte-identical with ops-verdict.sh and ops-adopt.sh
+# (check_lock_parity holds all three). --approve appends to VERDICTS.md AND
+# DECISIONS.md, which are exactly the files ops-verdict.sh serialises: without
+# this, a concurrent verdict row can land in the MIDDLE of the BAR block (six
+# separate writes in one group), and a concurrent --mark-handoff can interleave
+# with the SPEC-APPROVED line. A third writer to a locked file that does not
+# take the lock is not a smaller risk than no lock at all — it is the case the
+# lock cannot defend against.
+# >>> LOCK BLOCK — byte-identical in ops-verdict.sh and ops-adopt.sh
+# (check_lock_parity + the bash suite compare the markers' span; edit both).
+# mkdir is the atomic primitive (no flock on macOS). The holder stamps
+# host+uid+pid and waiters ask the KERNEL, not the clock (F03): dead → reclaim
+# now; alive → NEVER reclaim (wait, then proceed unlocked); unjudgeable (the
+# real mkdir→stamp window, or EPERM on a foreign uid) → the timed budget.
+# Reclaim is itself exclusive via a .reclaim claim that expires — an
+# unexpirable claim is a deadlock with extra steps.
+LOCK_SPINS=${LOCK_SPINS:-300}        # × 0.1s = 30s before an UNJUDGEABLE holder is presumed dead
+LOCK_LIVE_SPINS=${LOCK_LIVE_SPINS:-600}   # × 0.1s = 60s to wait on a CONFIRMED-LIVE holder, then go unlocked
+RECLAIM_WAIT=${RECLAIM_WAIT:-50}       # × 0.1s = 5s to let a LIVE reclaimer finish (it needs ms)
+LOCK_DEFERS_MAX=2     # short waits to grant before treating the claim as dead
+# Hard ceiling (#68): both budgets above `continue` past their own limit when
+# the escape path fails, so neither bounds the loop; this always exits.
+LOCK_MAX_SPINS=${LOCK_MAX_SPINS:-1200}   # × 0.1s = 120s hard ceiling, always exits
+
+# ${VAR:-default} only guards EMPTY: non-numeric wedges the spin loop (F-A),
+# zero collapses it to instant reclaim (F-B), RECLAIM_WAIT >= LOCK_SPINS makes
+# the deferral backoff non-positive (F-C). Refuse all three.
+_lock_is_posint() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; [ "$1" -ge 1 ]; }
+_lock_budget_die() { echo "ops-spec: $1 is not a positive integer (got '$2') — refusing; see LOCK_SPINS/LOCK_LIVE_SPINS/RECLAIM_WAIT" >&2; exit 2; }
+_lock_check_budget() { _lock_is_posint "$3" || _lock_budget_die "$1" "$3"; }
+_lock_check_budget LOCK_SPINS "$LOCK_SPINS" "$LOCK_SPINS"
+_lock_check_budget LOCK_LIVE_SPINS "$LOCK_LIVE_SPINS" "$LOCK_LIVE_SPINS"
+_lock_check_budget RECLAIM_WAIT "$RECLAIM_WAIT" "$RECLAIM_WAIT"
+[ "$RECLAIM_WAIT" -lt "$LOCK_SPINS" ] || _lock_budget_die "RECLAIM_WAIT (must be < LOCK_SPINS)" "$RECLAIM_WAIT"
+# The ceiling must exceed both budgets or it fires under ordinary contention.
+_lock_check_budget LOCK_MAX_SPINS "$LOCK_MAX_SPINS" "$LOCK_MAX_SPINS"
+# Explicit `if`, not `A && B || C` (SC2015): C also runs when B fails.
+if [ "$LOCK_MAX_SPINS" -le "$LOCK_SPINS" ] || [ "$LOCK_MAX_SPINS" -le "$LOCK_LIVE_SPINS" ]; then
+  _lock_budget_die "LOCK_MAX_SPINS (must exceed LOCK_SPINS and LOCK_LIVE_SPINS)" "$LOCK_MAX_SPINS"
+fi
+
+# Givers-up queue on $LOCKDIR.fallback (same idiom) so "proceed unlocked"
+# serializes N to 1 — one giver-up beside a live holder is the accepted floor.
+# It must NEVER touch $LOCKDIR (LOCK_HELD stays 0, or its release would rm the
+# LIVE holder's dir — the F03 displacement): own state, release, budget.
+FALLBACK_SPINS=${FALLBACK_SPINS:-50}   # × 0.1s = 5s to wait on a LIVE giver-up, then proceed anyway
+_lock_check_budget FALLBACK_SPINS "$FALLBACK_SPINS" "$FALLBACK_SPINS"
+
+LOCK_HELD=0
+LOCK_MINE=""
+LOCK_HOLDER_REC=""
+FALLBACK_DIR="$LOCKDIR.fallback"
+FALLBACK_HELD=0
+FALLBACK_MINE=""
+FALLBACK_REC=""
+
+# host + uid + pid: whether `kill -0` can answer for this holder. The
+# mkdir→stamp gap is why an absent stamp reads unjudgeable, never dead.
+holder_stamp() { printf '%s %s %s' "${HOSTNAME:-nohost}" "${UID:-0}" "$$"; }
+
+# 128-char bound; assigns a global (no fork per spin). Whole compound
+# redirected: a failed INPUT redirection reports before the command's own
+# 2>/dev/null; an empty record is the documented "cannot judge" input.
+lock_holder_read() {
+  # LC_ALL=C so `read -n N` counts BYTES, not characters: bash counts
+  # CHARACTERS outside the C locale, so in UTF-8 a 512-"char" read is up
+  # to 2048 bytes and the cap is 4x looser than it reads (measured on
+  # bash 3.2.57 and 5.2.15: 512 chars of "é" = 1024 bytes). Local, so
+  # nothing leaks to the caller — the idiom scripts/lib/partition.sh uses.
+  local LC_ALL=C
+  LOCK_HOLDER_REC=""
+  [ -f "$LOCKDIR/holder" ] || return 0
+  { IFS= read -r -n 128 LOCK_HOLDER_REC < "$LOCKDIR/holder"; } 2>/dev/null || true
+  LOCK_HOLDER_REC="${LOCK_HOLDER_REC%$'\r'}"
+}
+
+# 0 = alive · 1 = confirmed dead · 2 = cannot judge (caller must fall back).
+holder_state() { # holder_state <record>
+  local rec="$1" host uid pid
+  [ -n "$rec" ] || return 2
+  host="${rec%% *}"; rec="${rec#* }"
+  uid="${rec%% *}"; pid="${rec##* }"
+  [ "$host" = "${HOSTNAME:-nohost}" ] || return 2
+  [ "$uid" = "${UID:-0}" ] || return 2
+  case "$pid" in ''|*[!0-9]*) return 2 ;; esac
+  kill -0 "$pid" 2>/dev/null && return 0
+  return 1
+}
+
+# Same 128-byte bound as lock_holder_read; this too runs on a spin.
+fallback_holder_read() {
+  # LC_ALL=C so `read -n N` counts BYTES, not characters: bash counts
+  # CHARACTERS outside the C locale, so in UTF-8 a 512-"char" read is up
+  # to 2048 bytes and the cap is 4x looser than it reads (measured on
+  # bash 3.2.57 and 5.2.15: 512 chars of "é" = 1024 bytes). Local, so
+  # nothing leaks to the caller — the idiom scripts/lib/partition.sh uses.
+  local LC_ALL=C
+  FALLBACK_REC=""
+  [ -f "$FALLBACK_DIR/holder" ] || return 0
+  # Brace-wrapped like lock_holder_read (audit F116): without the braces a
+  # holder file removed between the -f test and the open reports a raw bash
+  # error before 2>/dev/null applies — the twin was hardened, this copy not.
+  { IFS= read -r -n 128 FALLBACK_REC < "$FALLBACK_DIR/holder"; } 2>/dev/null || true
+  FALLBACK_REC="${FALLBACK_REC%$'\r'}"
+}
+
+# Returns 0 won-or-not — blocking forever is worse than a second writer.
+fallback_acquire() {
+  local i=0 fstate=2 rec0=""
+  while ! mkdir "$FALLBACK_DIR" 2>/dev/null; do
+    i=$((i+1))
+    # ONE bound before any branch — it must cover the reclaim path too.
+    if [ "$i" -ge "$FALLBACK_SPINS" ]; then
+      echo "ops-spec: warning — fallback lock $FALLBACK_DIR held by another degraded writer for >$((FALLBACK_SPINS / 10))s; proceeding without it" >&2
+      return 0
+    fi
+    fallback_holder_read
+    fstate=0; holder_state "$FALLBACK_REC" || fstate=$?
+    if [ "$fstate" -eq 1 ]; then
+      # Confirmed dead. Re-verify first (a retaker is briefly unstamped);
+      # stamp before dir; no second claim marker on this degraded path.
+      rec0="$FALLBACK_REC"
+      fallback_holder_read
+      if [ "$FALLBACK_REC" != "$rec0" ]; then sleep 0.1; continue; fi
+      rm -f "$FALLBACK_DIR/holder" 2>/dev/null || true
+      rmdir "$FALLBACK_DIR" 2>/dev/null || true
+      continue
+    fi
+    # Alive or unjudgeable: wait out the short budget rather than stealing.
+    sleep 0.1
+  done
+  FALLBACK_HELD=1
+  FALLBACK_MINE="$(holder_stamp)"
+  printf '%s\n' "$FALLBACK_MINE" > "$FALLBACK_DIR/holder" 2>/dev/null || true
+  # Own trap: a crashed giver-up must leave a reclaimable dir.
+  trap 'lock_release; fallback_release' EXIT
+  trap 'lock_release; fallback_release; exit 130' INT
+  trap 'lock_release; fallback_release; exit 143' TERM
+  return 0
+}
+
+# Reached only via the acquire paths' traps (nine sites: the fallback acquire's
+# three, lock_acquire's three, and the reconcile path's three) — the linter
+# cannot follow a trap. TWO codes for the one fact, because shellcheck says it
+# twice: SC2317 (0.10, "command appears unreachable") and SC2329 (added in
+# 0.11, "this function is never invoked"). CI pins the v0.10.0 image, so only
+# the first has ever fired there; without the second the day someone bumps that
+# pin `validate` goes red on this line with no code change (#160).
+# shellcheck disable=SC2317,SC2329
+fallback_release() {
+  [ "${FALLBACK_HELD:-0}" = "1" ] || return 0
+  FALLBACK_HELD=0
+  # Displacement guard: a reclaimed fallback is another holder's dir.
+  fallback_holder_read
+  if [ -n "$FALLBACK_MINE" ] && [ -n "$FALLBACK_REC" ] && [ "$FALLBACK_REC" != "$FALLBACK_MINE" ]; then
+    echo "ops-spec: warning — $FALLBACK_DIR was reclaimed while this process held it; not releasing another holder's fallback lock" >&2
+    return 0
+  fi
+  rm -f "$FALLBACK_DIR/holder" 2>/dev/null || true
+  rmdir "$FALLBACK_DIR" 2>/dev/null || true
+}
+
+lock_acquire() {
+  local i=0 defers=0 state=2 rec0="" total=0
+  while ! mkdir "$LOCKDIR" 2>/dev/null; do
+    # The ceiling, on a variable nothing rewinds (#68).
+    total=$((total+1))
+    if [ "$total" -ge "$LOCK_MAX_SPINS" ]; then
+      # Refuse rather than proceed unlocked: this state is unjudged.
+      echo "ops-spec: could not acquire $LOCKDIR after $((LOCK_MAX_SPINS / 10))s — refusing to spin further." >&2
+      if [ ! -d "${LOCKDIR%/*}" ]; then
+        # Name the cause when it is knowable (#68's exact shape).
+        echo "ops-spec: ${LOCKDIR%/*} does not exist — the ledger directory was removed while this run was in flight." >&2
+      fi
+      exit 2
+    fi
+    i=$((i+1))
+    lock_holder_read
+    # holder_state reports via exit status; a bare call would trip set -e.
+    state=0; holder_state "$LOCK_HOLDER_REC" || state=$?
+
+    if [ "$state" -eq 0 ]; then
+      # Confirmed alive: NEVER reclaim (F03). Degrade via the fallback queue.
+      if [ "$i" -ge "$LOCK_LIVE_SPINS" ]; then
+        echo "ops-spec: warning — lock $LOCKDIR held by a LIVE process for >$((LOCK_LIVE_SPINS / 10))s; proceeding unlocked rather than stealing a running writer's lock" >&2
+        fallback_acquire
+        return 0
+      fi
+      sleep 0.1
+      continue
+    fi
+
+    if [ "$state" -eq 1 ] || [ "$i" -ge "$LOCK_SPINS" ]; then
+      if mkdir "$LOCKDIR.reclaim" 2>/dev/null; then
+        # Re-verify under the claim: never delete a retaker's LIVE lock.
+        rec0="$LOCK_HOLDER_REC"
+        lock_holder_read
+        if [ "$LOCK_HOLDER_REC" != "$rec0" ]; then
+          rmdir "$LOCKDIR.reclaim" 2>/dev/null || true
+          sleep 0.1
+          continue
+        fi
+        if [ "$state" -eq 1 ]; then
+          echo "ops-spec: warning — lock $LOCKDIR was held by process ${LOCK_HOLDER_REC##* }, which is gone; reclaiming it" >&2
+        else
+          echo "ops-spec: warning — lock $LOCKDIR held >$((LOCK_SPINS / 10))s and its holder cannot be identified; assuming a crashed writer and reclaiming it" >&2
+        fi
+        rm -f "$LOCKDIR/holder" 2>/dev/null || true
+        rmdir "$LOCKDIR" 2>/dev/null || true
+        if mkdir "$LOCKDIR" 2>/dev/null; then
+          rmdir "$LOCKDIR.reclaim" 2>/dev/null || true
+          break                       # we now hold the lock
+        fi
+        rmdir "$LOCKDIR.reclaim" 2>/dev/null || true
+        echo "ops-spec: warning — could not reclaim $LOCKDIR; proceeding unlocked" >&2
+        fallback_acquire      # same reason as the live-holder give-up above
+        return 0
+      fi
+      # A LIVE reclaimer needs ms — short waits; then the claim is dead.
+      defers=$((defers + 1))
+      if [ "$defers" -gt "$LOCK_DEFERS_MAX" ]; then
+        echo "ops-spec: warning — reclaim claim $LOCKDIR.reclaim abandoned; clearing it" >&2
+        rmdir "$LOCKDIR.reclaim" 2>/dev/null || true
+        defers=0
+      fi
+      i=$((LOCK_SPINS - RECLAIM_WAIT))
+    fi
+    sleep 0.1
+  done
+  LOCK_HELD=1
+  LOCK_MINE="$(holder_stamp)"
+  printf '%s\n' "$LOCK_MINE" > "$LOCKDIR/holder" 2>/dev/null || true
+  # Both releases in both handlers (each gated on its own HELD flag).
+  trap 'lock_release; fallback_release' EXIT
+  # Release AND exit — bash would otherwise resume the critical section.
+  trap 'lock_release; fallback_release; exit 130' INT
+  trap 'lock_release; fallback_release; exit 143' TERM
+}
+
+lock_release() {
+  [ "${LOCK_HELD:-0}" = "1" ] || return 0
+  LOCK_HELD=0
+  # A lock reclaimed under us is the NEW holder's — report, leave it.
+  lock_holder_read
+  if [ -n "$LOCK_MINE" ] && [ -n "$LOCK_HOLDER_REC" ] && [ "$LOCK_HOLDER_REC" != "$LOCK_MINE" ]; then
+    echo "ops-spec: warning — $LOCKDIR was reclaimed while this process held it; not releasing another holder's lock" >&2
+    return 0
+  fi
+  rm -f "$LOCKDIR/holder" 2>/dev/null || true
+  rmdir "$LOCKDIR" 2>/dev/null || true
+}
+# <<< LOCK BLOCK
 
 SPECDIR="$OPDIR/specs"
 DECISIONS="$OPDIR/DECISIONS.md"
@@ -253,8 +509,13 @@ esac
 
 # --- approve ---------------------------------------------------------------
 # (--owner and the already-approved refusal ran before the checker, above.)
+# RESOLVE THE STAMP BEFORE THE LOCK, ops-verdict.sh's ordering (PLAYBOOK): git
+# can be slow, and holding a lock across it widens the window every other
+# writer waits in.
 STAMP="$(source_stamp)"
 TODAY="$(date +%F)"
+
+lock_acquire
 
 # ORDER, and it is ops-verdict.sh's (#14) applied here: the DECISIONS line
 # BEFORE the ledger's BAR block, and the spec's own Status LAST. A crash
@@ -287,6 +548,8 @@ else
   rm -f "$_tmp" 2>/dev/null
   die "could not stamp Status: APPROVED on $SPEC — the DECISIONS line and the BAR block ARE written, so re-run --approve after fixing the file (it is idempotent only once the Status line lands)"
 fi
+
+lock_release
 
 echo "approved $SPEC @$STAMP"
 echo "  logged SPEC-APPROVED to $DECISIONS"

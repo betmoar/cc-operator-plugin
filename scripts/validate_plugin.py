@@ -2649,7 +2649,8 @@ CANONICAL_LOCK = (
 
 
 def check_lock_parity(root, problems):
-    """ops-verdict.sh and ops-adopt.sh must carry the SAME lock implementation,
+    """ops-verdict.sh, ops-adopt.sh and ops-spec.sh must carry the SAME lock
+    implementation,
     and it must be the RIGHT one.
 
     Both contend on `.operator/.lock`: a divergence is two different ideas of
@@ -2659,7 +2660,10 @@ def check_lock_parity(root, problems):
     in parity (F30, measured against this very check 2026-08-25).
     """
     blocks = {}
-    for name in ("ops-verdict.sh", "ops-adopt.sh"):
+    # THREE since #155: ops-spec.sh --approve appends to both ledgers, so it
+    # contends on the same lock. A writer to a locked file that does not take
+    # the lock is the case the lock cannot defend against.
+    for name in ("ops-verdict.sh", "ops-adopt.sh", "ops-spec.sh"):
         p = root / "scripts" / name
         if not p.is_file():
             return  # missing-file is already reported by check_scripts
@@ -2674,8 +2678,14 @@ def check_lock_parity(root, problems):
             return
         tool = name[:-3]  # ops-verdict.sh -> ops-verdict
         blocks[name] = text[start:end].replace(f"{tool}:", "TOOL:")
-    a, b = blocks["ops-verdict.sh"], blocks["ops-adopt.sh"]
-    if a != b:
+    # Parity is checked against ONE reference copy, so a third writer cannot
+    # drift unseen: pinning only ops-verdict vs ops-adopt left ops-spec.sh
+    # (added #155) held by the content pin alone, which uniform drift passes.
+    ref_name = "ops-verdict.sh"
+    a = blocks[ref_name]
+    for name, b in blocks.items():
+        if name == ref_name or a == b:
+            continue
         a_lines, b_lines = a.splitlines(), b.splitlines()
         detail = "differing line counts"
         for i, (x, y) in enumerate(zip(a_lines, b_lines), 1):
@@ -2683,7 +2693,7 @@ def check_lock_parity(root, problems):
                 detail = f"first difference at block line {i}: {x.strip()[:60]!r} vs {y.strip()[:60]!r}"
                 break
         problems.append(
-            f"scripts/ops-verdict.sh vs ops-adopt.sh: lock implementations have "
+            f"scripts/{ref_name} vs {name}: lock implementations have "
             f"drifted — they contend on the same lock and must be identical "
             f"({detail})")
     # The content pin runs per COPY, not on the comparison: uniform drift is

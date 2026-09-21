@@ -1,7 +1,7 @@
 ---
 description: Run the implement workflow — one implementer seat per task, serially, on the IMPLEMENT tier, refusing an incomplete dispatch packet before spending a seat.
 argument-hint: "<task id or short description>"
-allowed-tools: Bash(bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-tiers.sh:*), Workflow
+allowed-tools: Bash(bash:*), Workflow
 ---
 
 Implement `$ARGUMENTS` through the implement workflow rather than a plain
@@ -49,9 +49,15 @@ so the IMPLEMENT tier your `tiers.env` names never applies (#158).
    verify the claim and record the verdict:
 
    ```
-   .operator/bin/ops-claims.sh --claimed "<the changed paths>"
-   .operator/bin/ops-verdict.sh <id> <criterion> <evidence> <PASS|FAIL> --owner <session-id>
+   bash '<abs>/.operator/bin/ops-claims.sh' --claimed "<the changed paths>"
+   bash '<abs>/.operator/bin/ops-verdict.sh' <id> <criterion> <evidence> <PASS|FAIL> --owner <session-id>
    ```
+
+   The `bash` prefix is not decoration (#104): this command's `allowed-tools`
+   grants `Bash(bash:*)`, which matches any absolute path, while a relative
+   `.operator/bin/…` grant would match only the bare relative form — and a
+   relative path typed from a subdirectory is file-not-found. Use the ABSOLUTE
+   path SessionStart printed.
 
    A DONE status is the seat's claim, not evidence. Route the other three per
    the charter's four-status protocol.

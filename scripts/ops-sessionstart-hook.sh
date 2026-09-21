@@ -250,6 +250,14 @@ _gi_upgrade_failed=0
 # half-upgraded file as done.
 if [ -f "$_gi" ] && ! grep -qF '# cc-operator gitignore v3 (allowlist)' "$_gi" 2>/dev/null \
    && grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi" 2>/dev/null; then
+  # TERMINATE THE LAST LINE FIRST — the same fusion ops-init.sh's copy
+  # guards, and this one runs every session rather than on demand. Measured:
+  # `!my-hand-added.md` with no trailing newline became
+  # `!my-hand-added.md!specs/`, destroying the user's rule while the notice
+  # below said "any allow line you added by hand is still there".
+  if [ -s "$_gi" ] && [ -n "$(tail -c 1 "$_gi")" ]; then
+    printf '\n' >> "$_gi" || true
+  fi
   if printf '%s\n' '!specs/' '!specs/*.md' '# cc-operator gitignore v3 (allowlist)' >> "$_gi" 2>/dev/null; then
     _gi_upgraded=1
   else

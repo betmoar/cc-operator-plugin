@@ -53,7 +53,7 @@ _GI_V3_ADDS='!specs/
 # temp+mv the live file is always the old content or the complete v2.
 _gi_write() {
   if [ -L "$OPDIR/.gitignore.v3.tmp" ] || { [ -e "$OPDIR/.gitignore.v3.tmp" ] && [ ! -f "$OPDIR/.gitignore.v3.tmp" ]; }; then
-    echo "ops-init: $OPDIR/.gitignore.v2.tmp exists and is not a regular file — refusing to write the allowlist through it (move it aside, then re-run)" >&2
+    echo "ops-init: $OPDIR/.gitignore.v3.tmp exists and is not a regular file — refusing to write the allowlist through it (move it aside, then re-run)" >&2
     return 1
   fi
   cat > "$OPDIR/.gitignore.v3.tmp" <<EOF
@@ -87,6 +87,20 @@ elif ! grep -qF "$_GI_MARK" "$OPDIR/.gitignore" 2>/dev/null \
   # The marker is written LAST — a die mid-append leaves the file unmarked, so
   # the next run retries rather than leaving a half-upgraded file that reads
   # as done.
+  # TERMINATE THE LAST LINE FIRST, exactly as the .gitattributes arm below
+  # does and for the identical reason: `>>` appends at the byte offset the file
+  # ends at, so a v2 allowlist whose last line has no trailing newline FUSES
+  # that line with the first appended one. Measured: a file ending
+  # `!my-hand-added.md` (no newline) became `!my-hand-added.md!specs/` — the
+  # user's own allow rule DESTROYED, `!specs/` never in effect, and the v3
+  # marker landing anyway so nothing ever retries. That is precisely the
+  # outcome this additive arm exists to prevent, reintroduced by the append's
+  # own mechanics. An editor that strips the final newline is ordinary.
+  if [ -s "$OPDIR/.gitignore" ] && [ -n "$(tail -c 1 "$OPDIR/.gitignore")" ]; then
+    # `$( )` strips trailing newlines, so non-empty output means the last byte
+    # is NOT one — the portable spelling of "does this file end in a newline".
+    printf '\n' >> "$OPDIR/.gitignore" || true
+  fi
   if printf '%s\n%s\n' "$_GI_V3_ADDS" "$_GI_MARK" >> "$OPDIR/.gitignore" 2>/dev/null; then
     echo "upgraded $OPDIR/.gitignore to the v3 allowlist (added specs/; your own allow lines were kept)"
   else

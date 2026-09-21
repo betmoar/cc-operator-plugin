@@ -520,11 +520,14 @@ def make_good_tree(root):
           "# PREV reject-set (F15): carries *.exempt like the sentinel_owner parsers\n"
           'case "${PREV:-}" in */* | .* | *"|"* | *[[:space:]]* | *[[:cntrl:]]* | *.exempt) PREV="<invalid>" ;; esac\n'
           + GOOD_LOCK_BLOCK + GOOD_ROOT_BLOCK)
-    # ops-spec.sh: the FOURTH project-root copy (#155). It is a gate CLI —
-    # it writes DECISIONS.md and VERDICTS.md — so it resolves the project the
-    # same way the other three do, and check_root_parity holds all four equal.
+    # ops-spec.sh: the FOURTH project-root copy and the THIRD lock copy (#155).
+    # It is a gate CLI — it writes DECISIONS.md and VERDICTS.md under the same
+    # lock — so it resolves the project the same way the other three do
+    # (check_root_parity holds all four equal) and carries the lock block
+    # check_lock_parity holds against ops-verdict.sh.
     write(root / "scripts" / "ops-spec.sh",
-          "#!/usr/bin/env bash\n" + guards + GOOD_SOURCE_STAMP + GOOD_ROOT_BLOCK)
+          "#!/usr/bin/env bash\n" + guards + GOOD_SOURCE_STAMP + GOOD_LOCK_BLOCK
+          + GOOD_ROOT_BLOCK)
     # ops-claims.sh: check_claims pins its PROTECTED literal and requires
     # matches_protected applied to $p.
     write(root / "scripts" / "ops-claims.sh",
@@ -2300,11 +2303,17 @@ class LockParityTest(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)
 
-    def _write(self, verdict=None, adopt=None):
+    def _write(self, verdict=None, adopt=None, spec=None):
+        # THREE files since #155: with ops-spec.sh absent the check returns
+        # early (missing-file is check_scripts' to report), so a two-file
+        # fixture made every mutation below report NOTHING — measured, the
+        # four mutation cases went green against a check that never ran.
         v = self.BLOCK.replace("TOOL:", "ops-verdict:") if verdict is None else verdict
         a = self.BLOCK.replace("TOOL:", "ops-adopt:") if adopt is None else adopt
+        sp = self.BLOCK.replace("TOOL:", "ops-spec:") if spec is None else spec
         write(self.dir / "scripts" / "ops-verdict.sh", "#!/usr/bin/env bash\n" + v)
         write(self.dir / "scripts" / "ops-adopt.sh", "#!/usr/bin/env bash\n" + a)
+        write(self.dir / "scripts" / "ops-spec.sh", "#!/usr/bin/env bash\n" + sp)
 
     def problems(self):
         probs = []
@@ -2323,6 +2332,17 @@ class LockParityTest(unittest.TestCase):
         self.assertTrue(any("drifted" in p for p in probs), probs)
         self.assertTrue(any("LOCK_SPINS" in p for p in probs), probs)
 
+    def test_third_writer_drift_fires(self):
+        """Parity compared ops-verdict vs ops-adopt ONLY, so ops-spec.sh (#155)
+        was held by the content pin alone — and the content pin passes anything
+        that still LOOKS like a lock. Measured: LOCK_SPINS=100 in ops-spec.sh
+        alone reported nothing before the reference-copy loop."""
+        self._write(spec=self.BLOCK.replace("TOOL:", "ops-spec:")
+                    .replace("LOCK_SPINS=300", "LOCK_SPINS=100"))
+        probs = self.problems()
+        self.assertTrue(any("drifted" in p for p in probs), probs)
+        self.assertTrue(any("ops-spec.sh" in p for p in probs), probs)
+
     def test_uniform_drift_fires(self):
         """F30, committed inside the check whose docstring teaches it: the
         holder read inflated to 999999999 in BOTH copies left them perfectly
@@ -2330,7 +2350,8 @@ class LockParityTest(unittest.TestCase):
         Measured 2026-08-25; the bash suite did not see it either."""
         broke = self.BLOCK.replace("read -r -n 128", "read -r -n 999999999")
         self._write(verdict=broke.replace("TOOL:", "ops-verdict:"),
-                    adopt=broke.replace("TOOL:", "ops-adopt:"))
+                    adopt=broke.replace("TOOL:", "ops-adopt:"),
+                    spec=broke.replace("TOOL:", "ops-spec:"))
         probs = self.problems()
         self.assertFalse(any("drifted" in p for p in probs),
                          "uniform drift IS in parity — that is the point")
@@ -2345,7 +2366,8 @@ class LockParityTest(unittest.TestCase):
             '  while ! mkdir "$LOCKDIR" 2>/dev/null; do',
             '  # while ! mkdir "$LOCKDIR" 2>/dev/null; do\n  while [ -d "$LOCKDIR" ]; do')
         self._write(verdict=broke.replace("TOOL:", "ops-verdict:"),
-                    adopt=broke.replace("TOOL:", "ops-adopt:"))
+                    adopt=broke.replace("TOOL:", "ops-adopt:"),
+                    spec=broke.replace("TOOL:", "ops-spec:"))
         probs = self.problems()
         self.assertTrue(any("atomic primitive" in p for p in probs), probs)
 
@@ -2355,7 +2377,8 @@ class LockParityTest(unittest.TestCase):
         broke = self.BLOCK.replace('while ! mkdir "$LOCKDIR" 2>/dev/null; do',
                                    'while [ -d "$LOCKDIR" ]; do')
         self._write(verdict=broke.replace("TOOL:", "ops-verdict:"),
-                    adopt=broke.replace("TOOL:", "ops-adopt:"))
+                    adopt=broke.replace("TOOL:", "ops-adopt:"),
+                    spec=broke.replace("TOOL:", "ops-spec:"))
         probs = self.problems()
         self.assertTrue(any("atomic primitive" in p for p in probs), probs)
         self.assertFalse(any("drifted" in p for p in probs),
