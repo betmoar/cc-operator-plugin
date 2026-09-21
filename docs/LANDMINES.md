@@ -1965,3 +1965,33 @@ most is the application one: a field can be REQUIRED by the refusal and then dro
 the way to the prompt, which is worse than never requiring it, because the refusal
 implies the field was used. That is why the check demands `PACKET_FIELDS.map(` at a real
 call site and not merely two mentions of the name.
+
+## A stage that is stored is a second place for status to be wrong (#157)
+
+Seven stages, one command, and every transition between them was the operator remembering
+to make it. The obvious fix — a small `engagement.json` the hooks keep current — is the one
+this repo cannot take: `docs/UNKNOWNS.md` already reasoned that the moment status lives in
+two places one of them is wrong and nothing says which, and that is the argument that put
+the unknowns register in GitHub issues rather than in a markdown table. A stage file would
+have re-made the same mistake one directory down, with a worse failure mode: the ledger and
+the stage file disagreeing about whether an engagement is finished.
+
+So `stage_derive` opens no file. It is a function of what `scan_pending` and
+`scan_deviations` already computed, which buys three things at once — no new reader to give
+a byte cap and a NUL probe, no second copy of the partition rule to drift from the gate, and
+no possibility of the stage disagreeing with the hook that gated on the same numbers.
+
+The part worth keeping in mind is the UNKNOWN input. The Stop hook has run every scan;
+SessionStart runs only the pending one, because scanning DECISIONS.md there would mean a
+second reader in the hook whose whole contract is "never cost the id banner". Rather than
+have SessionStart guess, it passes `-` and the derivation narrows its own claim: it never
+reports HANDOFF, and the CLEAR it does report says out loud that the deviation gate was not
+scanned here. A stage that answered identically with and without that scan would be
+asserting a fact its caller never checked — the same class as a pin that reports green
+about a file it never read.
+
+The wiring's first cut carried a `&& \` continuation followed by a comment line. `bash -n`
+accepts it, the hook still ran, and no reviewer would spot it. What caught it was the
+end-to-end case — run the hook, read the banner — rather than any assertion about the lib.
+Unit cases over a pure function prove the function; only the integration case proves the
+wiring, and the wiring is where the shapes bash silently tolerates live.
