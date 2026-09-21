@@ -306,6 +306,48 @@ _ss_verdict="$(_ss_shq "$cwd/.operator/bin/ops-verdict.sh")"
 _ss_adopt="$(_ss_shq "$cwd/.operator/bin/ops-adopt.sh")"
 ctx="cc-operator: this session's id is ${session}. Pass --owner ${session} when opening or closing tracked tasks — ${_ss_task} <id> --owner ${session}, ${_ss_verdict} <id> ... --owner ${session}. Sentinels you open are then yours alone: the Stop hook blocks only on your own open tasks and reports other sessions' as informational. After a /clear your id changes — run ${_ss_adopt} --owner ${session} <id>... to re-claim tasks you are still working."
 
+
+# --- the derived stage (#157) ------------------------------------------------
+# The banner is the one channel a session reads before it does anything, and
+# after a compaction it is the ONLY one — which is exactly the moment the
+# RECOVERY PROTOCOL's seven prose steps depend on the operator choosing to
+# follow them. Naming the stage and the next move costs one line and removes
+# that dependency for the commonest case.
+#
+# FAIL-SILENT, and the polarity is not negotiable: a missing or unreadable lib
+# must never cost the id injection, which is the root of the whole ownership
+# mechanism. No stage line is a small loss; no banner is the mechanism.
+#
+# ONE partition rule, sourced — never a second scan written here. What this
+# hook does NOT scan is DECISIONS.md, so it passes "-" and stage_derive
+# narrows its own answer rather than claiming a clean deviation gate it never
+# checked.
+case "${BASH_SOURCE[0]}" in
+  */*) _ss_libdir="${BASH_SOURCE[0]%/*}/lib" ;;
+  *)   _ss_libdir="lib" ;;
+esac
+# `-f`, not `-r`: a permission test is INERT for uid 0 (root bypasses mode
+# bits), so it would read as a guard while guarding nothing — the validator
+# refuses one here for that reason. The type test holds on every uid, and an
+# unreadable-but-present lib is caught by the sourcing itself failing, which
+# the `|| true` below already absorbs.
+if [ -f "$_ss_libdir/partition.sh" ] && [ -f "$_ss_libdir/stage.sh" ]; then
+  # No backslash-continuation chain here: a `&& \` followed by a comment line
+  # joins into a dangling operator, which bash accepts and nobody can read.
+  # shellcheck source=/dev/null
+  . "$_ss_libdir/partition.sh" 2>/dev/null || true
+  # shellcheck source=/dev/null
+  . "$_ss_libdir/stage.sh" 2>/dev/null || true
+  if command -v scan_pending >/dev/null 2>&1 && command -v stage_derive >/dev/null 2>&1; then
+    scan_pending "$cwd/.operator" "$session" 2>/dev/null || true
+    stage_derive "${MALFORMED:-0}" "${MINE:-0}" "${MINE_IDS:-}" "${FOREIGN:-0}" "-" 2>/dev/null || true
+  fi
+  if [ -n "${STAGE:-}" ]; then
+    ctx="$ctx
+
+cc-operator: STAGE ${STAGE} — ${STAGE_NEXT}. (Derived from what is on disk, never stored: re-read it rather than remembering it.)"
+  fi
+fi
 # The migration notice (#32): name the backup path — the allowlist hides it
 # from a bare `git status`.
 if [ "$_gi_migrated" = 1 ]; then

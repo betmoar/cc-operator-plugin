@@ -4317,6 +4317,92 @@ check "ops-verdict.sh actually implements --mark-handoff" \
   "$(grep -q -- '--mark-handoff' "$SCRIPTS/ops-verdict.sh" && echo 0 || echo 1)"
 
 ########################################################################
+echo "-- Case: the derived stage (#157) — scripts/lib/stage.sh and the banner that carries it"
+# The cycle had seven stages and one command, and every transition between them
+# was the operator remembering to make it. After a compaction the RECOVERY
+# PROTOCOL's steps are prose the operator must CHOOSE to follow — so the stage
+# goes in the one channel a session reads before doing anything.
+#
+# stage_derive opens NO file: it is pure over facts scan_pending/scan_deviations
+# already computed, which is why the Stop hook (every scan) and SessionStart
+# (only the pending one) can share it without disagreeing. Testing it is
+# therefore a matter of calling it, not of building a project per case.
+STAGELIB="$SCRIPTS/lib/stage.sh"
+check "scripts/lib/stage.sh exists" "$([ -f "$STAGELIB" ] && echo 0 || echo 1)"
+# shellcheck source=/dev/null
+. "$STAGELIB"
+_stage_of() { stage_derive "$1" "$2" "${3:-}" "${4:-0}" "${5:--}"; printf '%s' "$STAGE"; }
+
+check "stage: nothing open, deviations unscanned → CLEAR" \
+  "$([ "$(_stage_of 0 0 '' 0 -)" = "CLEAR" ] && echo 0 || echo 1)"
+check "stage: an owned pending sentinel → IMPLEMENT" \
+  "$([ "$(_stage_of 0 1 'task-a' 0 0)" = "IMPLEMENT" ] && echo 0 || echo 1)"
+check "stage: an unclosable (malformed) sentinel → BLOCKED" \
+  "$([ "$(_stage_of 2 0 '' 0 0)" = "BLOCKED" ] && echo 0 || echo 1)"
+check "stage: unpresented deviations, nothing open → HANDOFF" \
+  "$([ "$(_stage_of 0 0 '' 0 3)" = "HANDOFF" ] && echo 0 || echo 1)"
+# PRECEDENCE, and each rung must beat the one below it because it makes that
+# rung unreachable: you cannot hand off while a task of yours is open, and you
+# cannot close that task while its sentinel carries a name no CLI can address.
+check "stage: BLOCKED outranks IMPLEMENT (an unclosable sentinel first)" \
+  "$([ "$(_stage_of 1 4 'a, b' 0 0)" = "BLOCKED" ] && echo 0 || echo 1)"
+check "stage: IMPLEMENT outranks HANDOFF (an open task is not a finished engagement)" \
+  "$([ "$(_stage_of 0 1 'a' 0 9)" = "IMPLEMENT" ] && echo 0 || echo 1)"
+# The UNKNOWN input has its own answer. SessionStart does not scan DECISIONS.md,
+# so it passes "-" — and a stage that then claimed a clean deviation gate would
+# be asserting a fact its caller never checked.
+stage_derive 0 0 '' 0 -
+check "stage: an unscanned deviation gate is SAID, never assumed clean" \
+  "$(case "$STAGE_NEXT" in *"not scanned"*) echo 0 ;; *) echo 1 ;; esac)"
+check "stage: and it never claims HANDOFF on an unknown input" \
+  "$([ "$STAGE" != "HANDOFF" ] && echo 0 || echo 1)"
+# CONTROL: with the gate actually scanned and clean, that caveat must be ABSENT
+# — otherwise the assertion above passes on a string that is always there.
+stage_derive 0 0 '' 0 0
+check "stage: CONTROL — a scanned, clean gate carries no 'not scanned' caveat" \
+  "$(case "$STAGE_NEXT" in *"not scanned"*) echo 1 ;; *) echo 0 ;; esac)"
+# A foreign task is REPORTED and is never a stage: another session's open work
+# changes nothing about what this session should do next.
+stage_derive 0 0 '' 2 0
+check "stage: a foreign task does not become my stage" \
+  "$([ "$STAGE" = "CLEAR" ] && echo 0 || echo 1)"
+check "stage: but it IS reported in the next move" \
+  "$(case "$STAGE_NEXT" in *"belong to other sessions"*) echo 0 ;; *) echo 1 ;; esac)"
+check "stage: REPORT-ONLY — no exit/return-1 in any stage_derive branch" \
+  "$(grep -nE '^\s*(exit|return 1)' "$STAGELIB" | grep -qv 'return 0' && echo 1 || echo 0)"
+
+# THE BANNER, END TO END. The assertions above all pass against a lib nothing
+# sources: the wiring is a separate claim and needs the hook actually run. It
+# also catches the shape that bash -n accepts and nobody can read — a
+# `&& \` continuation followed by a comment line.
+SP="$(newproj)"; mkdir -p "$SP/.operator/pending"
+printf 'x' > "$SP/.operator/pending/BANNER-SESS__open-one"
+SPOUT="$(printf '{"session_id":"BANNER-SESS","cwd":"%s"}' "$SP" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+check "the SessionStart banner carries the derived STAGE" \
+  "$(printf '%s' "$SPOUT" | grep -q 'STAGE IMPLEMENT' && echo 0 || echo 1)"
+check "the banner names the open task the stage is about" \
+  "$(printf '%s' "$SPOUT" | grep -q 'open-one' && echo 0 || echo 1)"
+# CONTROL: the same project with nothing open reports the other stage, so the
+# assertion above is not matching a constant.
+rm -f "$SP/.operator/pending"/*
+SPOUT2="$(printf '{"session_id":"BANNER-SESS","cwd":"%s"}' "$SP" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+check "CONTROL — with nothing open the banner reports STAGE CLEAR" \
+  "$(printf '%s' "$SPOUT2" | grep -q 'STAGE CLEAR' && echo 0 || echo 1)"
+# FAIL-SILENT, and this polarity is the load-bearing one: the id injection is
+# the root of the entire ownership mechanism, so a missing stage lib must cost
+# the STAGE LINE and nothing else. Copy the hook and its libs to a scratch tree
+# and delete stage.sh there — the shipped tree is never mutated.
+SPX="$(newproj)"; mkdir -p "$SPX/scripts/lib" "$SPX/proj/.operator/pending"
+cp "$SSHOOK" "$SPX/scripts/" && cp "$SCRIPTS/lib/partition.sh" "$SPX/scripts/lib/"
+cp "$SCRIPTS/ops-install-set.sh" "$SPX/scripts/" 2>/dev/null
+printf 'x' > "$SPX/proj/.operator/pending/BANNER-SESS__still-open"
+SPXOUT="$(printf '{"session_id":"BANNER-SESS","cwd":"%s"}' "$SPX/proj" | "$BASH_ABS" "$SPX/scripts/ops-sessionstart-hook.sh" 2>/dev/null)"
+check "a MISSING stage.sh costs the stage line, never the id banner (#157)" \
+  "$(printf '%s' "$SPXOUT" | grep -q "this session's id is BANNER-SESS" && echo 0 || echo 1)"
+check "…and no half-written STAGE line survives the missing lib" \
+  "$(printf '%s' "$SPXOUT" | grep -q 'STAGE' && echo 1 || echo 0)"
+
+########################################################################
 echo "-- Case: the workflow commands resolve tiers before dispatching (#75, #55)"
 # Six workflows shipped with no command surface at all: the operator hand-built
 # `Workflow({name, args})` calls and hand-pasted a model id resolved by a

@@ -328,6 +328,19 @@ the stage is a pure function of artifacts already on disk:
 | a plan exists, open criteria with no PASS row | `IMPLEMENT` | open a task |
 | every BAR criterion has a PASS row | `HANDOFF` | `/cc-operator:handoff` |
 
+**Built, as of `scripts/lib/stage.sh` (#157): the rows that do not need the spec
+artifact.** `stage_derive` is a PURE function over what `scan_pending` and
+`scan_deviations` already computed — it opens no file, so it adds no reader, no
+byte cap and no second copy of the partition rule, and the Stop hook (which has
+run every scan) and the SessionStart hook (which runs only the pending one) can
+share it without disagreeing. The shipped rungs are BLOCKED (an unclosable
+sentinel) > IMPLEMENT (a task of mine open) > HANDOFF (unpresented decisions) >
+CLEAR, and the SessionStart banner carries the result — the one channel a
+session reads before doing anything, and the only one it has after a
+compaction. The DIVERGE/SPEC/PLAN rows wait on #155: with no spec artifact
+there is nothing on disk to derive them from, and inventing a proxy would be
+the guess this design refuses.
+
 Four constraints on the implementation:
 
 - **Report-only.** It never exits non-zero, never blocks, never writes — the
