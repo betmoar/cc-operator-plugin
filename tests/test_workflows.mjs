@@ -1489,9 +1489,13 @@ const { result: dFall, rt: dFallRt } = await run(WF("dispatch.js"),
 const dFallCall = dFallRt.calls.find((c) => c.label === "dispatch:mechanic");
 // The load-bearing assertion: the key is ABSENT from the agent() options.
 // `=== undefined` alone would also pass for `model: undefined`, which is a key
-// the harness still sees, so ask the options object whether it HAS the key —
-// the stub records it as a property either way.
-ok(dFallCall && !("model" in dFallCall && dFallCall.model !== undefined),
+// the harness still sees, so ask `hasModelKey` — the stub's record of
+// `"model" in opts`, taken at the call. Reading `"model" in dFallCall` instead
+// asks the RECORD, which always carries a `model` property because the stub
+// writes one, so it is ALWAYS true and the test collapsed to `=== undefined`:
+// measured (PR #154, Copilot), dispatch.js sending `{ model: undefined }` on
+// this rung kept the whole node suite at 430 passed.
+ok(dFallCall && dFallCall.hasModelKey === false,
   "dispatch: no args.model and no args.tier sends NO model override — the seat's default stands (#158)");
 ok(dFall?.model === null && dFall?.modelSource === "seat-default",
   "dispatch: the return says seat-default rather than naming a model it did not choose (#158)");
@@ -1499,7 +1503,8 @@ ok(dFall?.model === null && dFall?.modelSource === "seat-default",
 // put the key back, or the check passes because the stub records nothing.
 const { rt: dFallCtl } = await run(WF("dispatch.js"),
   { seat: "mechanic", prompt: "p", model: "glm-5-turbo" }, DISPATCH_OK);
-ok(dFallCtl.calls.find((c) => c.label === "dispatch:mechanic")?.model === "glm-5-turbo",
+const dFallCtlCall = dFallCtl.calls.find((c) => c.label === "dispatch:mechanic");
+ok(dFallCtlCall?.model === "glm-5-turbo" && dFallCtlCall?.hasModelKey === true,
   "dispatch: CONTROL — with args.model the key IS present (the absence check can fail)");
 // It must SAY so: a caller who meant to pass a binding finds out, and the log
 // names commands a user can actually type — it once named `ops-render.sh

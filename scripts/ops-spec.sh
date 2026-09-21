@@ -492,9 +492,28 @@ check|approve)
 
   # An unanswered question is the interview skipped. The bundle orders them by
   # blast radius precisely so the first one is the one that reshapes the design.
-  _open="$(awk '/^## Open questions/{f=1;next} /^## /{f=0} f&&/^\|/{print}' "$SPEC" 2>/dev/null \
-           | grep -v '^| *Question' | grep -v '^|---' | grep -c '| *|' || true)"
+  #
+  # CELL-ADDRESSED, not a substring scan (PR #154, Copilot review). `grep -c
+  # '| *|'` matched an empty cell ANYWHERE in the row, so a question that WAS
+  # answered but names nobody was reported as "empty Resolution cell" — a true
+  # refusal under a false name, which is the one thing a gate message must
+  # never be. Measured: `| Can we X? | Yes |  |` printed the Resolution
+  # message. They are two conditions and each now says which one fired.
+  # A row with fewer than three cells is malformed and counts as unanswered —
+  # fail closed, the same polarity as every other refusal here.
+  _oq="$(awk -F'|' '
+    /^## Open questions/{f=1;next} /^## /{f=0}
+    f && /^\|/ {
+      if ($0 ~ /^\| *Question/ || $0 ~ /^\|---/) next
+      r = (NF > 2) ? $3 : ""; d = (NF > 3) ? $4 : ""
+      gsub(/[[:space:]]/, "", r); gsub(/[[:space:]]/, "", d)
+      if (r == "") u++; else if (d == "") a++
+    }
+    END { printf "%d %d", u + 0, a + 0 }' "$SPEC" 2>/dev/null)" || _oq="0 0"
+  [ -n "$_oq" ] || _oq="0 0"
+  _open="${_oq%% *}"; _unattr="${_oq##* }"
   [ "${_open:-0}" -eq 0 ] || _say "$_open open question(s) have an empty Resolution cell — approving with one unanswered is the interview skipped"
+  [ "${_unattr:-0}" -eq 0 ] || _say "$_unattr answered question(s) leave 'Decided by' empty — an unattributed decision reads later as a decision and was only ever a deferral"
 
   if [ "$_problems" -gt 0 ]; then
     echo "ops-spec: $SPEC is NOT ready ($_problems problem(s) above)" >&2

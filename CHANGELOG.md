@@ -83,6 +83,25 @@ derivation that tells a session where it stands. Design rationale: `docs/CYCLE.m
   the fixture, `check_lock_parity` returned early (missing-file is `check_scripts`' to
   report) and all four LockParityTest mutation cases went green against a check that never
   ran — the #111 shape, inside the suite written to prevent it.
+- **The open-questions check named the wrong cell (PR #154, Copilot review).**
+  `grep -c '| *|'` matched an empty cell ANYWHERE in the row, so a question that
+  WAS answered but named nobody was refused as an "empty Resolution cell" —
+  measured, `| Can we X? | Yes |  |` printed exactly that. A true refusal under
+  a false name sends the operator to fix the wrong cell. Now cell-addressed:
+  the unattributed case has its own message, and a row with fewer than three
+  cells fails CLOSED as unanswered rather than being guessed at. The reviewer's
+  other premise — that the skeleton's `||` headers were miscounted — does not
+  hold: the skeleton writes `| Question | Resolution | Decided by |` and
+  `|---|---|---|`, both filtered, and a fresh skeleton reports no
+  open-questions problem.
+- **The dispatch no-override assertion was reading the wrong object (PR #154,
+  Copilot review).** It asked `"model" in dFallCall` — the test stub's RECORD,
+  which always carries a `model` property because the stub writes one — so it
+  was always true and the check collapsed to `model === undefined`, while the
+  `hasModelKey` the stub records for exactly this purpose went unused. Measured:
+  `dispatch.js` sending `{ model: undefined }` on that rung kept the node suite
+  at 430 passed, 0 failed. The assertion now reads `hasModelKey === false` and
+  its control asserts `=== true`; the same mutation is red.
 - **SC2329 pre-empted (#160).** shellcheck 0.11 reports "this function is never invoked"
   on `ops-verdict.sh`'s `fallback_release`, which is trap-reachable from nine sites and
   already carried `# shellcheck disable=SC2317` for the same fact. The tree is clean

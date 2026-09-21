@@ -4359,6 +4359,12 @@ spec_fill() { # spec_fill <proj> <slug> [--no-missed|--open-question]
     printf '## Open questions\n\n| Question | Resolution | Decided by |\n|---|---|---|\n'
     if [ "$_mode" = "--open-question" ]; then
       printf '| who decides? |  |  |\n'
+    elif [ "$_mode" = "--unattributed" ]; then
+      # ANSWERED, but nobody named — the shape the substring scan reported as
+      # an empty RESOLUTION cell (PR #154, Copilot review).
+      printf '| who decides? | the operator |  |\n'
+    elif [ "$_mode" = "--malformed-row" ]; then
+      printf '| who decides? |\n'
     else
       printf '| who decides? | the operator | maintainer |\n'
     fi
@@ -4380,6 +4386,37 @@ spec_fill "$SP" alpha --open-question
 ( cd "$SP" && bash "$SPECSH" --check alpha >/dev/null 2>&1 ); SPOQ=$?
 check "#155 --check refuses an open question with an empty Resolution" \
   "$([ "$SPOQ" -eq 1 ] && echo 0 || echo 1)"
+# …and it names the RESOLUTION cell, not some other empty one. The check was a
+# substring scan for `| *|`, which matches an empty cell ANYWHERE in the row.
+SPOQMSG="$( cd "$SP" && bash "$SPECSH" --check alpha 2>&1 )"
+check "#155 …and the refusal names the Resolution cell" \
+  "$(printf '%s' "$SPOQMSG" | grep -q 'empty Resolution cell' && echo 0 || echo 1)"
+# THE FALSE NAME (PR #154, Copilot review). A question that WAS answered but
+# names nobody is a real refusal — under the substring scan it arrived as
+# "empty Resolution cell", which is a true refusal telling the operator to fix
+# the wrong cell. Two conditions, two messages.
+spec_fill "$SP" alpha --unattributed
+SPUNA="$( cd "$SP" && bash "$SPECSH" --check alpha 2>&1 )"; SPUNARC=$?
+check "#155 --check refuses an answered question that names nobody" \
+  "$([ "$SPUNARC" -eq 1 ] && echo 0 || echo 1)"
+check "#155 …and it names 'Decided by', NOT the Resolution cell" \
+  "$(printf '%s' "$SPUNA" | grep -q "Decided by" \
+     && ! printf '%s' "$SPUNA" | grep -q 'empty Resolution cell' && echo 0 || echo 1)"
+# FAIL CLOSED on a row the parser cannot address: fewer than three cells is
+# malformed, and the conservative reading is unanswered.
+spec_fill "$SP" alpha --malformed-row
+SPMAL="$( cd "$SP" && bash "$SPECSH" --check alpha 2>&1 )"; SPMALRC=$?
+check "#155 --check refuses a malformed open-questions row (fails CLOSED)" \
+  "$([ "$SPMALRC" -eq 1 ] && echo 0 || echo 1)"
+check "#155 …reading it as unanswered rather than guessing" \
+  "$(printf '%s' "$SPMAL" | grep -q 'empty Resolution cell' && echo 0 || echo 1)"
+# CONTROL: the skeleton's own header and separator rows are not open questions.
+# `|---|---|---|` and `| Question | Resolution | Decided by |` both carry the
+# `| *|`-adjacent shapes a looser filter counts.
+spec_fill "$SP" alpha
+SPHDR="$( cd "$SP" && bash "$SPECSH" --check alpha 2>&1 )"
+check "#155 CONTROL — the table's header and separator rows are not counted" \
+  "$(printf '%s' "$SPHDR" | grep -qE 'open question|Decided by' && echo 1 || echo 0)"
 
 # --approve: the guards run BEFORE the checker reports, so a refusal about the
 # INVOCATION never arrives dressed as a verdict on the CONTENT.
