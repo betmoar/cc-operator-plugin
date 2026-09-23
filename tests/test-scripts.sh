@@ -2233,6 +2233,64 @@ rm -f "$LONGENV"
 rm -f "$SEATENV"
 
 ########################################################################
+echo "-- Case: ops-tiers --suggest reports dominated bindings, changes nothing (#153)"
+# A fixture grades table, never the maintainer's real one: the dominance verdict must follow the TABLE, so each case
+# builds the table that decides it. Pareto, not min(): a cheaper-but-weaker model is a trade, not a domination.
+GRD="$(mktemp -d "${TMPDIR:-/tmp}/opstest-grades.XXXXXX")"
+cat > "$GRD/g.json" <<'GRADES'
+{"fetched_at":"2026-01-02T00:00:00Z","attribution":"fixture","models":{
+ "slow-dear":  {"score":60,"evidence":"measured","input_price":1.0,"output_price":4.0},
+ "fast-cheap": {"score":66,"evidence":"measured","input_price":0.1,"output_price":0.3},
+ "cheap-weak": {"score":40,"evidence":"measured","input_price":0.01,"output_price":0.02},
+ "out-dear":   {"score":70,"evidence":"measured","input_price":0.5,"output_price":9},
+ "in-dear":    {"score":70,"evidence":"measured","input_price":2,"output_price":1},
+ "top":        {"score":80,"evidence":"measured","input_price":5,"output_price":25},
+ "unpriced":   {"score":99,"evidence":"measured"}}}
+GRADES
+SUGG() { CC_OPERATOR_GRADES="$1" CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT=/nonexistent \
+  CC_PROXY_PORT=1 "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" "${@:2}"; }
+SGOUT="$(SUGG "$GRD/g.json" --set MECHANICAL=slow-dear --set JUDGMENT=top --suggest 2>&1)"; SGRC=$?
+check "#153 --suggest names a binding a graded model beats on score AND both prices" \
+  "$([ "$SGRC" -eq 0 ] && printf '%s\n' "$SGOUT" | grep -q '^MECHANICAL  *slow-dear (--set): DOMINATED' \
+     && printf '%s\n' "$SGOUT" | grep -q '^  *fast-cheap  score 66' && echo 0 || echo 1)"
+# Negative control: cheap-weak is cheaper than EVERY model and must not be offered for anything — a min()-by-price
+# (or a floor-free cheapest pick) would name it. An unpriced entry must not dominate either, however high its score.
+check "#153 a cheaper-but-weaker model is a trade, not a domination; an unpriced entry never dominates" \
+  "$(printf '%s\n' "$SGOUT" | grep -qE 'cheap-weak|unpriced' && echo 1 || echo 0)"
+# Each PRICE axis is its own condition: out-dear beats slow-dear on score and input but costs more per output token,
+# in-dear the mirror. A dominance test that dropped either axis names one of them.
+check "#153 better on score and ONE price is not dominance — both price axes are compared" \
+  "$(printf '%s\n' "$SGOUT" | grep -qE '(out|in)-dear' && echo 1 || echo 0)"
+check "#153 the top-scoring binding is reported not dominated" \
+  "$(printf '%s\n' "$SGOUT" | grep -q '^JUDGMENT  *top (--set): not dominated' && echo 0 || echo 1)"
+check "#153 an ungraded id is said, not guessed" \
+  "$(printf '%s\n' "$SGOUT" | grep -q '^RECON .*not graded' && echo 0 || echo 1)"
+check "#153 the report carries the table's fetched_at, so a stale suggestion says how stale" \
+  "$(printf '%s\n' "$SGOUT" | grep -q 'fetched_at 2026-01-02T00:00:00Z' && echo 0 || echo 1)"
+# REPORT-ONLY: the project tiers.env it read is byte-identical afterwards.
+SGP="$(newproj)"; mkdir -p "$SGP/.operator"; printf 'MECHANICAL=slow-dear\n' > "$SGP/.operator/tiers.env"
+SGB="$(wc -c < "$SGP/.operator/tiers.env" | tr -d ' ')"
+SGPOUT="$( cd "$SGP" && CC_OPERATOR_GRADES="$GRD/g.json" CC_OPERATOR_TIERS_USER=/nonexistent \
+  CC_PROXY_PORT=1 "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" --suggest 2>&1 )"
+check "#153 --suggest reads the project binding and leaves tiers.env untouched" \
+  "$(printf '%s\n' "$SGPOUT" | grep -q 'slow-dear (project): DOMINATED' && unchanged_bytes "$SGP/.operator/tiers.env" "$SGB" \
+     && echo 0 || echo 1)"
+# Fail-OPEN: cc-proxy is optional, so an absent or unreadable table is a note at rc 0 — never a failure.
+SGABS="$(SUGG /nonexistent/grades.json --suggest 2>&1)"; SGABSRC=$?
+check "#153 an absent grades table is a note at rc 0 (cc-proxy is optional)" \
+  "$([ "$SGABSRC" -eq 0 ] && printf '%s' "$SGABS" | grep -q 'no grades table' && echo 0 || echo 1)"
+printf 'not json' > "$GRD/bad.json"
+SGBAD="$(SUGG "$GRD/bad.json" --suggest 2>&1)"; SGBADRC=$?
+check "#153 a garbage grades table is a note at rc 0, never a traceback" \
+  "$([ "$SGBADRC" -eq 0 ] && printf '%s' "$SGBAD" | grep -q 'not a grades table' \
+     && ! printf '%s' "$SGBAD" | grep -q Traceback && echo 0 || echo 1)"
+# The baked default itself: the binding #153 measured as dominated must not come back.
+SGDEF="$(SUGG "$GRD/g.json" 2>/dev/null)"
+check "#153 the baked MECHANICAL default is glm-5.3-flash (glm-5-turbo was dominated on all three axes)" \
+  "$(printf '%s' "$SGDEF" | grep -q '"MECHANICAL":"glm-5.3-flash"' && echo 0 || echo 1)"
+rm -rf "$GRD" "$SGP"
+
+########################################################################
 echo "-- Case: /cc-operator:tiers render branch + ops-render.sh behavior"
 # ops-render.sh renders project-layer agents (.claude/agents/op-*.md) so a plain Agent dispatch can run on a
 # cc-proxy model; these cases exercise the renderer's behavior, not just its validator-level shape.

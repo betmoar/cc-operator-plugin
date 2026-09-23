@@ -1,6 +1,6 @@
 ---
 description: Resolve tier→model bindings, apply one-off overrides, or render project-layer agents so plain Agent dispatch can run on a configured cc-proxy model. Wraps the resolver (ops-tiers.sh) and renderer (ops-render.sh) — the command adds no logic; those scripts' charset guard is the validation.
-argument-hint: "[set NAME=model-id | render | revert | check]"
+argument-hint: "[set NAME=model-id | suggest | render | revert | check]"
 allowed-tools: Bash(bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-tiers.sh:*), Bash(bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-render.sh:*)
 ---
 
@@ -34,6 +34,19 @@ Selected by `$ARGUMENTS`:
 
    To persist an override across sessions, edit
    `~/.claude/cc-operator/tiers.env` or `.operator/tiers.env` directly.
+
+3. **`suggest`** — report which bindings a graded model dominates (#153). It is
+   report-only and changes nothing:
+
+   ```
+   bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-tiers.sh --suggest
+   ```
+
+   It reads cc-proxy's `~/.claude/cc-proxy/grades.json`. A binding is DOMINATED
+   when another graded model scores at least as high and costs no more on input
+   or output. That is not "the cheapest model above a floor", which would put
+   every tier on one model. With no table it prints a note and exits 0, because
+   cc-proxy is optional. To act on a suggestion, repoint the tier in `tiers.env`.
 
 ## Render branches (ops-render.sh — plain-Agent model flexibility)
 
@@ -112,20 +125,20 @@ it. Edit `.operator/tiers.env` to set the bindings first.
 > files once and every later plain dispatch picks it up. Use `dispatch` when you
 > want one seat on its configured model now, or cannot restart the session.
 
-3. **`render`** — render `.claude/agents/op-*.md` from the templates + the
+4. **`render`** — render `.claude/agents/op-*.md` from the templates + the
    resolved tier config:
 
    ```
    bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-render.sh
    ```
 
-4. **`revert`** — remove the project-layer agents (fall back to plugin-root):
+5. **`revert`** — remove the project-layer agents (fall back to plugin-root):
 
    ```
    bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-render.sh --revert
    ```
 
-5. **`check`** — render to a temp dir + liveness-probe each model id; write
+6. **`check`** — render to a temp dir + liveness-probe each model id; write
    nothing. Use before `render` to catch a typo'd or dead id:
 
    ```

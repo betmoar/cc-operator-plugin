@@ -61,7 +61,7 @@ is_tier_name() { case " $TIER_NAMES " in *" $1 "*) return 0 ;; *) return 1 ;; es
 TIER_NAMES="JUDGMENT IMPLEMENT MECHANICAL RECON"
 # tier → model (resolved; defaults from ops-tiers.sh baked set)
 TRES_JUDGMENT="claude-opus-5"; TRES_IMPLEMENT="claude-sonnet-5"
-TRES_MECHANICAL="glm-5-turbo"; TRES_RECON="claude-haiku-4-5-20251001"
+TRES_MECHANICAL="glm-5.3-flash"; TRES_RECON="claude-haiku-4-5-20251001"
 TSRC_JUDGMENT=default; TSRC_IMPLEMENT=default; TSRC_MECHANICAL=default; TSRC_RECON=default
 
 # Default seat → tier records, newline-separated "name|tier|src".

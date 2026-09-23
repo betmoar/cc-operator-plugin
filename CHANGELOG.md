@@ -9,7 +9,57 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
-## [0.12.4] - 2026-09-23
+## [0.12.5] - 2026-09-23
+
+The cheap tier stops paying more for less, and brainstorm's seats stop giving one answer
+four times.
+
+### Added
+
+- **`ops-tiers.sh --suggest` (#153).** Reports which tier bindings are dominated, and
+  changes nothing. It reads cc-proxy's `~/.claude/cc-proxy/grades.json`, or the path in
+  `CC_OPERATOR_GRADES`. A binding counts as dominated when some graded model scores at least
+  as high and costs no more on input or output, and is strictly better on at least one of
+  the three. It does NOT pick the cheapest model above a capability floor: run over the live
+  table, that `min()` puts three of the four tiers on one model, and then the judgment seat
+  is no stronger than the seat it reviews. The report prints the table's `fetched_at`, so a
+  stale suggestion shows how stale it is, and an ungraded id is reported as ungraded. It
+  fails open: cc-proxy is optional, so an absent, oversized or unparseable table, or a
+  missing `python3`, produces a note at exit 0. The table is read where cc-proxy keeps it
+  and never copied into this repo; that copying is the class 0.8.3 removed.
+
+### Changed
+
+- **The baked MECHANICAL default is `glm-5.3-flash` (#153).** It was `glm-5-turbo`. By
+  cc-proxy's grades (fetched 2026-09-17, both entries `measured`), the old default was
+  dominated on every axis: 61.69 vs 66.04 capability, $1.20 vs $0.09 input and $4.00 vs
+  $0.30 output per Mtok. That is 13× the price for a lower score, and it applied to every
+  project that had not overridden the tier. Changed in both copies (`ops-tiers.sh`,
+  `ops-render.sh`), the `tiers.env` scaffold, and `docs/HANDOUT.md`. The default carries
+  a dated comment, so the next reader knows when it was last checked.
+- **brainstorm assigns each direction seat a stance (#84).** On a live run, four seats
+  with one shared prompt (differing only by "Direction i of N") came back with four
+  checksum schemes for a single design. The directions that questioned the premise never
+  appeared. Each seat now gets one of six generative stances: smallest change, challenge
+  the premise, remove the cause, move the responsibility, detect and recover, borrow. The
+  order is chosen so that the 2-seat minimum still keeps the premise challenge. Converge is
+  told to keep one ranked entry per direction, so it cannot flatten them back into
+  `sharedConstraints`.
+  Measured on the original #82 topic, with 16 seats (4 unassigned, 4 assigned, on each of
+  `glm-5.3-flash` and `glm-5-turbo`, with no tools and the context inlined). A blind judge
+  at judgment tier clustered them by mechanism, twice. The number of distinct mechanisms
+  per 4-seat run did NOT change: 3 unassigned, against 3 or 4 assigned. The distribution
+  did. One family, "validate the whole set before any write", held 4 of the 8 unassigned
+  seats and 0 or 1 of the 8 assigned ones, depending on the judge run. Two mechanisms
+  appeared only in the assigned arm: moving the check to build time (2 or 3 seats), and the
+  in-loop smallest fix (2 seats). This setup did not reproduce #84's four-way convergence
+  either: one unassigned seat derived the set from the directory, which #84 lists as a
+  direction that never appeared. A replication with tools enabled, closer to the real
+  workflow, was lost to provider rate limits (10 of 23 seats) and produced no structured
+  output. The evidence is that the stances change WHICH directions appear. It does not
+  show that more of them appear.
+  What the stub suite can check is the input: N distinct stances at N=2, 4 and 6. Output
+  quality is still #79's gap.
 
 A criterion that stopped being answerable gets its own verdict word, and the rework cap says
 what it cannot see.

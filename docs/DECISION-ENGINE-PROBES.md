@@ -180,7 +180,7 @@ Same vendor, both measured, already in the `/model` picker. **+4.35 capability p
 and 13.3× cheaper on both axes** — dominated, no trade. `.operator/tiers.env` ships
 with every binding commented out, so the baked default is what runs.
 
-The mechanism that follows is not an engine: `ops-tiers.sh --suggest` reads the
+The mechanism that follows (built in 0.12.5) is not an engine: `ops-tiers.sh --suggest` reads the
 grades file **when present**, reports dominated bindings, changes nothing. It
 consumes a table maintained elsewhere with its own timestamp, rather than copying
 facts into this repo where they rot (`docs/LANDMINES.md` § *"A catalogue of another

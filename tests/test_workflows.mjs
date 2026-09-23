@@ -1599,6 +1599,24 @@ ok(bsDirCalls.length === 3 && bsDirCalls.every((c) => c.model === "haiku"),
 ok(bsOkRt.calls.find((c) => c.label === "converge")?.model === "opus",
   "brainstorm: converge is the ONE judgment-tier dispatch");
 
+// #84: seats that share one prompt converge — measured live, four checksum schemes for one
+// design. Spread must be in the INPUT, so each seat's prompt carries a DIFFERENT assigned
+// stance. The stub cannot judge the output (#79); it can prove the input differs.
+const stanceOf = (p) => (/YOUR ASSIGNED STANCE[^\n]*\n([^\n]+)/.exec(p ?? "") ?? [])[1];
+for (const n of [2, 4, 6]) {
+  const { rt } = await run(WF("brainstorm.js"), { topic: "t", context: "c", directions: n }, bsReturns(n));
+  const st = rt.calls.filter((c) => /^direction /.test(c.label)).map((c) => stanceOf(c.prompt));
+  ok(st.length === n && st.every(Boolean) && new Set(st).size === n,
+    `brainstorm #84: ${n} direction seats carry ${n} DISTINCT assigned stances`);
+  // The measured failure was the missing premise challenge; it must survive the minimum N=2.
+  ok(st.some((s) => /^CHALLENGE THE PREMISE/.test(s)),
+    `brainstorm #84: the premise-challenging stance is assigned at directions=${n}`);
+}
+// Converge must not flatten them back: the stances are only worth paying for if the ranked
+// bundle keeps one entry per direction.
+ok(/do not merge two directions/.test(bsOkRt.calls.find((c) => c.label === "converge")?.prompt ?? ""),
+  "brainstorm #84: converge is told to keep one ranked entry per direction, not merge them");
+
 // A dead blindspots agent is byte-identical to "no blindspots found" if
 // laundered — the exact F31/F32 class. It must surface as an error and keep the
 // directions, not ship a bundle whose scan silently never ran.
