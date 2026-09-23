@@ -251,7 +251,7 @@ model receives, verbatim shape:
 
 ```
 operator: pending verdict(s): replay-run — run '<abs>/.operator/bin/ops-verdict.sh'
-<id> <criterion> <evidence> <PASS|FAIL>, or --defer "<reason>"
+<id> <criterion> <evidence> <PASS|FAIL|MOOT>, or --defer "<reason>"
 ```
 
 The path is ABSOLUTE and single-quoted (#94; `<abs>` is the project root) —

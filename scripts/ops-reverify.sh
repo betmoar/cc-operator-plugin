@@ -154,7 +154,15 @@ scan_ledger() {
     [ "$stamp" != "$ev" ] || stamp="(none)"
     sha="${stamp%%+*}"
     status="" ; window=""
+    # A MOOT row (#91) records that its criterion STOPPED being answerable; its
+    # evidence cell is a reason, not a result, so there is no claim for this
+    # tool to re-run — dating it would send the maintainer to re-verify a
+    # sentence. It is listed (never dropped: a row you cannot see is a row you
+    # cannot audit) and counted clear.
+    if [ "$verdict" = MOOT ]; then sha="(moot)"; fi
     case "$sha" in
+      "(moot)")
+        status="clear (MOOT — asserts no result)"; window="—" ;;
       "(none)" | no-vcs | no-commit)
         status="UNDATABLE"; window="—" ;;
       *)
@@ -206,8 +214,8 @@ Re-verification procedure (#103) — per AFFECTED or UNDATABLE row:
      that is correct here: nothing was open, and the exception is the audit
      line that says this row is a retro-check.
   3. A row whose criterion cannot be re-run (the artifact is gone, the command
-     no longer exists) gets a DECISION line in DECISIONS.md saying so, not a
-     PASS.
+     no longer exists) gets a MOOT row through the same writer, the reason as
+     its evidence (#91) — never a PASS.
   UNDATABLE rows (@no-vcs, a sha this repo does not know) cannot be placed in
   or out of the window; treat them as affected unless you know otherwise.
 FOOT

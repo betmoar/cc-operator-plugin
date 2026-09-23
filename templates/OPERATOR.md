@@ -104,14 +104,15 @@ A row without evidence is FAIL by definition; assertions are not evidence — co
 diffs, and reviewer verdict lines are [D:CHART-def]. Open a tracked task with
 `.operator/bin/ops-task.sh <task-id> --owner <session-id>` — the id SessionStart injects; the
 CLI itself warns when you omit it [DOC:spec-concurrent].
-`.operator/bin/ops-verdict.sh <id> <criterion> <evidence> <PASS|FAIL> --owner <id>` appends the
-row and clears that sentinel — the single writer to VERDICTS.md [DOC:spec-D4].
+`.operator/bin/ops-verdict.sh <id> <criterion> <evidence> <PASS|FAIL|MOOT> --owner <id>` appends
+the row and clears that sentinel — the single writer to VERDICTS.md [DOC:spec-D4].
 `.operator/bin/ops-claims.sh --since <dispatch-sha> --claimed "<paths>"` verifies the
 REPORT's CHANGED line against the diff on DONE — `--since` is mandatory [DOC:spec-D4].
 Stop is blocked while a sentinel **you own** is pending;
 others' are reported, never yours to close. Open one YOURSELF: change 2+ files
 without one and Stop arms `autobar` for you [D:CHART-def]. A blocked task ends honestly via `--defer
-"<reason>"`, writing DEFERRED-VERDICT to DECISIONS.md [DOC:spec-D4]. Evidence from output
+"<reason>"` (DEFERRED-VERDICT in DECISIONS.md); an unanswerable criterion via MOOT, reason as
+evidence [DOC:spec-D4]. Evidence from output
 marked `[full output spilled to …]` MUST cite that spill path: the compressor elided the middle
 [DOC:spec-compress]. Every row is auto-stamped with the source state that produced it —
 `@<sha>`, `+dirty` when the tree was uncommitted, `@no-vcs` outside git; that is provenance,

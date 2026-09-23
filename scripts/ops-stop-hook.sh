@@ -537,7 +537,7 @@ fi
 scan_caps_cached "$opdir/VERDICTS.md" "$opdir/.capscache"
 # shellcheck disable=SC2154  # assigned by the sourced lib/caps.sh
 if [ "$caps_scan_failed" = 0 ] && [ "$caps_tripped" -gt 0 ]; then
-  caps_say "operator: $caps_tripped target(s) at the charter's same-target-rework cap ($CAPS_REWORK_MAX rework rounds on one target) — the cap table calls this a defined stop-and-report: stop reworking it, log the decision, move on or escalate. Not blocking; a later PASS on the same criterion clears it."
+  caps_say "operator: $caps_tripped target(s) at the charter's same-target-rework cap ($CAPS_REWORK_MAX rework rounds on one target) — the cap table calls this a defined stop-and-report: stop reworking it, log the decision, move on or escalate. Not blocking; a later PASS or MOOT on the same criterion clears it."
   # NAME the targets — the #93/#94 rule. A count whose rows the operator must
   # go find is a count answered by not looking. report_row does the sanitize,
   # the byte cap and the C locale in one place (PR #126 review).
@@ -645,7 +645,7 @@ if [ -n "$pending" ] || [ "$MALFORMED" -gt 0 ]; then
   # Guarded: with malformed-only entries there is no addressable id to name, and
   # printing "pending verdict(s): " with an empty list is the useless guidance
   # this whole branch exists to avoid.
-  [ -n "$pending" ] && echo "operator: pending verdict(s): $pending — run $verdict_cmd <id> <criterion> <evidence> <PASS|FAIL>, or --defer \"<reason>\"" >&2
+  [ -n "$pending" ] && echo "operator: pending verdict(s): $pending — run $verdict_cmd <id> <criterion> <evidence> <PASS|FAIL|MOOT>, or --defer \"<reason>\"" >&2
   # The mark's status is READ and the failure SAID (#123 C): the gate still
   # blocks either way, but without this line the operator cannot know why the
   # next continuation will block again — and on an unmarkable project the

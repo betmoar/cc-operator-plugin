@@ -88,15 +88,34 @@
 # detector off with every gate green. Measured 2026-09-07: a 5-cell ledger
 # carrying two rework rounds reports tripped=0, truncated=0.
 #
-# A new VERDICT WORD is the same hole from the other side. The reset branch
-# tests `= PASS`, so anything else is counted as a failing round — a MOOT row
-# (issue #91's proposal for a criterion that stopped being answerable) would
-# read as a rework rather than resolving one.
+# A new VERDICT WORD is the same hole from the other side, and it was hit:
+# the reset branch tested `= PASS` and the enum admitted PASS|FAIL only, so
+# when #91 added MOOT (a criterion that stopped being answerable) this file
+# had to learn it in the same change. A MOOT RESETS the key, like a PASS: it
+# is the cap's own prescribed exit — "stop reworking it, log, move on" — with
+# the reason in the evidence cell. Counting it as a round would report the
+# operator for doing what the cap asked. check_verdict_words holds this enum
+# to the writer's, so the next word cannot land in one file only.
 #
-# Neither is fixable here: this file cannot know what the writer will emit
-# next. The fix is at the writer, so CLAUDE.md's coupling row for the 4-cell
-# printf names BOTH parsers, and the two cases in the suite pin the blindness
-# so the next schema change reads it there instead of in the field.
+# The 5-cell hole is not fixable here: this file cannot know what the writer
+# will emit next. The fix is at the writer, so CLAUDE.md's coupling row for
+# the 4-cell printf names BOTH parsers, and a case in the suite pins the
+# blindness so the next schema change reads it there instead of in the field.
+#
+# WHAT "TARGET" MEANS HERE, AND WHAT IT CANNOT SEE (#129, a decision). The
+# key is the exact (task-id, criterion) pair the operator wrote. Review
+# rounds that each open a NEW id (`126-review`, `126-review2`, `126-review3`)
+# are distinct keys, so seven rounds on one PR report tripped=0 — measured on
+# this repo's own ledger 2026-09-23: 10 `126-*` rows, every one PASS but a
+# deliberate render probe (FAIL, FAIL, PASS), tripped=0; normalising every id
+# to its numeric prefix (`126-review2` -> `126`) STILL reports tripped=0,
+# because those rounds
+# closed PASS — a round that FOUND a defect and FIXED it records a pass, not a
+# failure. So no re-keying of this ledger would have fired: the rework was
+# never written as a FAIL. The cap is VERDICT-ROW-SCOPED BY DESIGN: it counts
+# failed rounds the operator recorded, keyed exactly as recorded, and it does
+# not infer targets from ids, branches or commits. A review loop is capped
+# only if its rounds are recorded as FAILs on one key.
 
 # The cap's own number, from the charter's Cap table: "two rework rounds on one
 # target". Two FAIL rows on one (id, criterion) ARE those two rounds.
@@ -344,9 +363,10 @@ scan_caps() { # scan_caps <verdicts-path>
     # a sequence.
     #
     # The full header line cannot collide: its fourth cell is `PASS/FAIL`,
-    # which the verdict enum below refuses (a row's verdict is exactly `PASS`
-    # or `FAIL`), so even an exact-match escape would be caught one test
-    # later. Prefix-matching was the only thing making the collision reachable.
+    # which the verdict enum below refuses (a row's verdict is exactly one of
+    # the writer's words), so even an exact-match escape would be caught one
+    # test later. Prefix-matching was the only thing making the collision
+    # reachable.
     case "$row" in
       "| Gate | Criterion | Evidence | PASS/FAIL |" | "|---"*) continue ;;
     esac
@@ -371,7 +391,7 @@ scan_caps() { # scan_caps <verdicts-path>
     id="${BASH_REMATCH[1]}"; crit="${BASH_REMATCH[2]}"
     ev="${BASH_REMATCH[3]}"; verdict="${BASH_REMATCH[4]}"
     [ -n "$ev" ] || continue
-    case "$verdict" in PASS | FAIL) ;; *) continue ;; esac
+    case "$verdict" in PASS | FAIL | MOOT) ;; *) continue ;; esac
     # The key. Both halves are pipe-free and newline-free by construction —
     # ops-verdict.sh's check_cell refuses both in every cell — so " | " cannot
     # be forged inside either half and the join is unambiguous.
@@ -399,8 +419,11 @@ scan_caps() { # scan_caps <verdicts-path>
     # is the same class as the size-bounds-are-not-work-bounds defect this
     # budget was added to fix — one level down, in the accounting itself.
     steps=$((steps + i + 1))
-    if [ "$verdict" = PASS ]; then
-      # A PASS RESETS, and a reset key LEAVES THE TABLE (#127). A key at count 0
+    if [ "$verdict" != FAIL ]; then
+      # A PASS RESETS, and a reset key LEAVES THE TABLE (#127). So does a MOOT
+      # (#91 — the cap's own "move on", reason recorded; see the header). The
+      # test is `!= FAIL` over the enum above, so a word that reaches here is
+      # one the writer emits, and only FAIL is a round. A key at count 0
       # behaves exactly like an absent one — its next FAIL counts 1 either way,
       # and the report reads only counts >= CAPS_REWORK_MAX — but a zero key
       # left in place is walked by every later row's lookup and holds one of

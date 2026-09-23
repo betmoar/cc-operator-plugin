@@ -645,7 +645,7 @@ names when it matters; record the outcome as a NEW row through the single
 writer — `.operator/bin/ops-verdict.sh <gate> "re-verify(#103): <criterion>"
 "<evidence>" <PASS|FAIL> --owner <sid>` — and let the GATE-EXCEPTION it writes
 (no sentinel was open) stand as the audit line that this was a retro-check. A
-criterion that cannot be re-run gets a DECISION line, not a PASS.
+criterion that cannot be re-run gets a MOOT row (reason as evidence, #91), not a PASS.
 
 **Never:** edit or delete the old row. The ledger is append-only with one
 writer; the old row is the record of what was believed at the time, and the
