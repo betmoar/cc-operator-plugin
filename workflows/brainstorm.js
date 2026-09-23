@@ -283,8 +283,9 @@ log(
 // --- Phase 2: converge -----------------------------------------------------
 // Synthesis is judgment work, so it runs on the strong tier — but it is ONE
 // pass over the divergent output, not N judgment dispatches. It does NOT pick
-// a winner: the human does, one question at a time. It ranks, dedups, and
-// folds the blindspots/references into each direction as constraints.
+// a winner: the human does, one question at a time. It ranks the directions
+// WITHOUT merging them (#84: each argues an assigned stance) and folds the
+// blindspots/references into each direction as constraints.
 phase("Converge");
 const OPTIONS = {
   type: "object",

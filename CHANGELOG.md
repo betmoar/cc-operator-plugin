@@ -26,7 +26,11 @@ four times.
   stale suggestion shows how stale it is, and an ungraded id is reported as ungraded. It
   fails open: cc-proxy is optional, so an absent, oversized or unparseable table, or a
   missing `python3`, produces a note at exit 0. The table is read where cc-proxy keeps it
-  and never copied into this repo; that copying is the class 0.8.3 removed.
+  and never copied into this repo; that copying is the class 0.8.3 removed. Every string
+  in the table is treated as untrusted. Control bytes are replaced before printing, so a
+  model key carrying terminal escapes (alternate screen, title bar) cannot repaint the
+  screen. A lone UTF-16 surrogate prints as a replacement character instead of ending the
+  report in a traceback. Both were reproduced in review.
 
 ### Changed
 
@@ -54,10 +58,14 @@ four times.
   appeared only in the assigned arm: moving the check to build time (2 or 3 seats), and the
   in-loop smallest fix (2 seats). This setup did not reproduce #84's four-way convergence
   either: one unassigned seat derived the set from the directory, which #84 lists as a
-  direction that never appeared. A replication with tools enabled, closer to the real
-  workflow, was lost to provider rate limits (10 of 23 seats) and produced no structured
-  output. The evidence is that the stances change WHICH directions appear. It does not
-  show that more of them appear.
+  direction that never appeared. The judge was blind to which arm a seat came from, but
+  not fully to its stance: one seat echoed its stance label. A replication with tools
+  enabled, closer to the real workflow, was not usable. Of 24 seats, 8 were rate-limited,
+  1 was killed mid-run, and the other 15 returned prose instead of the schema, so none of
+  them were clustered. The evidence is that the stances change WHICH directions appear. It
+  does not show that more of them appear. It covers N=4 only. N=2 (smallest change plus
+  challenge the premise) and the detect and borrow stances are a design choice, not a
+  measurement.
   What the stub suite can check is the input: N distinct stances at N=2, 4 and 6. Output
   quality is still #79's gap.
 

@@ -193,8 +193,14 @@ suggest_report() {
   done
   # shellcheck disable=SC2086  # _pairs is space-separated NAME=id=src words; ids are charset-guarded
   python3 - "$GRADES" $_pairs <<'PY' || echo "note: could not read $GRADES — bindings unchecked"
-import json, sys
+import json, re, sys
 path, pairs = sys.argv[1], sys.argv[2:]
+# Every string below comes from ANOTHER system's file on its way to a terminal and
+# a model: C0/C1 controls (ESC, BEL, CSI) are replaced, so a model key cannot
+# repaint the screen; errors="replace" keeps a lone surrogate from killing print().
+sys.stdout.reconfigure(errors="replace")
+def clean(v, cap=120):
+    return re.sub(r"[\x00-\x1f\x7f-\x9f]", "?", str(v))[:cap]
 with open(path, "rb") as f:
     raw = f.read(1048577)
 if len(raw) > 1048576:
@@ -210,9 +216,10 @@ def num(v):
 def graded(e):
     if not isinstance(e, dict): return None
     s, i, o = num(e.get("score")), num(e.get("input_price")), num(e.get("output_price"))
-    return None if None in (s, i, o) else (s, i, o, str(e.get("evidence", "?")))
+    return None if None in (s, i, o) else (s, i, o, clean(e.get("evidence", "?"), 20))
 table = {k: g for k, g in ((k, graded(v)) for k, v in models.items()) if g}
-print(f"grades: {path} (fetched_at {doc.get('fetched_at', 'unknown')}; attribution: {doc.get('attribution', 'unstated')})")
+print(f"grades: {clean(path, 400)} (fetched_at {clean(doc.get('fetched_at', 'unknown'))}; "
+      f"attribution: {clean(doc.get('attribution', 'unstated'))})")
 found = 0
 for p in pairs:
     name, mid, src = p.split("=", 2)
@@ -229,7 +236,7 @@ for p in pairs:
     found += 1
     print(f"{name:<11} {mid} ({src}): DOMINATED (score {s:g}, ${i:g}/${o:g}, {ev}) by:")
     for k, (bs, bi, bo, bev) in better[:3]:
-        print(f"              {k}  score {bs:g}, ${bi:g}/${bo:g} per Mtok in/out, {bev}")
+        print(f"              {clean(k)}  score {bs:g}, ${bi:g}/${bo:g} per Mtok in/out, {bev}")
 print(f"{found} dominated binding(s). Report only — nothing was changed; repoint a tier in tiers.env.")
 PY
 }

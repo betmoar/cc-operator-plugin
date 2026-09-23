@@ -2284,6 +2284,18 @@ SGBAD="$(SUGG "$GRD/bad.json" --suggest 2>&1)"; SGBADRC=$?
 check "#153 a garbage grades table is a note at rc 0, never a traceback" \
   "$([ "$SGBADRC" -eq 0 ] && printf '%s' "$SGBAD" | grep -q 'not a grades table' \
      && ! printf '%s' "$SGBAD" | grep -q Traceback && echo 0 || echo 1)"
+# The table is ANOTHER system's file, so every string it supplies is untrusted on the way to a terminal and a model:
+# a model key carrying ESC/BEL sequences (alt-screen, title-bar) must not be printed raw, and a lone UTF-16 surrogate
+# (valid JSON, unencodable) must not end the report in a traceback. Both reproduced on the first cut (PR review).
+printf '{"fetched_at":"x","models":{"weak":{"score":10,"input_price":5,"output_price":5},"\\u001b[?1049h\\u001b]0;pwned\\u0007evil":{"score":99,"input_price":0.01,"output_price":0.01,"evidence":"m\\u001b[2Jx"},"sur":{"score":50,"input_price":0.1,"output_price":0.1,"evidence":"bad\\ud800end"}}}' \
+  > "$GRD/hostile.json"
+SGHOS="$(SUGG "$GRD/hostile.json" --set MECHANICAL=weak --suggest 2>&1)"; SGHOSRC=$?
+check "#153 control bytes from the grades table never reach the output (ESC, BEL)" \
+  "$([ "$SGHOSRC" -eq 0 ] && printf '%s\n' "$SGHOS" | grep -q 'DOMINATED' \
+     && ! printf '%s' "$SGHOS" | LC_ALL=C grep -q "$(printf '[\033\007]')" && echo 0 || echo 1)"
+check "#153 a lone surrogate in the table is printed replaced, not a traceback" \
+  "$(printf '%s\n' "$SGHOS" | grep -q 'sur  score 50' && ! printf '%s' "$SGHOS" | grep -q 'Traceback\|could not read' \
+     && echo 0 || echo 1)"
 # The baked default itself: the binding #153 measured as dominated must not come back.
 SGDEF="$(SUGG "$GRD/g.json" 2>/dev/null)"
 check "#153 the baked MECHANICAL default is glm-5.3-flash (glm-5-turbo was dominated on all three axes)" \
