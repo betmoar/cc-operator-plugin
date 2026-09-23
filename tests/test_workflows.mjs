@@ -1612,6 +1612,19 @@ for (const n of [2, 4, 6]) {
   ok(st.some((s) => /^CHALLENGE THE PREMISE/.test(s)),
     `brainstorm #84: the premise-challenging stance is assigned at directions=${n}`);
 }
+// The ceiling IS the stance count: directions past it must clamp, never hand a seat
+// `undefined` as its stance (a literal "undefined" interpolated into the prompt, silently).
+{
+  const { rt } = await run(WF("brainstorm.js"), { topic: "t", context: "c", directions: 99 }, bsReturns(6));
+  const dirs = rt.calls.filter((c) => /^direction /.test(c.label));
+  ok(dirs.length > 0 && dirs.every((c) => !/\nundefined\n/.test(c.prompt) && stanceOf(c.prompt)),
+    "brainstorm #84: an over-large directions never dispatches a seat with an undefined stance");
+}
+// Distinct stance TEXT is not enough: the measured failure was seats drifting back to the obvious
+// answer, and a header that survives beside a softened mandate ("optionally consider…") ships green on
+// distinctness alone (PR #171 review, reproduced). The binding language is pinned too.
+ok(/argue from it, even if another stance seems more natural/.test(bsOkRt.calls.find((c) => /^direction /.test(c.label))?.prompt ?? ""),
+  "brainstorm #84: each seat is told to ARGUE its stance, not merely offered it");
 // Converge must not flatten them back: the stances are only worth paying for if the ranked
 // bundle keeps one entry per direction.
 ok(/do not merge two directions/.test(bsOkRt.calls.find((c) => c.label === "converge")?.prompt ?? ""),

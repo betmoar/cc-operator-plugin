@@ -114,16 +114,6 @@ if (typeof topic !== "string" || !topic.trim()) {
 const ctx = (typeof A === "string" ? undefined : A.context) ?? "(no codebase context provided)";
 // Coerce to a number: a non-numeric `directions` ("abc") would make Math.max
 // return NaN and Array.from({length: NaN}) silently yield zero directions.
-// Default 4, clamped to 2–6.
-const _d = Number(typeof A === "object" ? A.directions : undefined);
-const N = Math.min(Math.max(Number.isFinite(_d) ? _d : 4, 2), 6);
-
-// --- Phase 1: diverge ------------------------------------------------------
-// Three independent exploration angles, run in parallel. Each is narrow on
-// purpose: a lens that needs judgment is not a lens. The cheap tier is honest
-// here because each agent answers ONE question, not "design the whole thing".
-phase("Diverge");
-
 // (a) N divergent directions — the "unknown knowns" quadrant. Each seat is
 // ASSIGNED a stance (#84). N seats sharing one prompt that differed only by
 // "Direction i of N" converged live: four checksum schemes for one design, and
@@ -142,6 +132,17 @@ const STANCES = [
   "DETECT AND RECOVER: accept that the failure will happen and design for fast, loud detection and cheap repair, rather than prevention.",
   "BORROW: adopt the move an established external system (package managers, init systems, build tools, databases) uses for this class of problem, and name which one.",
 ];
+// Default 4, clamped to 2..STANCES.length — the ceiling IS the stance count, so
+// raising it without a new stance cannot hand a seat `undefined` as its stance.
+const _d = Number(typeof A === "object" ? A.directions : undefined);
+const N = Math.min(Math.max(Number.isFinite(_d) ? _d : 4, 2), STANCES.length);
+
+// --- Phase 1: diverge ------------------------------------------------------
+// Three independent exploration angles, run in parallel. Each is narrow on
+// purpose: a lens that needs judgment is not a lens. The cheap tier is honest
+// here because each agent answers ONE question, not "design the whole thing".
+phase("Diverge");
+
 const DIRECTION = {
   type: "object",
   required: ["stance", "sketch", "tradeoffs", "yagnis"],

@@ -192,13 +192,16 @@ suggest_report() {
     _pairs="$_pairs $n=$id=$src"
   done
   # shellcheck disable=SC2086  # _pairs is space-separated NAME=id=src words; ids are charset-guarded
-  python3 - "$GRADES" $_pairs <<'PY' || echo "note: could not read $GRADES — bindings unchecked"
+  # A non-zero python exit can come AFTER rows were printed (a crash mid-report),
+  # so the fallback must not read as "nothing was read": it disowns what is above.
+  python3 - "$GRADES" $_pairs <<'PY' || echo "note: --suggest failed partway reading $GRADES — any rows above are INCOMPLETE; bindings unchecked"
 import json, re, sys
 path, pairs = sys.argv[1], sys.argv[2:]
 # Every string below comes from ANOTHER system's file on its way to a terminal and
 # a model: C0/C1 controls (ESC, BEL, CSI) are replaced, so a model key cannot
 # repaint the screen; errors="replace" keeps a lone surrogate from killing print().
-sys.stdout.reconfigure(errors="replace")
+if hasattr(sys.stdout, "reconfigure"):   # 3.7+; older pythons keep strict stdout
+    sys.stdout.reconfigure(errors="replace")
 def clean(v, cap=120):
     return re.sub(r"[\x00-\x1f\x7f-\x9f]", "?", str(v))[:cap]
 with open(path, "rb") as f:
@@ -218,15 +221,33 @@ def graded(e):
     s, i, o = num(e.get("score")), num(e.get("input_price")), num(e.get("output_price"))
     return None if None in (s, i, o) else (s, i, o, clean(e.get("evidence", "?"), 20))
 table = {k: g for k, g in ((k, graded(v)) for k, v in models.items()) if g}
+# An entry with no numeric score or prices is never compared — say how many, or
+# "not dominated" reads as checked against a table it was not (a string-typed
+# score is skipped here, never coerced: guessing at another system's format is
+# how a report goes quietly wrong).
+skipped = len(models) - len(table)
+def lookup(mid):
+    base = mid.split("[", 1)[0]
+    if base in table: return base, table[base]
+    # A vendor-prefixed key (`z-ai/glm-5.3-flash`) names the same model a bare
+    # binding does. Matched by last path segment only when the answer is unique.
+    tail = base.rsplit("/", 1)[-1]
+    hits = sorted(k for k in table if k.rsplit("/", 1)[-1] == tail)
+    if len({table[k] for k in hits}) == 1: return hits[0], table[hits[0]]
+    return (None, hits) if hits else (None, None)
 print(f"grades: {clean(path, 400)} (fetched_at {clean(doc.get('fetched_at', 'unknown'))}; "
       f"attribution: {clean(doc.get('attribution', 'unstated'))})")
 found = 0
 for p in pairs:
     name, mid, src = p.split("=", 2)
-    cur = table.get(mid.split("[", 1)[0])
+    key, cur = lookup(mid)
+    if key is None and cur:
+        print(f"{name:<11} {mid} ({src}): AMBIGUOUS — graded under {', '.join(clean(k) for k in cur)} "
+              f"with different numbers; not compared"); continue
     if cur is None:
         print(f"{name:<11} {mid} ({src}): not graded — nothing to compare"); continue
     s, i, o, ev = cur
+    if key != mid.split("[", 1)[0]: ev = f"{ev}, graded as {clean(key)}"
     better = sorted(
         (k, g) for k, g in table.items()
         if g[0] >= s and g[1] <= i and g[2] <= o and (g[0] > s or g[1] < i or g[2] < o))
@@ -237,7 +258,10 @@ for p in pairs:
     print(f"{name:<11} {mid} ({src}): DOMINATED (score {s:g}, ${i:g}/${o:g}, {ev}) by:")
     for k, (bs, bi, bo, bev) in better[:3]:
         print(f"              {clean(k)}  score {bs:g}, ${bi:g}/${bo:g} per Mtok in/out, {bev}")
-print(f"{found} dominated binding(s). Report only — nothing was changed; repoint a tier in tiers.env.")
+print(f"{found} dominated binding(s), compared against {len(table)} graded model(s)."
+      + (f" {skipped} table entr{'y' if skipped == 1 else 'ies'} lacked a numeric score or price and"
+         f" were NOT compared — a dominator among them is invisible here." if skipped else "")
+      + " Report only — nothing was changed; repoint a tier in tiers.env.")
 PY
 }
 

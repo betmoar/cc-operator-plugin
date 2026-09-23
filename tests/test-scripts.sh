@@ -2296,6 +2296,53 @@ check "#153 control bytes from the grades table never reach the output (ESC, BEL
 check "#153 a lone surrogate in the table is printed replaced, not a traceback" \
   "$(printf '%s\n' "$SGHOS" | grep -q 'sur  score 50' && ! printf '%s' "$SGHOS" | grep -q 'Traceback\|could not read' \
      && echo 0 || echo 1)"
+# A skipped entry is SAID: "not dominated" over a table that dropped rows reads as a check it was not. The live
+# cc-proxy table skips 8 of 32 (scoreless deepseek, priceless qwen3.8-max) — the fixture's `unpriced` is that shape.
+check "#153 entries without numeric score/prices are COUNTED as not compared, never silently dropped" \
+  "$(printf '%s\n' "$SGOUT" | grep -q '1 table entry lacked a numeric score or price and were NOT compared' && echo 0 || echo 1)"
+# A vendor-prefixed key names the same model a bare binding does; "not graded" there reads as checked-and-clean.
+printf '{"models":{"z-ai/slow-dear":{"score":60,"input_price":1,"output_price":4},"fast-cheap":{"score":66,"input_price":0.1,"output_price":0.3},"a/twin":{"score":1,"input_price":1,"output_price":1},"b/twin":{"score":2,"input_price":1,"output_price":1}}}' \
+  > "$GRD/vendor.json"
+SGVEN="$(SUGG "$GRD/vendor.json" --set MECHANICAL=slow-dear --set RECON=twin --suggest 2>&1)"
+check "#153 a bare binding matches its vendor-prefixed grade (and says which key it matched)" \
+  "$(printf '%s\n' "$SGVEN" | grep -q '^MECHANICAL  *slow-dear (--set): DOMINATED.*graded as z-ai/slow-dear' && echo 0 || echo 1)"
+check "#153 two prefixed keys with different numbers are AMBIGUOUS, not a silent pick" \
+  "$(printf '%s\n' "$SGVEN" | grep -q '^RECON  *twin (--set): AMBIGUOUS' && echo 0 || echo 1)"
+# A crash AFTER rows were printed: the fallback note must disown them, not claim nothing was read.
+mkdir -p "$GRD/shim"
+printf '#!/bin/sh\necho "MECHANICAL  x (default): not dominated"\nexit 1\n' > "$GRD/shim/python3"; chmod +x "$GRD/shim/python3"
+SGPART="$(PATH="$GRD/shim:$PATH" SUGG "$GRD/g.json" --suggest 2>&1)"; SGPARTRC=$?
+check "#153 a mid-report python failure marks the printed rows INCOMPLETE, at rc 0" \
+  "$([ "$SGPARTRC" -eq 0 ] && printf '%s\n' "$SGPART" | grep -q 'rows above are INCOMPLETE' && echo 0 || echo 1)"
+# Fixture gaps the PR review measured (each mutation shipped green before these):
+# a JSON boolean is an int subclass in python, so `"score": true` would grade as 1 without the bool guard;
+# top-3 truncation and best-first order; the `[1m]` context-variant suffix; the 1MB read cap.
+printf '{"models":{"base":{"score":50,"input_price":2,"output_price":8},"boolish":{"score":true,"input_price":0,"output_price":0},"d1":{"score":90,"input_price":1,"output_price":1},"d2":{"score":80,"input_price":1,"output_price":1},"d3":{"score":70,"input_price":1,"output_price":1},"d4":{"score":60,"input_price":1,"output_price":1}}}' \
+  > "$GRD/many.json"
+SGMANY="$(SUGG "$GRD/many.json" --set 'MECHANICAL=base[1m]' --suggest 2>&1)"
+# `true` read as 1 would dominate a score-1 binding at zero cost — so the probe binds exactly that.
+printf '{"models":{"one":{"score":1,"input_price":1,"output_price":1},"boolish":{"score":true,"input_price":0,"output_price":0}}}' \
+  > "$GRD/bool.json"
+check "#153 a boolean score is not a number (never grades, never dominates)" \
+  "$(SUGG "$GRD/bool.json" --set MECHANICAL=one --suggest 2>&1 | grep -q 'one (--set): not dominated' && echo 0 || echo 1)"
+check "#153 a [1m]-suffixed binding is looked up by its base id" \
+  "$(printf '%s\n' "$SGMANY" | grep -q '^MECHANICAL  *base\[1m\] (--set): DOMINATED' && echo 0 || echo 1)"
+check "#153 dominators are listed best-first and capped at three" \
+  "$([ "$(printf '%s\n' "$SGMANY" | sed -n 's/^  *\(d[0-9]\)  score.*/\1/p' | tr '\n' ' ')" = "d1 d2 d3 " ] && echo 0 || echo 1)"
+{ printf '{"models":{},"pad":"'; head -c 1048600 /dev/zero | tr '\0' 'a'; printf '"}'; } > "$GRD/huge.json"
+SGHUGE="$(SUGG "$GRD/huge.json" --suggest 2>&1)"; SGHUGERC=$?
+check "#153 a grades table over 1MB is refused unread, as a note at rc 0" \
+  "$([ "$SGHUGERC" -eq 0 ] && printf '%s' "$SGHUGE" | grep -q 'exceeds 1MB' && echo 0 || echo 1)"
+# The baked default has THREE copies: ops-tiers.sh (asserted below), ops-render.sh's TRES_MECHANICAL, and the
+# commented tiers.env scaffold ops-init.sh writes. check_resolver_renderer_parity never compares TRES_* values.
+RDP="$(newproj)"
+RDOUT="$( cd "$RDP" && CC_OPERATOR_TIERS_USER=/nonexistent "$BASH_ABS" "$SCRIPTS/ops-render.sh" --model crawler 2>/dev/null )"
+check "#153 ops-render's own MECHANICAL default is glm-5.3-flash (crawler seat, no tiers.env)" \
+  "$([ "$RDOUT" = "glm-5.3-flash" ] && echo 0 || echo 1)"
+( cd "$RDP" && "$BASH_ABS" "$SCRIPTS/ops-init.sh" >/dev/null 2>&1 )
+check "#153 the tiers.env scaffold carries the same MECHANICAL default" \
+  "$(grep -qx '#MECHANICAL=glm-5.3-flash' "$RDP/.operator/tiers.env" && echo 0 || echo 1)"
+rm -rf "$RDP"
 # The baked default itself: the binding #153 measured as dominated must not come back.
 SGDEF="$(SUGG "$GRD/g.json" 2>/dev/null)"
 check "#153 the baked MECHANICAL default is glm-5.3-flash (glm-5-turbo was dominated on all three axes)" \

@@ -30,7 +30,14 @@ four times.
   in the table is treated as untrusted. Control bytes are replaced before printing, so a
   model key carrying terminal escapes (alternate screen, title bar) cannot repaint the
   screen. A lone UTF-16 surrogate prints as a replacement character instead of ending the
-  report in a traceback. Both were reproduced in review.
+  report in a traceback. Both were reproduced in review. The PR review added three more.
+  - A table entry without a numeric score or price is counted in the summary line instead of
+    dropped silently. The live table has 8 such entries out of 32, so "not dominated" is now
+    qualified by what was actually compared.
+  - A bare binding matches its vendor-prefixed grade key (`z-ai/…`). The report names the key
+    it matched, and says AMBIGUOUS when two prefixed keys carry different numbers.
+  - A python failure after some rows were printed marks those rows INCOMPLETE. Before this,
+    the fallback note claimed nothing had been read at all.
 
 ### Changed
 
@@ -59,7 +66,8 @@ four times.
   in-loop smallest fix (2 seats). This setup did not reproduce #84's four-way convergence
   either: one unassigned seat derived the set from the directory, which #84 lists as a
   direction that never appeared. The judge was blind to which arm a seat came from, but
-  not fully to its stance: one seat echoed its stance label. A replication with tools
+  not fully to its stance: two seats echoed their stance label ("REMOVE THE CAUSE",
+  "smallest change"). A replication with tools
   enabled, closer to the real workflow, was not usable. Of 24 seats, 8 were rate-limited,
   1 was killed mid-run, and the other 15 returned prose instead of the schema, so none of
   them were clustered. The evidence is that the stances change WHICH directions appear. It
