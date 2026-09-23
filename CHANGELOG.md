@@ -31,7 +31,9 @@ The cap scan stops costing a second on every Stop, and a long cell stops hanging
   scan, so the cache changes only cost, never the answer. The budget is written down for
   macOS bash 3.2: ≤50ms for a hit. Measured: 10 hits on a 3000-row ledger take 0.07s, where
   one full scan took 1.12s before this change. A PASS now removes its key from the table:
-  3000 rows scan in 0.63s, and 5000 rows no longer truncate.
+  3000 rows scan in 0.63s, and 5000 rows no longer truncate. `check_caps` pins the hook's
+  `scan_caps_cached` call and EXECUTES the cache against a same-size FAIL→PASS flip. The PR
+  review found that reverting the call to plain `scan_caps` left every gate green.
 
 ## [0.12.2] - 2026-09-23
 

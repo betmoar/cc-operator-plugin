@@ -4091,6 +4091,19 @@ def check_caps(root, problems):
                 "mention is not a source statement (audit F126), and an "
                 "unsourced detector reports nothing while every gate stays "
                 "green (#107)")
+        # (a2) the gate CALLS THE CACHED SCAN (#127, PR #169 review). Reverting
+        # the call to plain `scan_caps` undid the whole per-Stop fix with the
+        # shell suite at 1254/0 and this validator green — every cache case
+        # sourced the lib directly. A CALL, anchored at line start on code with
+        # comments stripped, so a mention in prose or an echo does not count.
+        if not re.search(r"^\s*scan_caps_cached\s+\"\$opdir/VERDICTS\.md\"\s+"
+                         r"\"\$opdir/\.capscache\"", hcode, re.M):
+            problems.append(
+                "scripts/ops-stop-hook.sh: does not call `scan_caps_cached "
+                "\"$opdir/VERDICTS.md\" \"$opdir/.capscache\"` — the uncached "
+                "scan re-reads the whole ledger on every Stop (~1s at 3000 rows "
+                "on bash 3.2), which is the cost #127 removed. The cache can "
+                "change only the cost, never the answer (see scan_caps_cached)")
         # (b) REPORT-ONLY. No `exit` may be reachable from a test of a `caps_*`
         # variable.
         #
@@ -4291,6 +4304,34 @@ def check_caps(root, problems):
                 for _k_i in range(60):
                     _fh.write(f"| T-{_k_i} | crit | ev @a{_r_i} | FAIL |\n")
         _script.append(f'scan_caps "{_bud}"\necho "budget=$caps_truncated"')
+        # (e) THE CACHE CANNOT SERVE A STALE ANSWER (#127). Executed, like the
+        # rest: a trip is cached, the ledger's last FAIL is flipped to PASS
+        # IN PLACE (same size — and inside one second, same mtime), and the
+        # cached scan must now answer 0. An mtime+size key, or any key blind to
+        # content, answers 1 here — the stale trip #127's header exists to
+        # refuse. Only when scan_caps_cached is present: a tree without it is
+        # caught by (a2) at the hook, not here.
+        _cfn = re.search(r'^scan_caps_cached\(\)\s*\{.*?^\}', code, re.M | re.S)
+        if _cfn:
+            _cl = os.path.join(_td, "cached.md")
+            _cd = os.path.join(_td, "cache")
+            with open(_cl, "w", encoding="utf-8", newline="") as _fh:
+                _fh.write(_hdr + _rows["trip"])
+            # SOURCED FROM THE FILE, not pasted into `bash -c`: the function
+            # hashes its own lib via BASH_SOURCE[0], which is EMPTY for code
+            # defined in `bash -c`. Pasted, the lib hash fails, nothing is ever
+            # cached, every call is a miss — and this probe passes against a
+            # cache keyed on anything, including the mtime+size key it exists
+            # to refuse. `cachewrote` is the control that says so.
+            _script.append(f'. "{p}"')
+            _script.append(
+                f'scan_caps_cached "{_cl}" "{_cd}"\n'
+                f'[ -f "{_cd}/scan" ] && echo "cachewrote=1" || echo "cachewrote=0"\n'
+                f"sed 's/| FAIL |$/| PASS |/' \"{_cl}\" > \"{_cl}.t\" "
+                f'&& cat "{_cl}.t" > "{_cl}"\n'
+                f'scan_caps_cached "{_cl}" "{_cd}"\necho "cached=$caps_tripped"')
+            _expect["cachewrote"] = "1"
+            _expect["cached"] = "0"
         _r = _run_probe(["bash", "-c", "\n".join(_script)], problems,
                         f"{rel}: scan_caps()")
         if _r is None:
@@ -4327,6 +4368,15 @@ def check_caps(root, problems):
                      "tripped=0 with failed=0 and truncated=0, which is "
                      "byte-identical to a clean ledger (#139 item 1). Strip "
                      "the whole trailing run, bounded by CAPS_MAX_CR",
+            "cachewrote": "scan_caps_cached must WRITE an entry on a miss — "
+                          "without one the stale-answer probe beside it is a "
+                          "cache that never hits, and it passes against any "
+                          "key at all (#127)",
+            "cached": "scan_caps_cached must SEE a same-size FAIL->PASS edit "
+                      "— the ledger's last FAIL flipped in place keeps its size "
+                      "and (within a second) its mtime, so a cache keyed on "
+                      "anything but CONTENT serves the stale trip the edit "
+                      "cleared. Key on the ledger's bytes (#127)",
             "midcr": "a MID-CELL CR must survive the strip and the row must "
                      "still trip — only the TRAILING run is a terminator "
                      "artifact. `${row%%$'\\r'*}` truncates the row there and "

@@ -7295,7 +7295,7 @@ mkdir -p "$_ccd/elsewhere"; ln -s "$_ccd/elsewhere" "$_ccd/linked"
 check "#127 a SYMLINKED cache dir is not written through, and the answer is still right" \
   "$([ "$(_cc_state "$_ccd/L.md" "$_ccd/linked")" = "tripped=1 failed=0 truncated=0" ] \
      && [ -z "$(ls -A "$_ccd/elsewhere")" ] && echo 0 || echo 1)"
-# shellcheck disable=SC1091,SC2123  # the lib is sourced by path; PATH is emptied ON PURPOSE
+# shellcheck disable=SC1091,SC2123,SC2030  # the lib is sourced by path; PATH is emptied ON PURPOSE, in its own subshell
 check "#127 no cksum on PATH, under set -u: a full scan, rc 0, the right answer" \
   "$(_o="$( ( set -u; . "$SCRIPTS/lib/caps.sh"; PATH=/nonexistent; scan_caps_cached "$_ccd/L.md" "$_ccd/np"; echo "rc=$? t=$caps_tripped" ) 2>/dev/null)"; [ "$_o" = "rc=0 t=1" ] && echo 0 || echo 1)"
 # A planted entry whose rows block does not match its declared length is a miss, never a
@@ -7305,6 +7305,55 @@ _cp_key="$(sed -n 2p "$_ccd/cp/scan")"
 printf 'caps-cache v1\n%s\n0 0 0 99\n\n' "$_cp_key" > "$_ccd/cp/scan"
 check "#127 an entry whose rows length disagrees with its header is a MISS (answer from the scan)" \
   "$([ "$(_cc_state "$_ccd/L.md" "$_ccd/cp")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+# PIPEFAIL is what keeps a broken `head` from keying every ledger alike (PR #169 review). Without
+# it `head … | cksum` hashes the EMPTY stream when head fails, the key is a constant, and a
+# FAIL->PASS edit is answered from the entry the FAIL wrote. A PATH shim makes `head` fail.
+_ccsh="$_ccd/shim"; mkdir -p "$_ccsh"
+printf '#!/bin/sh\nexit 1\n' > "$_ccsh/head"; chmod +x "$_ccsh/head"
+_caps_ledger "$_ccd/H.md" "| T-1 | crit | ev | FAIL |" "| T-1 | crit | ev | FAIL |"
+_cc_headless() { # _cc_headless <ledger> <cache> → tripped=N, with `head` failing on PATH
+  ( # shellcheck source=/dev/null
+    . "$SCRIPTS/lib/caps.sh"; PATH="$_ccsh:/usr/bin:/bin"; scan_caps_cached "$1" "$2"
+    printf 'tripped=%s' "$caps_tripped" ) 2>/dev/null
+}
+_cc_headless "$_ccd/H.md" "$_ccd/ch" >/dev/null
+sed 's/| FAIL |$/| PASS |/' "$_ccd/H.md" > "$_ccd/H.tmp" && cat "$_ccd/H.tmp" > "$_ccd/H.md"
+check "#127 a failing head cannot key every ledger alike — the edit is seen (pipefail)" \
+  "$([ "$(_cc_headless "$_ccd/H.md" "$_ccd/ch")" = "tripped=0" ] && echo 0 || echo 1)"
+check "#127 CONTROL: with head failing, nothing is cached at all" \
+  "$([ ! -e "$_ccd/ch/scan" ] && echo 0 || echo 1)"
+# A report too large for the reader's bound is not WRITTEN (it could never hit). 100 tripped
+# keys with 700-byte ids is ~72 KB of rows, past the 65536 the write guard allows.
+{ printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+  _pad="$(head -c 700 /dev/zero | tr '\0' x)"
+  i=0; while [ "$i" -lt 100 ]; do
+    printf '| T-%s%s | crit | ev | FAIL |\n| T-%s%s | crit | ev | FAIL |\n' "$i" "$_pad" "$i" "$_pad"
+    i=$((i+1)); done
+} > "$_ccd/B.md"
+check "#127 a report too large for the cache reader is not written (tripped=100 still answered)" \
+  "$([ "$(_cc_state "$_ccd/B.md" "$_ccd/cb")" = "tripped=100 failed=0 truncated=0" ] \
+     && [ ! -e "$_ccd/cb/scan" ] && echo 0 || echo 1)"
+# THE HOOK IS WIRED TO THE CACHE (PR #169 review). Every case above calls the lib directly, so
+# reverting ops-stop-hook.sh to plain `scan_caps` stayed 1254/0 — the whole #127 change undone
+# with the suite green. Drive two real Stops: the first writes the cache, the second answers
+# from it with the same report.
+if command -v git >/dev/null 2>&1; then
+  _cch="$(newproj)"
+  git -C "$_cch" init -q . 2>/dev/null
+  ( cd "$_cch" && bash "$INIT" >/dev/null 2>&1 )
+  printf '| T-w | crit | ev | FAIL |\n| T-w | crit | ev | FAIL |\n' >> "$_cch/.operator/VERDICTS.md"
+  run_hook stop-session-a.json "$_cch"; _cch1="$HERR"
+  check "#127 a real Stop writes .operator/.capscache/scan — the hook calls scan_caps_cached" \
+    "$([ -f "$_cch/.operator/.capscache/scan" ] && echo 0 || echo 1)"
+  run_hook stop-session-a.json "$_cch"; _cch2="$HERR"
+  check "#127 the cached Stop reports the SAME cap trip as the first" \
+    "$(printf '%s' "$_cch1" | grep -q '2 FAIL rounds: T-w | crit' \
+       && [ "$(printf '%s' "$_cch1" | grep -c 'same-target-rework')" = "$(printf '%s' "$_cch2" | grep -c 'same-target-rework')" ] \
+       && printf '%s' "$_cch2" | grep -q '2 FAIL rounds: T-w | crit' && echo 0 || echo 1)"
+else
+  skip "#127 a real Stop writes .operator/.capscache/scan — the hook calls scan_caps_cached (no git)"
+  skip "#127 the cached Stop reports the SAME cap trip as the first (no git)"
+fi
 
 # --- the SCHEMA coupling, documented as a limitation rather than papered over -
 # caps.sh is now the SECOND reader of the 4-cell row (ops-reverify.sh is the first), and the
