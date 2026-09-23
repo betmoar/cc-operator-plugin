@@ -65,8 +65,13 @@ jobs:
       # FIRST, before any suite: the cheapest gate rejects the most common
       # mistake (a tag that does not match plugin.json or the newest CHANGELOG
       # heading), and there is no point running four suites to then refuse.
+      # The notes go OUTSIDE the checkout. Written to the repo root they are a
+      # `*.md` the validator step below reads as prose: v0.11.17's notes quote
+      # the old `ops-claims.sh --claimed` form the CHANGELOG records, and
+      # check_prose_invocations failed the tag build on a file that exists only
+      # in this job (run 35822151503). check_release_notes_outside_tree pins it.
       - name: Gate — tag == plugin.json version == newest CHANGELOG heading
-        run: python3 scripts/release_gate.py "$GITHUB_REF_NAME" --notes-out release-notes.md
+        run: python3 scripts/release_gate.py "$GITHUB_REF_NAME" --notes-out "${RUNNER_TEMP:-/tmp}/release-notes.md"
 
       - name: Shellcheck gate scripts
         run: |
@@ -128,7 +133,7 @@ jobs:
           # YAML block scalar this script lives in. -c with a single-quoted
           # program keeps everything indented and parseable.
           python3 -c 'import json,sys; tag=sys.argv[1]; notes=open(sys.argv[2],encoding="utf-8").read(); json.dump({"tag_name":tag,"name":tag,"body":notes,"draft":False,"prerelease":False}, open("/tmp/body.json","w"))' \
-            "$GITHUB_REF_NAME" release-notes.md
+            "$GITHUB_REF_NAME" "${RUNNER_TEMP:-/tmp}/release-notes.md"
           code=$(curl -sS -o /tmp/rel.json -w '%{http_code}' \
             -X POST "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/releases" \
             -H "Authorization: token ${GITHUB_TOKEN}" \

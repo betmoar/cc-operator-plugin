@@ -9,6 +9,26 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.11.18] - 2026-09-23
+
+The v0.11.17 tag build could not ship. Its release job wrote `release-notes.md` to the
+repo root, and the validator step after it read every root `*.md` as prose: the notes
+quote the old `ops-claims.sh --claimed` form the CHANGELOG records, so
+`check_prose_invocations` failed the build 4 times on a file that exists only inside
+that job (GitHub run 35822151503). Every PR build was green, because no PR build
+writes the file. It is the first time a check shipped in a release read that
+release's own notes as prose.
+
+### Fixed
+
+- Both release workflows write and publish the notes at
+  `${RUNNER_TEMP:-/tmp}/release-notes.md`, outside the checkout.
+- `check_release_notes_outside_tree` pins it in both forges: every live mention of
+  `release-notes.md` in a `release.yml` must be the out-of-tree path, and the writer and
+  publisher must both name it. It fires 4 times on v0.11.17's workflows. The
+  publisher-left-behind case fires on its own, because moving only the writer makes a
+  release step that fails after every gate has passed.
+
 ## [0.11.17] - 2026-09-19
 
 Closes #149 and #148 — both found while reviewing the holdout's work in PR #146, and

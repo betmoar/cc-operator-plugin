@@ -24,8 +24,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The notes go OUTSIDE the checkout. Written to the repo root they are a
+      # `*.md` the validator step below reads as prose: v0.11.17's notes quote
+      # the old `ops-claims.sh --claimed` form the CHANGELOG records, and
+      # check_prose_invocations failed the tag build on a file that exists only
+      # in this job (run 35822151503). check_release_notes_outside_tree pins it.
       - name: Gate — tag == plugin.json version == newest CHANGELOG heading
-        run: python3 scripts/release_gate.py "$GITHUB_REF_NAME" --notes-out release-notes.md
+        run: python3 scripts/release_gate.py "$GITHUB_REF_NAME" --notes-out "${RUNNER_TEMP:-/tmp}/release-notes.md"
 
       - name: Shellcheck gate scripts
         # Pinned, same as validate.yml — the runner's own shellcheck version
@@ -59,5 +64,5 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
-            --notes-file release-notes.md \
+            --notes-file "${RUNNER_TEMP:-/tmp}/release-notes.md" \
             --verify-tag
