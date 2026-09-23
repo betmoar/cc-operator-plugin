@@ -551,7 +551,51 @@ check "pipe in evidence → no row, sentinel intact" "$(unchanged_lines "$P/.ope
 ( cd "$P" && bash "$VERDICT" T-P "crit" "$(printf 'l1\nl2')" PASS >/dev/null 2>&1 ); NRC=$?
 check "newline in evidence → refused" "$([ "$NRC" -ne 0 ] && echo 0 || echo 1)"
 ( cd "$P" && bash "$VERDICT" T-P "crit" "evidence" MAYBE >/dev/null 2>&1 ); MRC=$?
-check "verdict MAYBE → refused (PASS|FAIL only)" "$([ "$MRC" -ne 0 ] && echo 0 || echo 1)"
+check "verdict MAYBE → refused (PASS|FAIL|MOOT only)" "$([ "$MRC" -ne 0 ] && echo 0 || echo 1)"
+MERR="$( cd "$P" && bash "$VERDICT" T-P "crit" "evidence" MAYBE 2>&1 >/dev/null )"
+check "#91 the refusal NAMES all three words, MOOT included" \
+  "$(printf '%s' "$MERR" | grep -qF 'exactly PASS, FAIL or MOOT' && echo 0 || echo 1)"
+# #91: MOOT is the third word — a criterion that stopped being answerable. Per-CRITERION (the
+# sentinel clears like any verdict) and its evidence cell is the mandatory REASON: an empty one is
+# refused exactly like empty evidence, so the word cannot be a quiet escape hatch.
+( cd "$P" && bash "$VERDICT" T-P "crit" "" MOOT >/dev/null 2>&1 ); MTRC=$?
+check "#91 MOOT with an EMPTY reason → refused, sentinel intact" \
+  "$([ "$MTRC" -ne 0 ] && unchanged_lines "$P/.operator/VERDICTS.md" "$ROWS_BEFORE" && sentinel_any "$P" T-P && echo 0 || echo 1)"
+# A BLANK reason is an empty one (#91 adversarial review: `-n` accepted three spaces, and for
+# MOOT the evidence cell IS the reason). Whitespace is not evidence for PASS either.
+( cd "$P" && bash "$VERDICT" T-P "crit" "   " MOOT >/dev/null 2>&1 ); MTRC=$?
+( cd "$P" && bash "$VERDICT" T-P "crit" "$(printf ' \t ')" PASS >/dev/null 2>&1 ); MTRC2=$?
+check "#91 a BLANK reason (spaces / tabs) → refused for MOOT and PASS alike, sentinel intact" \
+  "$([ "$MTRC" -ne 0 ] && [ "$MTRC2" -ne 0 ] && unchanged_lines "$P/.operator/VERDICTS.md" "$ROWS_BEFORE" && sentinel_any "$P" T-P && echo 0 || echo 1)"
+# Locale-INDEPENDENT (PR #170 review): `[![:space:]]` follows the caller's locale, and a lone
+# U+00A0 (NBSP, a rich-text paste artifact) was refused under C.UTF-8 and ACCEPTED under C/POSIX.
+# Both locales, a zero-width-space + NBSP mix, and the CONTROL: a real non-ASCII reason (é, 日本)
+# is content in both — a guard that refuses every high byte would pass the first half.
+# The UTF-8 locale is DISCOVERED, as case 1342 does — a runner without C.UTF-8 would otherwise
+# fall back to C silently and test one locale twice. None installed: the C half still runs.
+_u8="$(locale -a 2>/dev/null | grep -m1 -i 'utf-\{0,1\}8' || true)"
+_nb=0
+for _loc in C ${_u8:+"$_u8"}; do
+  for _v in $'\xc2\xa0' $'\xe2\x80\x8b\xc2\xa0 \t' $'\xef\xbb\xbf'; do
+    ( cd "$P" && LC_ALL=$_loc bash "$VERDICT" T-P "crit" "$_v" MOOT >/dev/null 2>&1 ) && _nb=1
+  done
+done
+check "#91 Unicode-blank reasons (NBSP, ZWSP, BOM) refused under C AND a UTF-8 locale alike, sentinel intact" \
+  "$([ "$_nb" -eq 0 ] && unchanged_lines "$P/.operator/VERDICTS.md" "$ROWS_BEFORE" && sentinel_any "$P" T-P && echo 0 || echo 1)"
+_nc=0
+for _loc in C ${_u8:+"$_u8"}; do
+  : > "$P/.operator/pending/T-P"
+  ( cd "$P" && LC_ALL=$_loc bash "$VERDICT" T-P "crit" $'caf\xc3\xa9 \xe6\x97\xa5\xe6\x9c\xac' MOOT >/dev/null 2>&1 ) || _nc=1
+done
+check "#91 CONTROL a real non-ASCII reason (café 日本) is content under both locales" \
+  "$([ "$_nc" -eq 0 ] && echo 0 || echo 1)"
+: > "$P/.operator/pending/T-P"; ROWS_BEFORE="$(wc -l < "$P/.operator/VERDICTS.md" | tr -d ' ')"
+( cd "$P" && bash "$VERDICT" T-P "gate on the same bytes" "HEAD moved past the run's sha" MOOT >/dev/null 2>&1 ); MTRC=$?
+check "#91 MOOT with a reason → accepted, one 4-cell MOOT row, sentinel cleared" \
+  "$([ "$MTRC" -eq 0 ] && delta_is "$P/.operator/VERDICTS.md" "$(wc -l < "$P/.operator/VERDICTS.md" | tr -d ' ')" "$(( ROWS_BEFORE ))" 1 \
+     && tail -1 "$P/.operator/VERDICTS.md" | grep -qE '^\| T-P \| gate on the same bytes \| HEAD moved past the run.s sha @[^|]+ \| MOOT \|$' \
+     && ! sentinel_any "$P" T-P && echo 0 || echo 1)"
+: > "$P/.operator/pending/T-P"; ROWS_BEFORE="$(wc -l < "$P/.operator/VERDICTS.md" | tr -d ' ')"
 # INVARIANT: task-id is a bare filename, never a path (clear_sentinel's rm -f must not reach outside pending/).
 echo victim > "$P/victim.txt"
 ( cd "$P" && bash "$VERDICT" "../../victim.txt" "crit" "evidence" PASS >/dev/null 2>&1 ); XRC=$?
@@ -1199,6 +1243,15 @@ printf '| a | b | c | injected | PASS |\n| a | b | c | d | e | f | FAIL |\n' >> 
 ( cd "$P" && bash "$VERDICT" --reconcile >/dev/null 2>&1 )
 check "--reconcile refuses a 5-cell row (counts cells, not globs)" "$(! grep -q 'injected' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
 check "--reconcile refuses any over-celled row" "$(unchanged_lines "$P/.operator/VERDICTS.md" "$RB2" && echo 0 || echo 1)"
+# #91: a MOOT row the writer can emit must be one the recovery path restores. row_is_conformant
+# is a second copy of the verdict enum; without MOOT there this row is "non-conformant" and a
+# messy merge silently loses it (check_verdict_words pins the parity, this pins the effect).
+RB3="$(wc -l < "$P/.operator/VERDICTS.md" | tr -d ' ')"
+printf '| T-MOOT | c | reason it cannot be run @abc123 | MOOT |\n' >> "$P/.operator/verdicts.d/SESS-A.md"
+ROUT3="$( cd "$P" && bash "$VERDICT" --reconcile 2>&1 )"
+check "#91 --reconcile RESTORES a MOOT row (it is conformant, not skipped)" \
+  "$(delta_is "$P/.operator/VERDICTS.md" "$(wc -l < "$P/.operator/VERDICTS.md" | tr -d ' ')" "$RB3" 1 && grep -qxF '| T-MOOT | c | reason it cannot be run @abc123 | MOOT |' "$P/.operator/VERDICTS.md" \
+     && ! printf '%s' "$ROUT3" | grep -q 'T-MOOT' && echo 0 || echo 1)"
 rm -rf "$P"
 
 ########################################################################
@@ -5815,6 +5868,23 @@ check "reverify: a symlinked ledger is refused (rc 2)" \
 RVC="$(newproj)"
 check "reverify: a clean ledger (header only) exits 0" \
   "$( if ( cd "$RVC" && bash "$INIT" >/dev/null 2>&1 && bash "$RV" >/dev/null 2>&1 ); then echo 0; else echo 1; fi )"
+# #91: a MOOT row asserts no result — its evidence cell is the reason the criterion stopped being
+# answerable — so there is nothing to re-run. It is LISTED (never dropped) and counted clear, even
+# when its stamp sits squarely in the window. The CONTROL is the same stamp on a PASS: AFFECTED.
+# The fixture ledger sits in $RVP's .operator/ — the tool dates rows against the ledger's OWN
+# project, so a ledger outside that git repo reads every stamp UNDATABLE (no git).
+RVM="$RVP/.operator/VERDICTS-moot.md"; cp "$RVC/.operator/VERDICTS.md" "$RVM"
+printf '| m1 | crit | HEAD moved past the gate run @%s | MOOT |\n' "$RS1" >> "$RVM"
+RVOUT="$(bash "$RV" --ledger "$RVM" --quiet 2>&1)"; RVMRC=$?
+check "#91 reverify lists a MOOT row as clear, asserting no result — not AFFECTED, not skipped" \
+  "$([ "$RVMRC" -eq 0 ] && printf '%s\n' "$RVOUT" | grep -qF '| m1 | MOOT |' \
+     && printf '%s\n' "$RVOUT" | grep -qF 'clear (MOOT — asserts no result)' \
+     && printf '%s\n' "$RVOUT" | grep -qF 'affected: 0 · undatable: 0 · clear: 1 · skipped (not a 4-cell row): 0' && echo 0 || echo 1)"
+printf '| m2 | crit | ev @%s | PASS |\n' "$RS1" >> "$RVM"
+RVOUT="$(bash "$RV" --ledger "$RVM" --quiet 2>&1)"
+check "#91 CONTROL the same in-window stamp on a PASS row is AFFECTED" \
+  "$(printf '%s\n' "$RVOUT" | grep -q "| m2 | PASS | $RS1 | 2026-08-10 .. 2026-08-25 | AFFECTED |" && echo 0 || echo 1)"
+rm -f "$RVP/.operator/VERDICTS-moot.md"
 
 # A task id of `Gate` with criterion `Criterion` is a ledger ops-task.sh permits, and the
 # prefix filter dropped it from the sweep ENTIRELY. Measured 2026-09-16: the row is
@@ -7367,10 +7437,21 @@ _caps_ledger "$CAPD/v12.md" "| T-1 | crit | ev @a1 | reviewer-x | FAIL |" \
   "| T-1 | crit | ev @a2 | reviewer-x | FAIL |"
 check "a 5-CELL row is skipped, so a schema widening silently stops the detector (measured, NOT fixed here — the coupling row names both parsers)" \
   "$([ "$(_caps_state "$CAPD/v12.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
-_caps_ledger "$CAPD/v13.md" "| T-1 | crit | ev @a1 | FAIL |" "| T-1 | crit | ev @a2 | MOOT |" \
+# #91 landed the word this block predicted, and caps.sh learned it in the same change: a MOOT
+# RESETS a key like a PASS (the cap's own "move on", reason recorded). The old case pinned the
+# blindness; these pin the fix and its bounds.
+_caps_ledger "$CAPD/v13.md" "| T-1 | crit | ev @a1 | FAIL |" "| T-1 | crit | ev @a2 | FAIL |" \
+  "| T-1 | crit | why it cannot run @a3 | MOOT |"
+check "#91 a MOOT after two FAILs CLEARS the key — MOOT is the cap's prescribed exit, not a round" \
+  "$([ "$(_caps_state "$CAPD/v13.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+_caps_ledger "$CAPD/v13b.md" "| T-1 | crit | ev @a1 | FAIL |" "| T-1 | crit | why @a2 | MOOT |" \
   "| T-1 | crit | ev @a3 | FAIL |"
-check "a non-PASS verdict word does NOT reset a key — a MOOT row (#91) would read as a rework round" \
-  "$([ "$(_caps_state "$CAPD/v13.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+check "#91 CONTROL FAIL,MOOT,FAIL does not trip — the MOOT reset the count, so one round remains" \
+  "$([ "$(_caps_state "$CAPD/v13b.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+_caps_ledger "$CAPD/v13c.md" "| T-1 | crit | ev @a1 | FAIL |" "| T-1 | crit | why @a2 | MOOT |" \
+  "| T-1 | crit | ev @a3 | FAIL |" "| T-1 | crit | ev @a4 | FAIL |"
+check "#91 CONTROL FAIL,MOOT,FAIL,FAIL trips — rounds SINCE the MOOT still count" \
+  "$([ "$(_caps_state "$CAPD/v13c.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
 
 # --- the per-Stop COST, pinned as a property rather than a stopwatch (#127) --
 # A full scan measured ~1.2s for 3000 rows (2026-09-07), ~0.63s after #127/#145 reshaped it, and
@@ -7493,6 +7574,10 @@ if command -v git >/dev/null 2>&1; then
   run_hook stop-session-a.json "$CAPP"
   _cw=1; case "$HERR" in *"same-target-rework cap"*) _cw=0 ;; esac
   check "the Stop hook REPORTS the cap against rows the single writer produced" "$_cw"
+  # #91: the report names BOTH exits a caps.sh reset accepts. Told only "a later PASS clears
+  # it", an operator whose criterion went unanswerable is steered to a PASS it cannot earn.
+  _cm=1; case "$HERR" in *"a later PASS or MOOT on the same criterion clears it"*) _cm=0 ;; esac
+  check "#91 the cap report names MOOT beside PASS as what clears a tripped target" "$_cm"
   _cn=1; case "$HERR" in *"T-1 | the criterion"*) _cn=0 ;; esac
   check "the hook's report NAMES the target it is about" "$_cn"
   check "the cap NEVER blocks — a tripped cap still exits 0 (append-only: it could never clear)" \
@@ -7503,6 +7588,10 @@ if command -v git >/dev/null 2>&1; then
   run_hook stop-session-a.json "$CAPP"
   _cb=1; case "$HERR" in *"same-target-rework cap"*) case "$HERR" in *"pending verdict"*) _cb=0 ;; esac ;; esac
   check "on a BLOCKING stop the cap report is emitted beside the pending-verdict message" "$_cb"
+  # #91: the pending line is a PRESCRIPTION the model pastes; it must offer the word the
+  # writer accepts, or MOOT exists only for an operator who already knows it does.
+  _cp=1; case "$HERR" in *"<evidence> <PASS|FAIL|MOOT>, or --defer"*) _cp=0 ;; esac
+  check "#91 the pending-verdict line prescribes <PASS|FAIL|MOOT>" "$_cp"
   check "and the exit code is still the pending gate's 2, not the cap's" \
     "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
   # NEGATIVE CONTROL: a clean ledger must produce no cap line at all, or every check above is

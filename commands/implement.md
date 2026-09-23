@@ -50,7 +50,7 @@ so the IMPLEMENT tier your `tiers.env` names never applies (#158).
 
    ```
    bash '<abs>/.operator/bin/ops-claims.sh' --since <dispatch-sha> --claimed "<the changed paths>"
-   bash '<abs>/.operator/bin/ops-verdict.sh' <id> <criterion> <evidence> <PASS|FAIL> --owner <session-id>
+   bash '<abs>/.operator/bin/ops-verdict.sh' <id> <criterion> <evidence> <PASS|FAIL|MOOT> --owner <session-id>
    ```
 
    The `bash` prefix is not decoration (#104): this command's `allowed-tools`

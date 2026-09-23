@@ -65,7 +65,7 @@ Four fields, because an unknown without them is an anxiety, not a work item:
 
 1. Run the command in **What would close it**; capture the output.
 2. Record a verdict row citing that output:
-   `.operator/bin/ops-verdict.sh <id> <criterion> <evidence> PASS|FAIL --owner <sid>`
+   `.operator/bin/ops-verdict.sh <id> <criterion> <evidence> PASS|FAIL|MOOT --owner <sid>`
 3. Close the issue **with the verdict row quoted in the closing comment.**
 
 Do not close on reasoning alone, and do not delete an entry that turned out to be

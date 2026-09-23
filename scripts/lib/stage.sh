@@ -60,7 +60,7 @@ stage_derive() {
 
   if [ "$_mine" -gt 0 ]; then
     STAGE="IMPLEMENT"
-    STAGE_NEXT="record a verdict for each open task (ops-verdict.sh <id> <criterion> <evidence> PASS|FAIL --owner <sid>), or end it honestly with --defer \"<reason>\"${_mine_ids:+ — open: $_mine_ids}"
+    STAGE_NEXT="record a verdict for each open task (ops-verdict.sh <id> <criterion> <evidence> PASS|FAIL|MOOT --owner <sid>), or end it honestly with --defer \"<reason>\"${_mine_ids:+ — open: $_mine_ids}"
     return 0
   fi
 

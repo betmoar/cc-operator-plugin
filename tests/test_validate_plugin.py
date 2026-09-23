@@ -157,7 +157,7 @@ GOOD_CAPS_LIB = (
     "    [ \"$r1\" != \"$body\" ] || continue\n"
     "    [ \"$r2\" != \"$r1\" ] || continue\n"
     "    [ \"$verdict\" != \"$r2\" ] || continue\n"
-    "    case \"$verdict\" in PASS|FAIL) ;; *) continue ;; esac\n"
+    "    case \"$verdict\" in PASS|FAIL|MOOT) ;; *) continue ;; esac\n"
     "    key=\"$id | $crit\"\n"
     "    found=-1; i=0\n"
     "    while [ \"$i\" -lt \"$_caps_n\" ]; do\n"
@@ -171,7 +171,8 @@ GOOD_CAPS_LIB = (
     # and letting the PASS branch skip the budget test. A fixture that
     # reproduces the bug cannot witness the fix.
     "    steps=$((steps + i + 1))\n"
-    "    if [ \"$verdict\" = PASS ]; then\n"
+    # `!= FAIL`: a MOOT resets like a PASS (#91) — check_caps executes it.
+    "    if [ \"$verdict\" != FAIL ]; then\n"
     "      [ \"$found\" -ge 0 ] && _caps_c[found]=0\n"
     "    elif [ \"$found\" -ge 0 ]; then _caps_c[$found]=$(( ${_caps_c[$found]} + 1 ))\n"
     "    else _caps_k[$_caps_n]=\"$key\"; _caps_c[$_caps_n]=1; _caps_n=$((_caps_n+1)); fi\n"
@@ -511,6 +512,14 @@ def make_good_tree(root):
           '[ -L "$FRAGDIR/$who.md" ] && exit 1\n'
           '[ -f "$frag" ] && [ ! -L "$frag" ] && :;\n'
           '[ -f "$frag" ] && [ ! -L "$frag" ] && :;\n'
+          # The verdict-word enum's two copies in this CLI (#91): the writer's
+          # `case` and row_is_conformant's regex. check_verdict_words reads
+          # both and holds them to lib/caps.sh's.
+          'case "$VERDICT" in\n  PASS|FAIL|MOOT) ;;\n  *) die "bad verdict" ;;\nesac\n'
+          "row_is_conformant() {\n"
+          "  local _re='^\\| ([^|]+) \\| ([^|]+) \\| ([^|]+) \\| (PASS|FAIL|MOOT) \\|$'\n"
+          "  [[ $1 =~ $_re ]]\n"
+          "}\n"
           "# F17: both verdicts.d fragment scanners use the same 1MiB read bound\n"
           "while IFS= read -r -n 1048576 row; do :; done < \"$frag\"\n"
           "while IFS= read -r -n 1048576 line; do :; done < \"$frag\"\n"
@@ -1600,7 +1609,15 @@ class ValidatorTest(unittest.TestCase):
             '[ -L "$FRAGDIR/$who.md" ] && exit 1\n'
             '[ -f "$frag" ] && [ ! -L "$frag" ] && :;\n'
             '[ -f "$frag" ] && [ ! -L "$frag" ] && :;\n'
-            "# F17: both verdicts.d fragment scanners use the same 1MiB read bound\n"
+            # The verdict-word enum's two copies in this CLI (#91): the writer's
+          # `case` and row_is_conformant's regex. check_verdict_words reads
+          # both and holds them to lib/caps.sh's.
+          'case "$VERDICT" in\n  PASS|FAIL|MOOT) ;;\n  *) die "bad verdict" ;;\nesac\n'
+          "row_is_conformant() {\n"
+          "  local _re='^\\| ([^|]+) \\| ([^|]+) \\| ([^|]+) \\| (PASS|FAIL|MOOT) \\|$'\n"
+          "  [[ $1 =~ $_re ]]\n"
+          "}\n"
+          "# F17: both verdicts.d fragment scanners use the same 1MiB read bound\n"
             "while IFS= read -r -n 1048576 row; do :; done < \"$frag\"\n"
             "while IFS= read -r -n 1048576 line; do :; done < \"$frag\"\n")
         good_adopt = (
@@ -4966,6 +4983,121 @@ class TextEncodingTest(unittest.TestCase):
     def test_the_check_is_registered_FIRST(self):
         # It names the file before any other check can trip over it.
         self.assertIs(vp.CHECKS[0], vp.check_text_encoding)
+
+
+class VerdictWordsTest(unittest.TestCase):
+    """check_verdict_words (#91) and check_caps's `moot` fixture, against the
+    SHIPPED ops-verdict.sh and lib/caps.sh — the copies whose drift matters.
+
+    Every mutation was run red against the real tree on 2026-09-23 before the
+    check was believed (#111 — the gate that went red is named per case).
+    """
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        for rel in ("scripts/ops-verdict.sh", "scripts/lib/caps.sh"):
+            write(self.dir / rel, (ROOT / rel).read_text(encoding="utf-8"))
+        write(self.dir / "scripts" / "ops-stop-hook.sh", CapsTest.HOOK)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _words(self):
+        probs = []
+        vp.check_verdict_words(self.dir, probs)
+        return probs
+
+    def _caps(self):
+        probs = []
+        vp.check_caps(self.dir, probs)
+        return probs
+
+    def _edit(self, rel, old, new):
+        p = self.dir / rel
+        s = p.read_text(encoding="utf-8")
+        self.assertIn(old, s, f"anchor missing in {rel}")
+        p.write_text(s.replace(old, new, 1), encoding="utf-8")
+
+    def test_shipped_tree_is_clean(self):
+        # THE CONTROL: both checks clean on the shipped copies, so each red
+        # below is the mutation's, not a check that fires on everything.
+        self.assertEqual(self._words(), [])
+        self.assertEqual(self._caps(), [])
+
+    def test_reconcile_regex_missing_moot_fires(self):
+        # The defect #91 would have shipped: the writer takes MOOT and
+        # --reconcile refuses the row it wrote. Red in check_verdict_words.
+        self._edit("scripts/ops-verdict.sh",
+                   "(PASS|FAIL|MOOT) \\|$'", "(PASS|FAIL) \\|$'")
+        self.assertTrue(any("row_is_conformant" in p and "verdict words" in p
+                            for p in self._words()), self._words())
+
+    def test_writer_word_added_alone_fires(self):
+        # The NEXT word, landed in the writer only. Red in check_verdict_words.
+        self._edit("scripts/ops-verdict.sh",
+                   "  PASS|FAIL|MOOT) ;;", "  PASS|FAIL|MOOT|WAIVED) ;;")
+        self.assertTrue(any("WAIVED" in p for p in self._words()),
+                        self._words())
+
+    def test_caps_enum_missing_moot_fires(self):
+        # Red in BOTH gates: parity (the enum) and the executed `moot` ledger
+        # (a skipped MOOT leaves the two FAILs above it tripped).
+        self._edit("scripts/lib/caps.sh",
+                   "PASS | FAIL | MOOT) ;;", "PASS | FAIL) ;;")
+        self.assertTrue(any("lib/caps.sh" in p for p in self._words()),
+                        self._words())
+        self.assertTrue(any("'moot' ledger" in p for p in self._caps()),
+                        self._caps())
+
+    def test_caps_reset_on_pass_only_fires(self):
+        # Enum intact, reset narrowed back to `= PASS`: parity CANNOT see this
+        # (the word set is unchanged), so the executed fixture is the only
+        # gate. Red in check_caps; check_verdict_words stays clean — which is
+        # asserted, so a reader knows which gate owns this failure.
+        self._edit("scripts/lib/caps.sh",
+                   'if [ "$verdict" != FAIL ]; then',
+                   'if [ "$verdict" = PASS ]; then')
+        self.assertEqual(self._words(), [])
+        self.assertTrue(any("'moot' ledger" in p for p in self._caps()),
+                        self._caps())
+
+    def test_writer_word_as_second_arm_fires(self):
+        # THE ESCAPE THE ADVERSARIAL REVIEW FOUND: a new word as its own arm
+        # after `PASS|FAIL|MOOT) ;;`. The first reader parsed only the first
+        # arm, so this passed green — and the writer then emitted a row
+        # --reconcile drops. Red in check_verdict_words.
+        self._edit("scripts/ops-verdict.sh",
+                   "  PASS|FAIL|MOOT) ;;\n", "  PASS|FAIL|MOOT) ;;\n  WAIVE) ;;\n")
+        self.assertTrue(any("WAIVE" in p for p in self._words()),
+                        self._words())
+
+    def test_decoy_case_before_the_real_one_fires(self):
+        # The review's second escape: a decoy block FIRST, the real one gaining
+        # a word. A reader pinning the first match reads the decoy; this one
+        # requires exactly one site. Red in check_verdict_words.
+        self._edit("scripts/ops-verdict.sh",
+                   "  PASS|FAIL|MOOT) ;;\n", "  PASS|FAIL|MOOT|WAIVE) ;;\n")
+        self._edit("scripts/ops-verdict.sh", "die() {",
+                   '_decoy() {\n  case "$VERDICT" in\n  PASS|FAIL|MOOT) ;;\n'
+                   '  *) die x ;;\n  esac\n}\ndie() {')
+        self.assertTrue(any("could not be read" in p and "writer" in p
+                            for p in self._words()), self._words())
+
+    def test_refusing_arm_is_not_read_as_accepted(self):
+        # CONTROL for the all-arms reader: an arm that REFUSES a word (`die`)
+        # must not count it as accepted, or every refusal reads as drift.
+        self._edit("scripts/ops-verdict.sh",
+                   "  PASS|FAIL|MOOT) ;;\n",
+                   "  PASS|FAIL|MOOT) ;;\n  MAYBE) die \"no\" ;;\n")
+        self.assertEqual(self._words(), [])
+
+    def test_unreadable_enum_fires_not_passes(self):
+        # A reshaped `case` the reader cannot parse must be a finding, never
+        # "no words, so nothing disagrees".
+        self._edit("scripts/ops-verdict.sh",
+                   'case "$VERDICT" in', 'case "${VERDICT}" in')
+        self.assertTrue(any("could not be read" in p for p in self._words()),
+                        self._words())
 
 
 class CapsTest(unittest.TestCase):

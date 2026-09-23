@@ -9,6 +9,40 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.12.4] - 2026-09-23
+
+A criterion that stopped being answerable gets its own verdict word, and the rework cap says
+what it cannot see.
+
+### Added
+
+- **`MOOT`, a third verdict word (#91).** `ops-verdict.sh <id> <criterion> <reason> MOOT`
+  records that a criterion can no longer be evaluated, for example a gate that needs the
+  same bytes HEAD has since moved past. Before this, the choices were PASS (a lie), FAIL
+  (reads as broken work), or `--defer` (closes the whole task). MOOT works per criterion,
+  and the evidence cell is its mandatory reason. A blank reason is refused along with an empty
+  one, and whitespace-only evidence is now refused for PASS and FAIL too. "Blank" is judged by
+  bytes, so the locale does not change the answer: Unicode blanks (NBSP, zero-width space,
+  BOM, and similar) count as blank. A `[:space:]` test alone accepted a lone NBSP under
+  `C`/`POSIX` and refused it under UTF-8.
+  Every reader learned the word in the same change: `--reconcile` restores a MOOT row,
+  `lib/caps.sh` treats MOOT as a reset (it is the cap's own "stop, log, move on"), and
+  `ops-reverify.sh` lists it as clear because it asserts no result to re-run.
+- **`check_verdict_words`.** The verdict enum has three hand-copied sites: the writer's
+  `case`, `row_is_conformant`'s regex, and `caps.sh`'s enum. The check holds them to one
+  set. It reads every arm of a `case`, requires exactly one site per copy, and reports an
+  enum it cannot read. The adversarial review found that reading only the first arm let
+  `WAIVE) ;;` as a second arm pass green. `check_caps` gains an executed `moot`
+  fixture, because parity cannot see a reset narrowed back to `= PASS`.
+
+### Changed
+
+- **#129: the rework cap is verdict-row-scoped by design.** This is recorded in `caps.sh`'s
+  coverage note, with the measurement behind it. On this repo's ledger, `126-*` review rounds
+  report tripped=0, and still do when every id is normalised to its numeric prefix, because
+  those rounds closed PASS. A round that finds and fixes a defect records a pass, not a
+  failure. Re-keying targets would not have fired, so the cap stays keyed exactly as recorded.
+
 ## [0.12.3] - 2026-09-23
 
 The cap scan stops costing a second on every Stop, and a long cell stops hanging it.

@@ -4,8 +4,11 @@
 # a mkdir-based lock, so writes are mutually exclusive against concurrent
 # sessions.
 #
-# Verdict:  ops-verdict.sh <task-id> <criterion> <evidence> <PASS|FAIL> [--owner <sid>]
-#   Appends exactly one row and clears .operator/pending/<task-id>.
+# Verdict:  ops-verdict.sh <task-id> <criterion> <evidence> <PASS|FAIL|MOOT> [--owner <sid>]
+#   Appends exactly one row and clears .operator/pending/<task-id>. MOOT (#91)
+#   records a criterion that stopped being ANSWERABLE — the evidence cell is
+#   the reason, and it is as mandatory as any evidence. FAIL means "we ran it
+#   and it did not hold"; MOOT means "it cannot be evaluated any more".
 # Defer:    ops-verdict.sh <task-id> --defer "<reason>" [--owner <sid>]
 #   Writes a DEFERRED-VERDICT line to DECISIONS.md and clears the sentinel.
 # Reconcile: ops-verdict.sh --reconcile
@@ -446,15 +449,18 @@ sentinel_owner() { # sentinel_owner <task-id> → owner ("" if unowned/absent)
 }
 
 # row_is_conformant <line> — true iff the line is EXACTLY the 4-cell ledger row
-# `| id | criterion | evidence | PASS-or-FAIL |`. Counts cells by splitting on
+# `| id | criterion | evidence | PASS-or-FAIL-or-MOOT |`. Counts cells by splitting on
 # the delimiter — a glob's `*` happily matches ` | ` and admits a 5-cell row.
 row_is_conformant() {
   # ONE REGEX (#145), not a `${rest#*" | "}` walk: bash 3.2 runs that
   # quadratic in the cell it walks past — one 100 KB criterion cell cost 5.0s
   # (measured 2026-09-23), paid while --reconcile HOLDS the ledger lock. Same
-  # contract as before: four non-empty, pipe-free cells, verdict PASS or FAIL.
+  # contract as before: four non-empty, pipe-free cells, verdict one of the
+  # writer's words. The alternation IS the verdict enum below, a second copy —
+  # without MOOT here, --reconcile would refuse a row this CLI wrote (#91);
+  # check_verdict_words holds the two (and lib/caps.sh's) to one set.
   local LC_ALL=C
-  local _re='^\| ([^|]+) \| ([^|]+) \| ([^|]+) \| (PASS|FAIL) \|$'
+  local _re='^\| ([^|]+) \| ([^|]+) \| ([^|]+) \| (PASS|FAIL|MOOT) \|$'
   [[ $1 =~ $_re ]]
 }
 
@@ -547,7 +553,7 @@ if [ "${1:-}" = "--reconcile" ]; then
         done
         # PAST THE BOUND this file needs NO arm of its own, and that is a
         # measured fact rather than an omission (PR #144 review). The residual
-        # CR lands in the verdict cell, `row_is_conformant`'s PASS/FAIL enum
+        # CR lands in the verdict cell, `row_is_conformant`'s verdict enum
         # misses, and the row is refused and NAMED on stderr with a skipped
         # count — verified at 17 CRs: "skipping non-conformant line in 002.md",
         # 1 restored of 2. That is already this file's polarity. caps.sh stops
@@ -643,7 +649,7 @@ while [ $# -gt 0 ]; do
       shift
       while [ $# -gt 0 ]; do POS+=("$1"); shift; done ;;
     --defer) POS+=("$1"); shift ;;
-    --*) die "unknown option '$1' (usage: ops-verdict.sh <id> <criterion> <evidence> <PASS|FAIL> [--owner <sid>] | <id> --defer \"<reason>\" | --reconcile; use -- before a cell that starts with --)" ;;
+    --*) die "unknown option '$1' (usage: ops-verdict.sh <id> <criterion> <evidence> <PASS|FAIL|MOOT> [--owner <sid>] | <id> --defer \"<reason>\" | --reconcile; use -- before a cell that starts with --)" ;;
     *) POS+=("$1"); shift ;;
   esac
 done
@@ -653,11 +659,11 @@ set -- ${POS+"${POS[@]}"}
 if [ "${2:-}" = "--defer" ]; then
   [ $# -le 3 ] || die "unexpected extra argument '$4' — the defer form takes exactly <id> --defer \"<reason>\" (a mistyped flag lands here as a positional)"
 else
-  [ $# -le 4 ] || die "unexpected extra argument '$5' — the verdict form takes exactly <id> <criterion> <evidence> <PASS|FAIL> (a mistyped flag lands here as a positional)"
+  [ $# -le 4 ] || die "unexpected extra argument '$5' — the verdict form takes exactly <id> <criterion> <evidence> <PASS|FAIL|MOOT> (a mistyped flag lands here as a positional)"
 fi
 
 ID="${1:-}"
-[ -n "$ID" ] || die "missing task-id (usage: ops-verdict.sh <id> <criterion> <evidence> <PASS|FAIL> [--owner <sid>] | <id> --defer \"<reason>\" | --reconcile)"
+[ -n "$ID" ] || die "missing task-id (usage: ops-verdict.sh <id> <criterion> <evidence> <PASS|FAIL|MOOT> [--owner <sid>] | <id> --defer \"<reason>\" | --reconcile)"
 check_bare_name "task-id" "$ID"
 if [ -n "$OWNER" ]; then check_owner_name "$OWNER"; fi
 [ -d "$OPDIR" ] || die "no $OPDIR/ here or in any parent up to the repo boundary — run ops-init.sh first (from the project root)"
@@ -776,11 +782,37 @@ VERDICT="${4:-}"
 # A row without evidence is FAIL by definition — refuse to write it at all.
 [ -n "$CRITERION" ] || die "empty criterion — refusing (a row without a criterion is not conformant)"
 [ -n "$EVIDENCE" ]  || die "empty evidence — refusing (a row without evidence is FAIL by definition)"
+# BLANK is empty (#91 review): `-n` passed three spaces, and for MOOT the
+# evidence cell IS the reason — a blank one is the quiet escape hatch the word
+# was specified not to be. The same holds for PASS/FAIL: whitespace is not
+# evidence. A value of only newlines/CRs is refused here as blank, before
+# check_cell would refuse it for the newline — either refusal is right.
+#
+# LOCALE-INDEPENDENT, BY BYTES (PR #170 review). `[![:space:]]` follows the
+# caller's locale: measured, a lone U+00A0 (NBSP, a common rich-text paste
+# artifact) was refused under C.UTF-8 and ACCEPTED under C/POSIX — so the gate
+# depended on how the shell was launched (cron, a minimal container). Under
+# LC_ALL=C: any printable ASCII byte is content; otherwise the value is blank
+# iff it is nothing but ASCII whitespace and the UTF-8 encodings of the Unicode
+# blanks (U+0085, U+00A0, U+1680, U+2000-200B, U+2028/2029, U+202F, U+205F,
+# U+3000, U+FEFF). ONE regex, not a removal loop: bash 3.2 runs `${x//…}`
+# quadratic (#145); this measured 0.08s on 200 KB of NBSP.
+_blank_re=$'^([[:space:]]|\xc2[\xa0\x85]|\xe1\x9a\x80|\xe2\x80[\x80-\x8b\xa8\xa9\xaf]|\xe2\x81\x9f|\xe3\x80\x80|\xef\xbb\xbf)*$'
+if ( LC_ALL=C
+     case "$EVIDENCE" in *[[:graph:]]*) exit 1 ;; esac
+     [[ $EVIDENCE =~ $_blank_re ]] ); then
+  die "blank evidence — refusing (whitespace is not evidence; for MOOT the evidence cell is the reason the criterion can no longer be evaluated)"
+fi
 check_cell "criterion" "$CRITERION"
 check_cell "evidence" "$EVIDENCE"
+# MOOT (#91) is the third word, and it is per-CRITERION: --defer closes the
+# whole task, FAIL says the work did not hold. A criterion that stopped being
+# answerable (its gate needs bytes HEAD has moved past) had only those two lies
+# before. The evidence cell above is its mandatory reason, so it cannot be a
+# quiet escape hatch: a MOOT row with nothing in it is refused like any other.
 case "$VERDICT" in
-  PASS|FAIL) ;;
-  *) die "verdict must be exactly PASS or FAIL (got '${VERDICT:-<empty>}')" ;;
+  PASS|FAIL|MOOT) ;;
+  *) die "verdict must be exactly PASS, FAIL or MOOT (got '${VERDICT:-<empty>}') — MOOT is for a criterion that can no longer be evaluated, with the reason as its evidence" ;;
 esac
 [ -f "$VERDICTS" ]  || die "missing $VERDICTS — run ops-init.sh first"
 

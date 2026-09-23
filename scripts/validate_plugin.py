@@ -4272,9 +4272,15 @@ def check_caps(root, problems):
         # `${row%%$'\r'*}` — the other remedy the issue proposed — truncates
         # the row there and discards cells, which this row would catch.
         "midcr": "| T-2 | cr\rit | ev @a1 | FAIL |\n| T-2 | cr\rit | ev @a2 | FAIL |\n",
+        # #91: a MOOT RESETS like a PASS — it is the cap's own "move on",
+        # reason recorded. Before #91 the enum skipped the word, so the two
+        # FAILs above it still tripped; a reset testing `= PASS` alone does
+        # the same. check_verdict_words holds the enum; this holds the effect.
+        "moot": "| T-3 | crit | ev @a1 | FAIL |\n| T-3 | crit | ev @a2 | FAIL |\n"
+                "| T-3 | crit | gate needs bytes HEAD moved past @a3 | MOOT |\n",
     }
     _expect = {"trip": "1", "reset": "0", "keyed": "0", "budget": "1",
-               "dblcr": "1", "midcr": "1"}
+               "dblcr": "1", "midcr": "1", "moot": "0"}
     with tempfile.TemporaryDirectory() as _td:
         _script = ["\n".join(_consts), _fn.group(0)]
         for _k, _body in _rows.items():
@@ -4377,6 +4383,10 @@ def check_caps(root, problems):
                       "and (within a second) its mtime, so a cache keyed on "
                       "anything but CONTENT serves the stale trip the edit "
                       "cleared. Key on the ledger's bytes (#127)",
+            "moot": "a MOOT after two FAILs on one key must CLEAR it (#91) "
+                    "— MOOT is the cap's prescribed exit (stop, log the "
+                    "reason, move on), so counting it, or skipping it, "
+                    "reports the operator for doing what the cap asked",
             "midcr": "a MID-CELL CR must survive the strip and the row must "
                      "still trip — only the TRAILING run is a terminator "
                      "artifact. `${row%%$'\\r'*}` truncates the row there and "
@@ -4401,6 +4411,110 @@ def check_caps(root, problems):
                     f"{rel}: scan_caps() reported caps_tripped="
                     f"{_got.get(_k)!r} on the {_k!r} ledger, expected "
                     f"{_want!r} — {_why.get(_k, 'no rationale recorded')} (#107)")
+
+
+def _case_accepts(block):
+    """The words a `case` block ACCEPTS, read from EVERY arm — or None.
+
+    `block` is the text between `in` and `esac`. An arm whose body is empty
+    (`WORD) ;;`) accepts its labels; an arm that `die`s, `exit`s or
+    `continue`s refuses them; the `*)` default is skipped. Anything else — a
+    quoted or globbed label, an arm body doing other work — returns None: a
+    shape this reader does not understand is a finding, never a guess. Reading
+    only the FIRST arm was the escape the adversarial review walked through
+    (PR for #91): `WAIVE) ;;` as a second arm passed green while --reconcile
+    dropped the row.
+    """
+    words = set()
+    for arm in block.split(";;"):
+        arm = arm.strip()
+        if not arm:
+            continue
+        m = re.match(r"\(?\s*([^)]+?)\s*\)\s*(.*)\Z", arm, re.S)
+        if not m:
+            return None
+        labels = [w.strip() for w in m.group(1).split("|")]
+        body = m.group(2).strip()
+        if labels == ["*"]:
+            continue
+        if not all(re.fullmatch(r"[A-Z]+", w) for w in labels):
+            return None
+        if body == "":
+            words.update(labels)
+        elif re.match(r"(die|exit|continue)\b", body):
+            continue
+        else:
+            return None
+    return frozenset(words) or None
+
+
+def _verdict_word_sets(root):
+    """The verdict-word enum, read off each of its three copies' CODE.
+
+    Returns {site: frozenset|None}; None means the shape was not found, or was
+    found more than once, which the caller reports — an unreadable copy is a
+    pin proving nothing, never a copy that agrees. EXACTLY ONE site per copy:
+    a decoy block placed before the real one was the second escape the review
+    found (the reader pinned the first match).
+    """
+    out = {}
+    v = root / "scripts" / "ops-verdict.sh"
+    c = root / "scripts" / "lib" / "caps.sh"
+    vcode = shell_code(v) if v.is_file() else ""
+    ccode = shell_code(c) if c.is_file() else ""
+
+    def _one_case(code, var):
+        blocks = re.findall(
+            r'\bcase\s+"\$' + var + r'"\s+in\b(.*?)\besac\b', code, re.S)
+        return _case_accepts(blocks[0]) if len(blocks) == 1 else None
+
+    out["ops-verdict.sh writer enum (case \"$VERDICT\")"] = _one_case(vcode, "VERDICT")
+    fns = re.findall(r"^row_is_conformant\(\)\s*\{(.*?)^\}", vcode, re.M | re.S)
+    res = (re.findall(r"\\\| \(([A-Z|]+)\) \\\|\$'", fns[0])
+           if len(fns) == 1 else [])
+    out["ops-verdict.sh row_is_conformant (--reconcile)"] = (
+        frozenset(res[0].split("|")) if len(res) == 1 else None)
+    out["lib/caps.sh enum (case \"$verdict\")"] = _one_case(ccode, "verdict")
+    return out
+
+
+def check_verdict_words(root, problems):
+    """#91: the verdict vocabulary has ONE set, held across its three copies.
+
+    ops-verdict.sh's writer enum decides what a row may say; row_is_conformant
+    decides what --reconcile will restore; lib/caps.sh's enum decides what the
+    cap detector counts. They are hand-copied (the CLI installs standalone and
+    cannot source a lib), and a word added to the writer alone is a row the
+    recovery path refuses and the detector skips — both silent, every gate
+    green. That is what adding MOOT would have shipped: the writer took it,
+    --reconcile dropped it as non-conformant, and caps.sh skipped it, so two
+    FAILs followed by a MOOT still reported a trip.
+
+    Parity only, deliberately: the executed `moot` fixture in check_caps holds
+    the detector's BEHAVIOUR on the word (a MOOT resets). A copy whose shape
+    cannot be read is itself a finding — a parser we cannot read proves
+    nothing.
+    """
+    sets = _verdict_word_sets(root)
+    missing = [k for k, v in sets.items() if not v]
+    for k in missing:
+        problems.append(
+            f"{k}: the verdict-word enum could not be read (absent, more than "
+            f"one site, or an arm this reader does not understand) — "
+            f"check_verdict_words holds the writer, --reconcile and the cap "
+            f"detector to one word set (#91), and an unreadable copy is a pin "
+            f"proving nothing")
+    if missing:
+        return
+    ref_name = next(iter(sets))
+    ref = sets[ref_name]
+    for k, v in sets.items():
+        if v != ref:
+            problems.append(
+                f"{k}: verdict words {sorted(v)} != {ref_name}'s "
+                f"{sorted(ref)} — a word the writer emits but a reader lacks "
+                f"is silently dropped by --reconcile or skipped by the cap "
+                f"detector, with every gate green (#91)")
 
 
 def check_base_gate(root, problems):
@@ -5422,6 +5536,7 @@ CHECKS = (
     check_guard_parity,
     check_autobar,
     check_caps,
+    check_verdict_words,
     check_claims,
     check_install_set_parity,
     check_gitignore_parity,

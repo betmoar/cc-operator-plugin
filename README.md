@@ -118,7 +118,7 @@ Or from a local checkout:
 
 ```
 .operator/bin/ops-task.sh <id> --owner <session-id>     # open a tracked task (drops the sentinel)
-.operator/bin/ops-verdict.sh <id> <criterion> <evidence> <PASS|FAIL> --owner <session-id>
+.operator/bin/ops-verdict.sh <id> <criterion> <evidence> <PASS|FAIL|MOOT> --owner <session-id>
 .operator/bin/ops-verdict.sh <id> --defer "<reason>"    # honest exit for a blocked task
 .operator/bin/ops-adopt.sh --owner <new-id> <id>...     # re-claim your tasks after a /clear
 .operator/bin/ops-verdict.sh --reconcile                # restore rows lost to a messy merge
