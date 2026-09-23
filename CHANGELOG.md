@@ -9,6 +9,17 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+### Changed
+
+- **CLAUDE.md has headroom again (#159).** It sat at 37,980 of its 38,000-char cap, so the
+  next coupling row could not be added without an extraction first. Seventeen coupling
+  rows and seven map/provenance passages lost their measured narrative, 3,086 chars in
+  all (34,894 now). Every original cell moved VERBATIM to `docs/LANDMINES.md`
+  § "Extracted from CLAUDE.md (#159)", matching the 0.11.2 and 0.11.9 extractions. Every
+  coupling, pin name and `_"…"_` citation stays in the row: 67 citations before and after,
+  none reclassified. CLAUDE.md is a maintainer file and does nothing in the installed
+  plugin, so this only trims every dev session's always-on context.
+
 ## [0.12.0] - 2026-09-21
 
 The engagement cycle gains the two stages it never had — a **spec** artifact and an
