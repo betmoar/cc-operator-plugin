@@ -1,0 +1,450 @@
+[
+ {
+  "a": {
+   "id": "126-review",
+   "criterion": "Copilot's three findings fixed, and the fix for one of them found a worse bug via the second executor"
+  },
+  "b": {
+   "id": "126-review2",
+   "criterion": "the step budget now charges the comparisons it performs, and the case for it is not vacuous"
+  },
+  "label": 1,
+  "why": "126 review -> review2, same cap detector",
+  "ia": 16,
+  "ib": 17
+ },
+ {
+  "a": {
+   "id": "126-review2",
+   "criterion": "the step budget now charges the comparisons it performs, and the case for it is not vacuous"
+  },
+  "b": {
+   "id": "126-review3",
+   "criterion": "the step budget now covers every path, and the stub that hid it mirrors the shipped code"
+  },
+  "label": 1,
+  "why": "126 review2 -> review3, same step budget",
+  "ia": 17,
+  "ib": 19
+ },
+ {
+  "a": {
+   "id": "126-review",
+   "criterion": "Copilot's three findings fixed, and the fix for one of them found a worse bug via the second executor"
+  },
+  "b": {
+   "id": "126-review3",
+   "criterion": "the step budget now covers every path, and the stub that hid it mirrors the shipped code"
+  },
+  "label": 1,
+  "why": "126 review -> review3, same detector",
+  "ia": 16,
+  "ib": 19
+ },
+ {
+  "a": {
+   "id": "126-review",
+   "criterion": "Copilot's three findings fixed, and the fix for one of them found a worse bug via the second executor"
+  },
+  "b": {
+   "id": "126-adversarial",
+   "criterion": "Codex's two bounds-that-did-not-bind and Copilot's leak are fixed, and my own case for one of them took three attempts"
+  },
+  "label": 1,
+  "why": "126 review -> adversarial round, same detector",
+  "ia": 16,
+  "ib": 20
+ },
+ {
+  "a": {
+   "id": "126-review3",
+   "criterion": "the step budget now covers every path, and the stub that hid it mirrors the shipped code"
+  },
+  "b": {
+   "id": "126-adversarial",
+   "criterion": "Codex's two bounds-that-did-not-bind and Copilot's leak are fixed, and my own case for one of them took three attempts"
+  },
+  "label": 1,
+  "why": "126 review3 -> adversarial, same bounds",
+  "ia": 19,
+  "ib": 20
+ },
+ {
+  "a": {
+   "id": "126-review2",
+   "criterion": "the step budget now charges the comparisons it performs, and the case for it is not vacuous"
+  },
+  "b": {
+   "id": "126-keyceil",
+   "criterion": "a truncated cap scan stops instead of walking a table it has discarded"
+  },
+  "label": 1,
+  "why": "126 review2 -> keyceil, same truncated-scan logic",
+  "ia": 17,
+  "ib": 25
+ },
+ {
+  "a": {
+   "id": "107-caps",
+   "criterion": "the charter's same-target-rework cap is detected in code, report-only, pinned by an executing check"
+  },
+  "b": {
+   "id": "107-review",
+   "criterion": "the adversarial round's four findings are reproduced, fixed, and each red in check_caps or the bash suite"
+  },
+  "label": 1,
+  "why": "107-caps shipped -> 107-review reworks its findings",
+  "ia": 11,
+  "ib": 12
+ },
+ {
+  "a": {
+   "id": "107-caps",
+   "criterion": "the charter's same-target-rework cap is detected in code, report-only, pinned by an executing check"
+  },
+  "b": {
+   "id": "126-review",
+   "criterion": "Copilot's three findings fixed, and the fix for one of them found a worse bug via the second executor"
+  },
+  "label": 1,
+  "why": "107-caps -> 126-review, same cap detector across ids",
+  "ia": 11,
+  "ib": 16
+ },
+ {
+  "a": {
+   "id": "108-base-gate",
+   "criterion": "G1-G8: trusted base-ref gate (#108) shipped and mutation-checked"
+  },
+  "b": {
+   "id": "108-base-gate",
+   "criterion": "five-lens review: 5 bypasses found, reproduced, fixed, mutation-checked"
+  },
+  "label": 1,
+  "why": "108 gate shipped -> five-lens review finds 5 bypasses in it",
+  "ia": 4,
+  "ib": 6
+ },
+ {
+  "a": {
+   "id": "108-base-gate",
+   "criterion": "five-lens review: 5 bypasses found, reproduced, fixed, mutation-checked"
+  },
+  "b": {
+   "id": "108-base-gate",
+   "criterion": "review landed 163ad67: three further fail-opens closed, independently re-verified"
+  },
+  "label": 1,
+  "why": "108 five-lens review -> review landed, further fail-opens",
+  "ia": 6,
+  "ib": 7
+ },
+ {
+  "a": {
+   "id": "108-base-gate",
+   "criterion": "G1-G8: trusted base-ref gate (#108) shipped and mutation-checked"
+  },
+  "b": {
+   "id": "108-base-gate",
+   "criterion": "review landed 163ad67: three further fail-opens closed, independently re-verified"
+  },
+  "label": 1,
+  "why": "108 gate -> review round on the same gate",
+  "ia": 4,
+  "ib": 7
+ },
+ {
+  "a": {
+   "id": "108-base-gate",
+   "criterion": "review landed 163ad67: three further fail-opens closed, independently re-verified"
+  },
+  "b": {
+   "id": "108-base-gate",
+   "criterion": "9e9e48a verified independently; its own control comment corrected (e87c239)"
+  },
+  "label": 1,
+  "why": "108 review -> independent verification of the same commit",
+  "ia": 7,
+  "ib": 9
+ },
+ {
+  "a": {
+   "id": "126-render-probe",
+   "criterion": "delivery probe: does systemMessage reach the transcript"
+  },
+  "b": {
+   "id": "126-render-probe",
+   "criterion": "delivery probe: does systemMessage reach the transcript"
+  },
+  "label": 1,
+  "why": "identical criterion, same probe (caps.sh DOES catch this one)",
+  "ia": 22,
+  "ib": 23
+ },
+ {
+  "a": {
+   "id": "126-render-probe",
+   "criterion": "delivery probe: does systemMessage reach the transcript"
+  },
+  "b": {
+   "id": "126-render-probe",
+   "criterion": "delivery probe: does systemMessage reach the transcript"
+  },
+  "label": 1,
+  "why": "identical criterion again",
+  "ia": 23,
+  "ib": 24
+ },
+ {
+  "a": {
+   "id": "144-review",
+   "criterion": "PR #144 review round: 6 findings from 4 panels, each reproduced before fixing"
+  },
+  "b": {
+   "id": "146-review",
+   "criterion": "PR #146 review round: 4 panels, 3 real findings in my own change, each reproduced by mutation before fixing"
+  },
+  "label": 0,
+  "why": "HARD: both say 'PR review round', but #144=CR residue vs #146=holdout",
+  "ia": 38,
+  "ib": 41
+ },
+ {
+  "a": {
+   "id": "107-review",
+   "criterion": "the adversarial round's four findings are reproduced, fixed, and each red in check_caps or the bash suite"
+  },
+  "b": {
+   "id": "144-review",
+   "criterion": "PR #144 review round: 6 findings from 4 panels, each reproduced before fixing"
+  },
+  "label": 0,
+  "why": "HARD: both review rounds, 107 detector vs 144 CR parsers",
+  "ia": 12,
+  "ib": 38
+ },
+ {
+  "a": {
+   "id": "107-ci",
+   "criterion": "both forges verified FROM THEIR LOGS, and the trusted pull_request_target path fired for the first time"
+  },
+  "b": {
+   "id": "126-lokaal",
+   "criterion": "the third executor is now read from its own log, closing the status-only gap"
+  },
+  "label": 0,
+  "why": "HARD: both 'read from its own log' CI verification, different PRs",
+  "ia": 13,
+  "ib": 18
+ },
+ {
+  "a": {
+   "id": "108-base-gate",
+   "criterion": "lokaal CI: the polarity defect the local gates could not see"
+  },
+  "b": {
+   "id": "107-ci",
+   "criterion": "both forges verified FROM THEIR LOGS, and the trusted pull_request_target path fired for the first time"
+  },
+  "label": 0,
+  "why": "HARD: both lokaal CI verification, 108 gate vs 107 forges",
+  "ia": 5,
+  "ib": 13
+ },
+ {
+  "a": {
+   "id": "107-caps",
+   "criterion": "the charter's same-target-rework cap is detected in code, report-only, pinned by an executing check"
+  },
+  "b": {
+   "id": "107-coupling",
+   "criterion": "the schema coupling caps.sh silently inherited is named, measured, and pinned"
+  },
+  "label": 0,
+  "why": "107-caps ships detector vs 107-coupling pins a schema coupling",
+  "ia": 11,
+  "ib": 14
+ },
+ {
+  "a": {
+   "id": "126-delivery",
+   "criterion": "the cap report now reaches a channel that exists on exit 0, and a task named Gate is no longer discarded"
+  },
+  "b": {
+   "id": "126-keyceil",
+   "criterion": "a truncated cap scan stops instead of walking a table it has discarded"
+  },
+  "label": 0,
+  "why": "126-delivery channel fix vs 126-keyceil scan ceiling: different defects",
+  "ia": 21,
+  "ib": 25
+ },
+ {
+  "a": {
+   "id": "108-base-gate",
+   "criterion": "BAR registered: #108 base-ref enforcer"
+  },
+  "b": {
+   "id": "108-base-gate",
+   "criterion": "G1-G8: trusted base-ref gate (#108) shipped and mutation-checked"
+  },
+  "label": 0,
+  "why": "BAR registration vs the gate implementation itself",
+  "ia": 3,
+  "ib": 4
+ },
+ {
+  "a": {
+   "id": "108-base-gate",
+   "criterion": "release prep v0.11.11: gate green, changelog corrected, one vacuous test found by the release run"
+  },
+  "b": {
+   "id": "108-base-gate",
+   "criterion": "v0.11.11 released: gate live on main, publish run verified from its own log"
+  },
+  "label": 0,
+  "why": "release prep vs the release: sequential, not rework",
+  "ia": 8,
+  "ib": 10
+ },
+ {
+  "a": {
+   "id": "claude-md-diet",
+   "criterion": "char-cap under harness 40k clip"
+  },
+  "b": {
+   "id": "144-review",
+   "criterion": "PR #144 review round: 6 findings from 4 panels, each reproduced before fixing"
+  },
+  "label": 0,
+  "why": "claude-md char cap vs PR144 review",
+  "ia": 0,
+  "ib": 38
+ },
+ {
+  "a": {
+   "id": "claude-md-diet-verify",
+   "criterion": "BAR criteria 2-5: citations, mutation, gates, coupling"
+  },
+  "b": {
+   "id": "T-9",
+   "criterion": "c"
+  },
+  "label": 0,
+  "why": "claude-md verify vs citation check",
+  "ia": 1,
+  "ib": 33
+ },
+ {
+  "a": {
+   "id": "r2b-live",
+   "criterion": "R2b live half: harness honors the Stop block"
+  },
+  "b": {
+   "id": "review-round",
+   "criterion": "REFUTED resolved: both defects fixed, stack repaired, CI green on origin"
+  },
+  "label": 0,
+  "why": "R2b live harness vs PR142 stacked",
+  "ia": 2,
+  "ib": 30
+ },
+ {
+  "a": {
+   "id": "pr132-crlf-fixes",
+   "criterion": "six CR/ls-tree defect sites fixed, all gates green, controls mutation-verified"
+  },
+  "b": {
+   "id": "146-review",
+   "criterion": "PR #146 review round: 4 panels, 3 real findings in my own change, each reproduced by mutation before fixing"
+  },
+  "label": 0,
+  "why": "pr132 CRLF fixes vs 146 review",
+  "ia": 26,
+  "ib": 41
+ },
+ {
+  "a": {
+   "id": "pr132-audit",
+   "criterion": "PR #132 audited against every obligation: six sites, prose in five places, controls, floors, register, PR body"
+  },
+  "b": {
+   "id": "112-holdout",
+   "criterion": "BAR criteria 1-6: an independent holdout exists, is derived by a denied-context agent, asserts exact values, fails closed, goes red on real mutations, and this repo's gates are unchanged"
+  },
+  "label": 0,
+  "why": "pr132 audit vs v0.11.15 release",
+  "ia": 27,
+  "ib": 40
+ },
+ {
+  "a": {
+   "id": "139-cr-residue",
+   "criterion": "items 1+3: all four terminator shapes produce the LF verdict in all three 4-cell parsers"
+  },
+  "b": {
+   "id": "139-item4",
+   "criterion": "item 4: a rotted file:NNN citation in tracked prose fails the build"
+  },
+  "label": 0,
+  "why": "REFUTED resolution vs CR terminator shapes",
+  "ia": 31,
+  "ib": 32
+ },
+ {
+  "a": {
+   "id": "T-9",
+   "criterion": "c"
+  },
+  "b": {
+   "id": "139-release",
+   "criterion": "v0.11.15 released and the INSTALLED plugin runs the fixed gate, not just the repo tree"
+  },
+  "label": 0,
+  "why": "citation check vs holdout BAR",
+  "ia": 33,
+  "ib": 39
+ },
+ {
+  "a": {
+   "id": "107-coupling",
+   "criterion": "the schema coupling caps.sh silently inherited is named, measured, and pinned"
+  },
+  "b": {
+   "id": "112-holdout",
+   "criterion": "BAR criteria 1-6: an independent holdout exists, is derived by a denied-context agent, asserts exact values, fails closed, goes red on real mutations, and this repo's gates are unchanged"
+  },
+  "label": 0,
+  "why": "127-cost scan measurement vs release",
+  "ia": 14,
+  "ib": 40
+ },
+ {
+  "a": {
+   "id": "claude-md-diet",
+   "criterion": "char-cap under harness 40k clip"
+  },
+  "b": {
+   "id": "139-release",
+   "criterion": "v0.11.15 released and the INSTALLED plugin runs the fixed gate, not just the repo tree"
+  },
+  "label": 0,
+  "why": "char cap vs holdout",
+  "ia": 0,
+  "ib": 39
+ },
+ {
+  "a": {
+   "id": "0.11.14",
+   "criterion": "PR #141 opened with all gates green on CI, not just locally"
+  },
+  "b": {
+   "id": "140-followup",
+   "criterion": "PR #142 opened stacked on #141, both CI checks green"
+  },
+  "label": 0,
+  "why": "0.11.14 PR opened vs 140-followup stacked PR",
+  "ia": 28,
+  "ib": 29
+ }
+]

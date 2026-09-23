@@ -106,7 +106,7 @@ Or from a local checkout:
 .operator/bin/ops-verdict.sh <id> --defer "<reason>"    # honest exit for a blocked task
 .operator/bin/ops-adopt.sh --owner <new-id> <id>...     # re-claim your tasks after a /clear
 .operator/bin/ops-verdict.sh --reconcile                # restore rows lost to a messy merge
-.operator/bin/ops-claims.sh --claimed "<paths>"         # verify a DONE report against the diff
+.operator/bin/ops-claims.sh --since <sha> --claimed "<paths>"   # verify a DONE report against the diff
 ```
 
 `ops-init.sh` (run by `/cc-operator:start`) installs those CLIs into

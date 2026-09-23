@@ -1,0 +1,170 @@
+[
+ {
+  "id": "claude-md-diet",
+  "criterion": "char-cap under harness 40k clip"
+ },
+ {
+  "id": "claude-md-diet-verify",
+  "criterion": "BAR criteria 2-5: citations, mutation, gates, coupling"
+ },
+ {
+  "id": "r2b-live",
+  "criterion": "R2b live half: harness honors the Stop block"
+ },
+ {
+  "id": "108-base-gate",
+  "criterion": "BAR registered: #108 base-ref enforcer"
+ },
+ {
+  "id": "108-base-gate",
+  "criterion": "G1-G8: trusted base-ref gate (#108) shipped and mutation-checked"
+ },
+ {
+  "id": "108-base-gate",
+  "criterion": "lokaal CI: the polarity defect the local gates could not see"
+ },
+ {
+  "id": "108-base-gate",
+  "criterion": "five-lens review: 5 bypasses found, reproduced, fixed, mutation-checked"
+ },
+ {
+  "id": "108-base-gate",
+  "criterion": "review landed 163ad67: three further fail-opens closed, independently re-verified"
+ },
+ {
+  "id": "108-base-gate",
+  "criterion": "release prep v0.11.11: gate green, changelog corrected, one vacuous test found by the release run"
+ },
+ {
+  "id": "108-base-gate",
+  "criterion": "9e9e48a verified independently; its own control comment corrected (e87c239)"
+ },
+ {
+  "id": "108-base-gate",
+  "criterion": "v0.11.11 released: gate live on main, publish run verified from its own log"
+ },
+ {
+  "id": "107-caps",
+  "criterion": "the charter's same-target-rework cap is detected in code, report-only, pinned by an executing check"
+ },
+ {
+  "id": "107-review",
+  "criterion": "the adversarial round's four findings are reproduced, fixed, and each red in check_caps or the bash suite"
+ },
+ {
+  "id": "107-ci",
+  "criterion": "both forges verified FROM THEIR LOGS, and the trusted pull_request_target path fired for the first time"
+ },
+ {
+  "id": "107-coupling",
+  "criterion": "the schema coupling caps.sh silently inherited is named, measured, and pinned"
+ },
+ {
+  "id": "127-cost",
+  "criterion": "the per-Stop scan cost is measured, filed as #127, and its SHAPE pinned -- not implied solved by the worst-case budget"
+ },
+ {
+  "id": "126-review",
+  "criterion": "Copilot's three findings fixed, and the fix for one of them found a worse bug via the second executor"
+ },
+ {
+  "id": "126-review2",
+  "criterion": "the step budget now charges the comparisons it performs, and the case for it is not vacuous"
+ },
+ {
+  "id": "126-lokaal",
+  "criterion": "the third executor is now read from its own log, closing the status-only gap"
+ },
+ {
+  "id": "126-review3",
+  "criterion": "the step budget now covers every path, and the stub that hid it mirrors the shipped code"
+ },
+ {
+  "id": "126-adversarial",
+  "criterion": "Codex's two bounds-that-did-not-bind and Copilot's leak are fixed, and my own case for one of them took three attempts"
+ },
+ {
+  "id": "126-delivery",
+  "criterion": "the cap report now reaches a channel that exists on exit 0, and a task named Gate is no longer discarded"
+ },
+ {
+  "id": "126-render-probe",
+  "criterion": "delivery probe: does systemMessage reach the transcript"
+ },
+ {
+  "id": "126-render-probe",
+  "criterion": "delivery probe: does systemMessage reach the transcript"
+ },
+ {
+  "id": "126-render-probe",
+  "criterion": "delivery probe: does systemMessage reach the transcript"
+ },
+ {
+  "id": "126-keyceil",
+  "criterion": "a truncated cap scan stops instead of walking a table it has discarded"
+ },
+ {
+  "id": "pr132-crlf-fixes",
+  "criterion": "six CR/ls-tree defect sites fixed, all gates green, controls mutation-verified"
+ },
+ {
+  "id": "pr132-audit",
+  "criterion": "PR #132 audited against every obligation: six sites, prose in five places, controls, floors, register, PR body"
+ },
+ {
+  "id": "0.11.14",
+  "criterion": "PR #141 opened with all gates green on CI, not just locally"
+ },
+ {
+  "id": "140-followup",
+  "criterion": "PR #142 opened stacked on #141, both CI checks green"
+ },
+ {
+  "id": "review-round",
+  "criterion": "REFUTED resolved: both defects fixed, stack repaired, CI green on origin"
+ },
+ {
+  "id": "139-cr-residue",
+  "criterion": "items 1+3: all four terminator shapes produce the LF verdict in all three 4-cell parsers"
+ },
+ {
+  "id": "139-item4",
+  "criterion": "item 4: a rotted file:NNN citation in tracked prose fails the build"
+ },
+ {
+  "id": "T-9",
+  "criterion": "c"
+ },
+ {
+  "id": "T-9",
+  "criterion": "c"
+ },
+ {
+  "id": "T-9",
+  "criterion": "c"
+ },
+ {
+  "id": "T-9",
+  "criterion": "c"
+ },
+ {
+  "id": "T-9",
+  "criterion": "c"
+ },
+ {
+  "id": "144-review",
+  "criterion": "PR #144 review round: 6 findings from 4 panels, each reproduced before fixing"
+ },
+ {
+  "id": "139-release",
+  "criterion": "v0.11.15 released and the INSTALLED plugin runs the fixed gate, not just the repo tree"
+ },
+ {
+  "id": "112-holdout",
+  "criterion": "BAR criteria 1-6: an independent holdout exists, is derived by a denied-context agent, asserts exact values, fails closed, goes red on real mutations, and this repo's gates are unchanged"
+ },
+ {
+  "id": "146-review",
+  "criterion": "PR #146 review round: 4 panels, 3 real findings in my own change, each reproduced by mutation before fixing"
+ }
+]

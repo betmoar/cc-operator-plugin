@@ -4475,6 +4475,423 @@ def check_claude_md_size(root, problems):
             f"in the row")
 
 
+# Where check_prose_invocations looks. A MODULE CONSTANT so a case can assert
+# the SELECTION and not merely the count: narrowing this to ["*.md",
+# "docs/**/*.md"] — the plausible "the *.md glob already covers everything"
+# edit — stops reading templates/OPERATOR.md, the file #149's defect shipped
+# in, and every case plus the real tree stayed green (measured). The `_MIN`
+# floor cannot catch it; it counts invocations, not which files produced them,
+# and the reduced set still cleared 15.
+_PROSE_ROOTS = ("*.md", "docs/**/*.md", "templates/*.md", "commands/*.md",
+                "agents/*.md", "skills/**/*.md")
+
+
+_TEXT_ROOTS = ("*.md", "docs/**/*.md", "scripts/**/*", "hooks/**/*",
+               "templates/**/*", "agents/**/*", "commands/**/*",
+               "skills/**/*", "workflows/**/*", ".claude-plugin/**/*")
+
+
+def check_text_encoding(root, problems):
+    """Every file the validator reads decodes as UTF-8, and a file that does
+    not is REPORTED BY PATH (#163).
+
+    Fifty-odd checks read with `read_text(encoding="utf-8")`. One stray byte in
+    a CLI raised UnicodeDecodeError out of whichever check reached the file
+    first — measured: `printf '\\xff\\xfe' >> scripts/ops-claims.sh` gave a
+    traceback from an unrelated check and never named the file. That failed
+    closed, but it pointed the maintainer at the wrong place. This check runs
+    FIRST and names the file; `main()` turns any later decode crash into a
+    finding naming the check, so the run completes and every other contract
+    is still judged.
+    """
+    for pat in _TEXT_ROOTS:
+        for p in sorted(root.glob(pat)):
+            if (not p.is_file() or "__pycache__" in p.parts
+                    or "node_modules" in p.parts):
+                continue
+            try:
+                p.read_bytes().decode("utf-8")
+            except UnicodeDecodeError as e:
+                problems.append(
+                    f"{p.relative_to(root).as_posix()}: not valid UTF-8 "
+                    f"(byte {e.start}: {e.reason}) — every check reading it "
+                    f"is judging bytes it cannot decode (#163)")
+
+
+def _cli_flag_contract(path):
+    """The flags a gate CLI ACCEPTS and the ones it REFUSES to run without,
+    read off that CLI's own parser rather than catalogued here.
+
+    A hardcoded table in the validator would be the very shape #149 is about:
+    a second copy of the CLI's contract, correct when written, drifting the
+    moment the parser changes, with nothing comparing the two. So the accepted
+    set is the `--flag)` / `--flag=*)` arms of the `case` in the parse loop,
+    and the forms come from the CLI's own `usage:` strings.
+
+    A flag is MANDATORY PER FORM, not globally, and conflating the two is a
+    false positive that would have condemned five correct lines: `--owner` is
+    required by ops-verdict.sh's `--mark-handoff` form and optional in its
+    verdict form, and ops-claims.sh's `--since`/`--claimed` guards sit BELOW an
+    `--expect-clean` early exit. The CLI declares its own forms in the usage
+    string's top-level `|` alternation — split only OUTSIDE quotes and angle
+    brackets, since `"<paths>|none"` and `<PASS|FAIL>` both carry a literal `|`
+    that is not a form boundary. A flag inside `[…]` is the CLI saying
+    optional, in the CLI's own notation.
+
+    Returns (accepted, forms) where each form is (flags, mandatory_in_form).
+    An empty `accepted` means the parser shape was not recognised, which the
+    caller REPORTS at the point a prose line depends on it, rather than
+    treating as "this CLI takes no flags" — a parser we cannot read is a pin
+    that proves nothing, not a CLI that accepts everything.
+    """
+    # `replace`, not strict: an undecodable CLI is check_text_encoding's
+    # finding, by path. Crashing here would hide every other contract (#163).
+    text = path.read_text(encoding="utf-8", errors="replace")
+    # `(?:^|;;)`, not `^`: ops-render.sh packs two arms on one line
+    # (`--show) MODE=show; shift ;; --revert) MODE=revert; shift ;;`) and a
+    # line-anchored scan silently loses the second — it reported `--revert`,
+    # which commands/tiers.md correctly prescribes, as an unknown flag.
+    accepted = set(re.findall(r'(?:^|;;)\s*(--[a-z][a-z-]*)(?:=\*)?\)',
+                              text, re.M))
+    # The `"${1:-}" = "--flag"` dispatch forms: ops-verdict.sh reaches
+    # --reconcile and --mark-handoff that way, BEFORE the parse loop, so the
+    # `case` arms alone miss both.
+    accepted |= set(re.findall(r'"\$\{1:-\}"\s*=\s*"(--[a-z][a-z-]*)"', text))
+    accepted |= set(re.findall(r'"\$\{2:-\}"\s*=\s*"(--[a-z][a-z-]*)"', text))
+    # ALL the usage strings, not the first. A CLI with several entry points
+    # carries several and they are NOT hand-copies of each other: stopping at
+    # the first read --mark-handoff's requirements onto the verdict form and
+    # condemned five correct lines, the charter's among them. Duplicates are
+    # harmless — the selection below takes a max.
+    forms = []
+    for u in re.findall(r'usage:\s*ops-[a-z-]+\.sh((?:[^"\\\n]|\\.)*)', text):
+        u = u.replace('\\"', '"')
+        parts, buf, depth, quoted = [], "", 0, False
+        for ch in u:
+            if ch == '"':
+                quoted = not quoted
+            elif ch == "<" and not quoted:
+                depth += 1
+            elif ch == ">" and not quoted:
+                depth = max(0, depth - 1)
+            if ch == "|" and depth == 0 and not quoted:
+                parts.append(buf); buf = ""
+                continue
+            buf += ch
+        parts.append(buf)
+        for part in parts:
+            # `[--flag]` is the CLI's own notation for optional. Strip the
+            # bracketed spans, and whatever `--flag` survives is required IN
+            # THIS FORM — which is how `--owner` comes out mandatory for
+            # --mark-handoff and optional for the verdict form, from one line.
+            bare = re.sub(r'\[[^\]]*\]', ' ', part)
+            forms.append((set(re.findall(r'--[a-z][a-z-]*', part)),
+                          set(re.findall(r'--[a-z][a-z-]*', bare))))
+    # The COMMENT-BLOCK usage forms. ops-render.sh and ops-tiers.sh declare
+    # theirs only as a header block — `# Usage:` and then one `#   ops-x.sh …`
+    # line per form — which the one-line regex above misses twice over (the
+    # capital U, and a newline plus `#` between the colon and the name). Both
+    # read as ZERO forms and the mandatory-flag arm skipped them silently
+    # (#161, measured: `forms=[]` for both). Each line is one form; its
+    # trailing description (after `→` or a run of 2+ spaces) is not flags.
+    for blk in re.findall(r'^#\s*usage\b[^:\n]*:[ \t]*\n((?:#[ \t]+ops-[a-z-]+'
+                          r'\.sh\b.*\n)+)', text, re.M | re.I):
+        for ln in blk.splitlines():
+            part = re.sub(r'^#[ \t]+ops-[a-z-]+\.sh', '', ln).strip()
+            part = re.split(r'→|\s{2,}', part)[0]
+            bare = re.sub(r'\[[^\]]*\]', ' ', part)
+            forms.append((set(re.findall(r'--[a-z][a-z-]*', part)),
+                          set(re.findall(r'--[a-z][a-z-]*', bare))))
+    return accepted, forms
+
+
+def check_prose_invocations(root, problems):
+    r"""A CLI invocation prescribed in prose must be one the CLI accepts (#149).
+
+    v0.11.16 shipped a charter line reading
+    `ops-claims.sh --claimed "<paths>"`. The CLI has required a mandatory
+    `--since <sha>` since CR2 — a HEAD default would make a committed
+    gate-trespass invisible — and exits 2 without it. An operator following
+    `templates/OPERATOR.md`, which CLAUDE.md calls THE PRODUCT, got a usage
+    error. The fix then turned out to be one copy of three: README.md carried
+    the same broken form and docs/PLAYBOOK.md wrote `[--since <dispatch-sha>]`
+    in square brackets, marking OPTIONAL a flag the CLI refuses to run without.
+
+    All 1101 shell cases passed throughout the entire period the charter was
+    wrong, and they still would: every one of them is written AGAINST the CLI,
+    so every one passes `--since`. Nothing in the repo compared the charter's
+    prescription to the CLI's contract in either direction. It took an agent
+    that could not read `scripts/` to find it (#112), because everyone who
+    could wrote the invocation that works rather than the one the prose
+    documents.
+
+    That is the F30 shape crossed with a boundary nothing tests: both sides
+    individually correct, the defect living only in the relationship.
+
+    What this can and cannot see. It judges the SHAPE of a prescription — an
+    unknown flag, or a mandatory flag omitted or marked optional. It cannot see
+    a prescription that still parses and no longer means what the prose claims;
+    that is the same known limitation `check_line_citations` carries, and it
+    needs a human.
+
+    HISTORY IS EXEMPT BY NAME, not by pattern. CHANGELOG.md, the changelog
+    archive, LANDMINES.md and the probe record all quote OLD forms on purpose —
+    that is what a changelog is for — and a check that reports them is a check
+    people route around. `docs/dev/` is working notes, same reason.
+    """
+    _HISTORY = {"CHANGELOG.md", "docs/CHANGELOG-archive.md",
+                "docs/LANDMINES.md", "docs/DECISION-ENGINE-PROBES.md"}
+    contracts = {}
+    for p in sorted(root.glob("scripts/ops-*.sh")):
+        # An empty contract is NOT reported here. ops-init.sh, ops-install-set.sh
+        # and ops-sessionstart-hook.sh legitimately take no flags, and reporting
+        # them failed a correct tree — a gate that cries wolf is a gate people
+        # route around. It is reported below, at the line that DEPENDS on it.
+        contracts[p.name] = _cli_flag_contract(p)
+    if not contracts:
+        problems.append(
+            "check_prose_invocations found NO readable CLI contracts — it is "
+            "reporting green about a set it never read (#149)")
+        return
+    # The tail stops at the NEXT CLI name, not just at a backtick. `finditer`
+    # yields non-overlapping matches, so a greedy tail swallowed the following
+    # invocation whole and broke BOTH halves at once (review of 5ab2597,
+    # reproduced): in `Run ops-verdict.sh and ops-claims.sh --since <sha>
+    # --claimed "<paths>"` — prose that is entirely correct — ops-verdict.sh
+    # was condemned for `--claimed --since`, flags it never took, while
+    # ops-claims.sh's own invocation was never examined at all because the scan
+    # position had already passed it. A false positive on one CLI and a false
+    # negative on the next, from one regex.
+    _CITE = re.compile(r'(ops-[a-z-]+\.sh)((?:(?!ops-[a-z-]+\.sh)[^`\n])*)')
+    _FLAG = re.compile(r'--[a-z][a-z-]*')
+    _roots = _PROSE_ROOTS
+    files = sorted({p.relative_to(root).as_posix()
+                    for pat in _roots for p in root.glob(pat) if p.is_file()})
+    seen = 0
+    for rel in files:
+        if rel in _HISTORY or rel.startswith("docs/dev/"):
+            continue
+        text = (root / rel).read_text(encoding="utf-8", errors="replace")
+        _lines = text.split("\n")
+        # The PARAGRAPH each line sits in — contiguous non-blank lines. The
+        # deliberate-negative-control marker is looked for there, not on the
+        # line itself: docs/REPLAY-CHARTER.md's `--ownr` probe announces itself
+        # in the sentence ABOVE ("verify the parser refuses a mistyped flag")
+        # and names `unknown option` in the one below, which is how prose is
+        # written. A line-only scan condemned it. A paragraph is the natural
+        # bound and a narrow one — it cannot reach across a blank line into an
+        # unrelated block the way a fixed ±N window can.
+        _para, _pstart, _start = {}, {}, 0
+        for _i, _l in enumerate(_lines):
+            if _l.strip():
+                continue
+            _blk = "\n".join(_lines[_start:_i])
+            for _j in range(_start, _i):
+                _para[_j], _pstart[_j] = _blk, _start
+            _start = _i + 1
+        _blk = "\n".join(_lines[_start:])
+        for _j in range(_start, len(_lines)):
+            _para[_j], _pstart[_j] = _blk, _start
+        # A SHELL CONTINUATION is one command line. Scanned per physical line,
+        # `ops-claims.sh \` + `  --sinse abc --claimed "a"` was judged on its
+        # first line only and the broken flag was never read (#162, measured:
+        # 0 findings). Joined INSIDE A FENCE only: outside one, a trailing `\`
+        # is markdown's hard line break, not a shell continuation. The joined
+        # line reports under the number of the line the command starts on.
+        _logical, _fence, _i = [], False, 0
+        while _i < len(_lines):
+            _l, _no = _lines[_i], _i + 1
+            if re.match(r'\s*(```|~~~)', _l):
+                _fence = not _fence
+            while (_fence and _l.rstrip().endswith("\\")
+                   and _i + 1 < len(_lines)):
+                _i += 1
+                _l = _l.rstrip()[:-1] + " " + _lines[_i].strip()
+            _logical.append((_no, _l))
+            _i += 1
+        # The ONE typo each lesson paragraph excuses, keyed by paragraph start.
+        _excused = {}
+        for lineno, line in _logical:
+            for m in _CITE.finditer(line):
+                cli = m.group(1)
+                if cli not in contracts:
+                    continue
+                accepted, forms = contracts[cli]
+                flags = set(_FLAG.findall(m.group(2)))
+                if not flags:
+                    # A FLAGLESS prescription is still a prescription when the
+                    # CLI has no flagless form at all: `ops-adopt.sh <task-id>`
+                    # exits 2 with `missing --owner`, and the first cut of this
+                    # check was silent on it — it keyed on the presence of a
+                    # flag to decide something had been prescribed, which reads
+                    # "no flags named" as "nothing to check" rather than as the
+                    # omission it is. Found by running the check against every
+                    # form of every CLI rather than only the ones prose already
+                    # uses (#149, review round).
+                    #
+                    # Bounded three ways, because a bare CLI NAME in prose is
+                    # not a command line and the tree is full of them: every
+                    # form must require a flag; the mention must sit in a CODE
+                    # SPAN; and it must carry an ARGUMENT after the name. The
+                    # one number held here is the one a test holds: 0 false
+                    # positives on the real tree (test_the_real_tree_passes).
+                    # The population counts this comment used to carry were
+                    # never reproduced against the code — see floors.env.
+                    if not (forms and all(f[1] for f in forms)):
+                        continue
+                    # A LIST of filenames is not a command line, and the
+                    # argument bound alone cannot tell them apart: the span
+                    # `ops-verdict.sh ops-task.sh ops-adopt.sh …` in
+                    # REPLAY-CHARTER.md names the install set, and each entry
+                    # reads as the next one's argument (2 false positives,
+                    # measured — exposed once the tail regex stopped swallowing
+                    # the following CLI). An argument that is itself a CLI name
+                    # means the span is an enumeration.
+                    _arg = re.search(r'`[^`\n]*' + re.escape(cli)
+                                     + r'\s+([<"\'\w./$-]\S*)', line)
+                    if not _arg or re.match(r'ops-[a-z-]+\.sh', _arg.group(1)):
+                        continue
+                    seen += 1
+                    problems.append(
+                        f"{rel}:{lineno}: prescribes `{cli}` with NO flag — "
+                        f"every form of this CLI requires one "
+                        f"({' | '.join(' '.join(sorted(f[1])) for f in forms)}"
+                        f"), so an operator following this prose verbatim gets "
+                        f"a usage error and exit 2 (#149)")
+                    continue
+                seen += 1
+                # A DELIBERATE negative control — prose teaching that a
+                # mistyped flag is refused — says so in its own paragraph. The
+                # marker is the words the prose already uses; inventing a
+                # comment directive would be a convention followed in one file
+                # and stated nowhere, which this repo calls a hypothesis.
+                #
+                # THE EXEMPTION ATTACHES TO THE FLAG, NOT TO THE NEIGHBOURHOOD.
+                # Keying it on the paragraph alone exempted EVERY invocation in
+                # that paragraph, which is a suppression far wider than the one
+                # thing it excuses — reproduced on the real tree (PR #146
+                # review): a genuinely broken `ops-claims.sh --claimed "x"`
+                # appended to REPLAY-CHARTER.md's `--ownr` teaching paragraph
+                # was reported by nothing. That is this check's own defect
+                # class, relocated into its suppression logic and therefore
+                # harder to see, because the guard reports success.
+                #
+                # So the paragraph supplies the MARKER and the line supplies
+                # the SUBJECT: at least one flag on this line must be one the
+                # CLI does not accept. A correct invocation sitting beside a
+                # typo lesson is judged normally.
+                #
+                # And the exemption EXCUSES ONE REPORT, not the line. It
+                # skipped the whole judgment, so a neighbour carrying ANY typo
+                # of its own was exempt from the mandatory-flag arm too:
+                # `ops-claims.sh --sinse abc --claimed "a"` appended to a
+                # lesson paragraph reported nothing, and 2 findings without the
+                # paragraph (PR #146 review round 3). The lesson is about the
+                # unknown flag, so only the unknown-flag report is suppressed.
+                #
+                # And it excuses ONE FLAG PER PARAGRAPH: the first unaccepted
+                # flag the paragraph carries, in document order. A lesson
+                # teaches one typo; any line whose flags were merely unknown
+                # read as the lesson, so a neighbour whose ONLY defect was a
+                # typo of its own was exempt too (#164). Now a second,
+                # different typo in the same paragraph fires; the lesson's own
+                # typo repeated stays excused.
+                _unk_in_order = [f for f in _FLAG.findall(m.group(2))
+                                 if f not in accepted]
+                _lesson_flag = None
+                if (_unk_in_order and accepted
+                        and re.search(r'mistyped|unknown option|typo',
+                                      _para.get(lineno - 1, line), re.I)):
+                    _lesson_flag = _excused.setdefault(
+                        _pstart.get(lineno - 1), _unk_in_order[0])
+                if not accepted:
+                    problems.append(
+                        f"{rel}:{lineno}: prescribes flags for `{cli}`, whose "
+                        f"parser check_prose_invocations cannot read — so this "
+                        f"prescription is unpinned (#149). Reported rather "
+                        f"than skipped: a silent skip is how a gutted guard "
+                        f"ships green")
+                    continue
+                unknown = sorted(flags - accepted - {_lesson_flag})
+                if unknown:
+                    problems.append(
+                        f"{rel}:{lineno}: prescribes `{cli} "
+                        f"{' '.join(unknown)}` — that flag is not in the CLI's "
+                        f"parser, so an operator following this prose gets "
+                        f"`unknown option` (#149). Accepted: "
+                        f"{' '.join(sorted(accepted))}")
+                if not forms:
+                    # A parser we can read with NO usage form we can read: the
+                    # mandatory half of this prescription is unpinned. Skipping
+                    # it silently is how ops-render.sh and ops-tiers.sh went
+                    # unjudged (#161) — report it at the line that depends on
+                    # it, the same polarity as the unreadable-parser arm above.
+                    problems.append(
+                        f"{rel}:{lineno}: prescribes flags for `{cli}`, whose "
+                        f"usage forms check_prose_invocations cannot read — "
+                        f"its mandatory flags are unpinned (#161). Give the "
+                        f"CLI a `usage: {cli} …` string or a `# Usage:` block")
+                    continue
+                # A prescription is judged against the form it SELECTS — the
+                # form sharing the most flags with it. Judging against a union
+                # of every form's requirements is what condemned correct lines:
+                # `ops-claims.sh --expect-clean` is a complete form of its own,
+                # and demanding --since of it is demanding a flag the CLI exits
+                # 0 without.
+                flags_in = flags & accepted
+                form = max(forms, key=lambda f: (len(flags_in & f[0]),
+                                                 -len(f[1])))
+                # `[--since <sha>]` in PROSE is the third drifted copy from the
+                # PR #146 review: the flag is NAMED, so a presence test reads
+                # it as prescribed, while the brackets tell the operator it is
+                # OPTIONAL for a flag the CLI exits 2 without. The prose uses
+                # the CLI's own notation to say the opposite of what the CLI
+                # does. Caught by treating a bracketed mandatory flag as
+                # absent — which is how the reader will treat it.
+                bracketed = set(_FLAG.findall(
+                    " ".join(re.findall(r'\[[^\]]*\]', m.group(2)))))
+                missing = sorted(f for f in form[1]
+                                 if f not in flags or f in bracketed)
+                if missing and flags_in & form[0]:
+                    _opt = sorted(f for f in missing if f in bracketed)
+                    _how = (f"marks {' '.join(_opt)} OPTIONAL" if _opt
+                            else f"omits {' '.join(missing)}")
+                    problems.append(
+                        f"{rel}:{lineno}: prescribes `{cli} "
+                        f"{' '.join(sorted(flags_in - bracketed))}` and {_how} "
+                        f"— that form refuses to run without "
+                        f"{' '.join(missing)}, so an operator following this "
+                        f"prose verbatim gets a usage error and exit 2 (#149). "
+                        f"This is the defect a holdout found in the charter "
+                        f"itself at v0.11.16, with every in-repo test green")
+    # A shrinking scan is itself a finding, the _tool_loops rule: if the
+    # citation shape changes, this finds nothing and reports a perfect result
+    # about a set it never read. Measured: 33 flagged invocations
+    # (REPLAY-CHARTER 10, README 6, tiers.md 5, PLAYBOOK 4, OPERATOR 4,
+    # handoff.md 1, HANDOUT 1, UNKNOWNS 1). An earlier revision of this comment
+    # said 21 — a number beside the code is a second copy, and this one was
+    # never re-measured against the code it sits on (review of 5ab2597). The
+    # floor stays well below the count on purpose: it catches a COLLAPSE, not
+    # ordinary prose edits.
+    #
+    # The floor applies to a REPO, not to a fixture tree — the same escape
+    # check_claude_md_size and check_coupling_case_refs take, and for the same
+    # reason: the validator's own synthetic trees carry a stub charter and no
+    # cheat-sheets, so a floor over them measures the fixture, not the prose.
+    # ProseInvocationTest pins BOTH halves — that the floor fires below it on a
+    # tree that does carry a handoff, and that the real tree is above it — so
+    # the escape cannot become the way the floor goes quiet.
+    _MIN = 15
+    if not (root / "CLAUDE.md").is_file():
+        return
+    if seen < _MIN:
+        problems.append(
+            f"check_prose_invocations examined only {seen} flagged "
+            f"invocation(s), expected at least {_MIN} — either the prose lost "
+            f"its CLI cheat-sheets, or the citation shape changed and this "
+            f"check is now scanning for something nobody writes (#149)")
+
+
 def check_coupling_case_refs(root, problems):
     """Every `_"…"_` reference in CLAUDE.md still resolves to something.
 
@@ -4654,6 +5071,7 @@ def check_coupling_case_refs(root, problems):
 # parity, lock parity) ended up running in the build but not in the good-tree
 # test, which is the test most likely to be trusted.
 CHECKS = (
+    check_text_encoding,
     check_manifests,
     check_statusline,
     check_changelog,
@@ -4689,6 +5107,7 @@ CHECKS = (
     check_base_gate,
     check_coupling_case_refs,
     check_line_citations,
+    check_prose_invocations,
     check_claude_md_size,
 )
 
@@ -4698,7 +5117,15 @@ def main(argv=None):
         __file__).resolve().parent.parent
     problems = []
     for check in CHECKS:
-        check(root, problems)
+        # A decode error is a FINDING, not a crash (#163): a traceback out of
+        # one check hid every contract after it and named neither the file nor
+        # the check. check_text_encoding has already named the file.
+        try:
+            check(root, problems)
+        except UnicodeDecodeError as e:
+            problems.append(
+                f"{check.__name__} could not decode a file it reads ({e.reason}"
+                f" at byte {e.start}) — see check_text_encoding's finding (#163)")
 
     if problems:
         for p in problems:
