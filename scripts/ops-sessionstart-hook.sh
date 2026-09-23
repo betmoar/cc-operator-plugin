@@ -226,6 +226,11 @@ done
 # for one stop, which is the pre-#116 behaviour, but wiped is better).
 [ -d "$cwd/.operator/.stopguard" ] && rm -rf "$cwd/.operator/.stopguard" 2>/dev/null
 
+# The cap-scan cache (#127). Content-keyed, so a stale entry cannot be served;
+# wiped anyway, because a session boundary is the one moment nothing depends
+# on it, and a cache nothing prunes is a directory that only grows.
+[ -d "$cwd/.operator/.capscache" ] && [ ! -L "$cwd/.operator/.capscache" ] && rm -rf "$cwd/.operator/.capscache" 2>/dev/null
+
 # v1→v2 gitignore migration, every session (this is what carries a project
 # that never re-runs /cc-operator:start). The schemes contradict, so REPLACE,
 # keeping .gitignore.v1.bak; body pinned identical to ops-init's _gi_write.

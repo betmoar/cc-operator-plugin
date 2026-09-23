@@ -531,7 +531,10 @@ fi
 # cap detector over a permanent history is a permanent block. The charter also
 # makes the trip the OPERATOR's stop-and-report, not the gate's. Both point the
 # same way; see scripts/lib/caps.sh for the full polarity note.
-scan_caps "$opdir/VERDICTS.md"
+# CACHED (#127): an unchanged ledger is not rescanned on every Stop. The cache
+# is keyed on content and every failure of it is a full scan, so it can only
+# change the cost — see scan_caps_cached's header.
+scan_caps_cached "$opdir/VERDICTS.md" "$opdir/.capscache"
 # shellcheck disable=SC2154  # assigned by the sourced lib/caps.sh
 if [ "$caps_scan_failed" = 0 ] && [ "$caps_tripped" -gt 0 ]; then
   caps_say "operator: $caps_tripped target(s) at the charter's same-target-rework cap ($CAPS_REWORK_MAX rework rounds on one target) — the cap table calls this a defined stop-and-report: stop reworking it, log the decision, move on or escalate. Not blocking; a later PASS on the same criterion clears it."

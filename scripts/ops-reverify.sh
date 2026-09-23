@@ -85,6 +85,7 @@ AFFECTED=0; CLEAR=0; UNDATABLE=0; SKIPPED=0; n=0
 # display only; the row itself is never rewritten.
 scan_ledger() {
   local LC_ALL=C _cr=0
+  local _rv_row_re='^\| ([^|]*) \| ([^|]*) \| ([^|]*) \| ([^|]*)( \|)?$'
   printf '%s\n' "# ops-reverify — rows whose HEAD window overlaps [$FROM, $TO] — ledger: $LEDGER"
   printf '%s\n' "| # | gate | verdict | stamp | HEAD window | status | criterion |"
   printf '%s\n' "|---|---|---|---|---|---|---|"
@@ -140,14 +141,15 @@ scan_ledger() {
     # the same schema ops-verdict.sh --reconcile enforces; anything else is
     # counted as skipped, never silently dropped (a row you cannot see is a row
     # you will not re-verify).
-    body="${row#| }"; body="${body% |}"
-    gate="${body%% | *}";  r1="${body#* | }"
-    crit="${r1%% | *}";    r2="${r1#* | }"
-    ev="${r2%% | *}";      verdict="${r2#* | }"
-    if [ "$r1" = "$body" ] || [ "$r2" = "$r1" ] || [ "$verdict" = "$r2" ]; then
+    # ONE REGEX, not a chain of `${x%% | *}`/`${x#* | }` expansions (#145):
+    # bash 3.2 runs those quadratic in the cell they walk past — one 100 KB
+    # criterion cell cost 5.0s here (measured 2026-09-23). Same pattern as
+    # lib/caps.sh; `[^|]*` is the writer's cell (check_cell refuses `|`).
+    if ! [[ $row =~ $_rv_row_re ]]; then
       SKIPPED=$((SKIPPED+1)); continue
     fi
-    case "$verdict" in *" | "*) SKIPPED=$((SKIPPED+1)); continue ;; esac
+    gate="${BASH_REMATCH[1]}"; crit="${BASH_REMATCH[2]}"
+    ev="${BASH_REMATCH[3]}";   verdict="${BASH_REMATCH[4]}"
     stamp="${ev##* @}"
     [ "$stamp" != "$ev" ] || stamp="(none)"
     sha="${stamp%%+*}"

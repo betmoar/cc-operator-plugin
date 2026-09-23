@@ -101,6 +101,12 @@ GOOD_AUTOBAR_LIB = (
 # (id, criterion), reset on a PASS, trip at CAPS_REWORK_MAX. A name-only stub
 # is an under-built fixture, and the probe would correctly report it as a
 # detector that does not detect (the F144 lesson, one file over).
+# THIS STUB IS DELIBERATELY NOT THE SHIPPED LIB. It still splits with the
+# pre-#145 expansion chain and resets a key IN PLACE (the shipped lib uses one
+# regex and removes the key, #127) and it carries no scan_caps_cached, so
+# check_caps's cache probe is skipped for it. Both answer the same on these
+# synthetic ledgers, which is all the good tree needs; CapsTest runs the
+# SHIPPED file. Do not read this stub as the lib's current behaviour.
 GOOD_CAPS_LIB = (
     "#!/usr/bin/env bash\n"
     "# covers same-target-rework; identical-rejection and neighbor-regressing\n"
@@ -488,7 +494,9 @@ def make_good_tree(root):
           # stub mirrors the real file's permission-test count, which the
           # allowlist pins at 1 — a stub below it reads as a REMOVED guard.
           "#!/usr/bin/env bash\nstopguard_can_mark() { [ -d \"$d\" ] && [ -w \"$d\" ]; }\n"
-          ". lib/partition.sh\n. lib/autobar.sh\n. \"$_libdir/caps.sh\"\n" + JSON_GET)
+          ". lib/partition.sh\n. lib/autobar.sh\n. \"$_libdir/caps.sh\"\n"
+          # #127: the gate calls the CACHED scan; check_caps pins the call.
+          "scan_caps_cached \"$opdir/VERDICTS.md\" \"$opdir/.capscache\"\n" + JSON_GET)
     write(root / "scripts" / "ops-task.sh",
           "#!/usr/bin/env bash\n" + guards + nolink + lookup("sentinel_for") + duploop
           + GOOD_ROOT_BLOCK)
@@ -4990,7 +4998,7 @@ class CapsTest(unittest.TestCase):
         '. "$_libdir/partition.sh"\n'
         '. "$_libdir/autobar.sh"\n'
         '. "$_libdir/caps.sh"\n'
-        'scan_caps "$opdir/VERDICTS.md"\n'
+        'scan_caps_cached "$opdir/VERDICTS.md" "$opdir/.capscache"\n'
         'if [ "$caps_scan_failed" = 0 ] && [ "$caps_tripped" -gt 0 ]; then\n'
         '  echo "operator: $caps_tripped target(s) at the cap" >&2\n'
         'fi\n'
@@ -5043,9 +5051,42 @@ class CapsTest(unittest.TestCase):
         # Without the reset the report fires forever on any ledger carrying
         # one repeated failure in its history — and a line that is always
         # there is a line nobody reads.
+        #
+        # #127: a reset now REMOVES the key rather than zeroing it, so the
+        # mutation disables the removal branch — the whole of what a PASS does.
         self._edit("scripts/lib/caps.sh",
-                   '[ "$found" -ge 0 ] && _caps_c[found]=0', ":")
+                   'if [ "$found" -ge 0 ]; then\n        _caps_n=$((_caps_n - 1))',
+                   'if false; then\n        _caps_n=$((_caps_n - 1))')
         self.assertTrue(any("'reset' ledger" in p for p in self._probs()),
+                        self._probs())
+
+    def test_hook_that_calls_the_uncached_scan_fires(self):
+        # PR #169 review: reverting the hook to plain `scan_caps` undid #127's
+        # whole per-Stop fix with the shell suite at 1254/0 and the validator
+        # green, because every cache case sourced the lib directly.
+        self._edit("scripts/ops-stop-hook.sh",
+                   'scan_caps_cached "$opdir/VERDICTS.md" "$opdir/.capscache"',
+                   'scan_caps "$opdir/VERDICTS.md"')
+        self.assertTrue(any("does not call `scan_caps_cached" in p
+                            for p in self._probs()), self._probs())
+
+    def test_cache_keyed_on_size_fires(self):
+        # #127: a key blind to content serves the stale trip after a same-size
+        # FAIL->PASS flip. The probe flips one in place and must read 0.
+        self._edit("scripts/lib/caps.sh",
+                   'kled="$( (set -o pipefail; head -c "$((CAPS_MAX_BYTES + 1))" "$f" | cksum) 2>/dev/null)" || kled=""',
+                   'kled="$(wc -c < "$f" | tr -d \' \') $(wc -c < "$f" | tr -d \' \')"')
+        self.assertTrue(any("'cached' ledger" in p for p in self._probs()),
+                        self._probs())
+
+    def test_cache_that_never_writes_fires(self):
+        # The stale-answer probe is vacuous against a cache that never hits:
+        # every call a miss passes it with ANY key. `cachewrote` is its
+        # control, and must fire on its own.
+        self._edit("scripts/lib/caps.sh",
+                   'if [ -n "${key:-}" ] && [ "${#caps_rows}" -le 65536 ]; then',
+                   'if false; then')
+        self.assertTrue(any("'cachewrote' ledger" in p for p in self._probs()),
                         self._probs())
 
     def test_key_without_the_criterion_fires(self):

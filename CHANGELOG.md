@@ -9,6 +9,32 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.12.3] - 2026-09-23
+
+The cap scan stops costing a second on every Stop, and a long cell stops hanging it.
+
+### Fixed
+
+- **A long cell no longer hangs the Stop hook (#145).** Three parsers split ledger rows with
+  `${x%% | *}` / `${x#* | }` chains: `lib/caps.sh`, `ops-reverify.sh`, and
+  `ops-verdict.sh`'s `row_is_conformant`. bash 3.2 runs those in time quadratic in the
+  cell's length. One 200 KB cell took 8s, and a 2 MB single-row ledger did not return in
+  120s while every size bound read as satisfied. Each parser is now one regex match (0.05s
+  on the same 2 MB row). A hand-edited row with a bare `|` inside a cell is now skipped,
+  matching what the writer and `--reconcile` already refuse.
+
+### Changed
+
+- **The cap scan is no longer paid on every Stop (#127).** The Stop hook calls
+  `scan_caps_cached`. It is keyed on the ledger's CONTENT and the detector's own bytes, never
+  mtime+size, because a same-second FAIL→PASS flip keeps both. Every cache failure is a full
+  scan, so the cache changes only cost, never the answer. The budget is written down for
+  macOS bash 3.2: ≤50ms for a hit. Measured: 10 hits on a 3000-row ledger take 0.07s, where
+  one full scan took 1.12s before this change. A PASS now removes its key from the table:
+  3000 rows scan in 0.63s, and 5000 rows no longer truncate. `check_caps` pins the hook's
+  `scan_caps_cached` call and EXECUTES the cache against a same-size FAIL→PASS flip. The PR
+  review found that reverting the call to plain `scan_caps` left every gate green.
+
 ## [0.12.2] - 2026-09-23
 
 The merge-tree classifier's last unreached branches get cases.

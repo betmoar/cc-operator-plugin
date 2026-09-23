@@ -48,8 +48,10 @@
 #                           question, and this file would then read as though
 #                           two of three caps were covered.
 #
-# POLARITY — REPORT-ONLY. It never blocks Stop, never writes, never exits
-# non-zero. Two reasons, and the second is decisive:
+# POLARITY — REPORT-ONLY. It never blocks Stop and never exits non-zero.
+# scan_caps never writes; scan_caps_cached (below) writes only its own cache
+# under .operator/.capscache/. Two reasons for report-only, and the second is
+# decisive:
 #
 #   1. The charter makes a cap trip the OPERATOR's stop-and-report, not the
 #      gate's. Blocking would substitute the tool's judgment for the decision
@@ -160,11 +162,9 @@ CAPS_MAX_STEPS=100000
 #    1000 rows   0.4s         5000 rows   1.9s (truncated)
 #      48 rows   0.05s   <- this repo's own ledger after 40+ verdicts
 #
-# So a few thousand rows costs ~1-2s ON EVERY STOP, and that is real. There
-# is no stated wall-clock budget for this hook (the statusline has CR5's
-# 300ms; the Stop hook has never had one), so "within budget" is not a claim
-# available here — the honest statement is that the cost is bounded, paid
-# every time, and unmeasured against any agreed limit.
+# Those were paid ON EVERY STOP. #127 answered it with a stated budget and a
+# cache (both below); #127/#145 also made the full scan itself cheaper:
+# 3000 rows 1.12s -> 0.63s, and 5000 rows is no longer truncated.
 #
 # Two cheaper designs, neither taken, both with a reason:
 #
@@ -174,11 +174,21 @@ CAPS_MAX_STEPS=100000
 #   than a missed one here — this gate's whole credibility is that it does
 #   not cry wolf.
 #
-#   MTIME CACHE. The ledger is append-only with a single writer, so an
-#   unchanged mtime means an unchanged answer. This is the real fix and it is
-#   its own piece of work, with its own failure mode: a stale cache is a gate
-#   that silently stopped running, which is the exact class this file exists
-#   to end. Tracked as issue #127 rather than half-built here.
+#   MTIME CACHE. Built in #127 as scan_caps_cached below, keyed on CONTENT
+#   rather than mtime: bash 3.2's `-nt` compares whole seconds, and a
+#   FAIL->PASS edit is the same size, so mtime+size cannot see a same-second,
+#   same-size change — the exact stale cache this file must never serve.
+#
+# THE BUDGET (#127 step 1), and the executor it applies to. Measured
+# 2026-09-23 on macOS bash 3.2 (the slow executor — Linux bash 5.2 is 4-5x
+# faster, #127's second table), realistic shape, 3000 rows:
+#
+#   cache HIT   <= 50ms   the target: scan_caps_cached on an unchanged ledger
+#   cache MISS  ~0.63s    a full scan — paid once per ledger change, not per
+#                         Stop (1.12s before #127/#145 reshaped the scan)
+#
+# A budget with no executor is a number that passes on CI and fails in the
+# chair (#127's comment), so the number is macOS bash 3.2's.
 
 # Sets: caps_tripped (count of targets at or over the cap), caps_rows (one
 # "<n> FAIL rounds: <id> | <criterion>" line each — the CALLER sanitizes and
@@ -187,7 +197,7 @@ CAPS_MAX_STEPS=100000
 # cannot name itself; the caller enumerates the size bounds then),
 # caps_scan_failed (1 = no readable ledger).
 scan_caps() { # scan_caps <verdicts-path>
-  local f="$1" row body id crit ev verdict key r1 r2 i n=0 bytes=0 found steps=0 _cr=0
+  local f="$1" row id crit ev verdict key i n=0 bytes=0 found steps=0 _cr=0
   # The key table is INTERNAL state, and it must be local (PR #126 review,
   # Copilot). Only the caps_* globals are outputs; `_caps_k`/`_caps_c`/`_caps_n`
   # were plain assignments, so sourcing this lib silently clobbered any caller
@@ -202,6 +212,9 @@ scan_caps() { # scan_caps <verdicts-path>
   # it reads) and so nothing leaks to the sourcing script — the idiom
   # scripts/lib/partition.sh uses.
   local LC_ALL=C
+  # In a VARIABLE, not inline: bash 3.1 changed how a quoted inline pattern is
+  # read, and the variable form means the same thing on 3.2 and 5.x.
+  local _caps_row_re='^\| ([^|]*) \| ([^|]*) \| ([^|]*) \| ([^|]*)( \|)?$'
   caps_tripped=0
   caps_rows=""
   caps_truncated=0
@@ -338,17 +351,26 @@ scan_caps() { # scan_caps <verdicts-path>
       "| Gate | Criterion | Evidence | PASS/FAIL |" | "|---"*) continue ;;
     esac
     # EXACTLY four cells — `| id | criterion | evidence @stamp | verdict |`,
-    # the schema ops-verdict.sh --reconcile enforces. Split on " | "; anything
-    # else is skipped, never guessed at.
-    body="${row#| }"; body="${body% |}"
-    id="${body%% | *}";   r1="${body#* | }"
-    crit="${r1%% | *}";   r2="${r1#* | }"
-    ev="${r2%% | *}";     verdict="${r2#* | }"
-    [ "$r1" != "$body" ] || continue
-    [ "$r2" != "$r1" ] || continue
-    [ "$verdict" != "$r2" ] || continue
+    # the schema ops-verdict.sh --reconcile enforces; anything else is skipped,
+    # never guessed at.
+    #
+    # ONE REGEX, NOT A CHAIN OF EXPANSIONS (#145). The split used to be
+    # `${body%% | *}` / `${r1#* | }` pairs, and bash 3.2 runs those QUADRATIC
+    # in the length of the cell they walk past. Measured 2026-09-23: one 200 KB
+    # criterion cell cost 8.0s in `${r1%% | *}` alone; a 2 MB row did not
+    # return in 120s — and this scan runs before the gates on EVERY Stop, while
+    # every bound read as satisfied (the row sits under the NUL probe's 2 MiB
+    # and is one line, one step). The regex costs 0.05s on the same 2 MB row.
+    # `[^|]*` is exactly the writer's cell: check_cell refuses `|` in every
+    # cell, and row_is_conformant refuses one too, so a row with a bare `|`
+    # inside a cell (hand-edited) is now skipped where the chain split around
+    # it — the same side of the line --reconcile draws. The trailing ` |` stays
+    # OPTIONAL, as `${body% |}` made it: a hand-edited row without one (legal
+    # markdown) still counts, so this change moves cost, not what is counted.
+    [[ $row =~ $_caps_row_re ]] || continue
+    id="${BASH_REMATCH[1]}"; crit="${BASH_REMATCH[2]}"
+    ev="${BASH_REMATCH[3]}"; verdict="${BASH_REMATCH[4]}"
     [ -n "$ev" ] || continue
-    case "$verdict" in *" | "*) continue ;; esac
     case "$verdict" in PASS | FAIL) ;; *) continue ;; esac
     # The key. Both halves are pipe-free and newline-free by construction —
     # ops-verdict.sh's check_cell refuses both in every cell — so " | " cannot
@@ -378,10 +400,23 @@ scan_caps() { # scan_caps <verdicts-path>
     # budget was added to fix — one level down, in the accounting itself.
     steps=$((steps + i + 1))
     if [ "$verdict" = PASS ]; then
-      # A PASS RESETS. Only a key we are already tracking: a PASS on a target
-      # that never failed creates nothing, which is what keeps the table small
-      # on an ordinary ledger.
-      [ "$found" -ge 0 ] && _caps_c[found]=0
+      # A PASS RESETS, and a reset key LEAVES THE TABLE (#127). A key at count 0
+      # behaves exactly like an absent one — its next FAIL counts 1 either way,
+      # and the report reads only counts >= CAPS_REWORK_MAX — but a zero key
+      # left in place is walked by every later row's lookup and holds one of
+      # CAPS_MAX_KEYS forever. So the table holds only targets CURRENTLY
+      # failing. Measured 2026-09-23, 3,000 rows (25 ids x 2 criteria, 10%
+      # FAIL): 1.12s -> 0.68s; 5,000 rows went from truncated (the step budget,
+      # spent walking dead keys) to a complete scan. A PASS on a target that
+      # never failed still creates nothing.
+      if [ "$found" -ge 0 ]; then
+        _caps_n=$((_caps_n - 1))
+        while [ "$found" -lt "$_caps_n" ]; do
+          _caps_k[found]="${_caps_k[found+1]}"; _caps_c[found]="${_caps_c[found+1]}"
+          found=$((found + 1))
+        done
+        unset "_caps_k[_caps_n]" "_caps_c[_caps_n]"
+      fi
     elif [ "$found" -ge 0 ]; then
       _caps_c[found]=$(( _caps_c[found] + 1 ))
     elif [ "$_caps_n" -lt "$CAPS_MAX_KEYS" ]; then
@@ -461,4 +496,100 @@ scan_caps() { # scan_caps <verdicts-path>
     fi
     i=$((i + 1))
   done
+}
+
+# scan_caps_cached <verdicts-path> <cache-dir> — scan_caps, skipped when the
+# ledger AND this lib are byte-identical to the last scan (#127). Same outputs,
+# same polarity. EVERY failure below is a cache MISS, never an answer: no
+# cksum/head on PATH, an unreadable or planted cache file, a symlinked cache
+# dir — each falls through to a full scan, which is today's behaviour. A cache
+# can only ever make the scan cheaper; it has no path to a different answer.
+#
+# THE KEY IS CONTENT, computed BEFORE the scan. Before, because the ledger can
+# be appended to mid-scan: a key taken after would pair the NEW bytes with an
+# answer computed from the OLD ones and serve it until the next write. Taken
+# before, a race costs one extra miss. Content (CRC + byte count via cksum),
+# because mtime has whole-second granularity on bash 3.2 and a FAIL->PASS flip
+# does not change the size — mtime+size keys serve a stale answer to exactly
+# that edit. The lib's own bytes are in the key too, so a change to the
+# detector (or its CAPS_* constants) cannot be answered by the old detector.
+#
+# The ledger hash is BOUNDED: `head -c CAPS_MAX_BYTES+1`, and a ledger whose
+# hashed count exceeds CAPS_MAX_BYTES is NOT cached — the hash would then
+# cover a prefix, and the tail can still change the TRUNCATION REASON a full
+# scan reports. Past the bound a full scan is cheap anyway (the NUL probe or
+# the byte cap stops it). `pipefail`, because without it a missing `head`
+# hashes the EMPTY stream to a constant key that would hit forever.
+#
+# A planted cache file whose key matches needs the CRC of the current ledger —
+# the power to edit the ledger itself, which the gate already treats as
+# untrusted. The cached rows go back through the caller's report_row sanitizer
+# like fresh ones.
+scan_caps_cached() {
+  # Every local INITIALISED: ops-stop-hook.sh runs under `set -u`, and an
+  # unreadable cache skips the reads below, so a bare `local l1` would abort
+  # the gate on its first test. A cache failure must never be a hook failure.
+  local f="$1" dir="$2" key="" klib="" kled="" hit=0 l1="" l2="" l3="" l4=""
+  local rows="" t="" tr="" sf="" rb="" rest="" row="" i=0
+  local LC_ALL=C
+  if [ -n "$dir" ] && [ -f "$f" ] && [ ! -L "$f" ] && [ ! -L "$dir" ]; then
+    kled="$( (set -o pipefail; head -c "$((CAPS_MAX_BYTES + 1))" "$f" | cksum) 2>/dev/null)" || kled=""
+    klib="$(cksum < "${BASH_SOURCE[0]}" 2>/dev/null)" || klib=""
+    case "$kled" in [0-9]*" "[0-9]*) ;; *) kled="" ;; esac
+    case "${kled#* }" in
+      "" | *[!0-9]*) kled="" ;;
+      *) [ "${kled#* }" -le "$CAPS_MAX_BYTES" ] || kled="" ;;
+    esac
+    case "$klib" in [0-9]*" "[0-9]*) ;; *) klib="" ;; esac
+    if [ -n "$kled" ] && [ -n "$klib" ]; then
+      key="$kled/$klib/$f"
+      if [ -f "$dir/scan" ] && [ ! -L "$dir/scan" ]; then
+        # Bounded reads (check_reader_bounds): four header lines, then at most
+        # CAPS_MAX_KEYS row lines (the report has one per tripped key, and the
+        # key table cannot hold more). The header carries the rows block's byte
+        # count and it is checked EXACTLY below — a short or long block is a
+        # miss, never a partial answer.
+        {
+          IFS= read -r -n 64 l1; IFS= read -r -n 4096 l2; IFS= read -r -n 64 l3
+          IFS= read -r -n 1024 l4
+          i=0
+          while [ "$i" -lt "$CAPS_MAX_KEYS" ] && IFS= read -r -n 65536 row; do
+            rows="${rows}${row}
+"
+            i=$((i + 1))
+          done
+        } < "$dir/scan" 2>/dev/null
+        if [ "$l1" = "caps-cache v1" ] && [ "$l2" = "$key" ]; then
+          # Split by expansion, not `read <<EOF`: a heredoc needs a writable
+          # TMPDIR, and l3 is at most 64 bytes, so these cost nothing.
+          t="${l3%% *}"; rest="${l3#* }"; tr="${rest%% *}"; rest="${rest#* }"
+          sf="${rest%% *}"; rb="${rest#* }"
+          case "$t/$tr/$sf/$rb" in
+            [0-9]*/[01]/[01]/[0-9]*)
+              case "$t$rb" in *[!0-9]*) ;; *)
+                if [ "${#rows}" -eq "$rb" ]; then
+                  caps_tripped="$t"; caps_truncated="$tr"; caps_scan_failed="$sf"
+                  caps_truncated_reason="$l4"; caps_rows="$rows"; hit=1
+                fi ;;
+              esac ;;
+          esac
+        fi
+      fi
+    fi
+  fi
+  [ "$hit" = 1 ] && return 0
+  scan_caps "$f"
+  # Store only a keyed, reportable result. A rows block past the read bound
+  # above would never hit, so it is not written; nothing here may fail the
+  # caller, so every write error is swallowed and the next Stop simply scans.
+  if [ -n "${key:-}" ] && [ "${#caps_rows}" -le 65536 ]; then
+    ( umask 077
+      mkdir -p "$dir" 2>/dev/null && [ ! -L "$dir" ] || exit 0
+      printf '%s\n%s\n%s %s %s %s\n%s\n%s' "caps-cache v1" "$key" \
+        "$caps_tripped" "$caps_truncated" "$caps_scan_failed" "${#caps_rows}" \
+        "$caps_truncated_reason" "$caps_rows" > "$dir/scan.tmp.$$" 2>/dev/null \
+        && mv -f "$dir/scan.tmp.$$" "$dir/scan" 2>/dev/null
+      rm -f "$dir/scan.tmp.$$" 2>/dev/null ) || :
+  fi
+  return 0
 }

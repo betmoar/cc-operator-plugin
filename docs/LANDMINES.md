@@ -2059,3 +2059,52 @@ nothing reworded — lives here, so the measured WHY is one grep away.
 - **Map: partition rule — introduced in 0.10**: - **The gate's partition rule lives in ONE file: `scripts/lib/partition.sh`** (0.10).
 - **Map: partition rule — the CR5 measurement (whole-file scan 0.4s at 3000 lines)**: The bar's one deviation is its tail-window approximation of the deviation scan (CR5: the whole-file scan measured 0.4s at 3000 lines against a ~300ms render budget — fail toward silence, hook still gates exactly).
 - **Provenance: audit handoffs — the uncommitted F01–F06 files**: - **Audit handoffs are maintainer-local and never committed**, except `docs/audit-2026-08-09-handoff.md` (F67+). The 2026-07-31 and `docs/audits/audit-2026-07-27-*` files are cited by earlier revisions as shipped but have an empty `git log --all` (F01–F06): they survive only as code, comments and CHANGELOG entries. Everything else (build ledger, plans, pilot runbook/findings, prior-project evidence) left the tree in 0.3.0 — git history (tree ≤ v0.2.0) or the maintainer's local `.archive/dev/`.
+
+## The cap scan's cost: a quadratic split and a cache that cannot lie (#145, #127)
+
+**#145 — `${x#* | }` is quadratic on bash 3.2.** Every 4-cell row parser split cells with a
+chain of `${body%% | *}` / `${r1#* | }` expansions. On bash 3.2 (macOS's `/bin/bash`), the
+`#* | ` form costs time quadratic in the length of the cell it walks past. Measured
+2026-09-23: a 200 KB criterion cell took 8.0s in `${r1%% | *}` alone. A 2 MB single-row
+ledger did not return in 120s. Meanwhile every bound read as satisfied: one line, one step,
+and under the NUL probe's 2 MiB. bash 5.x does not show it, so Linux CI never would. The
+split is now ONE `[[ =~ ]]` against `^\| ([^|]*) \| ([^|]*) \| ([^|]*) \| ([^|]*)( \|)?$`
+(0.05s on the same 2 MB row). It sits in a local variable, never inline, because bash 3.1
+changed how a quoted inline pattern is read. `[^|]*` is exactly the writer's cell, since
+`check_cell` refuses `|`. So one behaviour moved on purpose: a hand-edited row with a bare `|`
+inside a cell is now skipped, which is the side `row_is_conformant` already drew. The same
+chain lived in `ops-reverify.sh` (5.0s on a 100 KB cell) and in `row_is_conformant` (5.0s,
+paid while `--reconcile` holds the ledger lock). Both were rewritten, and the old and new
+conformance checks agree on 20 edge-case rows.
+
+**#127 step 1 — the budget, with its executor.** The target is ≤50ms for a cache hit on
+macOS bash 3.2 (the slow executor; Linux bash 5.2 is 4-5x faster). A miss is one full scan
+(~0.63s at 3000 rows), paid once per ledger change rather than per Stop. Measured: three
+Stops on a 3000-row project took 3.37s before and 1.96s after the scan changes alone. Ten
+cache hits on the same ledger take 0.07s in total.
+
+**#127 — a PASS removes its key.** A reset key used to stay in the table at count 0. It then
+cost every later row a comparison and held one of `CAPS_MAX_KEYS` forever, so 5000 ordinary
+rows truncated. A key at 0 behaves exactly like an absent one, so removal changes the cost
+and not the answer. An independent Python model and a 400-trial differential fuzz against
+the pre-change lib agree.
+
+**#127 — the cache is keyed on CONTENT, and that is the whole design.**
+- **Why not mtime+size (the issue's proposal).** A FAIL→PASS flip keeps the size, and
+  bash 3.2's `-nt` compares whole seconds, so that key serves a stale `tripped=1` for the
+  edit that cleared it. The suite pins exactly that edit.
+- **What goes into the key.** `cksum` of the ledger's first `CAPS_MAX_BYTES+1` bytes, plus
+  `cksum` of the lib itself (a changed detector cannot be answered by the old one), plus
+  the path.
+- **When the key is taken.** BEFORE the scan: a mid-scan append then costs one extra miss
+  instead of pairing new bytes with an old answer.
+- **When it is not cached at all.** A ledger over `CAPS_MAX_BYTES` gets no cache entry: the
+  hash would cover only a prefix, and the tail can still change the truncation reason.
+- **Every failure is a MISS, never an answer.** That covers: no `cksum`/`head` (`pipefail`,
+  or the empty stream hashes to a constant key), a symlinked cache dir, an entry whose rows
+  block disagrees with its declared length, and an unwritable parent. Each falls through to
+  `scan_caps`, whose answer is today's. A 250-step randomized sequence of appends, flips,
+  CRLF, NUL, truncations and duplicates found the cached answer identical to a fresh scan at
+  every step.
+- **Where it lives.** `.operator/.capscache/`, ignored by the v3 allowlist and wiped by
+  SessionStart beside `.autobar/` and `.stopguard/`.
