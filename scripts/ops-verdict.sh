@@ -782,6 +782,15 @@ VERDICT="${4:-}"
 # A row without evidence is FAIL by definition — refuse to write it at all.
 [ -n "$CRITERION" ] || die "empty criterion — refusing (a row without a criterion is not conformant)"
 [ -n "$EVIDENCE" ]  || die "empty evidence — refusing (a row without evidence is FAIL by definition)"
+# BLANK is empty (#91 review): `-n` passed three spaces, and for MOOT the
+# evidence cell IS the reason — a blank one is the quiet escape hatch the word
+# was specified not to be. The same holds for PASS/FAIL: whitespace is not
+# evidence. A value of only newlines/CRs is refused here as blank, before
+# check_cell would refuse it for the newline — either refusal is right.
+case "$EVIDENCE" in
+  *[![:space:]]*) ;;
+  *) die "blank evidence — refusing (whitespace is not evidence; for MOOT the evidence cell is the reason the criterion can no longer be evaluated)" ;;
+esac
 check_cell "criterion" "$CRITERION"
 check_cell "evidence" "$EVIDENCE"
 # MOOT (#91) is the third word, and it is per-CRITERION: --defer closes the

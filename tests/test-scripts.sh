@@ -558,6 +558,12 @@ check "verdict MAYBE → refused (PASS|FAIL|MOOT only)" "$([ "$MRC" -ne 0 ] && e
 ( cd "$P" && bash "$VERDICT" T-P "crit" "" MOOT >/dev/null 2>&1 ); MTRC=$?
 check "#91 MOOT with an EMPTY reason → refused, sentinel intact" \
   "$([ "$MTRC" -ne 0 ] && unchanged_lines "$P/.operator/VERDICTS.md" "$ROWS_BEFORE" && sentinel_any "$P" T-P && echo 0 || echo 1)"
+# A BLANK reason is an empty one (#91 adversarial review: `-n` accepted three spaces, and for
+# MOOT the evidence cell IS the reason). Whitespace is not evidence for PASS either.
+( cd "$P" && bash "$VERDICT" T-P "crit" "   " MOOT >/dev/null 2>&1 ); MTRC=$?
+( cd "$P" && bash "$VERDICT" T-P "crit" "$(printf ' \t ')" PASS >/dev/null 2>&1 ); MTRC2=$?
+check "#91 a BLANK reason (spaces / tabs) → refused for MOOT and PASS alike, sentinel intact" \
+  "$([ "$MTRC" -ne 0 ] && [ "$MTRC2" -ne 0 ] && unchanged_lines "$P/.operator/VERDICTS.md" "$ROWS_BEFORE" && sentinel_any "$P" T-P && echo 0 || echo 1)"
 ( cd "$P" && bash "$VERDICT" T-P "gate on the same bytes" "HEAD moved past the run's sha" MOOT >/dev/null 2>&1 ); MTRC=$?
 check "#91 MOOT with a reason → accepted, one 4-cell MOOT row, sentinel cleared" \
   "$([ "$MTRC" -eq 0 ] && delta_is "$P/.operator/VERDICTS.md" "$(wc -l < "$P/.operator/VERDICTS.md" | tr -d ' ')" "$(( ROWS_BEFORE ))" 1 \

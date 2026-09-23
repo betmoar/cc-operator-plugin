@@ -20,13 +20,16 @@ what it cannot see.
   records that a criterion can no longer be evaluated, for example a gate that needs the
   same bytes HEAD has since moved past. Before this, the choices were PASS (a lie), FAIL
   (reads as broken work), or `--defer` (closes the whole task). MOOT works per criterion,
-  and the evidence cell is its mandatory reason, refused when empty like any evidence.
+  and the evidence cell is its mandatory reason. A blank reason is refused along with an empty
+  one, and whitespace-only evidence is now refused for PASS and FAIL too.
   Every reader learned the word in the same change: `--reconcile` restores a MOOT row,
   `lib/caps.sh` treats MOOT as a reset (it is the cap's own "stop, log, move on"), and
   `ops-reverify.sh` lists it as clear because it asserts no result to re-run.
 - **`check_verdict_words`.** The verdict enum has three hand-copied sites: the writer's
   `case`, `row_is_conformant`'s regex, and `caps.sh`'s enum. The check holds them to one
-  set, and an enum it cannot read is a finding. `check_caps` gains an executed `moot`
+  set. It reads every arm of a `case`, requires exactly one site per copy, and reports an
+  enum it cannot read. The adversarial review found that reading only the first arm let
+  `WAIVE) ;;` as a second arm pass green. `check_caps` gains an executed `moot`
   fixture, because parity cannot see a reset narrowed back to `= PASS`.
 
 ### Changed

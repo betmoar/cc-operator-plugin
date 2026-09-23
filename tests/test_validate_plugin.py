@@ -5061,6 +5061,36 @@ class VerdictWordsTest(unittest.TestCase):
         self.assertTrue(any("'moot' ledger" in p for p in self._caps()),
                         self._caps())
 
+    def test_writer_word_as_second_arm_fires(self):
+        # THE ESCAPE THE ADVERSARIAL REVIEW FOUND: a new word as its own arm
+        # after `PASS|FAIL|MOOT) ;;`. The first reader parsed only the first
+        # arm, so this passed green — and the writer then emitted a row
+        # --reconcile drops. Red in check_verdict_words.
+        self._edit("scripts/ops-verdict.sh",
+                   "  PASS|FAIL|MOOT) ;;\n", "  PASS|FAIL|MOOT) ;;\n  WAIVE) ;;\n")
+        self.assertTrue(any("WAIVE" in p for p in self._words()),
+                        self._words())
+
+    def test_decoy_case_before_the_real_one_fires(self):
+        # The review's second escape: a decoy block FIRST, the real one gaining
+        # a word. A reader pinning the first match reads the decoy; this one
+        # requires exactly one site. Red in check_verdict_words.
+        self._edit("scripts/ops-verdict.sh",
+                   "  PASS|FAIL|MOOT) ;;\n", "  PASS|FAIL|MOOT|WAIVE) ;;\n")
+        self._edit("scripts/ops-verdict.sh", "die() {",
+                   '_decoy() {\n  case "$VERDICT" in\n  PASS|FAIL|MOOT) ;;\n'
+                   '  *) die x ;;\n  esac\n}\ndie() {')
+        self.assertTrue(any("could not be read" in p and "writer" in p
+                            for p in self._words()), self._words())
+
+    def test_refusing_arm_is_not_read_as_accepted(self):
+        # CONTROL for the all-arms reader: an arm that REFUSES a word (`die`)
+        # must not count it as accepted, or every refusal reads as drift.
+        self._edit("scripts/ops-verdict.sh",
+                   "  PASS|FAIL|MOOT) ;;\n",
+                   "  PASS|FAIL|MOOT) ;;\n  MAYBE) die \"no\" ;;\n")
+        self.assertEqual(self._words(), [])
+
     def test_unreadable_enum_fires_not_passes(self):
         # A reshaped `case` the reader cannot parse must be a finding, never
         # "no words, so nothing disagrees".
