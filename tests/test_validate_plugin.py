@@ -3868,6 +3868,72 @@ class AuditPinRemediationTest(unittest.TestCase):
         self.assertEqual(self._run(vp.check_claims), [])
 
 
+class ReleaseNotesOutsideTreeTest(unittest.TestCase):
+    """check_release_notes_outside_tree: the tag build's notes never land in
+    the checkout.
+
+    v0.11.17's release job wrote release-notes.md to the repo root; the
+    validator step read it as prose and failed 4 times on the old
+    `ops-claims.sh --claimed` form the CHANGELOG quotes (GitHub run
+    35822151503). No PR build writes the file, so every PR was green.
+    """
+
+    GATE = ('      - run: python3 scripts/release_gate.py "$GITHUB_REF_NAME" '
+            '--notes-out {p}\n')
+    PUB = '      - run: gh release create "$T" --notes-file {p}\n'
+    OK = "${RUNNER_TEMP:-/tmp}/release-notes.md"
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _probs(self, gate, pub, base=".github"):
+        wf = self.dir / base / "workflows"
+        wf.mkdir(parents=True, exist_ok=True)
+        write(wf / "release.yml", "jobs:\n  r:\n    steps:\n"
+              + self.GATE.format(p=gate) + self.PUB.format(p=pub))
+        probs = []
+        vp.check_release_notes_outside_tree(self.dir, probs)
+        return probs
+
+    def test_the_shipped_in_tree_path_fires(self):
+        probs = self._probs("release-notes.md", "release-notes.md")
+        self.assertEqual(len(probs), 2, probs)
+        self.assertIn("inside the checkout", probs[0])
+
+    def test_the_out_of_tree_path_passes(self):
+        # CONTROL.
+        self.assertEqual(self._probs(self.OK, self.OK), [])
+
+    def test_a_publisher_left_in_tree_fires(self):
+        # Moving only the writer leaves the publisher reading a file that is
+        # not there — a release step that fails after every gate passed.
+        probs = self._probs(self.OK, "release-notes.md")
+        self.assertEqual(len(probs), 1, probs)
+        self.assertIn(":5:", probs[0])
+
+    def test_the_forgejo_file_is_read_too(self):
+        self.assertTrue(self._probs("release-notes.md", self.OK,
+                                    base=".forgejo"))
+
+    def test_a_comment_naming_the_old_path_is_not_a_step(self):
+        wf = self.dir / ".github" / "workflows"
+        wf.mkdir(parents=True)
+        write(wf / "release.yml", "jobs:\n  r:\n    steps:\n"
+              "      # once wrote release-notes.md in the tree\n"
+              + self.GATE.format(p=self.OK) + self.PUB.format(p=self.OK))
+        probs = []
+        vp.check_release_notes_outside_tree(self.dir, probs)
+        self.assertEqual(probs, [])
+
+    def test_the_real_workflows_pass(self):
+        probs = []
+        vp.check_release_notes_outside_tree(ROOT, probs)
+        self.assertEqual(probs, [])
+
+
 class ReleaseGateCoverageTest(unittest.TestCase):
     """check_release_gates_cover_validate: the job that PUBLISHES must gate at
     least as much as the job that does not.

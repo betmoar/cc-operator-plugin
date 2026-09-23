@@ -3498,6 +3498,43 @@ console.log(JSON.stringify({identity: a === plain, stripped: b.indexOf("\x1b") =
                 problems.append(f"ops-sessionstart-hook.sh: does not clear `{d}` — it is not in the `for _cdir in …; do` word list (got {wordlist.strip()[:60]!r}), so a stale dedup hash after a compact collapses output the model can no longer see")
 
 
+def check_release_notes_outside_tree(root, problems):
+    """A release job writes its notes OUTSIDE the checkout.
+
+    v0.11.17's tag build wrote `release-notes.md` to the repo root, and the
+    validator step after it globbed `*.md` as prose: the notes quote the old
+    `ops-claims.sh --claimed` form the CHANGELOG records on purpose (CHANGELOG
+    is history-exempt; a file named release-notes.md is not), so
+    check_prose_invocations failed the build 4 times on a file that exists only
+    inside that job (GitHub run 35822151503). Every PR build was green, because
+    no PR build writes the file. So the path is pinned here, in both forges:
+    every live mention of `release-notes.md` in a release.yml must sit under
+    `${RUNNER_TEMP:-/tmp}/`, the writer AND the publisher, or the publisher
+    reads a file that is not there.
+    """
+    _OK = "${RUNNER_TEMP:-/tmp}/release-notes.md"
+    for base in (".github", ".forgejo"):
+        rel = root / base / "workflows" / "release.yml"
+        if not rel.is_file():
+            continue
+        seen = 0
+        for n, ln in enumerate(rel.read_text(encoding="utf-8").splitlines(), 1):
+            if ln.strip().startswith("#") or "release-notes.md" not in ln:
+                continue
+            seen += ln.count("release-notes.md")
+            if ln.count("release-notes.md") != ln.count(_OK):
+                problems.append(
+                    f"{base}/workflows/release.yml:{n}: release-notes.md is "
+                    f"written or read inside the checkout — the validator step "
+                    f"reads every root *.md as prose, and the tag build failed "
+                    f"on exactly that (v0.11.17). Use {_OK}")
+        if seen and seen < 2:
+            problems.append(
+                f"{base}/workflows/release.yml: release-notes.md appears once — "
+                f"the gate that WRITES it and the step that PUBLISHES it must "
+                f"both name the same out-of-tree path")
+
+
 def check_release_gates_cover_validate(root, problems):
     """
     release.yml must run every suite validate.yml runs (#38): a tag build
@@ -5103,6 +5140,7 @@ CHECKS = (
     check_workflow_agent_types,
     check_commands,
     check_release_gates_cover_validate,
+    check_release_notes_outside_tree,
     check_suite_floors,
     check_base_gate,
     check_coupling_case_refs,
