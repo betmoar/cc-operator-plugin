@@ -197,8 +197,9 @@ BASE_SHA="$(git -C "$REPO" rev-parse --quiet --verify "${BASE_REF}^{commit}")" \
 #                                      what a truncated shallow fetch looks
 #                                      like — the same shape that silently
 #                                      disarmed the marker arm in #125. It
-#                                      must never read as a conflict. Kept
-#                                      though no construction here reaches it.
+#                                      must never read as a conflict. Real
+#                                      git does not reach it from here (#133);
+#                                      the suite forces it with a PATH shim.
 #   rc 128                          -> a FATAL git error: the repository is
 #                                      incomplete or an object is unreadable
 #                                      (a truncated or shallow fetch). This is

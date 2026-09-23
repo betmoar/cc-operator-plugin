@@ -9,6 +9,18 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+### Fixed
+
+- **base-gate's unreached merge-tree branches have cases (#133).** Three branches of the
+  merge-tree classifier had no case: rc 1 with no tree sha, rc 129, and an unrecognised rc.
+  For the first, the mutation `_is_sha` always returning 0 was recorded as unreproducible.
+  Real git does not produce rc 1 with no sha from inside the gate. Measured on git 2.54:
+  partial clones (blob:none and tree:0, lazy fetch on and off, promisor unreachable) answer
+  rc 128 or recover. So the bash suite forces merge-tree's exit status with a PATH shim,
+  plus a CONTROL case proving the shim reaches the classifier. Each of four mutations goes
+  red in exactly its named case. The rc-1 branch is kept: it fails closed, and a future
+  git could reach it.
+
 ## [0.12.1] - 2026-09-23
 
 CLAUDE.md gets its headroom back, and the narrative it cut stays one grep away.
