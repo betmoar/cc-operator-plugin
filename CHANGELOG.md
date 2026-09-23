@@ -98,10 +98,17 @@ of those were the check performing its own defect class:
   21 flagged invocations against a measured 33. Neither was gated by anything; both are
   the F30 rule applied to prose, and both are now stated with the measurement that
   produced them.
+- **Round 3: the exemption still skipped a whole line.** Its subject guard is met by ANY
+  unaccepted flag, so a neighbour with a typo of its own was exempt from the
+  mandatory-flag arm too — `ops-claims.sh --sinse abc --claimed "a"` under a lesson
+  paragraph reported nothing, and 2 findings alone. The lesson now suppresses only the
+  unknown-flag report. The flagless arm's population counts (149 / 126 / 3) did not
+  reproduce (measured 159 / 138 / 12) and were dropped rather than updated: only the
+  number a test holds — 0 false positives — stays beside the code.
 
 ### Changed
 
-- `FLOOR_shell` 1101 → 1116 and `FLOOR_python` 397 → 423, with the measurements
+- `FLOOR_shell` 1101 → 1116 and `FLOOR_python` 397 → 424, with the measurements
   in `tests/floors.env`.
 - CLAUDE.md gained two coupling rows and lost its `## Procedure` section, whose
   two pointers duplicated what `## Provenance` and `## Landmines` already said.

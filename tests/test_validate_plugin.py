@@ -5638,6 +5638,21 @@ class ProseInvocationTest(unittest.TestCase):
                                "typo lesson must still be reported")
         self.assertIn("--since", probs[0])
 
+    def test_the_exemption_does_not_cover_a_neighbour_WITH_A_TYPO_OF_ITS_OWN(self):
+        # Review round 3, reproduced on README.md before it was believed: the
+        # subject guard is satisfied by ANY unaccepted flag, so a neighbour
+        # carrying its own typo AND omitting --since was skipped whole — 0
+        # findings, against 2 for the same line outside the paragraph. The
+        # lesson excuses the UNKNOWN-FLAG report only; the mandatory-flag arm
+        # still judges the line.
+        probs = self._probs(
+            "**Verify the parser refuses a mistyped flag** — the control:\n"
+            "`ops-thing.sh --ownr S` must exit non-zero.\n"
+            'Also run `ops-thing.sh --sinse Y --claimed "x"` to double check.\n')
+        self.assertTrue(probs, "a missing mandatory flag must be reported even "
+                               "when the line also carries a typo")
+        self.assertIn("omits --since", probs[0])
+
     def test_the_exemption_still_covers_the_control_it_excuses(self):
         # The other half: narrowing the exemption must not break the thing it
         # exists for. docs/REPLAY-CHARTER.md's `--ownr` probe is deliberate.

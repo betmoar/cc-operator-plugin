@@ -4662,11 +4662,13 @@ def check_prose_invocations(root, problems):
                     # uses (#149, review round).
                     #
                     # Bounded three ways, because a bare CLI NAME in prose is
-                    # not a command line and this table is full of them (149 on
-                    # this tree): every form must require a flag; the mention
-                    # must sit in a CODE SPAN; and it must carry an ARGUMENT
-                    # after the name. Measured on the real tree: 126 flagless
-                    # code spans, 3 of them argument-bearing, 0 false positives.
+                    # not a command line and the tree is full of them: every
+                    # form must require a flag; the mention must sit in a CODE
+                    # SPAN; and it must carry an ARGUMENT after the name. The
+                    # one number held here is the one a test holds: 0 false
+                    # positives on the real tree (test_the_real_tree_passes).
+                    # The population counts this comment used to carry were
+                    # never reproduced against the code — see floors.env.
                     if not (forms and all(f[1] for f in forms)):
                         continue
                     # A LIST of filenames is not a command line, and the
@@ -4710,10 +4712,20 @@ def check_prose_invocations(root, problems):
                 # the SUBJECT: at least one flag on this line must be one the
                 # CLI does not accept. A correct invocation sitting beside a
                 # typo lesson is judged normally.
-                if (re.search(r'mistyped|unknown option|typo',
-                              _para.get(lineno - 1, line), re.I)
-                        and flags - accepted):
-                    continue
+                #
+                # And the exemption EXCUSES ONE REPORT, not the line. It
+                # skipped the whole judgment, so a neighbour carrying ANY typo
+                # of its own was exempt from the mandatory-flag arm too:
+                # `ops-claims.sh --sinse abc --claimed "a"` appended to a
+                # lesson paragraph reported nothing, and 2 findings without the
+                # paragraph (PR #146 review round 3). The lesson is about the
+                # unknown flag, so only the unknown-flag report is suppressed.
+                # Residual, accepted: a neighbour whose ONLY defect is a typo'd
+                # flag reads exactly like the lesson, and nothing on the line
+                # tells them apart.
+                _lesson = bool(re.search(r'mistyped|unknown option|typo',
+                                         _para.get(lineno - 1, line), re.I)
+                               and flags - accepted)
                 if not accepted:
                     problems.append(
                         f"{rel}:{lineno}: prescribes flags for `{cli}`, whose "
@@ -4723,7 +4735,7 @@ def check_prose_invocations(root, problems):
                         f"ships green")
                     continue
                 unknown = sorted(flags - accepted)
-                if unknown:
+                if unknown and not _lesson:
                     problems.append(
                         f"{rel}:{lineno}: prescribes `{cli} "
                         f"{' '.join(unknown)}` — that flag is not in the CLI's "
