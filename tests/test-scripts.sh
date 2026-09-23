@@ -4451,6 +4451,26 @@ check "#155 a second --approve is refused" \
 check "#155 …and only ONE BAR block exists for the spec" \
   "$([ "$(grep -c '^## BAR — alpha' "$SP/.operator/VERDICTS.md")" -eq 1 ] && echo 0 || echo 1)"
 
+# A RETRY AFTER A FAILED WRITE must not duplicate what already landed (PR #154
+# review, measured 3 SPEC-APPROVED rows + 2 BAR blocks for one spec). First try
+# dies at the BAR append (VERDICTS.md is a directory); the second succeeds.
+SPR="$(newproj)"; ( cd "$SPR" && bash "$INIT" >/dev/null 2>&1 )
+( cd "$SPR" && bash "$SPECSH" --new retried >/dev/null 2>&1 )
+spec_fill "$SPR" retried
+mv "$SPR/.operator/VERDICTS.md" "$SPR/.operator/V.bak" && mkdir "$SPR/.operator/VERDICTS.md"
+( cd "$SPR" && bash "$SPECSH" --approve retried --owner S-RETRY >/dev/null 2>&1 ); SPR1=$?
+rmdir "$SPR/.operator/VERDICTS.md" && mv "$SPR/.operator/V.bak" "$SPR/.operator/VERDICTS.md"
+( cd "$SPR" && bash "$SPECSH" --approve retried --owner S-RETRY >/dev/null 2>&1 ); SPR2=$?
+check "#155 retry: the first --approve FAILED at the BAR append (precondition)" \
+  "$([ "$SPR1" -eq 2 ] && echo 0 || echo 1)"
+check "#155 retry: the second --approve succeeded" \
+  "$([ "$SPR2" -eq 0 ] && grep -q '^Status: APPROVED' "$SPR/.operator/specs/retried.md" && echo 0 || echo 1)"
+check "#155 retry: exactly ONE SPEC-APPROVED line, not one per attempt" \
+  "$([ "$(grep -c '| retried | SPEC-APPROVED |' "$SPR/.operator/DECISIONS.md")" -eq 1 ] && echo 0 || echo 1)"
+check "#155 retry: exactly ONE BAR block" \
+  "$([ "$(grep -c '^## BAR — retried' "$SPR/.operator/VERDICTS.md")" -eq 1 ] && echo 0 || echo 1)"
+rm -rf "$SPR"
+
 # THE LEDGER LOCK. --approve appends to VERDICTS.md AND DECISIONS.md — the
 # files ops-verdict.sh serialises — and the BAR block is six writes in one
 # group, so a concurrent verdict row could land inside it. A third writer to a
@@ -4463,11 +4483,39 @@ spec_fill "$SPL" raced
 ( cd "$SPL" && bash "$SPECSH" --approve raced --owner S-RACE >/dev/null 2>&1 ) &
 ( cd "$SPL" && bash "$SCRIPTS/ops-verdict.sh" racer crit "cmd output" PASS --owner S-RACE >/dev/null 2>&1 ) &
 wait
-# The verdict row must exist WHOLE and OUTSIDE the BAR block's table — a row
-# spliced between the block's lines is the interleaving under test.
+# The verdict row must exist WHOLE and OUTSIDE the BAR block — a row spliced
+# between the block's lines is the interleaving under test. The block ENDS at
+# its `Caps:` line: ending it at the next `## ` heading read a row correctly
+# appended AFTER a trailing block as spliced, so the case failed whenever the
+# verdict lost the lock race (PR #154 review, reproduced on a hand-built
+# ledger). bar_spliced's two controls below pin both sides.
+bar_spliced() { # bar_spliced <file> <row-id> → "spliced" iff the row sits between ## BAR and Caps:
+  awk -v id="| $2 |" '/^## BAR/{inbar=1;next} inbar&&/^Caps:/{inbar=0} inbar&&index($0,id)==1{print "spliced"}' "$1"
+}
+_BS="$(newproj)"
+printf '## BAR — x
+
+| # | C |
+| 1 | c |
+
+Caps: t.
+| racer | crit | e | PASS |
+' > "$_BS/after.md"
+printf '## BAR — x
+
+| # | C |
+| racer | crit | e | PASS |
+| 1 | c |
+
+Caps: t.
+' > "$_BS/inside.md"
+check "#155 CONTROL bar_spliced: a row appended AFTER a trailing block is not spliced" \
+  "$([ -z "$(bar_spliced "$_BS/after.md" racer)" ] && echo 0 || echo 1)"
+check "#155 CONTROL bar_spliced: a row INSIDE the block is spliced" \
+  "$([ "$(bar_spliced "$_BS/inside.md" racer)" = spliced ] && echo 0 || echo 1)"
+rm -rf "$_BS"
 check "#155 a concurrent verdict row lands whole, never inside the BAR block" \
-  "$(awk '/^## BAR/{inbar=1;next} /^## /{inbar=0} inbar&&/\| racer \|/{print "spliced"}' \
-       "$SPL/.operator/VERDICTS.md" | grep -q spliced && echo 1 || echo 0)"
+  "$([ -z "$(bar_spliced "$SPL/.operator/VERDICTS.md" racer)" ] && echo 0 || echo 1)"
 check "#155 …and that row is still in the ledger (the lock serialised, never dropped)" \
   "$([ "$(grep -c '^| racer |' "$SPL/.operator/VERDICTS.md")" -eq 1 ] && echo 0 || echo 1)"
 check "#155 …and the BAR block was written exactly once" \

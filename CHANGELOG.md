@@ -49,8 +49,8 @@ derivation that tells a session where it stands. Design rationale: `docs/CYCLE.m
   silently.
 - **The charter names the implement workflow (#159).** ORCHESTRATED MODE listed review,
   brainstorm, plan and debate while `workflows/implement.js` shipped — the operator was
-  not told the stage it runs most has a workflow. One word: 143/150 lines,
-  8884/9000 bytes, caps re-run green.
+  not told the stage it runs most has a workflow. One word: 144/150 lines,
+  8934/9000 bytes after the rebase onto 0.11.18, caps re-run green.
 - **`.operator/.gitignore` takes a third version ADDITIVELY (#156).** v1→v2 REPLACES
   (blocklist and allowlist are contradictory schemes); v2→v3 APPENDS, because v3 only adds
   `specs/` to a scheme v2 already established. A replace there would have destroyed every
@@ -122,6 +122,20 @@ it read this branch's prose on arrival:
 - Three stage checks used `$(case … in pat) …)`, which bash 3.2 cannot parse
   inside a command substitution. On macOS the suite reported them as failures,
   while the Linux CI passed. The patterns now carry the leading `(`.
+- Review of the rebased branch (four lenses) found:
+  - `check_guard_parity` left out `ops-spec.sh`, a fourth writer with its own
+    copies of both name guards. Deleting its `*__*` arm reported all contracts
+    holding. It is now in the CLI tuple, with two cases that are red on the old
+    validator.
+  - `--approve` duplicated its ledger lines on a retry. A failure between writes
+    left Status DRAFT, and every retry re-appended the SPEC-APPROVED line and
+    the BAR block (measured: 3 lines and 2 blocks for one spec). A retry now
+    skips what already landed, keyed on slug + stamp.
+  - The concurrent-verdict case's detector ended the BAR block at the next
+    `## ` heading, so a row correctly appended after a trailing block read as
+    spliced, a flaky red. It now ends at `Caps:`, with both sides pinned.
+  - `stage.sh` and CYCLE.md said the Stop hook shares `stage_derive`. It does
+    not; only SessionStart calls it.
 - CLAUDE.md went over its 38000-char cap once both sides' rows were merged.
   The base-gate row's mechanics moved to `docs/LANDMINES.md` ("base-gate: the
   operational detail").

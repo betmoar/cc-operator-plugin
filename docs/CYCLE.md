@@ -10,8 +10,8 @@ Two stages are missing, not one. The spec stage has no artifact (§2, §3). The
 implement stage has an artifact but no workflow, which is why the one tier
 bound to the implementer is dispatched by nothing (§5).
 
-Scope discipline, stated once: `templates/OPERATOR.md` is at 143/150 lines and
-8873/9000 bytes. Nothing proposed here goes in the charter, and if something
+Scope discipline, stated once: `templates/OPERATOR.md` is at 144/150 lines and
+8934/9000 bytes. Nothing proposed here goes in the charter, and if something
 needs charter bytes the design is wrong — issue #75's own acceptance criterion,
 kept.
 
@@ -344,9 +344,9 @@ the stage is a pure function of artifacts already on disk:
 
 **Built (#157), and since #155 the spec rows too.** `stage_derive` is a PURE function over what `scan_pending` and
 `scan_deviations` already computed — it opens no file, so it adds no reader, no
-byte cap and no second copy of the partition rule, and the Stop hook (which has
-run every scan) and the SessionStart hook (which runs only the pending one) can
-share it without disagreeing. The shipped rungs are BLOCKED (an unclosable
+byte cap and no second copy of the partition rule. Only the SessionStart hook
+calls it today; the Stop hook (which runs every scan) could share it without
+disagreeing, because the two would differ in what they know, not in the rule. The shipped rungs are BLOCKED (an unclosable
 sentinel) > IMPLEMENT (a task of mine open) > HANDOFF (unpresented decisions) >
 CLEAR, and the SessionStart banner carries the result — the one channel a
 session reads before doing anything, and the only one it has after a

@@ -541,10 +541,27 @@ lock_acquire
 # between them leaves a record that the approval was attempted with the spec
 # still DRAFT — which re-runs cleanly. The reverse order leaves an APPROVED
 # spec no ledger knows about, and nothing would ever retry it.
-printf '%s | %s | SPEC-APPROVED | spec %s approved @%s | the plan gate reads this file; see %s\n' \
-  "$TODAY" "$SLUG" "$SLUG" "$STAMP" "$SPEC" >> "$DECISIONS" \
-  || die "could not append to $DECISIONS"
+#
+# A RETRY SKIPS WHAT ALREADY LANDED. The already-approved refusal keys on the
+# Status line, which is written LAST — so after a failure between the writes,
+# every retry re-appended a full SPEC-APPROVED row and BAR block (PR #154
+# review, measured: 3 rows and 2 blocks for one spec after two failed tries).
+# The key is slug + STAMP: a retry of the same approval re-derives the same
+# stamp and skips; a real re-approval after the spec changed carries a new one
+# and writes.
+_dec_key="| $SLUG | SPEC-APPROVED | spec $SLUG approved @$STAMP |"
+_bar_key="## BAR — $SLUG (spec $SLUG @$STAMP)"
+if grep -qF -- "$_dec_key" "$DECISIONS" 2>/dev/null; then
+  echo "  (retry: the SPEC-APPROVED line for @$STAMP is already in $DECISIONS — not re-appended)"
+else
+  printf '%s | %s | SPEC-APPROVED | spec %s approved @%s | the plan gate reads this file; see %s\n' \
+    "$TODAY" "$SLUG" "$SLUG" "$STAMP" "$SPEC" >> "$DECISIONS" \
+    || die "could not append to $DECISIONS"
+fi
 
+if grep -qxF -- "$_bar_key" "$VERDICTS" 2>/dev/null; then
+  echo "  (retry: the BAR block for @$STAMP is already in $VERDICTS — not re-appended)"
+else
 {
   printf '\n## BAR — %s (spec %s @%s)\n\n' "$SLUG" "$SLUG" "$STAMP"
   printf 'North star: '
@@ -554,6 +571,7 @@ printf '%s | %s | SPEC-APPROVED | spec %s approved @%s | the plan gate reads thi
   awk '/^## Done criteria/{f=1;next} /^## /{f=0} f&&/^\|/{print}' "$SPEC"
   printf '\nCaps: the charter table (identical-rejection x2, same-target-rework x2, neighbor-regressing x2).\n'
 } >> "$VERDICTS" || die "could not append the BAR block to $VERDICTS"
+fi
 
 # The Status line last, and rewritten through a temp + same-dir mv for the
 # .gitignore writers' reason: an in-place edit that dies leaves a spec that is
@@ -565,7 +583,7 @@ if sed "s|^Status: DRAFT\$|Status: APPROVED @$STAMP|" "$SPEC" > "$_tmp" 2>/dev/n
   :
 else
   rm -f "$_tmp" 2>/dev/null
-  die "could not stamp Status: APPROVED on $SPEC — the DECISIONS line and the BAR block ARE written, so re-run --approve after fixing the file (it is idempotent only once the Status line lands)"
+  die "could not stamp Status: APPROVED on $SPEC — the DECISIONS line and the BAR block ARE written, so re-run --approve after fixing the file: a retry at the same source state skips both and writes only the Status line"
 fi
 
 lock_release

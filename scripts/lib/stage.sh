@@ -16,10 +16,11 @@
 # PURE. This lib opens NO file. It is a function of facts the caller has
 # already computed — scan_pending's counts and scan_deviations' verdict — so
 # it adds no reader, no byte cap, no NUL probe, and no second copy of the
-# partition rule. That is the whole reason it can be shared by the Stop hook
-# (which has run every scan) and the SessionStart hook (which runs only the
-# pending one) without the two disagreeing: they differ in what they KNOW, not
-# in how the stage is decided, and the unknown input has its own answer.
+# partition rule. That is the whole reason it CAN be shared by the Stop hook
+# (which runs every scan) and the SessionStart hook (which runs only the
+# pending one) without the two disagreeing: they would differ in what they KNOW,
+# not in how the stage is decided. Today only SessionStart calls it; the Stop
+# hook does not source this lib.
 #
 # REPORT-ONLY, like the cap detector: nothing here exits, writes, or changes a
 # gate's verdict. A stage that could block would be a second gate keyed on
@@ -35,7 +36,7 @@
 # look, "none" when .operator/specs/ does not exist or holds nothing, "draft"
 # when specs exist but none is APPROVED, "approved" when at least one is. The
 # caller computes it because this lib opens no file — the same division that
-# lets the Stop hook and SessionStart share one derivation.
+# would let the Stop hook share one derivation with SessionStart.
 #
 # ABSENT specs/ is "none" and reports CLEAR, NOT a spec stage. A project that
 # never opted into the spec stage must not be told forever that it is in

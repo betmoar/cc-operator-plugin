@@ -1345,7 +1345,11 @@ def check_guard_parity(root, problems):
     may contain. `check_bare_name` (filename safety) and `check_owner_name`
     (owner-vs-session-id) are deliberately separate — conflating them wedged
     every pre-0.4 task whose id contained a space."""
-    clis = ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh")
+    # ops-spec.sh (#155) is a FOURTH writer of the same name grammar — its slug
+    # becomes a task id and its --owner a sentinel owner — and it carried its
+    # own copy of both guards outside this tuple, so deleting its `*__*` arm
+    # was `all contracts hold` (PR #154 review, measured).
+    clis = ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh", "ops-spec.sh")
     for name in clis:
         p = root / "scripts" / name
         if not p.is_file():

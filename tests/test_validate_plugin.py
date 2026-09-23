@@ -3548,7 +3548,7 @@ class GuardParityVacuityTest(unittest.TestCase):
 
     def _install_real(self):
         """Copy the real CLIs in — the pins must hold against shipped code."""
-        for n in ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh",
+        for n in ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh", "ops-spec.sh",
                   "ops-stop-hook.sh", "statusline.sh", "lib/partition.sh"):
             src = self.real / n
             if src.is_file():
@@ -3596,7 +3596,8 @@ class GuardParityVacuityTest(unittest.TestCase):
     # executable probe existed. One CLI at a time: guards do not cover for
     # each other, and a pin added to one of three is the F116 shape.
     def test_a_dead_case_arm_before_the_guards_fires_per_cli(self):
-        for script in ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh"):
+        for script in ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh",
+                       "ops-spec.sh"):
             with self.subTest(script=script):
                 self._install_real()
                 p = self.dir / "scripts" / script
@@ -3611,6 +3612,21 @@ class GuardParityVacuityTest(unittest.TestCase):
                     f"{script}: a `?*)` arm before the guards must fire: {probs}")
                 self._install_real()
                 self.assertEqual(self._probs(), [])
+
+    def test_ops_spec_is_a_guarded_writer(self):
+        # PR #154 review, measured: ops-spec.sh (#155) carries its own copy of
+        # both guards, and deleting its `*__*` arm was `all contracts hold` —
+        # it sat outside check_guard_parity's CLI tuple. Its slug becomes a
+        # task id and its --owner a sentinel owner, the same name grammar.
+        self._install_real()
+        p = self.dir / "scripts" / "ops-spec.sh"
+        src = p.read_text(encoding="utf-8")
+        arm = "    *__*) die \"$1 must not contain '__'"
+        self.assertIn(arm, src, "ops-spec.sh: the `*__*` arm moved")
+        write(p, src.replace(arm, "    *__NOPE__) die \"$1 must not contain '__'", 1))
+        probs = self._probs()
+        self.assertTrue(any("scripts/ops-spec.sh" in q and "'__'" in q
+                            for q in probs), probs)
 
     def test_an_arm_calling_a_nonexistent_command_fires(self):
         # PR review of e8e0179: the probe's first cut asked only `rc != 0`, so
