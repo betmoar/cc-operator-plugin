@@ -643,7 +643,7 @@ when anything needs re-verification. It never writes.
 **To re-verify a row:** re-run its criterion yourself, on the tree the stamp
 names when it matters; record the outcome as a NEW row through the single
 writer — `.operator/bin/ops-verdict.sh <gate> "re-verify(#103): <criterion>"
-"<evidence>" <PASS|FAIL> --owner <sid>` — and let the GATE-EXCEPTION it writes
+"<evidence>" <PASS|FAIL|MOOT> --owner <sid>` — and let the GATE-EXCEPTION it writes
 (no sentinel was open) stand as the audit line that this was a retro-check. A
 criterion that cannot be re-run gets a MOOT row (reason as evidence, #91), not a PASS.
 

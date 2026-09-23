@@ -21,7 +21,10 @@ what it cannot see.
   same bytes HEAD has since moved past. Before this, the choices were PASS (a lie), FAIL
   (reads as broken work), or `--defer` (closes the whole task). MOOT works per criterion,
   and the evidence cell is its mandatory reason. A blank reason is refused along with an empty
-  one, and whitespace-only evidence is now refused for PASS and FAIL too.
+  one, and whitespace-only evidence is now refused for PASS and FAIL too. "Blank" is judged by
+  bytes, so the locale does not change the answer: Unicode blanks (NBSP, zero-width space,
+  BOM, and similar) count as blank. A `[:space:]` test alone accepted a lone NBSP under
+  `C`/`POSIX` and refused it under UTF-8.
   Every reader learned the word in the same change: `--reconcile` restores a MOOT row,
   `lib/caps.sh` treats MOOT as a reset (it is the cap's own "stop, log, move on"), and
   `ops-reverify.sh` lists it as clear because it asserts no result to re-run.

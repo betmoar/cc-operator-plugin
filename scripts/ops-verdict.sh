@@ -787,10 +787,22 @@ VERDICT="${4:-}"
 # was specified not to be. The same holds for PASS/FAIL: whitespace is not
 # evidence. A value of only newlines/CRs is refused here as blank, before
 # check_cell would refuse it for the newline — either refusal is right.
-case "$EVIDENCE" in
-  *[![:space:]]*) ;;
-  *) die "blank evidence — refusing (whitespace is not evidence; for MOOT the evidence cell is the reason the criterion can no longer be evaluated)" ;;
-esac
+#
+# LOCALE-INDEPENDENT, BY BYTES (PR #170 review). `[![:space:]]` follows the
+# caller's locale: measured, a lone U+00A0 (NBSP, a common rich-text paste
+# artifact) was refused under C.UTF-8 and ACCEPTED under C/POSIX — so the gate
+# depended on how the shell was launched (cron, a minimal container). Under
+# LC_ALL=C: any printable ASCII byte is content; otherwise the value is blank
+# iff it is nothing but ASCII whitespace and the UTF-8 encodings of the Unicode
+# blanks (U+0085, U+00A0, U+1680, U+2000-200B, U+2028/2029, U+202F, U+205F,
+# U+3000, U+FEFF). ONE regex, not a removal loop: bash 3.2 runs `${x//…}`
+# quadratic (#145); this measured 0.08s on 200 KB of NBSP.
+_blank_re=$'^([[:space:]]|\xc2[\xa0\x85]|\xe1\x9a\x80|\xe2\x80[\x80-\x8b\xa8\xa9\xaf]|\xe2\x81\x9f|\xe3\x80\x80|\xef\xbb\xbf)*$'
+if ( LC_ALL=C
+     case "$EVIDENCE" in *[[:graph:]]*) exit 1 ;; esac
+     [[ $EVIDENCE =~ $_blank_re ]] ); then
+  die "blank evidence — refusing (whitespace is not evidence; for MOOT the evidence cell is the reason the criterion can no longer be evaluated)"
+fi
 check_cell "criterion" "$CRITERION"
 check_cell "evidence" "$EVIDENCE"
 # MOOT (#91) is the third word, and it is per-CRITERION: --defer closes the

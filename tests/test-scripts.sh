@@ -552,6 +552,9 @@ check "pipe in evidence → no row, sentinel intact" "$(unchanged_lines "$P/.ope
 check "newline in evidence → refused" "$([ "$NRC" -ne 0 ] && echo 0 || echo 1)"
 ( cd "$P" && bash "$VERDICT" T-P "crit" "evidence" MAYBE >/dev/null 2>&1 ); MRC=$?
 check "verdict MAYBE → refused (PASS|FAIL|MOOT only)" "$([ "$MRC" -ne 0 ] && echo 0 || echo 1)"
+MERR="$( cd "$P" && bash "$VERDICT" T-P "crit" "evidence" MAYBE 2>&1 >/dev/null )"
+check "#91 the refusal NAMES all three words, MOOT included" \
+  "$(printf '%s' "$MERR" | grep -qF 'exactly PASS, FAIL or MOOT' && echo 0 || echo 1)"
 # #91: MOOT is the third word — a criterion that stopped being answerable. Per-CRITERION (the
 # sentinel clears like any verdict) and its evidence cell is the mandatory REASON: an empty one is
 # refused exactly like empty evidence, so the word cannot be a quiet escape hatch.
@@ -564,6 +567,29 @@ check "#91 MOOT with an EMPTY reason → refused, sentinel intact" \
 ( cd "$P" && bash "$VERDICT" T-P "crit" "$(printf ' \t ')" PASS >/dev/null 2>&1 ); MTRC2=$?
 check "#91 a BLANK reason (spaces / tabs) → refused for MOOT and PASS alike, sentinel intact" \
   "$([ "$MTRC" -ne 0 ] && [ "$MTRC2" -ne 0 ] && unchanged_lines "$P/.operator/VERDICTS.md" "$ROWS_BEFORE" && sentinel_any "$P" T-P && echo 0 || echo 1)"
+# Locale-INDEPENDENT (PR #170 review): `[![:space:]]` follows the caller's locale, and a lone
+# U+00A0 (NBSP, a rich-text paste artifact) was refused under C.UTF-8 and ACCEPTED under C/POSIX.
+# Both locales, a zero-width-space + NBSP mix, and the CONTROL: a real non-ASCII reason (é, 日本)
+# is content in both — a guard that refuses every high byte would pass the first half.
+# The UTF-8 locale is DISCOVERED, as case 1342 does — a runner without C.UTF-8 would otherwise
+# fall back to C silently and test one locale twice. None installed: the C half still runs.
+_u8="$(locale -a 2>/dev/null | grep -m1 -i 'utf-\{0,1\}8' || true)"
+_nb=0
+for _loc in C ${_u8:+"$_u8"}; do
+  for _v in $'\xc2\xa0' $'\xe2\x80\x8b\xc2\xa0 \t' $'\xef\xbb\xbf'; do
+    ( cd "$P" && LC_ALL=$_loc bash "$VERDICT" T-P "crit" "$_v" MOOT >/dev/null 2>&1 ) && _nb=1
+  done
+done
+check "#91 Unicode-blank reasons (NBSP, ZWSP, BOM) refused under C AND a UTF-8 locale alike, sentinel intact" \
+  "$([ "$_nb" -eq 0 ] && unchanged_lines "$P/.operator/VERDICTS.md" "$ROWS_BEFORE" && sentinel_any "$P" T-P && echo 0 || echo 1)"
+_nc=0
+for _loc in C ${_u8:+"$_u8"}; do
+  : > "$P/.operator/pending/T-P"
+  ( cd "$P" && LC_ALL=$_loc bash "$VERDICT" T-P "crit" $'caf\xc3\xa9 \xe6\x97\xa5\xe6\x9c\xac' MOOT >/dev/null 2>&1 ) || _nc=1
+done
+check "#91 CONTROL a real non-ASCII reason (café 日本) is content under both locales" \
+  "$([ "$_nc" -eq 0 ] && echo 0 || echo 1)"
+: > "$P/.operator/pending/T-P"; ROWS_BEFORE="$(wc -l < "$P/.operator/VERDICTS.md" | tr -d ' ')"
 ( cd "$P" && bash "$VERDICT" T-P "gate on the same bytes" "HEAD moved past the run's sha" MOOT >/dev/null 2>&1 ); MTRC=$?
 check "#91 MOOT with a reason → accepted, one 4-cell MOOT row, sentinel cleared" \
   "$([ "$MTRC" -eq 0 ] && delta_is "$P/.operator/VERDICTS.md" "$(wc -l < "$P/.operator/VERDICTS.md" | tr -d ' ')" "$(( ROWS_BEFORE ))" 1 \
@@ -7548,6 +7574,10 @@ if command -v git >/dev/null 2>&1; then
   run_hook stop-session-a.json "$CAPP"
   _cw=1; case "$HERR" in *"same-target-rework cap"*) _cw=0 ;; esac
   check "the Stop hook REPORTS the cap against rows the single writer produced" "$_cw"
+  # #91: the report names BOTH exits a caps.sh reset accepts. Told only "a later PASS clears
+  # it", an operator whose criterion went unanswerable is steered to a PASS it cannot earn.
+  _cm=1; case "$HERR" in *"a later PASS or MOOT on the same criterion clears it"*) _cm=0 ;; esac
+  check "#91 the cap report names MOOT beside PASS as what clears a tripped target" "$_cm"
   _cn=1; case "$HERR" in *"T-1 | the criterion"*) _cn=0 ;; esac
   check "the hook's report NAMES the target it is about" "$_cn"
   check "the cap NEVER blocks — a tripped cap still exits 0 (append-only: it could never clear)" \
@@ -7558,6 +7588,10 @@ if command -v git >/dev/null 2>&1; then
   run_hook stop-session-a.json "$CAPP"
   _cb=1; case "$HERR" in *"same-target-rework cap"*) case "$HERR" in *"pending verdict"*) _cb=0 ;; esac ;; esac
   check "on a BLOCKING stop the cap report is emitted beside the pending-verdict message" "$_cb"
+  # #91: the pending line is a PRESCRIPTION the model pastes; it must offer the word the
+  # writer accepts, or MOOT exists only for an operator who already knows it does.
+  _cp=1; case "$HERR" in *"<evidence> <PASS|FAIL|MOOT>, or --defer"*) _cp=0 ;; esac
+  check "#91 the pending-verdict line prescribes <PASS|FAIL|MOOT>" "$_cp"
   check "and the exit code is still the pending gate's 2, not the cap's" \
     "$([ "$HRC" -eq 2 ] && echo 0 || echo 1)"
   # NEGATIVE CONTROL: a clean ledger must produce no cap line at all, or every check above is
