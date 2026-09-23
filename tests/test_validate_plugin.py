@@ -4616,6 +4616,52 @@ class CheckRegistryTest(unittest.TestCase):
                          {f.__name__ for f in reversed(vp.CHECKS)})
 
 
+class TextEncodingTest(unittest.TestCase):
+    """#163: a non-UTF-8 file is a FINDING BY PATH, never a traceback.
+
+    Measured before the fix: `printf '\\xff\\xfe' >> scripts/ops-claims.sh`
+    raised UnicodeDecodeError out of an unrelated check, named neither the file
+    nor the check, and hid every contract after it.
+    """
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        make_good_tree(self.dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _poison(self):
+        p = self.dir / "scripts" / "ops-claims.sh"
+        p.write_bytes(p.read_bytes() + b"\xff\xfe")
+
+    def test_a_non_utf8_CLI_is_named_by_path(self):
+        self._poison()
+        probs = []
+        vp.check_text_encoding(self.dir, probs)
+        self.assertTrue(any(x.startswith("scripts/ops-claims.sh: not valid "
+                                         "UTF-8") for x in probs), probs)
+
+    def test_main_completes_and_reports_instead_of_raising(self):
+        self._poison()
+        import io, contextlib
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = vp.main([str(self.dir)])
+        self.assertEqual(rc, 1)
+        self.assertIn("scripts/ops-claims.sh: not valid UTF-8", err.getvalue())
+
+    def test_the_good_tree_is_clean(self):
+        # CONTROL: a check that fired on every tree would pass the two above.
+        probs = []
+        vp.check_text_encoding(self.dir, probs)
+        self.assertEqual(probs, [])
+
+    def test_the_check_is_registered_FIRST(self):
+        # It names the file before any other check can trip over it.
+        self.assertIs(vp.CHECKS[0], vp.check_text_encoding)
+
+
 class CapsTest(unittest.TestCase):
     """check_caps (#107): the charter's cap table, with something behind it.
 
@@ -5649,9 +5695,9 @@ class ProseInvocationTest(unittest.TestCase):
             "**Verify the parser refuses a mistyped flag** — the control:\n"
             "`ops-thing.sh --ownr S` must exit non-zero.\n"
             'Also run `ops-thing.sh --sinse Y --claimed "x"` to double check.\n')
-        self.assertTrue(probs, "a missing mandatory flag must be reported even "
-                               "when the line also carries a typo")
-        self.assertIn("omits --since", probs[0])
+        self.assertTrue(any("omits --since" in x for x in probs),
+                        "a missing mandatory flag must be reported even when "
+                        f"the line also carries a typo; got {probs}")
 
     def test_the_exemption_still_covers_the_control_it_excuses(self):
         # The other half: narrowing the exemption must not break the thing it
@@ -5869,15 +5915,98 @@ class ProseInvocationTest(unittest.TestCase):
             '  -*) die "bad flag" ;;\n'   # no `usage:` string at all
             'esac\n',
             encoding="utf-8")
-        # No crash, and --owner IS accepted by that parser, so nothing fires.
-        self.assertEqual(
-            [x for x in self._probs("run `ops-noform.sh --owner S`\n")
-             if "ops-noform" in x], [])
+        # No crash — and since #161 the missing forms are REPORTED at the
+        # line that depends on them, not skipped: a formless CLI's mandatory
+        # half is unpinned, which is how ops-render.sh and ops-tiers.sh went
+        # unjudged.
+        probs = [x for x in self._probs("run `ops-noform.sh --owner S`\n")
+                 if "ops-noform" in x]
+        self.assertTrue(probs, "a CLI with no readable usage form must be "
+                               "reported where prose depends on it (#161)")
+        self.assertIn("usage forms", probs[0])
         # …and the unknown-flag arm still runs for it: a CLI with no parseable
         # form loses only the MANDATORY half, not every check.
         probs = [x for x in self._probs("run `ops-noform.sh --ownr S`\n")
                  if "ops-noform" in x]
         self.assertTrue(probs, "a formless CLI still gets unknown-flag checks")
+
+    def test_a_COMMENT_BLOCK_usage_is_read_as_forms(self):
+        # #161: ops-render.sh and ops-tiers.sh declare their forms only in a
+        # `# Usage:` header block, and the one-line `usage:` regex read ZERO
+        # forms from both — so the mandatory-flag arm skipped them silently.
+        (self.dir / "scripts" / "ops-blk.sh").write_text(
+            '#!/usr/bin/env bash\n'
+            '# Usage:\n'
+            '#   ops-blk.sh --seat <s> --model <id>   → bind one seat\n'
+            '#   ops-blk.sh --show                    → print the table (see --seat)\n'
+            'case "$1" in\n'
+            '  --seat) S="$2" ;; --model) M="$2" ;;\n'
+            '  --show) SHOW=1 ;;\n'
+            'esac\n', encoding="utf-8")
+        _, forms = vp._cli_flag_contract(self.dir / "scripts" / "ops-blk.sh")
+        self.assertEqual(sorted(sorted(f[1]) for f in forms),
+                         [["--model", "--seat"], ["--show"]],
+                         "the description after the arrow is not flags")
+        probs = self._probs("bind it: `ops-blk.sh --seat mechanic`\n")
+        self.assertTrue(probs, "a comment-block form's mandatory flag, "
+                               "omitted, must fire")
+        self.assertIn("omits --model", probs[0])
+        # CONTROL: the other form is complete on its own — and its
+        # DESCRIPTION names --seat, which must not be read as a requirement.
+        self.assertEqual(self._probs("then `ops-blk.sh --show`\n"), [])
+
+    def test_the_real_comment_block_CLIs_have_forms(self):
+        # The instance: the two shipped CLIs #161 measured at `forms=[]`.
+        for name in ("ops-render.sh", "ops-tiers.sh"):
+            _, forms = vp._cli_flag_contract(ROOT / "scripts" / name)
+            self.assertTrue(forms, f"{name}: no usage form read (#161)")
+            self.assertIn({"--show"}, [f[1] for f in forms], name)
+
+    def test_a_WRAPPED_invocation_is_judged_whole(self):
+        # #162: scanned per physical line, a `\` continuation was judged on
+        # its first line only — a broken flag on the next line was never read.
+        probs = self._probs(
+            "```bash\n"
+            "ops-thing.sh \\\n"
+            '  --sinse abc --claimed "a"\n'
+            "```\n")
+        self.assertTrue(probs, "a broken flag on a continuation line must fire")
+        self.assertTrue(any("--sinse" in x for x in probs), probs)
+        self.assertTrue(probs[0].startswith("docs/N.md:2:"),
+                        "reported at the line the command STARTS on")
+        # CONTROL: the correct wrapped form is green.
+        self.assertEqual(self._probs(
+            "```bash\n"
+            "ops-thing.sh \\\n"
+            '  --since abc \\\n'
+            '  --claimed "a"\n'
+            "```\n"), [])
+
+    def test_a_trailing_backslash_OUTSIDE_a_fence_is_not_joined(self):
+        # Outside a fence a trailing `\` is markdown's hard line break, not a
+        # shell continuation: joining it would glue the next sentence's
+        # `--flags` onto this CLI.
+        self.assertEqual(self._probs(
+            "Run ops-thing.sh --since X --claimed y\\\n"
+            "--dry-run is not something this CLI has.\n"), [])
+
+    def test_a_lesson_excuses_ONE_typo_not_every_typo(self):
+        # #164: any line whose flags were merely unknown read as the lesson,
+        # so a neighbour whose ONLY defect was a typo of its own was exempt.
+        # The lesson excuses the first unaccepted flag in its paragraph.
+        probs = self._probs(
+            "**Verify the parser refuses a mistyped flag** — the control:\n"
+            "`ops-thing.sh --ownr S` must exit non-zero.\n"
+            "Also `ops-thing.sh --since Y --clamed x` to double check.\n")
+        self.assertTrue(probs, "a SECOND, different typo in a lesson "
+                               "paragraph must fire")
+        self.assertIn("--clamed", probs[0])
+        # CONTROL: the lesson's own typo repeated in its paragraph stays
+        # excused — that IS the lesson.
+        self.assertEqual(self._probs(
+            "**Verify the parser refuses a mistyped flag** — the control:\n"
+            "`ops-thing.sh --ownr S` must exit non-zero, and so must\n"
+            "`ops-thing.sh --ownr T --since Y --claimed x`.\n"), [])
 
     def test_the_docs_dev_exemption_is_applied(self):
         # Working notes, exempt for the same reason as history. Confirmed

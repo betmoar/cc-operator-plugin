@@ -105,10 +105,23 @@ of those were the check performing its own defect class:
   unknown-flag report. The flagless arm's population counts (149 / 126 / 3) did not
   reproduce (measured 159 / 138 / 12) and were dropped rather than updated: only the
   number a test holds — 0 false positives — stays beside the code.
+- **The four latent gaps the review filed, fixed here** (#161 #162 #163 #164):
+  - `ops-render.sh` and `ops-tiers.sh` read as ZERO usage forms — they declare them in a
+    `# Usage:` comment block the one-line regex could not see — so the mandatory-flag
+    arm skipped both silently. The block is now read, and a CLI with no readable form is
+    REPORTED where prose depends on it instead of skipped.
+  - An invocation wrapped with a trailing `\` inside a fence was judged on its first
+    line only; a broken flag on the continuation was never read. Continuations are
+    joined in fences (outside one, `\` is a markdown hard break).
+  - A non-UTF-8 file crashed the validator with a traceback from an unrelated check.
+    `check_text_encoding` runs first and names the file; `main()` turns a later decode
+    error into a finding naming the check, so every other contract is still judged.
+  - A lesson paragraph excused any unknown flag on any line in it. It now excuses ONE —
+    the first typo it carries — and a second, different typo fires.
 
 ### Changed
 
-- `FLOOR_shell` 1101 → 1116 and `FLOOR_python` 397 → 424, with the measurements
+- `FLOOR_shell` 1101 → 1116 and `FLOOR_python` 397 → 433, with the measurements
   in `tests/floors.env`.
 - CLAUDE.md gained two coupling rows and lost its `## Procedure` section, whose
   two pointers duplicated what `## Provenance` and `## Landmines` already said.

@@ -4486,6 +4486,38 @@ _PROSE_ROOTS = ("*.md", "docs/**/*.md", "templates/*.md", "commands/*.md",
                 "agents/*.md", "skills/**/*.md")
 
 
+_TEXT_ROOTS = ("*.md", "docs/**/*.md", "scripts/**/*", "hooks/**/*",
+               "templates/**/*", "agents/**/*", "commands/**/*",
+               "skills/**/*", "workflows/**/*", ".claude-plugin/**/*")
+
+
+def check_text_encoding(root, problems):
+    """Every file the validator reads decodes as UTF-8, and a file that does
+    not is REPORTED BY PATH (#163).
+
+    Fifty-odd checks read with `read_text(encoding="utf-8")`. One stray byte in
+    a CLI raised UnicodeDecodeError out of whichever check reached the file
+    first — measured: `printf '\\xff\\xfe' >> scripts/ops-claims.sh` gave a
+    traceback from an unrelated check and never named the file. That failed
+    closed, but it pointed the maintainer at the wrong place. This check runs
+    FIRST and names the file; `main()` turns any later decode crash into a
+    finding naming the check, so the run completes and every other contract
+    is still judged.
+    """
+    for pat in _TEXT_ROOTS:
+        for p in sorted(root.glob(pat)):
+            if (not p.is_file() or "__pycache__" in p.parts
+                    or "node_modules" in p.parts):
+                continue
+            try:
+                p.read_bytes().decode("utf-8")
+            except UnicodeDecodeError as e:
+                problems.append(
+                    f"{p.relative_to(root).as_posix()}: not valid UTF-8 "
+                    f"(byte {e.start}: {e.reason}) — every check reading it "
+                    f"is judging bytes it cannot decode (#163)")
+
+
 def _cli_flag_contract(path):
     """The flags a gate CLI ACCEPTS and the ones it REFUSES to run without,
     read off that CLI's own parser rather than catalogued here.
@@ -4512,7 +4544,9 @@ def _cli_flag_contract(path):
     treating as "this CLI takes no flags" — a parser we cannot read is a pin
     that proves nothing, not a CLI that accepts everything.
     """
-    text = path.read_text(encoding="utf-8")
+    # `replace`, not strict: an undecodable CLI is check_text_encoding's
+    # finding, by path. Crashing here would hide every other contract (#163).
+    text = path.read_text(encoding="utf-8", errors="replace")
     # `(?:^|;;)`, not `^`: ops-render.sh packs two arms on one line
     # (`--show) MODE=show; shift ;; --revert) MODE=revert; shift ;;`) and a
     # line-anchored scan silently loses the second — it reported `--revert`,
@@ -4550,6 +4584,21 @@ def _cli_flag_contract(path):
             # bracketed spans, and whatever `--flag` survives is required IN
             # THIS FORM — which is how `--owner` comes out mandatory for
             # --mark-handoff and optional for the verdict form, from one line.
+            bare = re.sub(r'\[[^\]]*\]', ' ', part)
+            forms.append((set(re.findall(r'--[a-z][a-z-]*', part)),
+                          set(re.findall(r'--[a-z][a-z-]*', bare))))
+    # The COMMENT-BLOCK usage forms. ops-render.sh and ops-tiers.sh declare
+    # theirs only as a header block — `# Usage:` and then one `#   ops-x.sh …`
+    # line per form — which the one-line regex above misses twice over (the
+    # capital U, and a newline plus `#` between the colon and the name). Both
+    # read as ZERO forms and the mandatory-flag arm skipped them silently
+    # (#161, measured: `forms=[]` for both). Each line is one form; its
+    # trailing description (after `→` or a run of 2+ spaces) is not flags.
+    for blk in re.findall(r'^#\s*usage\b[^:\n]*:[ \t]*\n((?:#[ \t]+ops-[a-z-]+'
+                          r'\.sh\b.*\n)+)', text, re.M | re.I):
+        for ln in blk.splitlines():
+            part = re.sub(r'^#[ \t]+ops-[a-z-]+\.sh', '', ln).strip()
+            part = re.split(r'→|\s{2,}', part)[0]
             bare = re.sub(r'\[[^\]]*\]', ' ', part)
             forms.append((set(re.findall(r'--[a-z][a-z-]*', part)),
                           set(re.findall(r'--[a-z][a-z-]*', bare))))
@@ -4632,18 +4681,37 @@ def check_prose_invocations(root, problems):
         # written. A line-only scan condemned it. A paragraph is the natural
         # bound and a narrow one — it cannot reach across a blank line into an
         # unrelated block the way a fixed ±N window can.
-        _para, _start = {}, 0
+        _para, _pstart, _start = {}, {}, 0
         for _i, _l in enumerate(_lines):
             if _l.strip():
                 continue
             _blk = "\n".join(_lines[_start:_i])
             for _j in range(_start, _i):
-                _para[_j] = _blk
+                _para[_j], _pstart[_j] = _blk, _start
             _start = _i + 1
         _blk = "\n".join(_lines[_start:])
         for _j in range(_start, len(_lines)):
-            _para[_j] = _blk
-        for lineno, line in enumerate(_lines, 1):
+            _para[_j], _pstart[_j] = _blk, _start
+        # A SHELL CONTINUATION is one command line. Scanned per physical line,
+        # `ops-claims.sh \` + `  --sinse abc --claimed "a"` was judged on its
+        # first line only and the broken flag was never read (#162, measured:
+        # 0 findings). Joined INSIDE A FENCE only: outside one, a trailing `\`
+        # is markdown's hard line break, not a shell continuation. The joined
+        # line reports under the number of the line the command starts on.
+        _logical, _fence, _i = [], False, 0
+        while _i < len(_lines):
+            _l, _no = _lines[_i], _i + 1
+            if re.match(r'\s*(```|~~~)', _l):
+                _fence = not _fence
+            while (_fence and _l.rstrip().endswith("\\")
+                   and _i + 1 < len(_lines)):
+                _i += 1
+                _l = _l.rstrip()[:-1] + " " + _lines[_i].strip()
+            _logical.append((_no, _l))
+            _i += 1
+        # The ONE typo each lesson paragraph excuses, keyed by paragraph start.
+        _excused = {}
+        for lineno, line in _logical:
             for m in _CITE.finditer(line):
                 cli = m.group(1)
                 if cli not in contracts:
@@ -4720,12 +4788,22 @@ def check_prose_invocations(root, problems):
                 # lesson paragraph reported nothing, and 2 findings without the
                 # paragraph (PR #146 review round 3). The lesson is about the
                 # unknown flag, so only the unknown-flag report is suppressed.
-                # Residual, accepted: a neighbour whose ONLY defect is a typo'd
-                # flag reads exactly like the lesson, and nothing on the line
-                # tells them apart.
-                _lesson = bool(re.search(r'mistyped|unknown option|typo',
-                                         _para.get(lineno - 1, line), re.I)
-                               and flags - accepted)
+                #
+                # And it excuses ONE FLAG PER PARAGRAPH: the first unaccepted
+                # flag the paragraph carries, in document order. A lesson
+                # teaches one typo; any line whose flags were merely unknown
+                # read as the lesson, so a neighbour whose ONLY defect was a
+                # typo of its own was exempt too (#164). Now a second,
+                # different typo in the same paragraph fires; the lesson's own
+                # typo repeated stays excused.
+                _unk_in_order = [f for f in _FLAG.findall(m.group(2))
+                                 if f not in accepted]
+                _lesson_flag = None
+                if (_unk_in_order and accepted
+                        and re.search(r'mistyped|unknown option|typo',
+                                      _para.get(lineno - 1, line), re.I)):
+                    _lesson_flag = _excused.setdefault(
+                        _pstart.get(lineno - 1), _unk_in_order[0])
                 if not accepted:
                     problems.append(
                         f"{rel}:{lineno}: prescribes flags for `{cli}`, whose "
@@ -4734,8 +4812,8 @@ def check_prose_invocations(root, problems):
                         f"than skipped: a silent skip is how a gutted guard "
                         f"ships green")
                     continue
-                unknown = sorted(flags - accepted)
-                if unknown and not _lesson:
+                unknown = sorted(flags - accepted - {_lesson_flag})
+                if unknown:
                     problems.append(
                         f"{rel}:{lineno}: prescribes `{cli} "
                         f"{' '.join(unknown)}` — that flag is not in the CLI's "
@@ -4743,6 +4821,16 @@ def check_prose_invocations(root, problems):
                         f"`unknown option` (#149). Accepted: "
                         f"{' '.join(sorted(accepted))}")
                 if not forms:
+                    # A parser we can read with NO usage form we can read: the
+                    # mandatory half of this prescription is unpinned. Skipping
+                    # it silently is how ops-render.sh and ops-tiers.sh went
+                    # unjudged (#161) — report it at the line that depends on
+                    # it, the same polarity as the unreadable-parser arm above.
+                    problems.append(
+                        f"{rel}:{lineno}: prescribes flags for `{cli}`, whose "
+                        f"usage forms check_prose_invocations cannot read — "
+                        f"its mandatory flags are unpinned (#161). Give the "
+                        f"CLI a `usage: {cli} …` string or a `# Usage:` block")
                     continue
                 # A prescription is judged against the form it SELECTS — the
                 # form sharing the most flags with it. Judging against a union
@@ -4983,6 +5071,7 @@ def check_coupling_case_refs(root, problems):
 # parity, lock parity) ended up running in the build but not in the good-tree
 # test, which is the test most likely to be trusted.
 CHECKS = (
+    check_text_encoding,
     check_manifests,
     check_statusline,
     check_changelog,
@@ -5028,7 +5117,15 @@ def main(argv=None):
         __file__).resolve().parent.parent
     problems = []
     for check in CHECKS:
-        check(root, problems)
+        # A decode error is a FINDING, not a crash (#163): a traceback out of
+        # one check hid every contract after it and named neither the file nor
+        # the check. check_text_encoding has already named the file.
+        try:
+            check(root, problems)
+        except UnicodeDecodeError as e:
+            problems.append(
+                f"{check.__name__} could not decode a file it reads ({e.reason}"
+                f" at byte {e.start}) — see check_text_encoding's finding (#163)")
 
     if problems:
         for p in problems:
