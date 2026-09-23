@@ -1995,3 +1995,21 @@ accepts it, the hook still ran, and no reviewer would spot it. What caught it wa
 end-to-end case — run the hook, read the banner — rather than any assertion about the lib.
 Unit cases over a pure function prove the function; only the integration case proves the
 wiring, and the wiring is where the shapes bash silently tolerates live.
+
+## base-gate: the operational detail (0.12.0 extraction from CLAUDE.md)
+
+Moved out of CLAUDE.md's `base-gate.sh` coupling row when 0.12.0's rows pushed that file
+past its 38000-char cap. The row keeps the couplings and the citations; this keeps the
+mechanics.
+
+- **Arm 3b** holds each CI file's `gate-suite.sh <rung>` set from the base (`CI_FILES`).
+  Its git calls are CHECKED via `_ci_show`: at the base a failure is `die`, at the PR it
+  is `fail`.
+- **The subject is the merge result.** `merge-tree --write-tree` has EIGHT outcomes. The
+  SEVEN rc-2 refusals are keyed on rc, whether stdout is a sha, and whether the tree has
+  ENTRIES. Arm 4 alone keeps THREE dots (#130).
+- **The job** lives in its OWN `base-gate.yml` per forge. Its checkout is PINNED to the
+  base sha with `fetch-depth: 0`, and the head is only FETCHED. `check_base_gate` reads
+  `_BASE_GATE_FILES`.
+- **Fixture traps.** A ROOT-only fixture does not run on CI's uid (#134). A fixture that
+  DELETES a git object owes every later case a fresh repo (#140).

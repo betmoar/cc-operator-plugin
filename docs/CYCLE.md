@@ -143,7 +143,7 @@ Three requirements carry weight; the rest is shape:
 
 ### 3.3 Approval, and what the stamp means
 
-`ops-spec.sh --approve <slug>` does three things and refuses if `--check` does
+`ops-spec.sh --approve <slug> --owner <id>` does three things and refuses if `--check` does
 not pass first:
 
 1. Stamps `Status: APPROVED @<source-stamp>` using the **same** resolution

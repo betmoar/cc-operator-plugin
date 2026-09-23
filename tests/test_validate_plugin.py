@@ -6262,6 +6262,38 @@ class ProseInvocationTest(unittest.TestCase):
         # DESCRIPTION names --seat, which must not be read as a requirement.
         self.assertEqual(self._probs("then `ops-blk.sh --show`\n"), [])
 
+    def test_an_ALTERNATION_arm_accepts_every_flag_in_it(self):
+        # ops-spec.sh dispatches `--new|--check|--approve)` through ONE arm.
+        # The single-flag pattern read none of them: 10 correct prescriptions
+        # reported as unknown flags when PR #154 rebased onto 0.11.18.
+        (self.dir / "scripts" / "ops-alt.sh").write_text(
+            '#!/usr/bin/env bash\n'
+            'case "$1" in\n'
+            '  --new|--check) MODE="$1" ;;\n'
+            '  -h|--help) usage ;;\n'
+            'esac\n', encoding="utf-8")
+        accepted, _ = vp._cli_flag_contract(self.dir / "scripts" / "ops-alt.sh")
+        self.assertEqual(accepted, {"--new", "--check", "--help"})
+
+    def test_a_usage_HEREDOC_yields_one_form_per_line(self):
+        # ops-spec.sh's usage is a heredoc, one form per line. The one-line
+        # pattern read only the first, so --approve's mandatory --owner did
+        # not exist and `ops-spec.sh --approve <slug>` passed unjudged.
+        (self.dir / "scripts" / "ops-hd.sh").write_text(
+            '#!/usr/bin/env bash\n'
+            "  cat >&2 <<'USAGE'\n"
+            'usage: ops-hd.sh --new <slug>\n'
+            '       ops-hd.sh --approve <slug> --owner <sid>\n'
+            'USAGE\n'
+            'case "$1" in\n'
+            '  --new|--approve) M=1 ;; --owner) O="$2" ;;\n'
+            'esac\n', encoding="utf-8")
+        probs = self._probs("stamp it: `ops-hd.sh --approve <slug>`\n")
+        self.assertTrue(probs, "a heredoc form's mandatory flag must be read")
+        self.assertIn("omits --owner", probs[0])
+        # CONTROL: the first form needs nothing more.
+        self.assertEqual(self._probs("then `ops-hd.sh --new <slug>`\n"), [])
+
     def test_the_real_comment_block_CLIs_have_forms(self):
         # The instance: the two shipped CLIs #161 measured at `forms=[]`.
         for name in ("ops-render.sh", "ops-tiers.sh"):

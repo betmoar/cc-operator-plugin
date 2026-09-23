@@ -4642,21 +4642,21 @@ check "stage: IMPLEMENT outranks HANDOFF (an open task is not a finished engagem
 # be asserting a fact its caller never checked.
 stage_derive 0 0 '' 0 -
 check "stage: an unscanned deviation gate is SAID, never assumed clean" \
-  "$(case "$STAGE_NEXT" in *"not scanned"*) echo 0 ;; *) echo 1 ;; esac)"
+  "$(case "$STAGE_NEXT" in (*"not scanned"*) echo 0 ;; (*) echo 1 ;; esac)"
 check "stage: and it never claims HANDOFF on an unknown input" \
   "$([ "$STAGE" != "HANDOFF" ] && echo 0 || echo 1)"
 # CONTROL: with the gate actually scanned and clean, that caveat must be ABSENT
 # — otherwise the assertion above passes on a string that is always there.
 stage_derive 0 0 '' 0 0
 check "stage: CONTROL — a scanned, clean gate carries no 'not scanned' caveat" \
-  "$(case "$STAGE_NEXT" in *"not scanned"*) echo 1 ;; *) echo 0 ;; esac)"
+  "$(case "$STAGE_NEXT" in (*"not scanned"*) echo 1 ;; (*) echo 0 ;; esac)"
 # A foreign task is REPORTED and is never a stage: another session's open work
 # changes nothing about what this session should do next.
 stage_derive 0 0 '' 2 0
 check "stage: a foreign task does not become my stage" \
   "$([ "$STAGE" = "CLEAR" ] && echo 0 || echo 1)"
 check "stage: but it IS reported in the next move" \
-  "$(case "$STAGE_NEXT" in *"belong to other sessions"*) echo 0 ;; *) echo 1 ;; esac)"
+  "$(case "$STAGE_NEXT" in (*"belong to other sessions"*) echo 0 ;; (*) echo 1 ;; esac)"
 check "stage: REPORT-ONLY — no exit/return-1 in any stage_derive branch" \
   "$(grep -nE '^\s*(exit|return 1)' "$STAGELIB" | grep -qv 'return 0' && echo 1 || echo 0)"
 

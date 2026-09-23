@@ -283,5 +283,5 @@ return {
   changed,
   // Said out loud, because a caller reading `changed` might otherwise take it
   // for a verified claim: it is the seats' own account of what they touched.
-  changedIsUnverified: "these are the seats' CLAIMED paths — verify with .operator/bin/ops-claims.sh --claimed \"<paths>\" before recording a verdict",
+  changedIsUnverified: "these are the seats' CLAIMED paths — verify with .operator/bin/ops-claims.sh --since <dispatch-sha> --claimed \"<paths>\" before recording a verdict",
 };

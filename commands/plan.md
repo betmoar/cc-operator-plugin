@@ -24,8 +24,9 @@ arguments, before any dispatch — so assemble them first.
    and reads it without a fallback.
 
    **Take it from the spec's `## North star` section verbatim.** That is what
-   makes it the same sentence as the BAR block's: `ops-spec.sh --approve`
-   emitted that block FROM the spec, so copying from the spec keeps all three
+   makes it the same sentence as the BAR block's:
+   `ops-spec.sh --approve <slug> --owner <id>` emitted that block FROM the spec, so
+   copying from the spec keeps all three
    in step. For a spec-less invocation there is no such link — read the BAR
    block in `.operator/VERDICTS.md` and copy the sentence rather than writing a
    new one, and say in your report that nothing enforces the match.

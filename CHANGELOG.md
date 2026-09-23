@@ -106,6 +106,26 @@ derivation that tells a session where it stands. Design rationale: `docs/CYCLE.m
   on `ops-verdict.sh`'s `fallback_release`, which is trap-reachable from nine sites and
   already carried `# shellcheck disable=SC2317` for the same fact. The tree is clean
   under 0.11 with no exclusions; the CI pin is not bumped here.
+### Rebased onto 0.11.18
+
+#149's `check_prose_invocations` landed on main while this branch was open, and
+it read this branch's prose on arrival:
+
+- It reported 10 correct `ops-spec.sh` prescriptions as unknown flags. The CLI
+  dispatches its modes through one `--new|--check|--approve)` arm, and its usage
+  is a heredoc with one form per line. The contract reader handled only
+  single-flag arms and the first usage line; it now reads both shapes.
+- It found three real defects. `commands/implement.md` prescribed
+  `ops-claims.sh --claimed` without `--since`, the defect the holdout found in
+  the charter. `workflows/implement.js` carried a copy in a string that no
+  prose check reads. Two `--approve` lines omitted the mandatory `--owner`.
+- Three stage checks used `$(case … in pat) …)`, which bash 3.2 cannot parse
+  inside a command substitution. On macOS the suite reported them as failures,
+  while the Linux CI passed. The patterns now carry the leading `(`.
+- CLAUDE.md went over its 38000-char cap once both sides' rows were merged.
+  The base-gate row's mechanics moved to `docs/LANDMINES.md` ("base-gate: the
+  operational detail").
+
 ## [0.11.18] - 2026-09-23
 
 The v0.11.17 tag build could not ship. Its release job wrote `release-notes.md` to the

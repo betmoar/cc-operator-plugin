@@ -4811,6 +4811,13 @@ def _cli_flag_contract(path):
     # which commands/tiers.md correctly prescribes, as an unknown flag.
     accepted = set(re.findall(r'(?:^|;;)\s*(--[a-z][a-z-]*)(?:=\*)?\)',
                               text, re.M))
+    # ALTERNATION arms, `--new|--check|--approve)`: ops-spec.sh dispatches its
+    # three modes through one arm, and the single-flag pattern above read none
+    # of them — 10 correct prescriptions reported as unknown flags on the tree
+    # PR #154 rebased onto 0.11.18. Every `--flag` in such an arm is accepted.
+    for arm in re.findall(r'(?:^|;;)\s*((?:-{1,2}[a-z][a-z-]*\|)+'
+                          r'-{1,2}[a-z][a-z-]*)\)', text, re.M):
+        accepted |= {f for f in arm.split("|") if f.startswith("--")}
     # The `"${1:-}" = "--flag"` dispatch forms: ops-verdict.sh reaches
     # --reconcile and --mark-handoff that way, BEFORE the parse loop, so the
     # `case` arms alone miss both.
@@ -4822,7 +4829,20 @@ def _cli_flag_contract(path):
     # condemned five correct lines, the charter's among them. Duplicates are
     # harmless — the selection below takes a max.
     forms = []
-    for u in re.findall(r'usage:\s*ops-[a-z-]+\.sh((?:[^"\\\n]|\\.)*)', text):
+    # A usage HEREDOC carries one form per line: `usage: ops-x.sh --new <s>`
+    # then `       ops-x.sh --check <s>`. The one-line pattern read only the
+    # first, so ops-spec.sh's --check and --approve forms did not exist. The
+    # continuation lines are the ones directly after a `usage:` line that
+    # open with the same CLI name.
+    _usage = re.findall(r'usage:\s*ops-[a-z-]+\.sh((?:[^"\\\n]|\\.)*)', text)
+    for m in re.finditer(r'^[^\n]*usage:\s*(ops-[a-z-]+\.sh)[^\n]*\n', text,
+                         re.M):
+        for ln in text[m.end():].split("\n"):
+            c = re.match(r'\s+' + re.escape(m.group(1)) + r'\b(.*)$', ln)
+            if not c:
+                break
+            _usage.append(c.group(1))
+    for u in _usage:
         u = u.replace('\\"', '"')
         parts, buf, depth, quoted = [], "", 0, False
         for ch in u:
