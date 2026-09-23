@@ -449,26 +449,13 @@ sentinel_owner() { # sentinel_owner <task-id> → owner ("" if unowned/absent)
 # `| id | criterion | evidence | PASS-or-FAIL |`. Counts cells by splitting on
 # the delimiter — a glob's `*` happily matches ` | ` and admits a 5-cell row.
 row_is_conformant() {
-  local line="$1" rest field n=0 verdict=""
-  case "$line" in '| '*' |') ;; *) return 1 ;; esac
-  rest="${line#| }"          # strip leading  "| "
-  rest="${rest% |}"          # strip trailing " |"
-  # rest is now  cell1 | cell2 | cell3 | cell4  — split on " | "
-  while :; do
-    case "$rest" in
-      *" | "*) field="${rest%%" | "*}"; rest="${rest#*" | "}" ;;
-      *)       field="$rest"; rest="" ;;
-    esac
-    n=$((n+1))
-    [ -n "$field" ] || return 1        # empty cell is not conformant
-    case "$field" in *"|"*) return 1 ;; esac
-    verdict="$field"
-    [ -n "$rest" ] || break
-    [ "$n" -le 4 ] || return 1
-  done
-  [ "$n" -eq 4 ] || return 1
-  case "$verdict" in PASS|FAIL) ;; *) return 1 ;; esac
-  return 0
+  # ONE REGEX (#145), not a `${rest#*" | "}` walk: bash 3.2 runs that
+  # quadratic in the cell it walks past — one 100 KB criterion cell cost 5.0s
+  # (measured 2026-09-23), paid while --reconcile HOLDS the ledger lock. Same
+  # contract as before: four non-empty, pipe-free cells, verdict PASS or FAIL.
+  local LC_ALL=C
+  local _re='^\| ([^|]+) \| ([^|]+) \| ([^|]+) \| (PASS|FAIL) \|$'
+  [[ $1 =~ $_re ]]
 }
 
 append_fragment() { # append_fragment <owner-or-empty> <row>

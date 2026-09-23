@@ -928,6 +928,16 @@ check "--reconcile exits 0 and restores every row" "$([ "$RRC" -eq 0 ] && [ "$RE
 ( cd "$P" && bash "$VERDICT" --reconcile >/dev/null 2>&1 )
 AGAIN="$(grep -cE '^\| T-' "$P/.operator/VERDICTS.md" || true)"
 check "--reconcile is idempotent (no duplicate rows)" "$([ "$AGAIN" = "$TOTAL" ] && echo 0 || echo 1)"
+# #145: row_is_conformant walked each cell with `${rest#*" | "}`, quadratic on bash 3.2 — one
+# 100 KB cell cost 5.0s, paid while --reconcile HOLDS the ledger lock. A 400 KB fragment row
+# must be restored within a wide watchdog, and still be judged conformant.
+P="$(newproj)"; ( cd "$P" && bash "$INIT" >/dev/null 2>&1 )
+printf '| T-rl | %s | ev @no-commit | PASS |\n' "$(head -c 400000 /dev/zero | tr '\0' c)" > "$P/.operator/verdicts.d/long.md"
+( cd "$P" && bash "$VERDICT" --reconcile >/dev/null 2>&1 ) & _rcp=$!
+_w=0; while [ "$_w" -lt 15 ] && kill -0 "$_rcp" 2>/dev/null; do sleep 1; _w=$((_w + 1)); done
+if kill -0 "$_rcp" 2>/dev/null; then kill -9 "$_rcp" 2>/dev/null; wait "$_rcp" 2>/dev/null; _rcrc=99; else wait "$_rcp" 2>/dev/null; _rcrc=$?; fi
+check "#145 --reconcile restores a 400 KB-cell row within 15s (row_is_conformant is linear)" \
+  "$([ "$_rcrc" -eq 0 ] && grep -q '^| T-rl | c' "$P/.operator/VERDICTS.md" && echo 0 || echo 1)"
 # #139 item 1: --reconcile is the RECOVERY path, so a fragment it cannot parse
 # is a row left unrecovered. #136's single strip restores a `\r\n` fragment and
 # still refuses `\r\r\n`: row_is_conformant sees the residual CR in the verdict
@@ -5157,6 +5167,12 @@ check "control: the marker exists before SessionStart" \
 printf '%s' "$(sed "s|<tmp>|$P|" "$FIXTURES/sessionstart.json")" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
 check "SessionStart WIPES the arm markers (a stale one disarms a future session)" \
   "$([ -d "$P/.operator/.autobar" ] && echo 1 || echo 0)"
+# #127: the cap-scan cache is wiped beside them — content-keyed, so never stale, but a cache
+# nothing prunes only grows.
+mkdir -p "$P/.operator/.capscache"; printf 'x\n' > "$P/.operator/.capscache/scan"
+printf '%s' "$(sed "s|<tmp>|$P|" "$FIXTURES/sessionstart.json")" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
+check "#127 SessionStart WIPES the cap-scan cache" \
+  "$([ -d "$P/.operator/.capscache" ] && echo 1 || echo 0)"
 
 # --- the count sees FILES, not collapsed directories (#86 review) -----------
 # Porcelain's DEFAULT untracked mode collapses an untracked directory to ONE
@@ -5909,6 +5925,18 @@ check "#139 the refused row is COUNTED as skipped, never silently dropped" \
 check "#139 CONTROL: an ordinary CRLF ledger still reports its rows (0 skipped)" \
   "$(bash "$RV" --ledger "$_crlfd/crlf.md" 2>&1 | grep -q 'skipped (not a 4-cell row): 0' && echo 0 || echo 1)"
 rm -rf "$_crlfd"
+# #145: the same quadratic split lived here. One 100 KB criterion cell cost 5.0s (measured on
+# bash 3.2, 2026-09-23); a watchdog with a wide margin, and the row must still be REPORTED.
+_rvl="$(newproj)"
+{ printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+  printf '| T-long | %s | ev @no-commit | FAIL |\n' "$(head -c 400000 /dev/zero | tr '\0' c)"
+} > "$_rvl/v.md"
+( bash "$RV" --ledger "$_rvl/v.md" > "$_rvl/out" 2>&1 ) & _rvp=$!
+_w=0; while [ "$_w" -lt 10 ] && kill -0 "$_rvp" 2>/dev/null; do sleep 1; _w=$((_w + 1)); done
+if kill -0 "$_rvp" 2>/dev/null; then kill -9 "$_rvp" 2>/dev/null; wait "$_rvp" 2>/dev/null; echo TIMEOUT > "$_rvl/out"; else wait "$_rvp" 2>/dev/null; fi
+check "#145 ops-reverify reports a 400 KB-criterion row within 10s (linear split)" \
+  "$(grep -qE '^\| [0-9]+ \| T-long \| FAIL \|' "$_rvl/out" && echo 0 || echo 1)"
+rm -rf "$_rvl"
 
 echo "-- Case: gate-suite.sh holds a rung to its MARKER and its FLOOR (0.11.7)"
 # Two claims that fail independently. The FLOOR catches deletion; the MARKER
@@ -7126,20 +7154,157 @@ check "CONTROL: the same shape well under the step budget does NOT truncate" \
 # A PASS is not cheaper than a FAIL: both do the same linear lookup, and only what happens AFTER
 # it differs. `continue` in a loop whose tail carries a guard is the shape to distrust — it reads
 # as "skip the rest of the work" and means "skip the rest of the guards".
+#
+# THE PASS ROWS MISS THE TABLE (#127). They used to PASS the 100 failing keys themselves, and
+# once a reset REMOVES its key that fixture is cheap — the first PASS per key empties a slot and
+# every later row walks nothing, so the case went red for a reason unrelated to the guard. A PASS
+# on a target the table does not hold still walks all 100 keys and still has to be charged, which
+# is the path this case exists for.
 { printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
   k=0; while [ "$k" -lt 100 ]; do printf '| T-%s | crit | ev @abc | FAIL |\n' "$k"; k=$((k+1)); done
-  r=0; while [ "$r" -lt 19000 ]; do printf '| T-%s | crit | ev @abc | PASS |\n' "$((r % 100))"; r=$((r+1)); done
+  r=0; while [ "$r" -lt 19000 ]; do printf '| U-%s | crit | ev @abc | PASS |\n' "$((r % 100))"; r=$((r+1)); done
 } > "$CAPD/v20.md"
 check "a PASS-heavy ledger hits the step budget — the PASS path enforces the bound it charges" \
   "$(printf '%s' "$(_caps_state "$CAPD/v20.md")" | grep -q 'truncated=1' && echo 0 || echo 1)"
 check "CONTROL: that ledger is under CAPS_MAX_LINES — the STEP bound fired, not the row count" \
-  "$([ "$(grep -c '^| T-' "$CAPD/v20.md")" -lt "$(grep -o 'CAPS_MAX_LINES=[0-9]*' "$SCRIPTS/lib/caps.sh" | cut -d= -f2)" ] && echo 0 || echo 1)"
+  "$([ "$(grep -c '^| [TU]-' "$CAPD/v20.md")" -lt "$(grep -o 'CAPS_MAX_LINES=[0-9]*' "$SCRIPTS/lib/caps.sh" | cut -d= -f2)" ] && echo 0 || echo 1)"
 # The reset must still WORK after the branch reshape — a budget fix that broke the semantics
 # would trade a slow gate for a wrong one.
 _caps_ledger "$CAPD/v21.md" "| T-1 | crit | ev @a1 | FAIL |" "| T-1 | crit | ev @a2 | FAIL |" \
   "| T-1 | crit | ev @a3 | PASS |"
 check "CONTROL: the PASS reset still clears a tripped key after the branches were merged" \
   "$([ "$(_caps_state "$CAPD/v21.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+
+# --- #145: a LONG CELL is linear, not quadratic -----------------------------
+# The split used to be `${body%% | *}`/`${r1#* | }` pairs, which bash 3.2 runs QUADRATIC in the
+# length of the cell they walk past: one 200 KB criterion cell measured 8.0s in one expansion, and
+# a 2 MB single-row ledger did not return in 120s (#145) — while every bound read as satisfied (one
+# line, one step, under the NUL probe's 2 MiB). A duration would flake, so the assertion is a
+# WATCHDOG with a wide margin: 400 KB costs ~0.05s linear and ~30s+ quadratic on bash 3.2.
+# (bash 5.x is not quadratic here; on Linux CI this case proves only the RESULT is right.)
+_caps_long="$CAPD/v145.md"
+{ printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+  printf '| T-1 | %s | ev @a1 | FAIL |\n' "$(head -c 400000 /dev/zero | tr '\0' c)"
+  printf '| T-1 | %s | ev @a2 | FAIL |\n' "$(head -c 400000 /dev/zero | tr '\0' c)"
+} > "$_caps_long"
+_caps_watch() { # _caps_watch <ledger> <budget-s> → state, or "TIMEOUT"
+  local _o="$CAPD/watch.out" _w=0 _p
+  ( _caps_state "$1" > "$_o" ) & _p=$!
+  while [ "$_w" -lt "$2" ] && kill -0 "$_p" 2>/dev/null; do sleep 1; _w=$((_w + 1)); done
+  if kill -0 "$_p" 2>/dev/null; then kill -9 "$_p" 2>/dev/null; wait "$_p" 2>/dev/null; echo TIMEOUT; return; fi
+  wait "$_p" 2>/dev/null; cat "$_o"
+}
+check "#145 two FAIL rows with 400 KB criterion cells TRIP within 10s — the split is linear" \
+  "$([ "$(_caps_watch "$_caps_long" 10)" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+# The key must be the WHOLE cell, not a prefix: two 400 KB criteria differing only in the LAST
+# byte are two targets. A split that truncated long cells would collapse them and trip.
+{ printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+  printf '| T-1 | %sA | ev @a1 | FAIL |\n' "$(head -c 400000 /dev/zero | tr '\0' c)"
+  printf '| T-1 | %sB | ev @a2 | FAIL |\n' "$(head -c 400000 /dev/zero | tr '\0' c)"
+} > "$CAPD/v145b.md"
+check "#145 CONTROL: 400 KB criteria differing in the LAST byte are two keys (no trip)" \
+  "$([ "$(_caps_watch "$CAPD/v145b.md" 10)" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+# The row the old chain split AROUND: a bare `|` inside a cell. check_cell refuses one at the
+# writer and row_is_conformant refuses one in --reconcile, so the regex skips it too — this pins
+# that the change is deliberate and matches the writer, rather than an accident nobody chose.
+_caps_ledger "$CAPD/v145c.md" "| a|b | crit | ev @a1 | FAIL |" "| a|b | crit | ev @a2 | FAIL |"
+check "#145 a row with a bare | inside a cell is skipped, as the writer and --reconcile refuse it" \
+  "$([ "$(_caps_state "$CAPD/v145c.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+# A hand-edited row WITHOUT the trailing ` |` is still counted, as `${body% |}` made it.
+printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n| T-1 | crit | ev | FAIL\n| T-1 | crit | ev | FAIL\n' > "$CAPD/v145d.md"
+check "#145 CONTROL: rows without the trailing ' |' still count (what \${body% |} allowed)" \
+  "$([ "$(_caps_state "$CAPD/v145d.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+
+# --- #127: a reset key LEAVES the table -------------------------------------
+# A PASS used to zero its key in place, so every later row walked it and it held one of
+# CAPS_MAX_KEYS forever. 150 targets each failed once then passed, then one real trip: under the
+# old table that is 150 dead keys and the ceiling truncates; with removal the table stays small.
+{ printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+  i=0; while [ "$i" -lt 150 ]; do printf '| T-%s | crit | ev @a | FAIL |\n| T-%s | crit | ev @b | PASS |\n' "$i" "$i"; i=$((i+1)); done
+  printf '| Z-1 | crit | ev @a | FAIL |\n| Z-1 | crit | ev @b | FAIL |\n'
+} > "$CAPD/v127k.md"
+check "#127 150 targets that failed and then PASSED do not exhaust the key ceiling — a reset key leaves the table" \
+  "$([ "$(_caps_state "$CAPD/v127k.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+# CONTROL: 150 targets STILL failing do exhaust it — the ceiling is real, only resolved keys leave.
+{ printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+  i=0; while [ "$i" -lt 150 ]; do printf '| T-%s | crit | ev @a | FAIL |\n' "$i"; i=$((i+1)); done
+} > "$CAPD/v127l.md"
+check "#127 CONTROL: 150 targets still failing DO hit the key ceiling (truncated=1)" \
+  "$(printf '%s' "$(_caps_state "$CAPD/v127l.md")" | grep -q 'truncated=1' && echo 0 || echo 1)"
+# A reset that removes the WRONG key would pass the case above. Three keys, the MIDDLE one reset,
+# then one more FAIL on each outer key: both outer keys must trip, the middle must not.
+_caps_ledger "$CAPD/v127m.md" "| A | c | e | FAIL |" "| B | c | e | FAIL |" "| C | c | e | FAIL |" \
+  "| B | c | e | PASS |" "| A | c | e | FAIL |" "| C | c | e | FAIL |" "| B | c | e | FAIL |"
+check "#127 removing the MIDDLE key keeps its neighbours' counts (A and C trip, B does not)" \
+  "$(_r="$(_caps_rows_of "$CAPD/v127m.md")"; printf '%s' "$_r" | grep -q '^2 FAIL rounds: A | c$' \
+     && printf '%s' "$_r" | grep -q '^2 FAIL rounds: C | c$' && ! printf '%s' "$_r" | grep -q ': B |' && echo 0 || echo 1)"
+
+# --- #127: the cache can change the COST, never the ANSWER --------------------
+_cc_state() { # _cc_state <ledger> <cache-dir> → the same line _caps_state prints, via the cache
+  ( # shellcheck source=/dev/null
+    . "$SCRIPTS/lib/caps.sh"
+    scan_caps_cached "$1" "$2"
+    # shellcheck disable=SC2154  # OUTPUTS of the sourced lib
+    printf 'tripped=%s failed=%s truncated=%s' "$caps_tripped" "$caps_scan_failed" "$caps_truncated" )
+}
+_ccd="$CAPD/cc"; mkdir -p "$_ccd"
+_caps_ledger "$_ccd/V.md" "| T-1 | crit | ev | FAIL |" "| T-1 | crit | ev | FAIL |"
+check "#127 cache MISS answers like scan_caps (tripped=1)" \
+  "$([ "$(_cc_state "$_ccd/V.md" "$_ccd/c")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+check "#127 CONTROL: the miss WROTE a cache entry (the hit below is a real hit)" \
+  "$([ -f "$_ccd/c/scan" ] && echo 0 || echo 1)"
+# THE STALE-CACHE CASE, and it is why the key is content. FAIL -> PASS on the last row keeps the
+# SIZE, and inside one second keeps the MTIME: an mtime+size key would serve tripped=1 forever.
+sed 's/| FAIL |$/| PASS |/' "$_ccd/V.md" > "$_ccd/V.tmp" && cat "$_ccd/V.tmp" > "$_ccd/V.md"
+check "#127 SETUP: the flip kept the ledger's size" \
+  "$([ "$(wc -c < "$_ccd/V.md")" = "$(wc -c < "$_ccd/V.tmp")" ] && echo 0 || echo 1)"
+check "#127 a same-size FAIL->PASS edit is SEEN — the cache key is content, not mtime+size" \
+  "$([ "$(_cc_state "$_ccd/V.md" "$_ccd/c")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
+# A HIT must not re-run the scan. Proved by the scan's own trace (the row loop's `n=` assignment,
+# the probe _caps_rows_read uses), not by a clock.
+_cc_rows_read() { # _cc_rows_read <ledger> <cache-dir> → rows scan_caps consumed under the cached path
+  local _t="$CAPD/cc-xtrace.log"
+  ( # shellcheck source=/dev/null
+    . "$SCRIPTS/lib/caps.sh"; PS4='+'; exec 2>"$_t"; set -x
+    scan_caps_cached "$1" "$2" ) >/dev/null 2>/dev/null
+  grep -ac '^+*n=[0-9][0-9]*$' "$_t"
+}
+# Its OWN ledger: the first draft read $CAPD/v14.md, which this suite writes further DOWN — so the
+# hit case read a file that did not exist yet, passed at 0 rows, and only the CONTROL went red.
+{ printf '| Gate | Criterion | Evidence | PASS/FAIL |\n|---|---|---|---|\n'
+  r=0; while [ "$r" -lt 3000 ]; do
+    printf '| T-%s | criterion %s | ev @abc123def456 | PASS |\n' "$((r % 25))" "$((r % 2))"; r=$((r+1)); done
+} > "$_ccd/big.md"
+_cc_rows_read "$_ccd/big.md" "$_ccd/cbig" >/dev/null
+check "#127 a cache HIT on an unchanged 3000-row ledger reads ZERO rows" \
+  "$([ "$(_cc_rows_read "$_ccd/big.md" "$_ccd/cbig")" = 0 ] && echo 0 || echo 1)"
+check "#127 CONTROL: the same ledger with the cache wiped is read WHOLE — the hit above is the cache's" \
+  "$(rm -rf "$_ccd/cbig"; [ "$(_cc_rows_read "$_ccd/big.md" "$_ccd/cbig")" -ge 3000 ] && echo 0 || echo 1)"
+# The lib is in the key: a cache written by another detector must not answer for this one.
+_caps_ledger "$_ccd/L.md" "| T-1 | crit | ev | FAIL |" "| T-1 | crit | ev | FAIL |"
+_cc_state "$_ccd/L.md" "$_ccd/cl" >/dev/null
+# Rewrite the entry with the SAME ledger hash and path but a different lib hash ("1 1"), claiming
+# tripped=0. A cache that ignored the lib half would serve it.
+_cl_key="$(sed -n 2p "$_ccd/cl/scan")"
+printf 'caps-cache v1\n%s\n0 0 0 0\n\n' "${_cl_key%%/*}/1 1/${_cl_key#*/*/}" > "$_ccd/cl/scan"
+check "#127 an entry keyed to a DIFFERENT lib is a miss (the detector's bytes are in the key)" \
+  "$([ "$(_cc_state "$_ccd/L.md" "$_ccd/cl")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
+# Every cache FAILURE is a full scan. A symlinked cache dir is refused (the F65 class), and a
+# PATH with no cksum/head cannot hash — both must answer exactly as scan_caps does.
+mkdir -p "$_ccd/elsewhere"; ln -s "$_ccd/elsewhere" "$_ccd/linked"
+check "#127 a SYMLINKED cache dir is not written through, and the answer is still right" \
+  "$([ "$(_cc_state "$_ccd/L.md" "$_ccd/linked")" = "tripped=1 failed=0 truncated=0" ] \
+     && [ -z "$(ls -A "$_ccd/elsewhere")" ] && echo 0 || echo 1)"
+# shellcheck disable=SC1091,SC2123  # the lib is sourced by path; PATH is emptied ON PURPOSE
+check "#127 no cksum on PATH, under set -u: a full scan, rc 0, the right answer" \
+  "$(_o="$( ( set -u; . "$SCRIPTS/lib/caps.sh"; PATH=/nonexistent; scan_caps_cached "$_ccd/L.md" "$_ccd/np"; echo "rc=$? t=$caps_tripped" ) 2>/dev/null)"; [ "$_o" = "rc=0 t=1" ] && echo 0 || echo 1)"
+# A planted entry whose rows block does not match its declared length is a miss, never a
+# partial answer.
+_cc_state "$_ccd/L.md" "$_ccd/cp" >/dev/null
+_cp_key="$(sed -n 2p "$_ccd/cp/scan")"
+printf 'caps-cache v1\n%s\n0 0 0 99\n\n' "$_cp_key" > "$_ccd/cp/scan"
+check "#127 an entry whose rows length disagrees with its header is a MISS (answer from the scan)" \
+  "$([ "$(_cc_state "$_ccd/L.md" "$_ccd/cp")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
 
 # --- the SCHEMA coupling, documented as a limitation rather than papered over -
 # caps.sh is now the SECOND reader of the 4-cell row (ops-reverify.sh is the first), and the
@@ -7159,9 +7324,9 @@ check "a non-PASS verdict word does NOT reset a key — a MOOT row (#91) would r
   "$([ "$(_caps_state "$CAPD/v13.md")" = "tripped=1 failed=0 truncated=0" ] && echo 0 || echo 1)"
 
 # --- the per-Stop COST, pinned as a property rather than a stopwatch (#127) --
-# The scan re-reads the whole ledger on EVERY Stop: measured 2026-09-07 at ~1.2s for 3000 rows
-# in a realistic shape, which is real and is tracked in #127 (the Stop hook has no stated
-# wall-clock budget to judge it against — writing one is that issue's step 1).
+# A full scan measured ~1.2s for 3000 rows (2026-09-07), ~0.63s after #127/#145 reshaped it, and
+# the hook no longer pays it on every Stop: scan_caps_cached answers an unchanged ledger from a
+# content-keyed cache (its cases sit above; the budget is written in lib/caps.sh's header).
 #
 # What is pinned here is the SHAPE of the cost, not a duration. A timing assertion in a suite is
 # a flake on a loaded runner, and it fails for reasons that have nothing to do with this code.
@@ -7202,7 +7367,7 @@ check "CONTROL: one id with two criteria is also TWO keys — not collapsed by i
   "$([ "$(_caps_keys_in "$CAPD/v17.md")" = 2 ] && echo 0 || echo 1)"
 check "CONTROL: the realistic fixture stays UNDER the key ceiling — its timings describe a WHOLE scan" \
   "$([ "$(_caps_keys_in "$CAPD/v14.md")" -le "$(grep -o 'CAPS_MAX_KEYS=[0-9]*' "$SCRIPTS/lib/caps.sh" | cut -d= -f2)" ] && echo 0 || echo 1)"
-check "a realistic 3000-row ledger is scanned WHOLE (not truncated) — the cost is real, and #127 owns it" \
+check "a realistic 3000-row ledger is scanned WHOLE (not truncated) — a full scan, cache or no cache" \
   "$([ "$(_caps_state "$CAPD/v14.md")" = "tripped=0 failed=0 truncated=0" ] && echo 0 || echo 1)"
 # The bound is what keeps the cost from growing without limit. Ten times the rows, same keys:
 # the budget must bite, or the scan is proportional to a file nothing caps.

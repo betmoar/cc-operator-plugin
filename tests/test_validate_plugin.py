@@ -5043,8 +5043,12 @@ class CapsTest(unittest.TestCase):
         # Without the reset the report fires forever on any ledger carrying
         # one repeated failure in its history — and a line that is always
         # there is a line nobody reads.
+        #
+        # #127: a reset now REMOVES the key rather than zeroing it, so the
+        # mutation disables the removal branch — the whole of what a PASS does.
         self._edit("scripts/lib/caps.sh",
-                   '[ "$found" -ge 0 ] && _caps_c[found]=0', ":")
+                   'if [ "$found" -ge 0 ]; then\n        _caps_n=$((_caps_n - 1))',
+                   'if false; then\n        _caps_n=$((_caps_n - 1))')
         self.assertTrue(any("'reset' ledger" in p for p in self._probs()),
                         self._probs())
 
