@@ -649,16 +649,17 @@ Q="$(newproj)"
 SSQ="$(sed "s|<tmp>|$Q|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"; SSQRC=$?
 check "sessionstart hook silent outside operator projects" "$([ "$SSQRC" -eq 0 ] && [ -z "$SSQ" ] && echo 0 || echo 1)"
 # F14: json_get()'s python3 branch must render true/false, not Python True/False (pinned by check_guard_parity).
-# SessionStart migrates the v1 blocklist .operator/.gitignore to the v2 allowlist; the schemes contradict, so replace.
+# SessionStart migrates the v1 blocklist .operator/.gitignore to the v3 allowlist; the schemes contradict, so replace.
+# (v2 -> v3 is a DIFFERENT, additive arm — its cases are the #156 block further down.)
 GIP="$(newproj)"; ( cd "$GIP" && bash "$INIT" >/dev/null 2>&1 )
 printf '# legacy\n.lock/\n' > "$GIP/.operator/.gitignore"
 sed "s|<tmp>|$GIP|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
-check "sessionstart migrates a v1 gitignore to the v2 allowlist" \
-  "$(grep -qF '# cc-operator gitignore v2 (allowlist)' "$GIP/.operator/.gitignore" && echo 0 || echo 1)"
-check "the v2 migration keeps the user's v1 file as .v1.bak" \
+check "sessionstart migrates a v1 gitignore to the v3 allowlist" \
+  "$(grep -qF '# cc-operator gitignore v3 (allowlist)' "$GIP/.operator/.gitignore" && echo 0 || echo 1)"
+check "the v3 migration keeps the user's v1 file as .v1.bak" \
   "$(grep -q '^# legacy$' "$GIP/.operator/.gitignore.v1.bak" 2>/dev/null && echo 0 || echo 1)"
 # The load-bearing half: ledgers/fragments stay tracked, machine state does not.
-check "v2 re-admits both ledgers, tiers.env and the merge=union fragments" \
+check "v3 re-admits both ledgers, tiers.env and the merge=union fragments" \
   "$( for a in '!VERDICTS.md' '!DECISIONS.md' '!tiers.env' '!verdicts.d/*.md'; do
         grep -qF "$a" "$GIP/.operator/.gitignore" || exit 1
       done; echo 0 )"
@@ -3814,9 +3815,9 @@ echo "-- Case: a backed-up-but-FAILED gitignore write is reported (the third sta
 GIW="$(newproj)"
 mkdir -p "$GIW/.operator"
 printf '# cc-operator gitignore (v1)\nbin/\n!my-own-rule.md\n' > "$GIW/.operator/.gitignore"
-mkdir -p "$GIW/.operator/.gitignore.v2.tmp"          # a DIRECTORY at the temp path
+mkdir -p "$GIW/.operator/.gitignore.v3.tmp"          # a DIRECTORY at the temp path
 GIWOUT="$(sed "s|<tmp>|$GIW|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
-check "failed write: the hook SAYS the v2 file could not be written (silence was the defect)" \
+check "failed write: the hook SAYS the v3 file could not be written (silence was the defect)" \
   "$(printf '%s' "$GIWOUT" | grep -q 'could not be written this session' && echo 0 || echo 1)"
 check "failed write: it does NOT claim MIGRATED over a file it never replaced" \
   "$(printf '%s' "$GIWOUT" | grep -q 'was MIGRATED' && echo 1 || echo 0)"
@@ -4315,6 +4316,524 @@ done
 # --mark-handoff must exist in the CLI the command tells the operator to run, or the instruction is a dead end.
 check "ops-verdict.sh actually implements --mark-handoff" \
   "$(grep -q -- '--mark-handoff' "$SCRIPTS/ops-verdict.sh" && echo 0 || echo 1)"
+
+########################################################################
+echo "-- Case: the spec artifact (#155) — ops-spec.sh new/check/approve"
+# The cycle went brainstorm -> ??? -> plan, and the only thing carrying a
+# design across that gap was prose the operator retyped: no file, no
+# provenance, no stamp, no ledger row, nothing surviving a compaction.
+SPECSH="$SCRIPTS/ops-spec.sh"
+SP="$(newproj)"; ( cd "$SP" && bash "$INIT" >/dev/null 2>&1 )
+( cd "$SP" && bash "$SPECSH" --new alpha >/dev/null 2>&1 )
+check "#155 --new scaffolds .operator/specs/<slug>.md" \
+  "$([ -f "$SP/.operator/specs/alpha.md" ] && echo 0 || echo 1)"
+check "#155 the skeleton carries every required section" \
+  "$( for _s in 'North star' 'Done criteria' 'In scope' 'Out of scope' 'Open questions' 'Constraints'; do
+        grep -qxF "## $_s" "$SP/.operator/specs/alpha.md" || { echo 1; break; }
+      done | grep -q 1 && echo 1 || echo 0)"
+check "#155 a fresh spec is DRAFT, never APPROVED" \
+  "$(grep -qx 'Status: DRAFT' "$SP/.operator/specs/alpha.md" && echo 0 || echo 1)"
+# O_EXCL, ops-task.sh's discipline: a second --new must not clobber work in
+# progress.
+( cd "$SP" && bash "$SPECSH" --new alpha >/dev/null 2>&1 ); SPDUP=$?
+check "#155 a second --new REFUSES rather than overwriting the spec" \
+  "$([ "$SPDUP" -ne 0 ] && echo 0 || echo 1)"
+
+# --check REFUSES the untouched skeleton: its placeholder row is not a
+# criterion, and a spec approved with the template still in it has none.
+( cd "$SP" && bash "$SPECSH" --check alpha >/dev/null 2>&1 ); SPCHK=$?
+check "#155 --check refuses the untouched skeleton (placeholder != criterion)" \
+  "$([ "$SPCHK" -eq 1 ] && echo 0 || echo 1)"
+
+# A filled spec passes. Written with printf rather than an editor so the case
+# states exactly what a valid spec is.
+spec_fill() { # spec_fill <proj> <slug> [--no-missed|--open-question]
+  local _f="$1/.operator/specs/$2.md" _mode="${3:-}"
+  {
+    printf '# SPEC — %s\n\nSlug: %s\nStatus: DRAFT\nProvenance: the suite\n\n' "$2" "$2"
+    printf '## North star\n\nThe gate refuses an unevidenced claim.\n'
+    [ "$_mode" = "--no-missed" ] || printf 'Missed if: a row lands with no command output.\n'
+    printf '\n## Done criteria\n\n| # | Criterion | Command | Expected output |\n|---|---|---|---|\n'
+    printf '| 1 | the suite passes | bash tests/test-scripts.sh | 0 failed |\n\n'
+    printf '## In scope\n\nthe gate\n\n## Out of scope\n\neverything else\n\n'
+    printf '## Open questions\n\n| Question | Resolution | Decided by |\n|---|---|---|\n'
+    if [ "$_mode" = "--open-question" ]; then
+      printf '| who decides? |  |  |\n'
+    elif [ "$_mode" = "--unattributed" ]; then
+      # ANSWERED, but nobody named — the shape the substring scan reported as
+      # an empty RESOLUTION cell (PR #154, Copilot review).
+      printf '| who decides? | the operator |  |\n'
+    elif [ "$_mode" = "--malformed-row" ]; then
+      printf '| who decides? |\n'
+    else
+      printf '| who decides? | the operator | maintainer |\n'
+    fi
+    printf '\n## Constraints\n\nnone\n'
+  } > "$_f"
+}
+spec_fill "$SP" alpha
+( cd "$SP" && bash "$SPECSH" --check alpha >/dev/null 2>&1 )
+check "#155 --check passes a filled spec" "$?"
+# The north star's clause is what plan.js reads WITHOUT a fallback — a spec
+# missing it produces a plan workflow that refuses after the operator has
+# already approved.
+spec_fill "$SP" alpha --no-missed
+( cd "$SP" && bash "$SPECSH" --check alpha >/dev/null 2>&1 ); SPNM=$?
+check "#155 --check refuses a north star with no 'Missed if:' clause" \
+  "$([ "$SPNM" -eq 1 ] && echo 0 || echo 1)"
+# An unanswered question is the interview skipped.
+spec_fill "$SP" alpha --open-question
+( cd "$SP" && bash "$SPECSH" --check alpha >/dev/null 2>&1 ); SPOQ=$?
+check "#155 --check refuses an open question with an empty Resolution" \
+  "$([ "$SPOQ" -eq 1 ] && echo 0 || echo 1)"
+# …and it names the RESOLUTION cell, not some other empty one. The check was a
+# substring scan for `| *|`, which matches an empty cell ANYWHERE in the row.
+SPOQMSG="$( cd "$SP" && bash "$SPECSH" --check alpha 2>&1 )"
+check "#155 …and the refusal names the Resolution cell" \
+  "$(printf '%s' "$SPOQMSG" | grep -q 'empty Resolution cell' && echo 0 || echo 1)"
+# THE FALSE NAME (PR #154, Copilot review). A question that WAS answered but
+# names nobody is a real refusal — under the substring scan it arrived as
+# "empty Resolution cell", which is a true refusal telling the operator to fix
+# the wrong cell. Two conditions, two messages.
+spec_fill "$SP" alpha --unattributed
+SPUNA="$( cd "$SP" && bash "$SPECSH" --check alpha 2>&1 )"; SPUNARC=$?
+check "#155 --check refuses an answered question that names nobody" \
+  "$([ "$SPUNARC" -eq 1 ] && echo 0 || echo 1)"
+check "#155 …and it names 'Decided by', NOT the Resolution cell" \
+  "$(printf '%s' "$SPUNA" | grep -q "Decided by" \
+     && ! printf '%s' "$SPUNA" | grep -q 'empty Resolution cell' && echo 0 || echo 1)"
+# FAIL CLOSED on a row the parser cannot address: fewer than three cells is
+# malformed, and the conservative reading is unanswered.
+spec_fill "$SP" alpha --malformed-row
+SPMAL="$( cd "$SP" && bash "$SPECSH" --check alpha 2>&1 )"; SPMALRC=$?
+check "#155 --check refuses a malformed open-questions row (fails CLOSED)" \
+  "$([ "$SPMALRC" -eq 1 ] && echo 0 || echo 1)"
+check "#155 …reading it as unanswered rather than guessing" \
+  "$(printf '%s' "$SPMAL" | grep -q 'empty Resolution cell' && echo 0 || echo 1)"
+# CONTROL: the skeleton's own header and separator rows are not open questions.
+# `|---|---|---|` and `| Question | Resolution | Decided by |` both carry the
+# `| *|`-adjacent shapes a looser filter counts.
+spec_fill "$SP" alpha
+SPHDR="$( cd "$SP" && bash "$SPECSH" --check alpha 2>&1 )"
+check "#155 CONTROL — the table's header and separator rows are not counted" \
+  "$(printf '%s' "$SPHDR" | grep -qE 'open question|Decided by' && echo 1 || echo 0)"
+
+# --approve: the guards run BEFORE the checker reports, so a refusal about the
+# INVOCATION never arrives dressed as a verdict on the CONTENT.
+spec_fill "$SP" alpha
+SPNOOWN="$( cd "$SP" && bash "$SPECSH" --approve alpha 2>&1 )"; SPNOOWNRC=$?
+check "#155 --approve without --owner is refused" \
+  "$([ "$SPNOOWNRC" -ne 0 ] && echo 0 || echo 1)"
+check "#155 …and that refusal does NOT first print a verdict on the content" \
+  "$(printf '%s' "$SPNOOWN" | grep -q 'passes --check' && echo 1 || echo 0)"
+( cd "$SP" && bash "$SPECSH" --approve alpha --owner 'ev$il' >/dev/null 2>&1 ); SPBADO=$?
+check "#155 --approve refuses a shell-metacharacter owner" \
+  "$([ "$SPBADO" -ne 0 ] && echo 0 || echo 1)"
+
+( cd "$SP" && bash "$SPECSH" --approve alpha --owner SESS-SPEC >/dev/null 2>&1 )
+check "#155 --approve stamps Status: APPROVED with a source stamp" \
+  "$(grep -qE '^Status: APPROVED @' "$SP/.operator/specs/alpha.md" && echo 0 || echo 1)"
+check "#155 --approve logs SPEC-APPROVED to DECISIONS.md" \
+  "$(grep -q '| SPEC-APPROVED |' "$SP/.operator/DECISIONS.md" && echo 0 || echo 1)"
+check "#155 --approve appends a BAR block to VERDICTS.md" \
+  "$(grep -q '^## BAR — alpha' "$SP/.operator/VERDICTS.md" && echo 0 || echo 1)"
+# THE LINKAGE, which is the whole reason the BAR block is emitted rather than
+# hand-written: the charter's north star and the one plan.js reads are now the
+# SAME SENTENCE, because both come from this file.
+check "#155 the BAR block's north star is the SPEC's, verbatim" \
+  "$(grep -q 'North star: The gate refuses an unevidenced claim.' "$SP/.operator/VERDICTS.md" && echo 0 || echo 1)"
+check "#155 …and it carries the Missed if: clause too" \
+  "$(grep -q 'Missed if: a row lands with no command output.' "$SP/.operator/VERDICTS.md" && echo 0 || echo 1)"
+# A second approval would append a SECOND BAR block for one spec.
+( cd "$SP" && bash "$SPECSH" --approve alpha --owner SESS-SPEC >/dev/null 2>&1 ); SPTWICE=$?
+check "#155 a second --approve is refused" \
+  "$([ "$SPTWICE" -ne 0 ] && echo 0 || echo 1)"
+check "#155 …and only ONE BAR block exists for the spec" \
+  "$([ "$(grep -c '^## BAR — alpha' "$SP/.operator/VERDICTS.md")" -eq 1 ] && echo 0 || echo 1)"
+
+# A RETRY AFTER A FAILED WRITE must not duplicate what already landed (PR #154
+# review, measured 3 SPEC-APPROVED rows + 2 BAR blocks for one spec). First try
+# dies at the BAR append (VERDICTS.md is a directory); the second succeeds.
+SPR="$(newproj)"; ( cd "$SPR" && bash "$INIT" >/dev/null 2>&1 )
+( cd "$SPR" && bash "$SPECSH" --new retried >/dev/null 2>&1 )
+spec_fill "$SPR" retried
+mv "$SPR/.operator/VERDICTS.md" "$SPR/.operator/V.bak" && mkdir "$SPR/.operator/VERDICTS.md"
+( cd "$SPR" && bash "$SPECSH" --approve retried --owner S-RETRY >/dev/null 2>&1 ); SPR1=$?
+rmdir "$SPR/.operator/VERDICTS.md" && mv "$SPR/.operator/V.bak" "$SPR/.operator/VERDICTS.md"
+( cd "$SPR" && bash "$SPECSH" --approve retried --owner S-RETRY >/dev/null 2>&1 ); SPR2=$?
+check "#155 retry: the first --approve FAILED at the BAR append (precondition)" \
+  "$([ "$SPR1" -eq 2 ] && echo 0 || echo 1)"
+check "#155 retry: the second --approve succeeded" \
+  "$([ "$SPR2" -eq 0 ] && grep -q '^Status: APPROVED' "$SPR/.operator/specs/retried.md" && echo 0 || echo 1)"
+check "#155 retry: exactly ONE SPEC-APPROVED line, not one per attempt" \
+  "$([ "$(grep -c '| retried | SPEC-APPROVED |' "$SPR/.operator/DECISIONS.md")" -eq 1 ] && echo 0 || echo 1)"
+check "#155 retry: exactly ONE BAR block" \
+  "$([ "$(grep -c '^## BAR — retried' "$SPR/.operator/VERDICTS.md")" -eq 1 ] && echo 0 || echo 1)"
+rm -rf "$SPR"
+
+# THE LEDGER LOCK. --approve appends to VERDICTS.md AND DECISIONS.md — the
+# files ops-verdict.sh serialises — and the BAR block is six writes in one
+# group, so a concurrent verdict row could land inside it. A third writer to a
+# locked file that does not take the lock is the case the lock cannot defend
+# against (PR #154 review).
+SPL="$(newproj)"; ( cd "$SPL" && bash "$INIT" >/dev/null 2>&1 )
+( cd "$SPL" && bash "$SPECSH" --new raced >/dev/null 2>&1 )
+spec_fill "$SPL" raced
+( cd "$SPL" && bash "$SCRIPTS/ops-task.sh" racer --owner S-RACE >/dev/null 2>&1 )
+( cd "$SPL" && bash "$SPECSH" --approve raced --owner S-RACE >/dev/null 2>&1 ) &
+( cd "$SPL" && bash "$SCRIPTS/ops-verdict.sh" racer crit "cmd output" PASS --owner S-RACE >/dev/null 2>&1 ) &
+wait
+# The verdict row must exist WHOLE and OUTSIDE the BAR block — a row spliced
+# between the block's lines is the interleaving under test. The block ENDS at
+# its `Caps:` line: ending it at the next `## ` heading read a row correctly
+# appended AFTER a trailing block as spliced, so the case failed whenever the
+# verdict lost the lock race (PR #154 review, reproduced on a hand-built
+# ledger). bar_spliced's two controls below pin both sides.
+bar_spliced() { # bar_spliced <file> <row-id> → "spliced" iff the row sits between ## BAR and Caps:
+  awk -v id="| $2 |" '/^## BAR/{inbar=1;next} inbar&&/^Caps:/{inbar=0} inbar&&index($0,id)==1{print "spliced"}' "$1"
+}
+_BS="$(newproj)"
+printf '## BAR — x
+
+| # | C |
+| 1 | c |
+
+Caps: t.
+| racer | crit | e | PASS |
+' > "$_BS/after.md"
+printf '## BAR — x
+
+| # | C |
+| racer | crit | e | PASS |
+| 1 | c |
+
+Caps: t.
+' > "$_BS/inside.md"
+check "#155 CONTROL bar_spliced: a row appended AFTER a trailing block is not spliced" \
+  "$([ -z "$(bar_spliced "$_BS/after.md" racer)" ] && echo 0 || echo 1)"
+check "#155 CONTROL bar_spliced: a row INSIDE the block is spliced" \
+  "$([ "$(bar_spliced "$_BS/inside.md" racer)" = spliced ] && echo 0 || echo 1)"
+rm -rf "$_BS"
+check "#155 a concurrent verdict row lands whole, never inside the BAR block" \
+  "$([ -z "$(bar_spliced "$SPL/.operator/VERDICTS.md" racer)" ] && echo 0 || echo 1)"
+check "#155 …and that row is still in the ledger (the lock serialised, never dropped)" \
+  "$([ "$(grep -c '^| racer |' "$SPL/.operator/VERDICTS.md")" -eq 1 ] && echo 0 || echo 1)"
+check "#155 …and the BAR block was written exactly once" \
+  "$([ "$(grep -c '^## BAR — raced' "$SPL/.operator/VERDICTS.md")" -eq 1 ] && echo 0 || echo 1)"
+check "#155 --approve releases the lock it took" \
+  "$([ -d "$SPL/.operator/.lock" ] && echo 1 || echo 0)"
+rm -rf "$SPL"
+
+# THE FOURTH PROJECT ROOT BLOCK's whole point (#95): the CLI must work from a
+# SUBDIRECTORY. Without the walk-up every path resolves against the caller's
+# cwd, so the CLI works from the project root and nowhere else — and the Stop
+# hook prescribes an ABSOLUTE path, which is exactly the subdirectory case.
+mkdir -p "$SP/apps/viewer"
+( cd "$SP/apps/viewer" && bash "$SPECSH" --new fromsub >/dev/null 2>&1 )
+check "#155 ops-spec.sh resolves the project by WALKING UP from a subdirectory" \
+  "$([ -f "$SP/.operator/specs/fromsub.md" ] && echo 0 || echo 1)"
+
+# The slug becomes a FILENAME, so it takes the sentinel reject set.
+for _bad in 'a/b' '.hidden' 'a__b' 'a|b'; do
+  ( cd "$SP" && bash "$SPECSH" --new "$_bad" >/dev/null 2>&1 ); _rc=$?
+  check "#155 the slug reject set refuses $(printf '%s' "$_bad")" \
+    "$([ "$_rc" -ne 0 ] && echo 0 || echo 1)"
+done
+# A symlinked spec is refused BEFORE it is read (F65's class: the link is never
+# ours, and following it reads something the operator never wrote).
+ln -s /etc/passwd "$SP/.operator/specs/linked.md" 2>/dev/null
+( cd "$SP" && bash "$SPECSH" --check linked >/dev/null 2>&1 ); SPLNK=$?
+check "#155 a SYMLINKED spec is refused, never followed" \
+  "$([ "$SPLNK" -ne 0 ] && echo 0 || echo 1)"
+
+# #156's integration: the spec must actually be TRACKED, or the whole artifact
+# is invisible to the teammate it exists for. This is the reason the allowlist
+# took a third version at all.
+if command -v git >/dev/null 2>&1; then
+  ( cd "$SP" && git init -q . >/dev/null 2>&1 )
+  ( cd "$SP" && git check-ignore -q .operator/specs/alpha.md >/dev/null 2>&1 ); SPIGN=$?
+  check "#155/#156 an approved spec is NOT gitignored (the v3 allowlist admits it)" \
+    "$([ "$SPIGN" -ne 0 ] && echo 0 || echo 1)"
+else
+  skip "#155/#156 spec tracking (git unavailable)"
+fi
+rm -rf "$SP"
+
+########################################################################
+echo "-- Case: v2 -> v3 gitignore is ADDITIVE, so it appends (#156)"
+# The v1 -> v2 migration REPLACES because a blocklist and an allowlist
+# contradict. v3 is v2 PLUS two lines, so replacing would answer a
+# non-destructive change destructively: every allow line the user added by hand
+# would be deleted from the live file (recoverable from a backup, but gone from
+# the thing git reads). The arm therefore APPENDS, and these cases are the
+# difference between the two.
+GIA="$(newproj)"; mkdir -p "$GIA/.operator"
+printf '%s\n' '# cc-operator gitignore v2 (allowlist)' '*' '!VERDICTS.md' '!my-hand-added.md' \
+  > "$GIA/.operator/.gitignore"
+( cd "$GIA" && bash "$INIT" >/dev/null 2>&1 )
+check "#156 ops-init upgrades a v2 allowlist to v3" \
+  "$(grep -qF '# cc-operator gitignore v3 (allowlist)' "$GIA/.operator/.gitignore" && echo 0 || echo 1)"
+check "#156 the specs/ allow lines are present after the upgrade" \
+  "$(grep -qxF '!specs/' "$GIA/.operator/.gitignore" && grep -qxF '!specs/*.md' "$GIA/.operator/.gitignore" && echo 0 || echo 1)"
+# THE LOAD-BEARING ONE: the user's own line is still in the LIVE file, not just
+# in a backup. A rewrite passes every check above and fails this one.
+check "#156 the user's hand-added allow line SURVIVES in the live file" \
+  "$(grep -qxF '!my-hand-added.md' "$GIA/.operator/.gitignore" && echo 0 || echo 1)"
+check "#156 an additive upgrade takes NO backup (nothing was removed)" \
+  "$([ -e "$GIA/.operator/.gitignore.v1.bak" ] || [ -e "$GIA/.operator/.gitignore.v2.bak" ] && echo 1 || echo 0)"
+# Idempotent: the marker check is what stops a second append, so a re-run must
+# not double the lines.
+( cd "$GIA" && bash "$INIT" >/dev/null 2>&1 )
+check "#156 a re-run appends nothing (one specs line, one v3 marker)" \
+  "$([ "$(grep -cxF '!specs/' "$GIA/.operator/.gitignore")" -eq 1 ] \
+     && [ "$(grep -cF '# cc-operator gitignore v3 (allowlist)' "$GIA/.operator/.gitignore")" -eq 1 ] && echo 0 || echo 1)"
+rm -rf "$GIA"
+
+# THE APPEND'S OWN MECHANICS, which shipped green in the first cut and destroy
+# exactly what this arm exists to protect. `>>` writes at the byte offset the
+# file ENDS at, so a v2 allowlist whose last line has no trailing newline FUSES
+# that line with the first appended one: measured, `!my-hand-added.md` became
+# `!my-hand-added.md!specs/` — the user's rule gone, `!specs/` never in effect,
+# and the v3 marker landing anyway so nothing ever retried. Every case above
+# passed throughout, because they all wrote fixtures WITH a trailing newline.
+# An editor that strips the final newline is ordinary, not exotic.
+GIN="$(newproj)"; mkdir -p "$GIN/.operator"
+printf '# cc-operator gitignore v2 (allowlist)\n*\n!VERDICTS.md\n!no-final-newline.md' \
+  > "$GIN/.operator/.gitignore"
+( cd "$GIN" && bash "$INIT" >/dev/null 2>&1 )
+check "#156 ops-init: a v2 file with NO TRAILING NEWLINE keeps its last rule" \
+  "$(grep -qxF '!no-final-newline.md' "$GIN/.operator/.gitignore" && echo 0 || echo 1)"
+check "#156 …and the appended !specs/ is a line of its own, not fused" \
+  "$(grep -qxF '!specs/' "$GIN/.operator/.gitignore" && echo 0 || echo 1)"
+check "#156 …and nothing in the file is the fused token" \
+  "$(grep -q 'no-final-newline.md!specs/' "$GIN/.operator/.gitignore" && echo 1 || echo 0)"
+rm -rf "$GIN"
+
+# The hook's copy of the same arm — and this one runs EVERY SESSION, so the
+# fusion would reach projects that never re-run /cc-operator:start.
+GINH="$(newproj)"; mkdir -p "$GINH/.operator"
+printf '# cc-operator gitignore v2 (allowlist)\n*\n!hook-no-newline.md' \
+  > "$GINH/.operator/.gitignore"
+sed "s|<tmp>|$GINH|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" >/dev/null 2>&1
+check "#156 the hook: a v2 file with NO TRAILING NEWLINE keeps its last rule" \
+  "$(grep -qxF '!hook-no-newline.md' "$GINH/.operator/.gitignore" && echo 0 || echo 1)"
+check "#156 …and its !specs/ is a line of its own" \
+  "$(grep -qxF '!specs/' "$GINH/.operator/.gitignore" && echo 0 || echo 1)"
+rm -rf "$GINH"
+
+# The HOOK's copy of the same arm — both writers, or a project upgrades only
+# when someone runs /cc-operator:start by hand.
+GIH="$(newproj)"; mkdir -p "$GIH/.operator"
+printf '%s\n' '# cc-operator gitignore v2 (allowlist)' '*' '!VERDICTS.md' '!hook-hand-added.md' \
+  > "$GIH/.operator/.gitignore"
+GIHOUT="$(sed "s|<tmp>|$GIH|" "$FIXTURES/sessionstart.json" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+check "#156 the SessionStart hook upgrades a v2 allowlist to v3 as well" \
+  "$(grep -qF '# cc-operator gitignore v3 (allowlist)' "$GIH/.operator/.gitignore" && echo 0 || echo 1)"
+check "#156 the hook's upgrade keeps the user's hand-added line" \
+  "$(grep -qxF '!hook-hand-added.md' "$GIH/.operator/.gitignore" && echo 0 || echo 1)"
+# It must SAY so, and must NOT reuse the v1 notice — that one tells the user
+# their hand-written rules are GONE, which would be false here and is exactly
+# the kind of misdirection the third-state case exists to prevent.
+check "#156 the hook REPORTS the additive upgrade" \
+  "$(printf '%s' "$GIHOUT" | grep -q 'upgraded from the v2 allowlist to v3' && echo 0 || echo 1)"
+check "#156 …and does NOT claim the destructive MIGRATED wording" \
+  "$(printf '%s' "$GIHOUT" | grep -q 'was MIGRATED' && echo 1 || echo 0)"
+rm -rf "$GIH"
+
+# CONTROL, and it is the one that proves the arms are distinct: a v1 file must
+# STILL take the destructive path, with its backup. If the additive arm
+# swallowed v1 files it would append allow lines to a blocklist — a file that
+# ignores nothing it should and tracks nothing it must.
+GIC="$(newproj)"; mkdir -p "$GIC/.operator"
+printf '%s\n' '# legacy blocklist' 'bin/' '!v1-rule.md' > "$GIC/.operator/.gitignore"
+( cd "$GIC" && bash "$INIT" >/dev/null 2>&1 )
+check "#156 CONTROL a v1 blocklist still takes the REPLACE arm" \
+  "$(grep -qxF 'bin/' "$GIC/.operator/.gitignore" && echo 1 || echo 0)"
+check "#156 CONTROL the v1 file is still recoverable at .v1.bak" \
+  "$(grep -qxF '!v1-rule.md' "$GIC/.operator/.gitignore.v1.bak" 2>/dev/null && echo 0 || echo 1)"
+rm -rf "$GIC"
+
+########################################################################
+echo "-- Case: the derived stage (#157) — scripts/lib/stage.sh and the banner that carries it"
+# The cycle had seven stages and one command, and every transition between them
+# was the operator remembering to make it. After a compaction the RECOVERY
+# PROTOCOL's steps are prose the operator must CHOOSE to follow — so the stage
+# goes in the one channel a session reads before doing anything.
+#
+# stage_derive opens NO file: it is pure over facts scan_pending/scan_deviations
+# already computed, which is why the Stop hook (every scan) and SessionStart
+# (only the pending one) can share it without disagreeing. Testing it is
+# therefore a matter of calling it, not of building a project per case.
+STAGELIB="$SCRIPTS/lib/stage.sh"
+check "scripts/lib/stage.sh exists" "$([ -f "$STAGELIB" ] && echo 0 || echo 1)"
+# shellcheck source=/dev/null
+. "$STAGELIB"
+_stage_of() { stage_derive "$1" "$2" "${3:-}" "${4:-0}" "${5:--}" "${6:--}"; printf '%s' "$STAGE"; }
+
+check "stage: nothing open, deviations unscanned → CLEAR" \
+  "$([ "$(_stage_of 0 0 '' 0 -)" = "CLEAR" ] && echo 0 || echo 1)"
+check "stage: an owned pending sentinel → IMPLEMENT" \
+  "$([ "$(_stage_of 0 1 'task-a' 0 0)" = "IMPLEMENT" ] && echo 0 || echo 1)"
+check "stage: an unclosable (malformed) sentinel → BLOCKED" \
+  "$([ "$(_stage_of 2 0 '' 0 0)" = "BLOCKED" ] && echo 0 || echo 1)"
+check "stage: unpresented deviations, nothing open → HANDOFF" \
+  "$([ "$(_stage_of 0 0 '' 0 3)" = "HANDOFF" ] && echo 0 || echo 1)"
+# PRECEDENCE, and each rung must beat the one below it because it makes that
+# rung unreachable: you cannot hand off while a task of yours is open, and you
+# cannot close that task while its sentinel carries a name no CLI can address.
+check "stage: BLOCKED outranks IMPLEMENT (an unclosable sentinel first)" \
+  "$([ "$(_stage_of 1 4 'a, b' 0 0)" = "BLOCKED" ] && echo 0 || echo 1)"
+check "stage: IMPLEMENT outranks HANDOFF (an open task is not a finished engagement)" \
+  "$([ "$(_stage_of 0 1 'a' 0 9)" = "IMPLEMENT" ] && echo 0 || echo 1)"
+# The UNKNOWN input has its own answer. SessionStart does not scan DECISIONS.md,
+# so it passes "-" — and a stage that then claimed a clean deviation gate would
+# be asserting a fact its caller never checked.
+stage_derive 0 0 '' 0 -
+check "stage: an unscanned deviation gate is SAID, never assumed clean" \
+  "$(case "$STAGE_NEXT" in (*"not scanned"*) echo 0 ;; (*) echo 1 ;; esac)"
+check "stage: and it never claims HANDOFF on an unknown input" \
+  "$([ "$STAGE" != "HANDOFF" ] && echo 0 || echo 1)"
+# CONTROL: with the gate actually scanned and clean, that caveat must be ABSENT
+# — otherwise the assertion above passes on a string that is always there.
+stage_derive 0 0 '' 0 0
+check "stage: CONTROL — a scanned, clean gate carries no 'not scanned' caveat" \
+  "$(case "$STAGE_NEXT" in (*"not scanned"*) echo 1 ;; (*) echo 0 ;; esac)"
+# A foreign task is REPORTED and is never a stage: another session's open work
+# changes nothing about what this session should do next.
+stage_derive 0 0 '' 2 0
+check "stage: a foreign task does not become my stage" \
+  "$([ "$STAGE" = "CLEAR" ] && echo 0 || echo 1)"
+check "stage: but it IS reported in the next move" \
+  "$(case "$STAGE_NEXT" in (*"belong to other sessions"*) echo 0 ;; (*) echo 1 ;; esac)"
+check "stage: REPORT-ONLY — no exit/return-1 in any stage_derive branch" \
+  "$(grep -nE '^\s*(exit|return 1)' "$STAGELIB" | grep -qv 'return 0' && echo 1 || echo 0)"
+
+# THE SPEC RUNGS (#155 x #157): with the spec artifact on disk, the stages
+# docs/CYCLE.md §6 listed as "waiting on #155" are derivable — and the caller
+# computes the summary because this lib opens no file.
+check "stage: a DRAFT spec → SPEC" \
+  "$([ "$(_stage_of 0 0 '' 0 0 draft)" = "SPEC" ] && echo 0 || echo 1)"
+check "stage: an APPROVED spec → PLAN" \
+  "$([ "$(_stage_of 0 0 '' 0 0 approved)" = "PLAN" ] && echo 0 || echo 1)"
+# THE OPT-OUT PROPERTY, and it is the one that keeps this honest: a project
+# that never used the spec stage must not be told forever that it is in a spec
+# stage. The derivation reports where the engagement IS, never where a
+# ceremony says it should be.
+check "stage: NO specs dir is CLEAR, never a spec stage" \
+  "$([ "$(_stage_of 0 0 '' 0 0 none)" = "CLEAR" ] && echo 0 || echo 1)"
+# The gate's own rungs still outrank them: an open task is what this session
+# must close whatever the specs say.
+check "stage: an open task outranks an APPROVED spec" \
+  "$([ "$(_stage_of 0 1 'task-a' 0 0 approved)" = "IMPLEMENT" ] && echo 0 || echo 1)"
+check "stage: an unpresented decision outranks a DRAFT spec" \
+  "$([ "$(_stage_of 0 0 '' 0 3 draft)" = "HANDOFF" ] && echo 0 || echo 1)"
+
+# THE BANNER, END TO END. The assertions above all pass against a lib nothing
+# sources: the wiring is a separate claim and needs the hook actually run. It
+# also catches the shape that bash -n accepts and nobody can read — a
+# `&& \` continuation followed by a comment line.
+SP="$(newproj)"; mkdir -p "$SP/.operator/pending"
+printf 'x' > "$SP/.operator/pending/BANNER-SESS__open-one"
+SPOUT="$(printf '{"session_id":"BANNER-SESS","cwd":"%s"}' "$SP" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+check "the SessionStart banner carries the derived STAGE" \
+  "$(printf '%s' "$SPOUT" | grep -q 'STAGE IMPLEMENT' && echo 0 || echo 1)"
+check "the banner names the open task the stage is about" \
+  "$(printf '%s' "$SPOUT" | grep -q 'open-one' && echo 0 || echo 1)"
+# CONTROL: the same project with nothing open reports the other stage, so the
+# assertion above is not matching a constant.
+rm -f "$SP/.operator/pending"/*
+SPOUT2="$(printf '{"session_id":"BANNER-SESS","cwd":"%s"}' "$SP" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+check "CONTROL — with nothing open the banner reports STAGE CLEAR" \
+  "$(printf '%s' "$SPOUT2" | grep -q 'STAGE CLEAR' && echo 0 || echo 1)"
+SP2="$SP"
+# The SPEC summary end to end: the hook computes it, so a banner that reports
+# the right STAGE proves both halves — the glob AND the derivation.
+mkdir -p "$SP2/.operator/specs" 2>/dev/null
+printf '# SPEC — d
+Status: DRAFT
+' > "$SP2/.operator/specs/d.md"
+SPB1="$(printf '{"session_id":"BANNER-SESS","cwd":"%s"}' "$SP2" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+check "the banner reports STAGE SPEC for a DRAFT spec (#155 x #157)"   "$(printf '%s' "$SPB1" | grep -q 'STAGE SPEC' && echo 0 || echo 1)"
+printf '# SPEC — d
+Status: APPROVED @deadbeef
+' > "$SP2/.operator/specs/d.md"
+SPB2="$(printf '{"session_id":"BANNER-SESS","cwd":"%s"}' "$SP2" | "$BASH_ABS" "$SSHOOK" 2>/dev/null)"
+check "the banner reports STAGE PLAN once a spec is APPROVED"   "$(printf '%s' "$SPB2" | grep -q 'STAGE PLAN' && echo 0 || echo 1)"
+rm -rf "$SP2"
+
+# FAIL-SILENT, and this polarity is the load-bearing one: the id injection is
+# the root of the entire ownership mechanism, so a missing stage lib must cost
+# the STAGE LINE and nothing else. Copy the hook and its libs to a scratch tree
+# and delete stage.sh there — the shipped tree is never mutated.
+SPX="$(newproj)"; mkdir -p "$SPX/scripts/lib" "$SPX/proj/.operator/pending"
+cp "$SSHOOK" "$SPX/scripts/" && cp "$SCRIPTS/lib/partition.sh" "$SPX/scripts/lib/"
+cp "$SCRIPTS/ops-install-set.sh" "$SPX/scripts/" 2>/dev/null
+printf 'x' > "$SPX/proj/.operator/pending/BANNER-SESS__still-open"
+SPXOUT="$(printf '{"session_id":"BANNER-SESS","cwd":"%s"}' "$SPX/proj" | "$BASH_ABS" "$SPX/scripts/ops-sessionstart-hook.sh" 2>/dev/null)"
+check "a MISSING stage.sh costs the stage line, never the id banner (#157)" \
+  "$(printf '%s' "$SPXOUT" | grep -q "this session's id is BANNER-SESS" && echo 0 || echo 1)"
+check "…and no half-written STAGE line survives the missing lib" \
+  "$(printf '%s' "$SPXOUT" | grep -q 'STAGE' && echo 1 || echo 0)"
+
+########################################################################
+echo "-- Case: the workflow commands resolve tiers before dispatching (#75, #55)"
+# Six workflows shipped with no command surface at all: the operator hand-built
+# `Workflow({name, args})` calls and hand-pasted a model id resolved by a
+# separate script. That hand-paste IS #55 at the call site — skip it and every
+# seat runs on a harness alias while tiers.env says otherwise, silently. A
+# command that forgets step 1 reproduces exactly that, so the resolution is
+# pinned per command rather than trusted to the prose around it.
+#
+# COVERAGE, not equality: every workflow except dispatch must have a command
+# (deleting one fires), and any command named after a workflow must carry the
+# contract (adding commands/dispatch.md later is legal and automatically
+# checked). dispatch.js is the low-level escape hatch `/cc-operator:tiers`
+# documents; it takes a resolved id by construction.
+WFDIR="$REPO/workflows"
+CMDDIR="$REPO/commands"
+_wf_commanded=0
+for _wf in "$WFDIR"/*.js; do
+  _n="${_wf##*/}"; _n="${_n%.js}"
+  [ "$_n" = "dispatch" ] && continue
+  check "commands/$_n.md exists — the workflow has an entry point (#75)" \
+    "$([ -f "$CMDDIR/$_n.md" ] && echo 0 || echo 1)"
+  [ -f "$CMDDIR/$_n.md" ] || continue
+  _wf_commanded=$((_wf_commanded + 1))
+  # 1. The tier resolution itself. --json is the machine-readable form whose
+  #    own comment says it exists for Workflow({args:{tiers:...}}).
+  check "commands/$_n.md resolves the tier bindings with ops-tiers.sh --json" \
+    "$(grep -q 'ops-tiers.sh --json' "$CMDDIR/$_n.md" && echo 0 || echo 1)"
+  # 2. THE GRANT MUST COVER THE PRESCRIPTION (#104's rule, applied here): a
+  #    body that prescribes a Bash invocation and a Workflow call needs both in
+  #    allowed-tools, or the command it exists to make frictionless opens with
+  #    two permission prompts.
+  _fm="$(awk 'BEGIN{n=0} /^---$/{n++; if(n==2) exit; next} n==1' "$CMDDIR/$_n.md")"
+  # COVERAGE, not spelling (#104's actual rule): the narrow
+  # `Bash(bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-tiers.sh:*)` and the broad
+  # `Bash(bash:*)` both cover `bash …/ops-tiers.sh --json`, because the
+  # interpreter is the prefix and the path is an argument. A command that
+  # prescribes MORE bash than the resolver (implement.md also runs the gate
+  # CLIs) legitimately takes the broad grant; demanding the literal string
+  # made this case fail a command whose grant had gotten WIDER, which is the
+  # opposite of what it is for. No bash grant at all still fires.
+  check "commands/$_n.md's allowed-tools grants the bash it prescribes" \
+    "$(printf '%s' "$_fm" | grep -qE 'allowed-tools:.*(ops-tiers\.sh|Bash\(bash:\*\))' && echo 0 || echo 1)"
+  check "commands/$_n.md's allowed-tools grants the Workflow tool it dispatches with" \
+    "$(printf '%s' "$_fm" | grep -q 'allowed-tools:.*Workflow' && echo 0 || echo 1)"
+  # 3. It must name ITS OWN workflow. A command that dispatches a different one
+  #    is a mis-wire no other check can see: check_commands reads frontmatter
+  #    and paths, and knows nothing about which workflow a body invokes.
+  check "commands/$_n.md dispatches cc-operator:$_n, not another workflow" \
+    "$(grep -q "cc-operator:$_n" "$CMDDIR/$_n.md" && echo 0 || echo 1)"
+done
+# The loop itself must have run: a glob that matched nothing would pass every
+# check above by never executing one (the vacuity this repo keeps re-finding).
+check "the workflow-command loop actually ran (>=5 commanded workflows)" \
+  "$([ "$_wf_commanded" -ge 5 ] && echo 0 || echo 1)"
+# CONTROL: the same three greps against a command that is NOT a workflow entry
+# point must come back negative, or the greps match anything.
+check "CONTROL — commands/start.md does not resolve tiers (the greps can fail)" \
+  "$(grep -q 'ops-tiers.sh --json' "$CMDDIR/start.md" && echo 1 || echo 0)"
 
 ########################################################################
 echo "-- Case: skills/chief-operator/SKILL.md — the front door resolves"

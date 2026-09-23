@@ -1,9 +1,9 @@
 export const meta = {
   name: "dispatch",
   description:
-    "Run ONE agent seat on a caller-supplied model id. The plain Agent tool's model parameter is enum-locked to Anthropic aliases, so a seat cannot be dispatched on a configured cc-proxy model without a workflow; this is that workflow, and nothing more.",
+    "Run ONE agent seat on a caller-supplied model id, or on a named tier. The plain Agent tool's model parameter is enum-locked to Anthropic aliases, so a seat cannot be dispatched on a configured cc-proxy model without a workflow; this is that workflow, and nothing more. With neither, it dispatches with NO model override and the seat's own configured default stands.",
   whenToUse:
-    "When you need a single seat (author, mechanic, scout, verifier, crawler, brainstorm) to run on the model its tier is bound to, and you have not rendered project-layer agent files. Resolve the id first with `/cc-operator:tiers` (its render branch prints one id per seat) and pass it as args.model; args.seat picks the seat and args.prompt is the task.",
+    "When you need a single seat (author, mechanic, scout, verifier, crawler, brainstorm) to run on the model its tier is bound to, and you have not rendered project-layer agent files. Resolve the id first with `/cc-operator:tiers` (its render branch prints one id per seat) and pass it as args.model; or pass args.tier (JUDGMENT, IMPLEMENT, MECHANICAL, RECON) to take the id from args.tiers. args.seat picks the seat and args.prompt is the task.",
   phases: [{ title: "Dispatch", detail: "one seat, one model, one call" }],
 };
 
@@ -16,9 +16,15 @@ export const meta = {
 // class 0.8.3 removed from the id guard. An alias is resolved by the harness,
 // so it cannot go stale here; real bindings are the operator's job via
 // /cc-operator:tiers, arriving as args.tiers or args.model. Exactly the tiers
-// this workflow dispatches (the JUDGMENT fallback below).
+// this workflow CAN dispatch — all four since the fallback stopped being
+// JUDGMENT (#158): `args.tier` names one of these, and the caller's
+// `args.tiers` supplies the id behind it. A bare invocation naming a tier but
+// no map still resolves, to the harness alias.
 const DEFAULT_TIERS = {
   JUDGMENT: "opus",
+  IMPLEMENT: "sonnet",
+  MECHANICAL: "haiku",
+  RECON: "haiku",
 };
 // The ONLY id guard, by design: operator does not decide which models
 // exist. That is the user's choice (tiers.env / args.model) and cc-proxy's
@@ -68,15 +74,25 @@ const TIERS = { ...DEFAULT_TIERS };
 for (const [name, id] of Object.entries(overrides ?? {})) {
   if (name in DEFAULT_TIERS) TIERS[name] = id;
 }
-for (const [name, id] of Object.entries(TIERS)) {
+// VALIDATED LAZILY, and that is the point (#158). This file used to validate
+// every key of TIERS eagerly, which was sound while JUDGMENT was the only tier
+// it could dispatch: every key was reachable on every call. Now four tiers are
+// nameable and at most ONE is reached per call, so an eager loop would resurrect
+// exactly what PR #78 removed one level down — a malformed value on a tier this
+// CALL never touches failing the run, which makes "forward the resolver's whole
+// map" unsafe the moment any single binding in tiers.env is malformed. The
+// guard is unchanged in strength; only its subject narrowed to the id that
+// actually reaches agent().
+function tier_id(name) {
+  const id = TIERS[name];
   if (typeof id !== "string" || !id.trim()) {
     throw new Error(`tier ${name}=${JSON.stringify(id)} is not a model id string`);
   }
   if (BAD_CHARSET.test(id)) {
     throw new Error(`tier ${name}=${JSON.stringify(id)} contains characters outside the model-id charset [A-Za-z0-9._:/@[]-]`);
   }
+  return id;
 }
-const JUDGMENT = TIERS.JUDGMENT;
 
 // --- the seat table ---------------------------------------------------------
 // A LITERAL map, not `"cc-operator:op-" + seat`. Two reasons, and the second is
@@ -156,10 +172,29 @@ if (!prompt) {
 // model parameter is enum-locked to sonnet|opus|haiku|fable and rejects a
 // cc-proxy id before dispatch (#55).
 //
-// Falling back to a tier default rather than throwing, because dispatching on
-// JUDGMENT is a defensible default for a seat whose binding the caller did not
-// name — and the log line below says which happened, so a caller who meant to
-// pass a model finds out.
+// THE FALLBACK NO LONGER INVENTS A CHOICE (#158). It used to be
+// `model || JUDGMENT`: a seat whose binding the caller did not name was
+// dispatched on the judgment default, so `mechanic` — the seat ops-render.sh
+// binds to IMPLEMENT — silently ran one tier up. The log said so, which made
+// it honest, not correct. A workflow cannot read tiers.env (no filesystem in
+// the sandbox), so the only honest thing it can do about a binding it cannot
+// resolve is DECLINE TO CHOOSE: omit `model` from the agent() options entirely
+// and let the layers that already own that decision answer — the seat's
+// `model:` frontmatter, a project-layer agent written by `/cc-operator:tiers
+// render`, or $CLAUDE_CODE_SUBAGENT_MODEL. Renderer and dispatcher stop
+// competing: render sets the standing default, dispatch overrides per call.
+//
+// MEASURED 2026-09-21, and this rung rests on it. The converse was already
+// recorded (opts.model OVERRIDES the agent file's frontmatter, 2026-07-29);
+// the complement — that an OMITTED opts.model leaves the frontmatter in
+// effect — was an assumption until a two-seat probe ran it. Same agentType
+// (a project-layer agent pinning `model: opus`), one dispatch with no `model`
+// key and one with `model: "haiku"`. The runtime's per-agent metadata recorded
+// NO model key for the first and `"model":"haiku"` for the second, and the
+// transcripts show them served by claude-opus-5 and claude-haiku-4-5
+// respectively. Omitting the key hands the decision to the agent definition,
+// which is exactly what this rung claims.
+const rawTier = typeof A.tier === "string" && A.tier.trim() ? A.tier.trim() : "";
 const model = typeof A.model === "string" && A.model.trim() ? A.model.trim() : "";
 if (model) {
   // The caller-supplied id gets the SAME guard as a tiers.env binding — no
@@ -170,16 +205,35 @@ if (model) {
     throw new Error(`args.model=${JSON.stringify(model)} contains characters outside the model-id charset [A-Za-z0-9._:/@[]-]`);
   }
 }
-const resolved = model || JUDGMENT;
-log(model
-  ? `dispatch: ${seat} on ${resolved} (caller-supplied)`
-  : `dispatch: ${seat} on ${resolved} — no args.model given, fell back to the JUDGMENT tier; run \`/cc-operator:tiers\` to resolve ${seat}'s configured binding and pass it as args.model`);
+// An UNKNOWN tier name is refused, never defaulted: `args.tier` is caller
+// input, and a typo silently resolving to something would be the same class of
+// silent substitution this change exists to remove. Case-insensitive because
+// tiers.env writes them upper and a caller copying a seat line may not.
+let tierId = "";
+if (rawTier && !model) {
+  const tierName = rawTier.toUpperCase();
+  if (!Object.hasOwn(TIERS, tierName)) {
+    throw new Error(`unknown tier ${JSON.stringify(rawTier)} (known: ${Object.keys(DEFAULT_TIERS).join(", ")})`);
+  }
+  tierId = tier_id(tierName);
+}
+// "" means: send no `model` key at all. Never a tier id standing in for one.
+const resolved = model || tierId;
+const modelSource = model ? "args.model" : (tierId ? `args.tier:${rawTier.toUpperCase()}` : "seat-default");
+if (model && rawTier) {
+  log(`dispatch: both args.model and args.tier given — args.model (${model}) wins, args.tier=${rawTier} unused`);
+}
+log(resolved
+  ? `dispatch: ${seat} on ${resolved} (${modelSource})`
+  : `dispatch: ${seat} with NO model override — the seat's own configured default stands (agents/op-${seat}.md frontmatter, a project-layer agent from \`/cc-operator:tiers render\`, or $CLAUDE_CODE_SUBAGENT_MODEL). Pass args.model=<id> or args.tier=<${Object.keys(DEFAULT_TIERS).join("|")}> to override it here.`);
 
 // --- dispatch ----------------------------------------------------------------
 phase("Dispatch");
 const result = await agent(prompt, {
   agentType,
-  model: resolved,
+  // Spread, not `model: resolved`: an empty string is still a KEY, and a key
+  // whose value is falsy is not the same as no override at all.
+  ...(resolved ? { model: resolved } : {}),
   label: `dispatch:${seat}`,
   phase: "Dispatch",
   ...(typeof A.effort === "string" && A.effort.trim() ? { effort: A.effort.trim() } : {}),
@@ -191,9 +245,10 @@ const result = await agent(prompt, {
 if (result == null) {
   return {
     seat,
-    model: resolved,
+    model: resolved || null,
+    modelSource,
     dead: true,
     error: `the ${seat} seat returned nothing — this is NOT an empty result. The agent died: the model id was refused, or a schema mismatch, timeout, or rate limit. The harness logs its own failure line above, which names the cause.`,
   };
 }
-return { seat, model: resolved, dead: false, result };
+return { seat, model: resolved || null, modelSource, dead: false, result };

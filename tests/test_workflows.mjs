@@ -45,7 +45,7 @@ function makeRuntime(agentReturns = {}) {
     // — so a workflow handing a debater's prompt to an implementer seat (one
     // with Write/Edit, able to change the artifact it is arguing about) passes
     // that checker. The per-call-site binding only has an assertion here.
-    calls.push({ label, model: opts.model, prompt, isolation: opts.isolation, agentType: opts.agentType });
+    calls.push({ label, model: opts.model, prompt, isolation: opts.isolation, agentType: opts.agentType, schema: opts.schema, hasModelKey: "model" in opts });
     return agentReturns[label] ?? null;
   };
   const parallel = async (thunks) => {
@@ -165,8 +165,13 @@ ok(implOk, "brainstorm tier: IMPLEMENT accepted (F07 — resolver-map forwarding
 // "accepted, unused" and threw on it one line later (Copilot, PR #78). A tier
 // this workflow does not dispatch must not be able to fail its run at all —
 // otherwise "accepted" is a lie and forwarding the resolver's map is unsafe
-// the moment any tier in it is malformed. dispatch.js is the sharpest case:
-// it dispatches JUDGMENT alone, so every other key is unused by construction.
+// the moment any tier in it is malformed.
+//
+// #158 MOVED THE SUBJECT, not the property. dispatch.js used to dispatch
+// JUDGMENT alone, so every other key was unused by construction; now all four
+// tiers are NAMEABLE (args.tier) and at most ONE is reached per call. So the
+// property is enforced one level down — per CALL, not per workflow — and the
+// unused key here is a MECHANICAL binding on a call that names no tier at all.
 {
   let unusedOk = true;
   try {
@@ -176,15 +181,28 @@ ok(implOk, "brainstorm tier: IMPLEMENT accepted (F07 — resolver-map forwarding
       { "dispatch:scout": "ok" });
   } catch { unusedOk = false; }
   ok(unusedOk,
-    "dispatch tier: a malformed value on an UNDISPATCHED tier does not throw (logged unused means unused)");
+    "dispatch tier: a malformed value on a tier THIS CALL never reaches does not throw (logged unused means unused)");
 }
-// ...and the converse control: the same malformed value on a tier the
-// workflow DOES dispatch must still throw, or the filter above has simply
-// disabled the guard.
+// A key no tier table knows is the other half of F07: forwarding a resolver
+// map from a NEWER operator must stay free, malformed value and all.
+{
+  let futureOk = true;
+  try {
+    await run(WF("dispatch.js"),
+      { seat: "scout", prompt: "x", model: "glm-5-turbo",
+        tiers: { FUTURE_TIER: "glm 5 with spaces" } },
+      { "dispatch:scout": "ok" });
+  } catch { futureOk = false; }
+  ok(futureOk,
+    "dispatch tier: an UNKNOWN tier key is accepted-and-unused even when malformed (F07 survives #158)");
+}
+// ...and the converse control: the same malformed value on the tier the call
+// DOES reach must still throw, or lazy validation has simply disabled the
+// guard. `args.tier` is what makes it reachable.
 await throws(() => run(WF("dispatch.js"),
-  { seat: "scout", prompt: "x", model: "glm-5-turbo",
+  { seat: "scout", prompt: "x", tier: "JUDGMENT",
     tiers: { JUDGMENT: "glm 5 with spaces" } }, {}),
-  "dispatch tier: a malformed value on a DISPATCHED tier still throws (the filter did not neuter the guard)",
+  "dispatch tier: a malformed value on the tier THIS CALL reaches still throws (lazy validation did not neuter the guard)",
   "outside the");
 
 // ── review: bucket + threshold filter ───────────────────────────────────────
@@ -1460,18 +1478,76 @@ await throws(() => run(WF("dispatch.js"), { seat: "mechanic", model: "glm-5-turb
   "dispatch: an empty prompt is refused (a paid seat with no task)",
   "must be a non-empty string");
 
-// No args.model: falls back to a tier default rather than throwing, and SAYS
-// SO — a silent fallback hides a caller's mistaken binding.
+// ── #158: the resolution ladder ────────────────────────────────────────────
+// RUNG 3 IS THE DEFECT FIX. `model || JUDGMENT` dispatched the IMPLEMENT-tier
+// seat (mechanic, per ops-render.sh's seat_add) on the judgment default and
+// logged that it had — honest, not correct. A workflow cannot read tiers.env,
+// so the only honest answer to "no binding named" is to send NO model key and
+// let the seat's own configured default stand.
 const { result: dFall, rt: dFallRt } = await run(WF("dispatch.js"),
   { seat: "mechanic", prompt: "p" }, DISPATCH_OK);
-ok(dFall?.model === "opus",
-  "dispatch: no args.model falls back to the JUDGMENT default — a harness ALIAS since #76 step 2, never a vendor id");
-// The fallback command must be one a user can actually type — it used to name
-// `ops-render.sh --model <seat>`, neither installed nor reachable via
-// ${CLAUDE_PLUGIN_ROOT} (#62, caught by Copilot review).
-ok(dFallRt.logs.some((m) => /no args\.model given/.test(m)
+const dFallCall = dFallRt.calls.find((c) => c.label === "dispatch:mechanic");
+// The load-bearing assertion: the key is ABSENT from the agent() options.
+// `=== undefined` alone would also pass for `model: undefined`, which is a key
+// the harness still sees, so ask `hasModelKey` — the stub's record of
+// `"model" in opts`, taken at the call. Reading `"model" in dFallCall` instead
+// asks the RECORD, which always carries a `model` property because the stub
+// writes one, so it is ALWAYS true and the test collapsed to `=== undefined`:
+// measured (PR #154, Copilot), dispatch.js sending `{ model: undefined }` on
+// this rung kept the whole node suite at 430 passed.
+ok(dFallCall && dFallCall.hasModelKey === false,
+  "dispatch: no args.model and no args.tier sends NO model override — the seat's default stands (#158)");
+ok(dFall?.model === null && dFall?.modelSource === "seat-default",
+  "dispatch: the return says seat-default rather than naming a model it did not choose (#158)");
+// NEGATIVE CONTROL for the assertion above: the same shape WITH a model must
+// put the key back, or the check passes because the stub records nothing.
+const { rt: dFallCtl } = await run(WF("dispatch.js"),
+  { seat: "mechanic", prompt: "p", model: "glm-5-turbo" }, DISPATCH_OK);
+const dFallCtlCall = dFallCtl.calls.find((c) => c.label === "dispatch:mechanic");
+ok(dFallCtlCall?.model === "glm-5-turbo" && dFallCtlCall?.hasModelKey === true,
+  "dispatch: CONTROL — with args.model the key IS present (the absence check can fail)");
+// It must SAY so: a caller who meant to pass a binding finds out, and the log
+// names commands a user can actually type — it once named `ops-render.sh
+// --model <seat>`, neither installed nor reachable via ${CLAUDE_PLUGIN_ROOT}
+// (#62, caught by Copilot review).
+ok(dFallRt.logs.some((m) => /NO model override/.test(m)
     && /\/cc-operator:tiers/.test(m) && /mechanic/.test(m)),
-  "dispatch: the fallback is LOGGED and names a command a user can actually run");
+  "dispatch: the no-override rung is LOGGED and names a command a user can actually run");
+
+// RUNG 2: args.tier resolves against the caller's map.
+const { result: dTier, rt: dTierRt } = await run(WF("dispatch.js"),
+  { seat: "mechanic", prompt: "p", tier: "IMPLEMENT",
+    tiers: { IMPLEMENT: "deepseek:deepseek-v4-flash" } }, DISPATCH_OK);
+ok(dTierRt.calls.find((c) => c.label === "dispatch:mechanic")?.model === "deepseek:deepseek-v4-flash",
+  "dispatch: args.tier resolves the id out of args.tiers and reaches agent() (#158 rung 2)");
+ok(dTier?.modelSource === "args.tier:IMPLEMENT",
+  "dispatch: the return names WHICH rung supplied the model");
+// IMPLEMENT is the tier that no workflow could dispatch before #158 — the
+// whole reason this rung exists. Without args.tiers it resolves to the harness
+// alias in DEFAULT_TIERS, never to JUDGMENT's.
+const { rt: dTierBare } = await run(WF("dispatch.js"),
+  { seat: "mechanic", prompt: "p", tier: "IMPLEMENT" }, DISPATCH_OK);
+ok(dTierBare.calls.find((c) => c.label === "dispatch:mechanic")?.model === "sonnet",
+  "dispatch: a bare args.tier=IMPLEMENT resolves to its own default alias, not the JUDGMENT one");
+// Case-insensitive: tiers.env writes them upper, a caller may not.
+const { result: dTierLower } = await run(WF("dispatch.js"),
+  { seat: "scout", prompt: "p", tier: "recon" }, { "dispatch:scout": { ok: true } });
+ok(dTierLower?.modelSource === "args.tier:RECON",
+  "dispatch: args.tier is case-insensitive (tiers.env writes upper; a caller may not)");
+// An unknown tier name REFUSES — a typo resolving silently is the same class
+// of substitution this change removes.
+await throws(() => run(WF("dispatch.js"),
+  { seat: "mechanic", prompt: "p", tier: "IMPLEMENTT" }, DISPATCH_OK),
+  "dispatch: an unknown args.tier is refused, never defaulted", "unknown tier");
+// RUNG 1 beats rung 2, and says so rather than silently dropping one.
+const { result: dBoth, rt: dBothRt } = await run(WF("dispatch.js"),
+  { seat: "mechanic", prompt: "p", model: "glm-5-turbo", tier: "IMPLEMENT",
+    tiers: { IMPLEMENT: "deepseek:deepseek-v4-flash" } }, DISPATCH_OK);
+ok(dBoth?.modelSource === "args.model"
+    && dBothRt.calls.find((c) => c.label === "dispatch:mechanic")?.model === "glm-5-turbo",
+  "dispatch: args.model wins over args.tier (rung 1 before rung 2)");
+ok(dBothRt.logs.some((m) => /both args\.model and args\.tier/.test(m)),
+  "dispatch: the shadowed args.tier is LOGGED, not silently dropped");
 
 // A dead agent returns null; reporting that as a result would let a caller
 // read "ran and said nothing" from "never ran".
@@ -1481,6 +1557,8 @@ ok(dDead?.dead === true && /agent died/.test(dDead?.error ?? ""),
   "dispatch: a dead agent is reported as dead, not as an empty result");
 ok(dDead?.result === undefined,
   "dispatch: a dead agent carries no `result` key a caller could read as output");
+ok(dDead?.modelSource === "args.model",
+  "dispatch: a dead agent still reports WHICH rung chose the model (the id is the likeliest cause)");
 
 // ── brainstorm: fan-out shape + the dead-agent paths ────────────────────────
 // Until the 2026-08-22 replay, brainstorm had ONE case (tier validation). Its
@@ -2063,6 +2141,162 @@ for (const [label, weird] of [['"none"', "none"], ["{}", {}]]) {
     `review/F107: the adversarial seat still runs after findings:${label}`);
   ok((f107?.deadLenses ?? []).includes("quality"),
     `review/F107: a malformed lens is reported DEAD — lost coverage, never full coverage`);
+}
+
+
+// ── implement: the stage that writes, as a workflow (#158) ──────────────────
+console.log("-- Case: implement.js dispatches the IMPLEMENT tier, serially, on a complete packet");
+// Until this file, `grep -rn IMPLEMENT workflows/` returned NOTHING: the tier
+// ops-render.sh binds the implementer to was dispatched by no workflow, so a
+// tiers.env binding reached a seat only through `render` plus a session
+// restart. Every stage of the cycle that only READS ran as a workflow with a
+// tier map; the one stage that WRITES CODE was a plain Agent call against a
+// hardcoded frontmatter alias.
+const PKT = (over = {}) => ({
+  task: "add the guard", text: "the full task text", scene: "where this sits",
+  inputs: "a.js, b.js", forbidden: "the gate files", done: "tests pass",
+  reach: "cli.js:main -> guard()", ...over,
+});
+const IMPL_OK = (status = "DONE", changed = ["a.js"]) => ({ status, summary: "did it", changed, evidence: "out" });
+
+// REFUSAL FIRST, and the assertion that matters is what it SPENT. #84 measured
+// what a deficient packet costs when the fan-out runs first: 7 agents, 123,935
+// tokens, every seat answering that it could not proceed.
+{
+  let spent = null, msg = "";
+  try { await run(WF("implement.js"), {}, {}); }
+  catch (e) { spent = e.rt?.calls?.length; msg = String(e?.message ?? e); }
+  ok(spent === 0, "implement: an absent args.tasks refuses having dispatched ZERO agents");
+  ok(/args\.tasks is required/.test(msg), "implement: the refusal names the missing argument");
+}
+{
+  let spent = null, msg = "";
+  try { await run(WF("implement.js"), { tasks: [PKT({ done: "", reach: undefined })] }, {}); }
+  catch (e) { spent = e.rt?.calls?.length; msg = String(e?.message ?? e); }
+  ok(spent === 0, "implement: an INCOMPLETE packet refuses before a seat is paid for (#152's point, one level in)");
+  // EVERY defect at once: a refusal naming one field per round costs the
+  // operator a round per field.
+  ok(/DONE is missing/.test(msg) && /REACH is missing/.test(msg),
+    "implement: the refusal names EVERY missing field, not just the first");
+  ok(/2 defect\(s\)/.test(msg), "implement: the refusal counts the defects it found");
+}
+// A bare packet object is a legal single task (the common case is one dispatch).
+{
+  const { result: r1, rt: rt1 } = await run(WF("implement.js"),
+    { tasks: PKT({ id: "solo" }) }, { "implement:solo": IMPL_OK() });
+  ok(r1?.dispatched === 1 && rt1.calls.length === 1,
+    "implement: a bare packet object is taken as a single task, not refused");
+}
+
+// Serial, in packet order, one label per task.
+const { result: iOk, rt: iRt } = await run(WF("implement.js"),
+  { tasks: [PKT({ id: "one" }), PKT({ id: "two", task: "second" })] },
+  { "implement:one": IMPL_OK("DONE", ["a.js"]), "implement:two": IMPL_OK("DONE", ["b.js", "a.js"]) });
+ok(iRt.calls.map((c) => c.label).join(",") === "implement:one,implement:two",
+  "implement: tasks are dispatched in packet order, one label each");
+ok(iRt.calls.every((c) => c.agentType === "cc-operator:op-mechanic"),
+  "implement: the default seat is the mechanic — the IMPLEMENT-tier implementer");
+ok(iOk?.serial === true && iOk?.dispatched === 2 && iOk?.requested === 2,
+  "implement: the return states the run was serial and how many of how many ran");
+// CHANGED is unioned and deduped — it is what the operator hands ops-claims.sh.
+ok(JSON.stringify(iOk?.changed) === JSON.stringify(["a.js", "b.js"]),
+  "implement: CHANGED paths are unioned across tasks and deduped, in first-seen order");
+ok(/ops-claims\.sh/.test(iOk?.changedIsUnverified ?? ""),
+  "implement: the return says CHANGED is the seats' CLAIM, and names the CLI that checks it");
+// The packet must REACH the seat — a field validated and then dropped is worse
+// than one never required, because the refusal implies it was used.
+for (const f of ["SCENE", "FORBIDDEN", "REACH", "DONE"]) {
+  ok(new RegExp(`${f}:`).test(iRt.calls[0].prompt),
+    `implement: the packet's ${f} clause reaches the seat's prompt`);
+}
+// The four-status protocol arrives as a SCHEMA, not a prose request: the
+// operator routes on status, and a free-text status is one it must parse.
+const iEnum = iRt.calls[0]?.schema?.properties?.status?.enum ?? [];
+ok(["DONE", "DONE_WITH_CONCERNS", "NEEDS_CONTEXT", "BLOCKED"].every((s) => iEnum.includes(s)),
+  "implement: the seat is given the charter's four-status protocol as a schema enum");
+ok(iRt.calls[0]?.schema?.properties?.changed?.type === "array",
+  "implement: `changed` is an ARRAY of paths — a prose CHANGED line cannot be checked against a diff");
+
+// SERIALIZATION. The stub's parallel() runs thunks sequentially, so a
+// concurrency counter here would pass for a parallel implementation too — a
+// vacuous pin, which is the one thing this repo refuses to ship. What IS
+// enforceable is that the file contains no parallel() call at all: the
+// charter's one-implementer-at-a-time rule [D:CHART-r6] is a property of the
+// script, not a promise in a comment.
+{
+  const fs = await import("node:fs");
+  const src = fs.readFileSync(new URL(WF("implement.js")), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  ok(!/\bparallel\s*\(/.test(src),
+    "implement: NO parallel() call in the file (serialization is structural)");
+  // CONTROL: the same scan against a workflow that DOES fan out must find one,
+  // or the assertion above passes on a broken regex.
+  const bs = fs.readFileSync(new URL(WF("brainstorm.js")), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  ok(/\bparallel\s*\(/.test(bs),
+    "implement: CONTROL — the scan finds parallel() in brainstorm.js");
+}
+
+// THE TIER. mechanic defaults to IMPLEMENT, author to JUDGMENT — what
+// ops-render.sh's seat_add lines say. args.tiers supplies the id behind it.
+const { result: iTier, rt: iTierRt } = await run(WF("implement.js"),
+  { tasks: PKT({ id: "t" }), tiers: { IMPLEMENT: "deepseek:deepseek-v4-flash" } },
+  { "implement:t": IMPL_OK() });
+ok(iTierRt.calls[0]?.model === "deepseek:deepseek-v4-flash" && iTier?.modelSource === "args.tier:IMPLEMENT",
+  "implement: the mechanic seat resolves the IMPLEMENT binding out of args.tiers (the #158 point)");
+const { result: iBare, rt: iBareRt } = await run(WF("implement.js"),
+  { tasks: PKT({ id: "t" }) }, { "implement:t": IMPL_OK() });
+ok(iBareRt.calls[0]?.model === "sonnet" && iBare?.modelSource === "args.tier:IMPLEMENT",
+  "implement: with no args.tiers the IMPLEMENT default alias stands — never the JUDGMENT one");
+const { result: iAuth, rt: iAuthRt } = await run(WF("implement.js"),
+  { tasks: PKT({ id: "t" }), seat: "author" }, { "implement:t": IMPL_OK() });
+ok(iAuthRt.calls[0]?.agentType === "cc-operator:op-author" && iAuth?.modelSource === "args.tier:JUDGMENT",
+  "implement: the author seat defaults to JUDGMENT, its own tier");
+const { rt: iModelRt } = await run(WF("implement.js"),
+  { tasks: PKT({ id: "t" }), model: "glm-5-turbo", tiers: { IMPLEMENT: "x" } },
+  { "implement:t": IMPL_OK() });
+ok(iModelRt.calls[0]?.model === "glm-5-turbo",
+  "implement: an explicit args.model wins over the seat's tier");
+await throws(() => run(WF("implement.js"),
+  { tasks: PKT({ id: "t" }), model: "not routable" }, {}),
+  "implement: a charset-bad args.model is refused", "outside the");
+// READ-ONLY SEATS ARE NOT DISPATCHABLE HERE. Serializing a scout buys nothing,
+// and the charter's rule is about implementers specifically.
+for (const s of ["scout", "crawler", "verifier", "reviewer", "__proto__"]) {
+  await throws(() => run(WF("implement.js"), { tasks: PKT({ id: "t" }), seat: s }, {}),
+    `implement: the read-only/non-implementer seat ${JSON.stringify(s)} is refused`, "unknown seat");
+}
+// `op-` prefix optional, as everywhere else in this project.
+{
+  const { rt } = await run(WF("implement.js"),
+    { tasks: PKT({ id: "t" }), seat: "op-author" }, { "implement:t": IMPL_OK() });
+  ok(rt.calls[0]?.agentType === "cc-operator:op-author",
+    "implement: the 'op-' prefix is optional on args.seat");
+}
+
+// A DEAD SEAT STOPS THE RUN. The next task may depend on this one's output, so
+// stepping over a death produces a tree half-built by a seat that never ran.
+{
+  const { result: iDead, rt: iDeadRt } = await run(WF("implement.js"),
+    { tasks: [PKT({ id: "a" }), PKT({ id: "b" }), PKT({ id: "c" })] },
+    { "implement:a": IMPL_OK() });  // b dies
+  ok(iDeadRt.calls.length === 2 && iDead?.stoppedAt === "b",
+    "implement: a dead seat STOPS the serial run at that task, leaving the rest undispatched");
+  ok(iDead?.dispatched === 2 && iDead?.requested === 3,
+    "implement: the return states how many of how many ran, so a short run cannot read as complete");
+  ok(iDead?.results?.[1]?.dead === true && /NOT an empty report/.test(iDead?.results?.[1]?.error ?? ""),
+    "implement: the dead task is reported as DEAD, never as an empty report");
+  ok(iDead?.results?.[0]?.report?.status === "DONE",
+    "implement: the work completed before the death is kept — it is real work");
+}
+// The args normalizer: the Workflow tool stringifies args in transit (#92).
+{
+  const { result: iStr } = await run(WF("implement.js"),
+    JSON.stringify({ tasks: PKT({ id: "s" }) }), { "implement:s": IMPL_OK() });
+  ok(iStr?.dispatched === 1,
+    "implement: a JSON-STRING args (how the tool sends it) is parsed, not refused as empty");
 }
 
 console.log(`\n== summary: ${pass} passed, ${fail} failed ==`);

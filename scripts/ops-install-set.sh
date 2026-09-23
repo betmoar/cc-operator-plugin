@@ -16,4 +16,4 @@
 # CHARTER_REQUIRED_CLIS (4 entries, no ops-backlog.sh): those list the CLIs the
 # charter references, this lists what gets installed. ops-backlog.sh is
 # installed but deliberately not charter-required.
-_OPS_TOOLS="ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh ops-backlog.sh"
+_OPS_TOOLS="ops-verdict.sh ops-task.sh ops-adopt.sh ops-claims.sh ops-backlog.sh ops-spec.sh"

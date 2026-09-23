@@ -30,10 +30,16 @@ _PACKET_SENTENCE = (
     "point + the proof) / REPORT (status, SHA, CHANGED: <paths>|none)\n```"
 )
 
+# The four-status protocol (#158, check_implement_packet): implement.js hands
+# the seat these as a schema enum, so the charter must still define them.
+_STATUS_SENTENCE = (
+    "\n\nDONE / DONE_WITH_CONCERNS / NEEDS_CONTEXT / BLOCKED [D:CHART-status]"
+)
+
 GOOD_CHARTER = "# OPERATOR.md\n\n" + "\n".join(
     f"## {sec}\n\nrule [D:tag-{i}] body"
     + (_CLI_SENTENCE if sec == "EVIDENCE GATE" else ".")
-    + (_PACKET_SENTENCE if sec == "ORCHESTRATED MODE" else "")
+    + (_PACKET_SENTENCE + _STATUS_SENTENCE if sec == "ORCHESTRATED MODE" else "")
     + "\n"
     for i, sec in enumerate(vp.CHARTER_SECTION_ORDER)
 )
@@ -328,7 +334,7 @@ def make_good_tree(root):
           "# Decisions — append-only, one line per entry\n"
           "# <ISO-date> | <engagement.task> | <kind> | <what> | <why>\n"
           "# gated: DEVIATION | ESCALATION | GATE-EXCEPTION\n"
-          "# record: DECISION | DEFERRED-VERDICT\n"
+          "# record: DECISION | DEFERRED-VERDICT | SPEC-APPROVED\n"
           "# marker: HANDOFF-MARK\n")
     for name, model in (("op-author", "opus"),
                         ("op-mechanic", "sonnet"),
@@ -363,15 +369,33 @@ def make_good_tree(root):
     write(root / ".claude-plugin" / "statusline.json", json.dumps({
         "name": "cc-operator", "render": "scripts/statusline.sh", "order": 30,
     }))
-    # Both .operator/.gitignore writers must carry the v2 allowlist body,
+    # Both .operator/.gitignore writers must carry the CURRENT allowlist body,
     # byte-equal (check_gitignore_parity).
-    gitignore_v2 = ("# cc-operator gitignore v2 (allowlist)\n"
+    gitignore_v2 = ("# cc-operator gitignore v3 (allowlist)\n"
                     "*\n"
                     "!.gitignore\n!.gitattributes\n"
                     "!VERDICTS.md\n!DECISIONS.md\n!tiers.env\n"
                     "!verdicts.d/\n!verdicts.d/*.md\n"
                     # Evidence, not machine state (#30).
-                    "!handoff-*.md\n")
+                    "!handoff-*.md\n"
+                    # The spec artifact's home — an input to later work (#155).
+                    "!specs/\n!specs/*.md\n")
+    # The ADDITIVE v2 -> v3 arm both writers must carry (#156): a v2 file is
+    # APPENDED to, never replaced, so the user's own allow lines survive. The
+    # stub does the real thing — recognise v2, append, mark last.
+    _v3_append_init = (
+        "_GI_MARK_V2='# cc-operator gitignore v2 (allowlist)'\n"
+        "if ! grep -qF \"$_GI_MARK\" \"$OPDIR/.gitignore\" 2>/dev/null \\\n"
+        "   && grep -qF \"$_GI_MARK_V2\" \"$OPDIR/.gitignore\" 2>/dev/null; then\n"
+        "  printf '%s\\n' '!specs/' '!specs/*.md' \"$_GI_MARK\" "
+        ">> \"$OPDIR/.gitignore\" 2>/dev/null\n"
+        "fi\n")
+    _v3_append_hook = (
+        "if ! grep -qF '# cc-operator gitignore v3 (allowlist)' \"$_gi\" 2>/dev/null \\\n"
+        "   && grep -qF '# cc-operator gitignore v2 (allowlist)' \"$_gi\" 2>/dev/null; then\n"
+        "  printf '%s\\n' '!specs/' '!specs/*.md' "
+        "'# cc-operator gitignore v3 (allowlist)' >> \"$_gi\" 2>/dev/null\n"
+        "fi\n")
     # Both writers must detect a v1 file, emit the v2 body, and refuse to
     # overwrite without a verified backup. The install set lives in one
     # manifest (#76 step 3); check_install_set_parity pins both writers
@@ -389,7 +413,7 @@ def make_good_tree(root):
                      "done\n")
     write(root / "scripts" / "ops-init.sh",
           "#!/usr/bin/env bash\nset -eu\n" + _install_loop +
-          "_GI_MARK='# cc-operator gitignore v2 (allowlist)'\n"
+          "_GI_MARK='# cc-operator gitignore v3 (allowlist)'\n" + _v3_append_init +
           "if ! grep -qF \"$_GI_MARK\" \"$OPDIR/.gitignore\" 2>/dev/null; then\n"
           "  if [ -e \"$OPDIR/.gitignore.v1.bak\" ] && [ ! -f \"$OPDIR/.gitignore.v1.bak\" ]; then\n"
           "    echo refusing >&2\n"
@@ -397,8 +421,8 @@ def make_good_tree(root):
           "    echo refusing >&2\n"
           "  else\n"
           # ATOMIC: temp + same-dir mv (audit F137 pins init's swap like the hook's)
-          "cat > \"$OPDIR/.gitignore.v2.tmp\" <<'EOF'\n" + gitignore_v2 + "EOF\n"
-          "mv -f \"$OPDIR/.gitignore.v2.tmp\" \"$OPDIR/.gitignore\"\n"
+          "cat > \"$OPDIR/.gitignore.v3.tmp\" <<'EOF'\n" + gitignore_v2 + "EOF\n"
+          "mv -f \"$OPDIR/.gitignore.v3.tmp\" \"$OPDIR/.gitignore\"\n"
           "  fi\nfi\n"
           "echo ok\n")
     # SessionStart clears the compressor's session-scoped artifacts and migrates
@@ -422,7 +446,8 @@ def make_good_tree(root):
           "    *'$'* | *'`'* | *\"'\"* | *'\"'* | *\\\\*) continue ;;\n"
           "  esac\n"
           "done\n"
-          "if ! grep -qF '# cc-operator gitignore v2 (allowlist)' \"$_gi\" 2>/dev/null; then\n"
+          + _v3_append_hook +
+          "if ! grep -qF '# cc-operator gitignore v3 (allowlist)' \"$_gi\" 2>/dev/null; then\n"
           "  if [ -e \"$_gi.v1.bak\" ] && [ ! -f \"$_gi.v1.bak\" ]; then\n"
           "    _gi_backup_failed=1\n"
           "  elif ! cp \"$_gi\" \"$_gi.v1.bak\" 2>/dev/null; then\n"
@@ -432,15 +457,15 @@ def make_good_tree(root):
           # and the validator excused it, because the CONFIRMATION pin was gated
           # on `".v2.tmp" in text` — the exact vacuity PR #104's review found.
           # With the atomic pin unconditional, a good tree must BE atomic.
-          "  elif cat > \"$_gi.v2.tmp\" 2>/dev/null <<'EOF'\n" + gitignore_v2 + "EOF\n"
+          "  elif cat > \"$_gi.v3.tmp\" 2>/dev/null <<'EOF'\n" + gitignore_v2 + "EOF\n"
           # The THIRD state: backup written, overwrite failed. Two flags cannot
           # express three outcomes, and the missing one reported nothing at all.
           "  then\n"
-          "    if grep -qF '# cc-operator gitignore v2 (allowlist)' \"$_gi.v2.tmp\" 2>/dev/null \\\n"
-          "       && mv -f \"$_gi.v2.tmp\" \"$_gi\" 2>/dev/null; then\n"
+          "    if grep -qF '# cc-operator gitignore v3 (allowlist)' \"$_gi.v3.tmp\" 2>/dev/null \\\n"
+          "       && mv -f \"$_gi.v3.tmp\" \"$_gi\" 2>/dev/null; then\n"
           "      _gi_migrated=1\n"
           "    else\n"
-          "      rm -f \"$_gi.v2.tmp\" 2>/dev/null\n"
+          "      rm -f \"$_gi.v3.tmp\" 2>/dev/null\n"
           "      _gi_write_failed=1\n"
           "    fi\n"
           "  else\n"
@@ -480,7 +505,15 @@ def make_good_tree(root):
           '[ -f "$frag" ] && [ ! -L "$frag" ] && :;\n'
           "# F17: both verdicts.d fragment scanners use the same 1MiB read bound\n"
           "while IFS= read -r -n 1048576 row; do :; done < \"$frag\"\n"
-          "while IFS= read -r -n 1048576 line; do :; done < \"$frag\"\n" +
+          "while IFS= read -r -n 1048576 line; do :; done < \"$frag\"\n"
+          # The bounded trailing-CR run strip (#139 item 1), required
+          # unconditionally since the PR #154 review: check_cr_strip_parity used
+          # to skip any file with no `_cr` in it, which is exactly what deleting
+          # the strip produces. A stub that omits it now reads as the deletion.
+          "_cr=0\n"
+          "while [ \"$_cr\" -lt 16 ]; do\n"
+          "  case \"$row\" in *$'\\r') row=\"${row%$'\\r'}\"; _cr=$((_cr + 1)) ;; *) break ;; esac\n"
+          "done\n" +
           # --mark-handoff EMITS the marker (audit F127: the pin reads a
           # printf line in code, not a mention in a comment) — in the KIND
           # CELL, cell 3 of `date | eng | kind | what`, which is the cell the
@@ -495,6 +528,14 @@ def make_good_tree(root):
           "# PREV reject-set (F15): carries *.exempt like the sentinel_owner parsers\n"
           'case "${PREV:-}" in */* | .* | *"|"* | *[[:space:]]* | *[[:cntrl:]]* | *.exempt) PREV="<invalid>" ;; esac\n'
           + GOOD_LOCK_BLOCK + GOOD_ROOT_BLOCK)
+    # ops-spec.sh: the FOURTH project-root copy and the THIRD lock copy (#155).
+    # It is a gate CLI — it writes DECISIONS.md and VERDICTS.md under the same
+    # lock — so it resolves the project the same way the other three do
+    # (check_root_parity holds all four equal) and carries the lock block
+    # check_lock_parity holds against ops-verdict.sh.
+    write(root / "scripts" / "ops-spec.sh",
+          "#!/usr/bin/env bash\n" + guards + GOOD_SOURCE_STAMP + GOOD_LOCK_BLOCK
+          + GOOD_ROOT_BLOCK)
     # ops-claims.sh: check_claims pins its PROTECTED literal and requires
     # matches_protected applied to $p.
     write(root / "scripts" / "ops-claims.sh",
@@ -639,6 +680,18 @@ def make_good_tree(root):
     for wname in ("review", "brainstorm"):
         write(root / "workflows" / f"{wname}.js",
               f'export const meta = {{ name: "{wname}", description: "d" }};\n' + WF_SHARED)
+    # implement.js is separate because check_implement_packet REPORTS a missing
+    # one (#158): the implement stage running as a workflow IS the contract, so
+    # a check that passes when its subject is deleted is not a check. The stub
+    # carries the packet list, its two application sites, and the status enum.
+    write(root / "workflows" / "implement.js",
+          'export const meta = { name: "implement", description: "d" };\n' + WF_SHARED +
+          'const PACKET_FIELDS = ["task", "text", "scene", "inputs", "forbidden", "done", "reach"];\n'
+          'for (const f of PACKET_FIELDS) { if (!A.tasks?.[0]?.[f]) throw new Error(`${f} missing`); }\n'
+          'const prompt = PACKET_FIELDS.map((f) => `${f.toUpperCase()}:\\n${A.tasks[0][f]}`).join("\\n");\n'
+          'const REPORT = { properties: { status: {\n'
+          '  enum: ["DONE", "DONE_WITH_CONCERNS", "NEEDS_CONTEXT", "BLOCKED"],\n'
+          '} } };\n')
     # plan.js is separate because check_northstar REPORTS a missing plan.js
     # rather than skipping (#58): read without a fallback, refused when absent
     # or missing `Missed if:`, interpolated into exactly one prompt.
@@ -1003,6 +1056,106 @@ class ValidatorTest(unittest.TestCase):
         self._mutate_verdict("# --- Verdict path ---", "# --- verdict stuff ---")
         self.assertFires("Verdict path")
 
+    # --- #158: the implement stage's packet (check_implement_packet) ---
+    # A FOURTH hand-copy of the charter's dispatch packet, this one in CODE.
+    # Every case below drives check_implement_packet red; the fixture is
+    # clean-by-construction, so a fixture edited only to go green would
+    # disable the check with the suite passing (F30's shape).
+    _IMPLEMENT_EXPECTED_FIELDS = ("TASK", "TEXT", "SCENE", "INPUTS",
+                                  "FORBIDDEN", "DONE", "REACH")
+    _IMPLEMENT_EXPECTED_STATUSES = ("DONE", "DONE_WITH_CONCERNS",
+                                    "NEEDS_CONTEXT", "BLOCKED")
+
+    def _implement(self):
+        return self.dir / "workflows" / "implement.js"
+
+    def test_implement_fields_match_expected(self):
+        # The one place the two copies are compared. Deriving the cases below
+        # from the module under test would assert self-consistency, not
+        # correctness — _EXPECTED_SPINE's lesson, applied to this pin.
+        self.assertEqual(tuple(vp.IMPLEMENT_PACKET_FIELDS),
+                         self._IMPLEMENT_EXPECTED_FIELDS,
+                         "IMPLEMENT_PACKET_FIELDS changed — update the "
+                         "independent copy here, templates/OPERATOR.md, "
+                         "docs/HANDOUT.md and workflows/implement.js")
+        self.assertEqual(tuple(vp.IMPLEMENT_STATUSES),
+                         self._IMPLEMENT_EXPECTED_STATUSES,
+                         "IMPLEMENT_STATUSES changed — update the independent "
+                         "copy here and the charter's four-status protocol")
+
+    def test_implement_packet_dropped_field_fires(self):
+        # The realistic mutation: a field quietly dropped from the list. The
+        # refusal stops demanding REACH and the seat stops receiving it.
+        p = self._implement()
+        p.write_text(p.read_text(encoding="utf-8").replace(', "reach"', ""),
+                     encoding="utf-8")
+        self.assertFires("PACKET_FIELDS is missing 'REACH'")
+
+    def test_implement_packet_extra_field_fires(self):
+        # The mirror: code asking for a clause the contract never defined.
+        p = self._implement()
+        p.write_text(p.read_text(encoding="utf-8").replace(
+            '"reach"]', '"reach", "budget"]'), encoding="utf-8")
+        self.assertFires("PACKET_FIELDS carries 'budget'")
+
+    def test_implement_packet_validated_then_dropped_fires(self):
+        # Validated and then NEVER SENT — worse than never required, because
+        # the refusal implies the field was used. The list keeps every field;
+        # only the prompt-building site goes.
+        p = self._implement()
+        src = p.read_text(encoding="utf-8")
+        src = src.replace('const prompt = PACKET_FIELDS.map((f) => `${f.toUpperCase()}:\\n${A.tasks[0][f]}`).join("\\n");',
+                          'const prompt = "hardcoded task text only";')
+        p.write_text(src, encoding="utf-8")
+        self.assertFires("no `PACKET_FIELDS.map(`")
+
+    def test_implement_packet_application_in_a_comment_does_not_count(self):
+        # F48/F57's shape on this pin: a call site moved into a comment must
+        # not satisfy the application check.
+        p = self._implement()
+        src = p.read_text(encoding="utf-8")
+        src = src.replace("const prompt = PACKET_FIELDS.map(",
+                          "// const prompt = PACKET_FIELDS.map(")
+        p.write_text(src, encoding="utf-8")
+        self.assertFires("no `PACKET_FIELDS.map(`")
+
+    def test_implement_status_enum_dropped_fires(self):
+        # A status the seat cannot return is a route the operator's protocol
+        # has and the workflow silently removes.
+        p = self._implement()
+        p.write_text(p.read_text(encoding="utf-8").replace(', "BLOCKED"', ""),
+                     encoding="utf-8")
+        self.assertFires("status enum is missing 'BLOCKED'")
+
+    def test_implement_charter_losing_a_packet_field_fires(self):
+        # The contract's other end. check_handout_packet fires too — this
+        # needle is the one that names the workflow still requiring it.
+        c = self.dir / "templates" / "OPERATOR.md"
+        c.write_text(c.read_text(encoding="utf-8").replace(
+            "FORBIDDEN / DONE", "DONE"), encoding="utf-8")
+        self.assertFires("the dispatch packet lost 'FORBIDDEN', which "
+                         "workflows/implement.js still requires")
+
+    def test_implement_charter_losing_a_status_fires(self):
+        c = self.dir / "templates" / "OPERATOR.md"
+        c.write_text(c.read_text(encoding="utf-8").replace(
+            "NEEDS_CONTEXT / ", ""), encoding="utf-8")
+        self.assertFires("four-status protocol lost 'NEEDS_CONTEXT'")
+
+    def test_implement_missing_file_fires(self):
+        # Absence is a FINDING, never a skip (#114): a check that passes when
+        # its subject is deleted is not a check.
+        self._implement().unlink()
+        self.assertFires("workflows/implement.js: missing")
+
+    def test_implement_packet_locator_reshape_fires(self):
+        # A reshape must update the locator, not silence the pin.
+        p = self._implement()
+        p.write_text(p.read_text(encoding="utf-8").replace(
+            "const PACKET_FIELDS = [", "const PACKET_SPEC = ["),
+            encoding="utf-8")
+        self.assertFires("no `const PACKET_FIELDS = [...]` found")
+
     # --- the handout packet pin (check_handout_packet, F69 + #57) ---
     # The full packet spine, written once rather than derived from
     # vp.HANDOUT_PACKET_SPINE (a derived test asserts self-consistency, not
@@ -1223,15 +1376,29 @@ class ValidatorTest(unittest.TestCase):
         write(self.dir / "templates" / "DECISIONS-header.md",
               "# Decisions\n"
               "# gated: DEVIATION | ESCALATION | GATE-EXCEPTION\n"
-              "# record: DECISION | DEFERRED-VERDICT\n")
+              "# record: DECISION | DEFERRED-VERDICT | SPEC-APPROVED\n")
         self.assertFires("missing 'HANDOFF-MARK'")
+
+    def test_spec_approved_must_be_a_RECORD_kind(self):
+        # #9's defect, for #155's kind: a kind in the wrong constant is a kind
+        # the gate silently mishandles. As a GATED kind, every approved spec
+        # would block Stop until the handoff presented it — an approval is not
+        # a deviation to answer for. The header is the contract both halves
+        # read, so putting it on the gated line must fire.
+        write(self.dir / "templates" / "DECISIONS-header.md",
+              "# <ISO-date> | <engagement.task> | <kind> | <what> | <why>\n"
+              "# gated: DEVIATION | ESCALATION | GATE-EXCEPTION | SPEC-APPROVED\n"
+              "# record: DECISION | DEFERRED-VERDICT\n"
+              "# marker: HANDOFF-MARK\n")
+        probs = self.problems()
+        self.assertTrue(any("SPEC-APPROVED" in p for p in probs), probs)
 
     def test_decisions_enum_missing_split_fires(self):
         # All kinds present but no gated/record split (issue #9).
         write(self.dir / "templates" / "DECISIONS-header.md",
               "# <ISO-date> | <eng> | "
               "<DEVIATION|ESCALATION|GATE-EXCEPTION|DECISION|DEFERRED-VERDICT"
-              "|HANDOFF-MARK> | <what> | <why>\n")
+              "|SPEC-APPROVED|HANDOFF-MARK> | <what> | <why>\n")
         self.assertFires("does not distinguish gated from record kinds")
 
     def test_decisions_reader_missing_handoff_mark_fires(self):
@@ -2144,11 +2311,17 @@ class LockParityTest(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)
 
-    def _write(self, verdict=None, adopt=None):
+    def _write(self, verdict=None, adopt=None, spec=None):
+        # THREE files since #155: with ops-spec.sh absent the check returns
+        # early (missing-file is check_scripts' to report), so a two-file
+        # fixture made every mutation below report NOTHING — measured, the
+        # four mutation cases went green against a check that never ran.
         v = self.BLOCK.replace("TOOL:", "ops-verdict:") if verdict is None else verdict
         a = self.BLOCK.replace("TOOL:", "ops-adopt:") if adopt is None else adopt
+        sp = self.BLOCK.replace("TOOL:", "ops-spec:") if spec is None else spec
         write(self.dir / "scripts" / "ops-verdict.sh", "#!/usr/bin/env bash\n" + v)
         write(self.dir / "scripts" / "ops-adopt.sh", "#!/usr/bin/env bash\n" + a)
+        write(self.dir / "scripts" / "ops-spec.sh", "#!/usr/bin/env bash\n" + sp)
 
     def problems(self):
         probs = []
@@ -2167,6 +2340,17 @@ class LockParityTest(unittest.TestCase):
         self.assertTrue(any("drifted" in p for p in probs), probs)
         self.assertTrue(any("LOCK_SPINS" in p for p in probs), probs)
 
+    def test_third_writer_drift_fires(self):
+        """Parity compared ops-verdict vs ops-adopt ONLY, so ops-spec.sh (#155)
+        was held by the content pin alone — and the content pin passes anything
+        that still LOOKS like a lock. Measured: LOCK_SPINS=100 in ops-spec.sh
+        alone reported nothing before the reference-copy loop."""
+        self._write(spec=self.BLOCK.replace("TOOL:", "ops-spec:")
+                    .replace("LOCK_SPINS=300", "LOCK_SPINS=100"))
+        probs = self.problems()
+        self.assertTrue(any("drifted" in p for p in probs), probs)
+        self.assertTrue(any("ops-spec.sh" in p for p in probs), probs)
+
     def test_uniform_drift_fires(self):
         """F30, committed inside the check whose docstring teaches it: the
         holder read inflated to 999999999 in BOTH copies left them perfectly
@@ -2174,7 +2358,8 @@ class LockParityTest(unittest.TestCase):
         Measured 2026-08-25; the bash suite did not see it either."""
         broke = self.BLOCK.replace("read -r -n 128", "read -r -n 999999999")
         self._write(verdict=broke.replace("TOOL:", "ops-verdict:"),
-                    adopt=broke.replace("TOOL:", "ops-adopt:"))
+                    adopt=broke.replace("TOOL:", "ops-adopt:"),
+                    spec=broke.replace("TOOL:", "ops-spec:"))
         probs = self.problems()
         self.assertFalse(any("drifted" in p for p in probs),
                          "uniform drift IS in parity — that is the point")
@@ -2189,7 +2374,8 @@ class LockParityTest(unittest.TestCase):
             '  while ! mkdir "$LOCKDIR" 2>/dev/null; do',
             '  # while ! mkdir "$LOCKDIR" 2>/dev/null; do\n  while [ -d "$LOCKDIR" ]; do')
         self._write(verdict=broke.replace("TOOL:", "ops-verdict:"),
-                    adopt=broke.replace("TOOL:", "ops-adopt:"))
+                    adopt=broke.replace("TOOL:", "ops-adopt:"),
+                    spec=broke.replace("TOOL:", "ops-spec:"))
         probs = self.problems()
         self.assertTrue(any("atomic primitive" in p for p in probs), probs)
 
@@ -2199,7 +2385,8 @@ class LockParityTest(unittest.TestCase):
         broke = self.BLOCK.replace('while ! mkdir "$LOCKDIR" 2>/dev/null; do',
                                    'while [ -d "$LOCKDIR" ]; do')
         self._write(verdict=broke.replace("TOOL:", "ops-verdict:"),
-                    adopt=broke.replace("TOOL:", "ops-adopt:"))
+                    adopt=broke.replace("TOOL:", "ops-adopt:"),
+                    spec=broke.replace("TOOL:", "ops-spec:"))
         probs = self.problems()
         self.assertTrue(any("atomic primitive" in p for p in probs), probs)
         self.assertFalse(any("drifted" in p for p in probs),
@@ -2218,7 +2405,7 @@ class LockParityTest(unittest.TestCase):
 
 
 class RootParityTest(unittest.TestCase):
-    """The three gate CLIs must resolve the project the same way, and it must
+    """The four gate CLIs must resolve the project the same way, and it must
     be the right way (#95).
 
     Until 0.11.3 OPDIR was relative to the caller's cwd, so every CLI worked
@@ -2255,7 +2442,10 @@ class RootParityTest(unittest.TestCase):
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def _write(self, **over):
-        for name in ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh"):
+        # FOUR since #155: ops-spec.sh writes DECISIONS.md and VERDICTS.md, so
+        # it resolves the project the same way. A writer left out of this list
+        # is a writer the parity mutations below never cover.
+        for name in ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh", "ops-spec.sh"):
             key = name[:-3].replace("-", "_")
             body = over.get(key, self.BLOCK.replace("TOOL:", name[:-3] + ":"))
             write(self.dir / "scripts" / name, "#!/usr/bin/env bash\n" + body)
@@ -2285,7 +2475,11 @@ class RootParityTest(unittest.TestCase):
                                    '      OPDIR="$_walk/.operator"')
         self._write(ops_task=broke.replace("TOOL:", "ops-task:"),
                     ops_verdict=broke.replace("TOOL:", "ops-verdict:"),
-                    ops_adopt=broke.replace("TOOL:", "ops-adopt:"))
+                    ops_adopt=broke.replace("TOOL:", "ops-adopt:"),
+                    # ALL FOUR since #155, or the mutation is not uniform and
+                    # these cases measure drift instead of the uniform loss
+                    # they are named for.
+                    ops_spec=broke.replace("TOOL:", "ops-spec:"))
         probs = self.problems()
         self.assertFalse(any("drifted" in p for p in probs),
                          "uniform drift IS in parity — that is the point")
@@ -2297,7 +2491,11 @@ class RootParityTest(unittest.TestCase):
         broke = self.BLOCK.replace('    [ -e "$_walk/.git" ] && break\n', "")
         self._write(ops_task=broke.replace("TOOL:", "ops-task:"),
                     ops_verdict=broke.replace("TOOL:", "ops-verdict:"),
-                    ops_adopt=broke.replace("TOOL:", "ops-adopt:"))
+                    ops_adopt=broke.replace("TOOL:", "ops-adopt:"),
+                    # ALL FOUR since #155, or the mutation is not uniform and
+                    # these cases measure drift instead of the uniform loss
+                    # they are named for.
+                    ops_spec=broke.replace("TOOL:", "ops-spec:"))
         probs = self.problems()
         self.assertTrue(any("nested repo" in p for p in probs), probs)
 
@@ -2310,7 +2508,11 @@ class RootParityTest(unittest.TestCase):
             '      # cd "$_walk" 2>/dev/null || die "TOOL: could not cd"\n      :')
         self._write(ops_task=broke.replace("TOOL:", "ops-task:"),
                     ops_verdict=broke.replace("TOOL:", "ops-verdict:"),
-                    ops_adopt=broke.replace("TOOL:", "ops-adopt:"))
+                    ops_adopt=broke.replace("TOOL:", "ops-adopt:"),
+                    # ALL FOUR since #155, or the mutation is not uniform and
+                    # these cases measure drift instead of the uniform loss
+                    # they are named for.
+                    ops_spec=broke.replace("TOOL:", "ops-spec:"))
         probs = self.problems()
         self.assertTrue(any("REPO-relative" in p for p in probs), probs)
 
@@ -3067,12 +3269,21 @@ class GitignoreParityTest(unittest.TestCase):
                 write(self.dir / "scripts" / name, real)   # restore for the next subTest
         self.assertEqual(self._probs(), [])
 
-    def test_losing_the_v2_marker_fires(self):
-        # Without the marker neither writer can detect a v1 file, so a blocklist
-        # is appended to instead of replaced.
+    def test_losing_the_CURRENT_marker_fires(self):
+        # Without the current marker neither writer can detect an older file,
+        # so a blocklist is appended to instead of replaced.
         write(self.dir / "scripts" / "ops-init.sh",
-              self._real_init.replace("# cc-operator gitignore v2 (allowlist)", "# v2", 1))
-        self.assertTrue(any("v2 gitignore marker" in p for p in self._probs()),
+              self._real_init.replace("# cc-operator gitignore v3 (allowlist)", "# v3", 1))
+        self.assertTrue(any("CURRENT gitignore marker" in p for p in self._probs()),
+                        self._probs())
+
+    def test_losing_the_PREVIOUS_marker_fires(self):
+        # #156's other half: a writer that stops RECOGNISING v2 sends every v2
+        # file down the destructive arm, deleting the user's own allow lines.
+        # Separate message, separate case — the two markers are two claims.
+        write(self.dir / "scripts" / "ops-init.sh",
+              self._real_init.replace("# cc-operator gitignore v2 (allowlist)", "# v2"))
+        self.assertTrue(any("PREVIOUS marker" in p for p in self._probs()),
                         self._probs())
 
     def test_losing_EVERY_marker_grep_fires(self):
@@ -3094,14 +3305,19 @@ class GitignoreParityTest(unittest.TestCase):
                  'elif false; then'),
                 # the anchor is the grep PREFIX shared by both hook greps;
                 # `false` ignores the dangling path argument.
+                # Since #156 the hook greps TWO markers on the live file —
+                # v3 (both arms) and v2 (the additive arm's recognition). This
+                # case knocks out the v3 greps only: the v2 RECOGNITION grep
+                # must survive, or the MARK_V2 pin fires and the failure under
+                # test is masked by a different one.
                 ("ops-sessionstart-hook.sh", self._real_ssh,
-                 "grep -qF '# cc-operator gitignore v2 (allowlist)'",
+                 "grep -qF '# cc-operator gitignore v3 (allowlist)'",
                  "false")):
             with self.subTest(writer=name):
                 self.assertIn(detect, real, f"{name}: detection anchor moved")
                 write(self.dir / "scripts" / name, real.replace(detect, replacement))
                 probs = self._probs()
-                self.assertTrue(any("never greps for it on the LIVE" in p
+                self.assertTrue(any("on the LIVE .gitignore TWICE" in p
                                     for p in probs), probs)
                 write(self.dir / "scripts" / name, real)
         self.assertEqual(self._probs(), [])
@@ -3115,17 +3331,17 @@ class GitignoreParityTest(unittest.TestCase):
         # detection a v1 blocklist is never replaced at all — reported green.
         # The confirmation grep is left INTACT on purpose: that is precisely
         # the shape that satisfied the old pin.
-        detect = ("if [ -f \"$_gi\" ] && ! grep -qF "
-                  "'# cc-operator gitignore v2 (allowlist)' \"$_gi\" 2>/dev/null; then")
+        detect = ("elif [ -f \"$_gi\" ] && ! grep -qF "
+                  "'# cc-operator gitignore v3 (allowlist)' \"$_gi\" 2>/dev/null; then")
         self.assertIn(detect, self._real_ssh, "detection anchor moved")
-        mutated = self._real_ssh.replace(detect, 'if [ -f "$_gi" ] && false; then', 1)
+        mutated = self._real_ssh.replace(detect, 'elif [ -f "$_gi" ] && false; then', 1)
         # Control on the mutation itself: the confirmation grep must survive it,
         # or this is just the both-greps mutation the case above already runs.
-        self.assertIn("grep -qF '# cc-operator gitignore v2 (allowlist)' "
-                      "\"$_gi.v2.tmp\"", mutated)
+        self.assertIn("grep -qF '# cc-operator gitignore v3 (allowlist)' "
+                      "\"$_gi.v3.tmp\"", mutated)
         write(self.dir / "scripts" / "ops-sessionstart-hook.sh", mutated)
         probs = self._probs()
-        self.assertTrue(any("never greps for it on the LIVE" in p for p in probs),
+        self.assertTrue(any("on the LIVE .gitignore TWICE" in p for p in probs),
                         probs)
         write(self.dir / "scripts" / "ops-sessionstart-hook.sh", self._real_ssh)
         self.assertEqual(self._probs(), [])
@@ -3144,7 +3360,7 @@ class GitignoreParityTest(unittest.TestCase):
                 ("ops-init.sh", self._real_init, '"$OPDIR/.gitignore"',
                  '"$OPDIR/.gitignore.v1.bak"')):
             with self.subTest(writer=name):
-                anchor = ("grep -qF '# cc-operator gitignore v2 (allowlist)' " + live
+                anchor = ("grep -qF '# cc-operator gitignore v3 (allowlist)' " + live
                           if name == "ops-sessionstart-hook.sh"
                           else 'grep -qF "$_GI_MARK" ' + live)
                 self.assertIn(anchor, real, f"{name}: detection anchor moved")
@@ -3152,7 +3368,7 @@ class GitignoreParityTest(unittest.TestCase):
                       real.replace(anchor, anchor.replace(live, derived), 1))
                 probs = self._probs()
                 self.assertTrue(
-                    any(name in p and "never greps for it on the LIVE" in p
+                    any(name in p and "on the LIVE .gitignore TWICE" in p
                         for p in probs),
                     f"{name}: a derivative detection target must fire: {probs}")
                 write(self.dir / "scripts" / name, real)  # control
@@ -3162,15 +3378,15 @@ class GitignoreParityTest(unittest.TestCase):
         # The other half of the same asymmetry (#102). Detection stays intact:
         # a pin that cannot tell the two apart is satisfied by whichever
         # survives, in either direction.
-        confirm = ("    if grep -qF '# cc-operator gitignore v2 (allowlist)' "
-                   "\"$_gi.v2.tmp\" 2>/dev/null \\\n")
+        confirm = ("    if grep -qF '# cc-operator gitignore v3 (allowlist)' "
+                   "\"$_gi.v3.tmp\" 2>/dev/null \\\n")
         self.assertIn(confirm, self._real_ssh, "confirmation anchor moved")
         mutated = self._real_ssh.replace(confirm, "    if true \\\n", 1)
-        self.assertIn("grep -qF '# cc-operator gitignore v2 (allowlist)' \"$_gi\"",
+        self.assertIn("grep -qF '# cc-operator gitignore v3 (allowlist)' \"$_gi\"",
                       mutated, "detection must survive this mutation")
         write(self.dir / "scripts" / "ops-sessionstart-hook.sh", mutated)
         probs = self._probs()
-        self.assertTrue(any("confirmed by grepping the marker in the `.v2.tmp`" in p
+        self.assertTrue(any("confirmed by grepping the marker in the `.v3.tmp`" in p
                             for p in probs), probs)
         write(self.dir / "scripts" / "ops-sessionstart-hook.sh", self._real_ssh)
         self.assertEqual(self._probs(), [])
@@ -3183,7 +3399,7 @@ class GitignoreParityTest(unittest.TestCase):
         # remaining mention of `.gitignore.v2.tmp`, which lives in user-facing
         # prose, not code.
         src = self._real_ssh
-        start = src.index('  elif [ -L "$_gi.v2.tmp" ]')
+        start = src.index('  elif [ -L "$_gi.v3.tmp" ]')
         end = src.index('    _gi_write_failed=1\n  fi\n', start) + len('    _gi_write_failed=1\n  fi\n')
         block = src[start:end]
         heredoc = block[block.index("<<'EOF'"):block.index("EOF\n  then") + 4]
@@ -3211,7 +3427,7 @@ class GitignoreParityTest(unittest.TestCase):
                 probs = self._probs()
                 self.assertTrue(any("not ATOMIC" in p for p in probs), probs)
                 # …and the confirmation pin is UNCONDITIONAL now: it fires too.
-                self.assertTrue(any("confirmed by grepping the marker in the `.v2.tmp`" in p
+                self.assertTrue(any("confirmed by grepping the marker in the `.v3.tmp`" in p
                                     for p in probs), probs)
         write(self.dir / "scripts" / "ops-sessionstart-hook.sh", self._real_ssh)
         self.assertEqual(self._probs(), [])
@@ -3223,10 +3439,10 @@ class GitignoreParityTest(unittest.TestCase):
         # hold" — measured on a scratch copy of 0.11.5. Both writers were made
         # atomic in the same review; only one got the pin.
         src = self._real_init.replace(
-            'cat > "$OPDIR/.gitignore.v2.tmp" <<EOF', 'cat > "$OPDIR/.gitignore" <<EOF', 1)
-        src = src.replace('  mv -f "$OPDIR/.gitignore.v2.tmp" "$OPDIR/.gitignore"\n', '', 1)
+            'cat > "$OPDIR/.gitignore.v3.tmp" <<EOF', 'cat > "$OPDIR/.gitignore" <<EOF', 1)
+        src = src.replace('  mv -f "$OPDIR/.gitignore.v3.tmp" "$OPDIR/.gitignore"\n', '', 1)
         self.assertNotEqual(src, self._real_init, "init anchors moved")
-        self.assertNotIn('mv -f "$OPDIR/.gitignore.v2.tmp"', src)
+        self.assertNotIn('mv -f "$OPDIR/.gitignore.v3.tmp"', src)
         write(self.dir / "scripts" / "ops-init.sh", src)
         probs = self._probs()
         self.assertTrue(any("ops-init.sh" in p and "not ATOMIC" in p for p in probs), probs)
@@ -3237,7 +3453,7 @@ class GitignoreParityTest(unittest.TestCase):
         # Control on the pin's shape: an `mv -f` from somewhere ELSE onto the
         # live path is not the same-dir temp swap. The pin must read the temp
         # name, not just "an mv exists".
-        src = self._real_ssh.replace('mv -f "$_gi.v2.tmp" "$_gi"', 'mv -f "$_gi.new" "$_gi"', 1)
+        src = self._real_ssh.replace('mv -f "$_gi.v3.tmp" "$_gi"', 'mv -f "$_gi.new" "$_gi"', 1)
         self.assertNotEqual(src, self._real_ssh, "mv anchor moved")
         write(self.dir / "scripts" / "ops-sessionstart-hook.sh", src)
         probs = self._probs()
@@ -3332,7 +3548,7 @@ class GuardParityVacuityTest(unittest.TestCase):
 
     def _install_real(self):
         """Copy the real CLIs in — the pins must hold against shipped code."""
-        for n in ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh",
+        for n in ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh", "ops-spec.sh",
                   "ops-stop-hook.sh", "statusline.sh", "lib/partition.sh"):
             src = self.real / n
             if src.is_file():
@@ -3380,7 +3596,8 @@ class GuardParityVacuityTest(unittest.TestCase):
     # executable probe existed. One CLI at a time: guards do not cover for
     # each other, and a pin added to one of three is the F116 shape.
     def test_a_dead_case_arm_before_the_guards_fires_per_cli(self):
-        for script in ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh"):
+        for script in ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh",
+                       "ops-spec.sh"):
             with self.subTest(script=script):
                 self._install_real()
                 p = self.dir / "scripts" / script
@@ -3395,6 +3612,21 @@ class GuardParityVacuityTest(unittest.TestCase):
                     f"{script}: a `?*)` arm before the guards must fire: {probs}")
                 self._install_real()
                 self.assertEqual(self._probs(), [])
+
+    def test_ops_spec_is_a_guarded_writer(self):
+        # PR #154 review, measured: ops-spec.sh (#155) carries its own copy of
+        # both guards, and deleting its `*__*` arm was `all contracts hold` —
+        # it sat outside check_guard_parity's CLI tuple. Its slug becomes a
+        # task id and its --owner a sentinel owner, the same name grammar.
+        self._install_real()
+        p = self.dir / "scripts" / "ops-spec.sh"
+        src = p.read_text(encoding="utf-8")
+        arm = "    *__*) die \"$1 must not contain '__'"
+        self.assertIn(arm, src, "ops-spec.sh: the `*__*` arm moved")
+        write(p, src.replace(arm, "    *__NOPE__) die \"$1 must not contain '__'", 1))
+        probs = self._probs()
+        self.assertTrue(any("scripts/ops-spec.sh" in q and "'__'" in q
+                            for q in probs), probs)
 
     def test_an_arm_calling_a_nonexistent_command_fires(self):
         # PR review of e8e0179: the probe's first cut asked only `rc != 0`, so
@@ -5493,6 +5725,31 @@ class CrStripParityTest(unittest.TestCase):
         probs = self._probs()
         self.assertTrue(probs and "CAPS_MAX_CR" in probs[0])
 
+    def test_a_copy_that_drops_the_counter_ENTIRELY_fires(self):
+        """PR #154 review. The check skipped any file with no `_cr` in it —
+        and `_cr` is exactly what the realistic simplification removes: a copy
+        rewritten to `${row%%$'\\r'*}` (the #139 issue's own rejected proposal:
+        cheap, and it TRUNCATES the row at a mid-cell CR) carries no counter,
+        so the pin excused it. MEASURED on the real tree before the fix:
+        ops-reverify.sh's loop replaced by that single non-counting strip and
+        `_cr` gone from its `local` line left `validate_plugin: all contracts
+        hold`. Note the narrower mutation — the loop deleted but the `local
+        … _cr=0` line kept — DID fire even before the fix; the guard only
+        excused a copy with no `_cr` anywhere."""
+        self._edit("scripts/ops-reverify.sh",
+                   """    _cr=0
+    while [ "$_cr" -lt 16 ]; do
+      case "$row" in *$'\\r') row="${row%$'\\r'}"; _cr=$((_cr + 1)) ;; *) break ;; esac
+    done
+""",
+                   """    row="${row%%$'\\r'*}"
+""")
+        self._edit("scripts/ops-reverify.sh",
+                   "  local LC_ALL=C _cr=0\n", "  local LC_ALL=C\n")
+        probs = self._probs()
+        self.assertTrue(any("ops-reverify.sh" in p and "no bounded trailing-CR"
+                            in p for p in probs), probs)
+
     def test_a_gutted_loop_that_keeps_its_shape_fires(self):
         # F30: equality alone is satisfied by identically-broken copies. A loop
         # that removes without counting reads as bounded and is not.
@@ -6020,6 +6277,38 @@ class ProseInvocationTest(unittest.TestCase):
         # CONTROL: the other form is complete on its own — and its
         # DESCRIPTION names --seat, which must not be read as a requirement.
         self.assertEqual(self._probs("then `ops-blk.sh --show`\n"), [])
+
+    def test_an_ALTERNATION_arm_accepts_every_flag_in_it(self):
+        # ops-spec.sh dispatches `--new|--check|--approve)` through ONE arm.
+        # The single-flag pattern read none of them: 10 correct prescriptions
+        # reported as unknown flags when PR #154 rebased onto 0.11.18.
+        (self.dir / "scripts" / "ops-alt.sh").write_text(
+            '#!/usr/bin/env bash\n'
+            'case "$1" in\n'
+            '  --new|--check) MODE="$1" ;;\n'
+            '  -h|--help) usage ;;\n'
+            'esac\n', encoding="utf-8")
+        accepted, _ = vp._cli_flag_contract(self.dir / "scripts" / "ops-alt.sh")
+        self.assertEqual(accepted, {"--new", "--check", "--help"})
+
+    def test_a_usage_HEREDOC_yields_one_form_per_line(self):
+        # ops-spec.sh's usage is a heredoc, one form per line. The one-line
+        # pattern read only the first, so --approve's mandatory --owner did
+        # not exist and `ops-spec.sh --approve <slug>` passed unjudged.
+        (self.dir / "scripts" / "ops-hd.sh").write_text(
+            '#!/usr/bin/env bash\n'
+            "  cat >&2 <<'USAGE'\n"
+            'usage: ops-hd.sh --new <slug>\n'
+            '       ops-hd.sh --approve <slug> --owner <sid>\n'
+            'USAGE\n'
+            'case "$1" in\n'
+            '  --new|--approve) M=1 ;; --owner) O="$2" ;;\n'
+            'esac\n', encoding="utf-8")
+        probs = self._probs("stamp it: `ops-hd.sh --approve <slug>`\n")
+        self.assertTrue(probs, "a heredoc form's mandatory flag must be read")
+        self.assertIn("omits --owner", probs[0])
+        # CONTROL: the first form needs nothing more.
+        self.assertEqual(self._probs("then `ops-hd.sh --new <slug>`\n"), [])
 
     def test_the_real_comment_block_CLIs_have_forms(self):
         # The instance: the two shipped CLIs #161 measured at `forms=[]`.

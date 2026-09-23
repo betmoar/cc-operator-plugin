@@ -34,18 +34,29 @@ mkdir -p "$OPDIR/pending" "$OPDIR/verdicts.d"
 # TRACKED, a silently recurring failure. Tracked = what a teammate needs
 # (ledgers, verdicts.d/ fragments — merge=union operates on them — tiers.env);
 # everything else the plugin recreates. OPERATOR.md goes to the project ROOT.
-_GI_MARK='# cc-operator gitignore v2 (allowlist)'
+_GI_MARK='# cc-operator gitignore v3 (allowlist)'
+# The PREVIOUS scheme's marker. v2 -> v3 is ADDITIVE (v3 is v2 plus the two
+# specs/ allow lines), and that is the whole reason this arm exists: the v1 ->
+# v2 migration REPLACES because a blocklist and an allowlist contradict, but
+# replacing a v2 file would silently delete every allow line the user added by
+# hand. An additive scheme change must not use a destructive migration (#156).
+_GI_MARK_V2='# cc-operator gitignore v2 (allowlist)'
+# The lines v3 adds. Appended AFTER the existing body, which is where a
+# negation has to sit to override the `*` above it, and the marker goes LAST
+# so a partial append leaves the file unmarked and the next run retries.
+_GI_V3_ADDS='!specs/
+!specs/*.md'
 # ATOMIC: heredoc into a temp, same-dir mv (Copilot review on PR #97, the
 # SessionStart writer's lesson applied to this one): a cat dying mid-write
 # under set -e left a truncated marker-less .gitignore, and the RE-RUN's
 # migration then copied that truncated file over the good .v1.bak. With the
 # temp+mv the live file is always the old content or the complete v2.
 _gi_write() {
-  if [ -L "$OPDIR/.gitignore.v2.tmp" ] || { [ -e "$OPDIR/.gitignore.v2.tmp" ] && [ ! -f "$OPDIR/.gitignore.v2.tmp" ]; }; then
-    echo "ops-init: $OPDIR/.gitignore.v2.tmp exists and is not a regular file — refusing to write the allowlist through it (move it aside, then re-run)" >&2
+  if [ -L "$OPDIR/.gitignore.v3.tmp" ] || { [ -e "$OPDIR/.gitignore.v3.tmp" ] && [ ! -f "$OPDIR/.gitignore.v3.tmp" ]; }; then
+    echo "ops-init: $OPDIR/.gitignore.v3.tmp exists and is not a regular file — refusing to write the allowlist through it (move it aside, then re-run)" >&2
     return 1
   fi
-  cat > "$OPDIR/.gitignore.v2.tmp" <<EOF
+  cat > "$OPDIR/.gitignore.v3.tmp" <<EOF
 $_GI_MARK
 # Ignore everything under .operator/ by default, then re-admit the evidence.
 # New machine state is ignored automatically — that is the point of the
@@ -60,14 +71,43 @@ $_GI_MARK
 !verdicts.d/
 !verdicts.d/*.md
 !handoff-*.md
+!specs/
+!specs/*.md
 EOF
-  mv -f "$OPDIR/.gitignore.v2.tmp" "$OPDIR/.gitignore"
+  mv -f "$OPDIR/.gitignore.v3.tmp" "$OPDIR/.gitignore"
 }
 if [ ! -f "$OPDIR/.gitignore" ]; then
   _gi_write
-  echo "created $OPDIR/.gitignore (allowlist: ledgers + fragments + tiers.env)"
+  echo "created $OPDIR/.gitignore (allowlist: ledgers + fragments + tiers.env + specs)"
+elif ! grep -qF "$_GI_MARK" "$OPDIR/.gitignore" 2>/dev/null \
+     && grep -qF "$_GI_MARK_V2" "$OPDIR/.gitignore" 2>/dev/null; then
+  # v2 -> v3: ADDITIVE, so APPEND rather than replace. Every line the user
+  # added to their allowlist survives by construction, which a rewrite cannot
+  # promise. No backup is taken and none is needed: nothing is removed.
+  # The marker is written LAST — a die mid-append leaves the file unmarked, so
+  # the next run retries rather than leaving a half-upgraded file that reads
+  # as done.
+  # TERMINATE THE LAST LINE FIRST, exactly as the .gitattributes arm below
+  # does and for the identical reason: `>>` appends at the byte offset the file
+  # ends at, so a v2 allowlist whose last line has no trailing newline FUSES
+  # that line with the first appended one. Measured: a file ending
+  # `!my-hand-added.md` (no newline) became `!my-hand-added.md!specs/` — the
+  # user's own allow rule DESTROYED, `!specs/` never in effect, and the v3
+  # marker landing anyway so nothing ever retries. That is precisely the
+  # outcome this additive arm exists to prevent, reintroduced by the append's
+  # own mechanics. An editor that strips the final newline is ordinary.
+  if [ -s "$OPDIR/.gitignore" ] && [ -n "$(tail -c 1 "$OPDIR/.gitignore")" ]; then
+    # `$( )` strips trailing newlines, so non-empty output means the last byte
+    # is NOT one — the portable spelling of "does this file end in a newline".
+    printf '\n' >> "$OPDIR/.gitignore" || true
+  fi
+  if printf '%s\n%s\n' "$_GI_V3_ADDS" "$_GI_MARK" >> "$OPDIR/.gitignore" 2>/dev/null; then
+    echo "upgraded $OPDIR/.gitignore to the v3 allowlist (added specs/; your own allow lines were kept)"
+  else
+    echo "ops-init: could not append the v3 allow lines to $OPDIR/.gitignore — it stays v2, so .operator/specs/ is ignored until this is fixed" >&2
+  fi
 elif ! grep -qF "$_GI_MARK" "$OPDIR/.gitignore" 2>/dev/null; then
-  # MIGRATION: v1 and v2 contradict, so REPLACE, keeping a copy.
+  # MIGRATION: v1 and the allowlist contradict, so REPLACE, keeping a copy.
   # BACKUP FIRST, overwrite ONLY on backup success (a swallowed cp failure
   # once destroyed the user's rules while claiming recoverability). The backup
   # path must be a non-symlink regular file — `-f` follows symlinks, so cp
@@ -75,10 +115,10 @@ elif ! grep -qF "$_GI_MARK" "$OPDIR/.gitignore" 2>/dev/null; then
   if [ -L "$OPDIR/.gitignore.v1.bak" ] || { [ -e "$OPDIR/.gitignore.v1.bak" ] && [ ! -f "$OPDIR/.gitignore.v1.bak" ]; }; then
     echo "cc-operator: $OPDIR/.gitignore.v1.bak exists and is not a regular file — refusing to migrate .gitignore (move it aside, then re-run)" >&2
   elif ! cp "$OPDIR/.gitignore" "$OPDIR/.gitignore.v1.bak" 2>/dev/null; then
-    echo "cc-operator: could not write $OPDIR/.gitignore.v1.bak — refusing to migrate .gitignore without a backup (the v1 and v2 schemes contradict, so migration REPLACES the file)" >&2
+    echo "cc-operator: could not write $OPDIR/.gitignore.v1.bak — refusing to migrate .gitignore without a backup (the v1 blocklist and the allowlist contradict, so migration REPLACES the file)" >&2
   else
     _gi_write
-    echo "migrated $OPDIR/.gitignore to the v2 allowlist (previous kept as .gitignore.v1.bak)"
+    echo "migrated $OPDIR/.gitignore to the v3 allowlist (previous kept as .gitignore.v1.bak)"
   fi
 fi
 

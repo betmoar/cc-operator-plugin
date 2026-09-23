@@ -9,6 +9,137 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-21
+
+The engagement cycle gains the two stages it never had — a **spec** artifact and an
+**implement** workflow — plus the command surface that reaches them and the stage
+derivation that tells a session where it stands. Design rationale: `docs/CYCLE.md`.
+
+### Added
+
+- **The spec stage has an artifact (#155).** `scripts/ops-spec.sh` writes
+  `.operator/specs/<slug>.md` (`--new`), checks it against the schema (`--check`) and
+  stamps approval (`--approve`) — the stamp writes a `SPEC-APPROVED` row to DECISIONS.md
+  and the BAR block to VERDICTS.md, both under the SAME `.operator/.lock` `ops-verdict.sh`
+  and `ops-adopt.sh` take, in that order. Before this, "approved" was a claim in a
+  transcript; a session restarting could not tell an approved spec from a draft.
+  `check_lock_parity` now holds THREE writers, `check_root_parity` FOUR.
+- **The implement stage runs as a workflow (#158).** `workflows/implement.js` replaces the
+  bare `Agent` dispatch, which could not reach a tier: the Agent tool's `model` is
+  enum-locked to `sonnet|opus|haiku|fable`, so a seat bound to an external model in
+  `tiers.env` was unreachable and silently ran the default. The workflow carries the
+  charter's dispatch packet (`PACKET_FIELDS`, seven fields), the four-status REPORT
+  protocol, and a SERIAL loop — no `parallel(` in the file, because one implementer at a
+  time is [D:CHART-r6] and prose does not hold it. `check_implement_packet` pins all four.
+- **A command per workflow (#75).** `commands/{spec,brainstorm,plan,implement,review,crawl,debate}.md`.
+  Each resolves the tier bindings itself with `ops-tiers.sh --json` rather than asking the
+  operator to hand-paste them — the hand-paste IS #55 at the call site. Every workflow but
+  `dispatch` owes one, and an absent command is refused by the suite.
+- **The session is told where the engagement stands (#157).** `scripts/lib/stage.sh`
+  derives one word — BLOCKED > IMPLEMENT > HANDOFF > SPEC > PLAN > CLEAR — from the
+  sentinel partition, the deviation scan and the spec summary. PURE and REPORT-ONLY: it
+  opens no file, so it is not a reader and carries no byte cap. An UNSCANNED deviation
+  gate (`-`) is said, never assumed clean; a foreign sentinel is reported, never a stage.
+
+### Changed
+
+- **`dispatch.js` declines to choose a model rather than promoting a seat (#158).**
+  `args.model` wins, then `args.tier`, and with NEITHER the `model` key is omitted
+  entirely so the seat's own configured default stands. The previous fallback promoted
+  silently.
+- **The charter names the implement workflow (#159).** ORCHESTRATED MODE listed review,
+  brainstorm, plan and debate while `workflows/implement.js` shipped — the operator was
+  not told the stage it runs most has a workflow. One word: 144/150 lines,
+  8934/9000 bytes after the rebase onto 0.11.18, caps re-run green.
+- **`.operator/.gitignore` takes a third version ADDITIVELY (#156).** v1→v2 REPLACES
+  (blocklist and allowlist are contradictory schemes); v2→v3 APPENDS, because v3 only adds
+  `specs/` to a scheme v2 already established. A replace there would have destroyed every
+  hand-added rule. Both writers (`ops-init.sh`, `ops-sessionstart-hook.sh`) carry it and
+  `check_gitignore_parity` pins both halves.
+
+### Fixed
+
+- **The v3 append no longer FUSES with an unterminated last line.** `>>` appends at the
+  byte offset the file ends at, so a `.gitignore` whose last line carried no terminating
+  newline came back as `!my-hand-added.md!specs/` — measured: the user's rule destroyed,
+  `!specs/` inert, and the v3 marker still landing so the migration never retries. Both
+  writers terminate the file first. Five cases; the mutation removing the guard from BOTH
+  writers turns all five red.
+- **`check_cr_strip_parity` no longer excuses a copy with no counter.** Its
+  `if "_cr" not in code: continue` guard skipped exactly what the realistic simplification
+  produces. Measured on the real tree: `ops-reverify.sh`'s loop replaced by the #139
+  issue's own rejected `${row%%$'\r'*}` — which truncates the row at a mid-cell CR — with
+  `_cr` dropped from its `local` line left `validate_plugin: all contracts hold`. The loop
+  is now required unconditionally wherever `lib/caps.sh` declares `CAPS_MAX_CR`. (The
+  narrower mutation, the loop deleted but the `local … _cr=0` line kept, fired even
+  before this fix.) Red in `CrStripParityTest`.
+- **`check_lock_parity` compared two of three writers.** It held `ops-verdict.sh` against
+  `ops-adopt.sh` only, so `ops-spec.sh`'s copy was held by the content pin alone — and
+  the content pin passes anything that still looks like a lock. Measured:
+  `LOCK_SPINS=100` in `ops-spec.sh` alone reported nothing. Parity now runs against one
+  reference copy, so a fourth writer cannot drift unseen either. Red in
+  `test_third_writer_drift_fires`.
+- **The good-tree fixture was hiding the check entirely.** With `ops-spec.sh` absent from
+  the fixture, `check_lock_parity` returned early (missing-file is `check_scripts`' to
+  report) and all four LockParityTest mutation cases went green against a check that never
+  ran — the #111 shape, inside the suite written to prevent it.
+- **The open-questions check named the wrong cell (PR #154, Copilot review).**
+  `grep -c '| *|'` matched an empty cell ANYWHERE in the row, so a question that
+  WAS answered but named nobody was refused as an "empty Resolution cell" —
+  measured, `| Can we X? | Yes |  |` printed exactly that. A true refusal under
+  a false name sends the operator to fix the wrong cell. Now cell-addressed:
+  the unattributed case has its own message, and a row with fewer than three
+  cells fails CLOSED as unanswered rather than being guessed at. The reviewer's
+  other premise — that the skeleton's `||` headers were miscounted — does not
+  hold: the skeleton writes `| Question | Resolution | Decided by |` and
+  `|---|---|---|`, both filtered, and a fresh skeleton reports no
+  open-questions problem.
+- **The dispatch no-override assertion was reading the wrong object (PR #154,
+  Copilot review).** It asked `"model" in dFallCall` — the test stub's RECORD,
+  which always carries a `model` property because the stub writes one — so it
+  was always true and the check collapsed to `model === undefined`, while the
+  `hasModelKey` the stub records for exactly this purpose went unused. Measured:
+  `dispatch.js` sending `{ model: undefined }` on that rung kept the node suite
+  at 430 passed, 0 failed. The assertion now reads `hasModelKey === false` and
+  its control asserts `=== true`; the same mutation is red.
+- **SC2329 pre-empted (#160).** shellcheck 0.11 reports "this function is never invoked"
+  on `ops-verdict.sh`'s `fallback_release`, which is trap-reachable from nine sites and
+  already carried `# shellcheck disable=SC2317` for the same fact. The tree is clean
+  under 0.11 with no exclusions; the CI pin is not bumped here.
+### Rebased onto 0.11.18
+
+#149's `check_prose_invocations` landed on main while this branch was open, and
+it read this branch's prose on arrival:
+
+- It reported 10 correct `ops-spec.sh` prescriptions as unknown flags. The CLI
+  dispatches its modes through one `--new|--check|--approve)` arm, and its usage
+  is a heredoc with one form per line. The contract reader handled only
+  single-flag arms and the first usage line; it now reads both shapes.
+- It found three real defects. `commands/implement.md` prescribed
+  `ops-claims.sh --claimed` without `--since`, the defect the holdout found in
+  the charter. `workflows/implement.js` carried a copy in a string that no
+  prose check reads. Two `--approve` lines omitted the mandatory `--owner`.
+- Three stage checks used `$(case … in pat) …)`, which bash 3.2 cannot parse
+  inside a command substitution. On macOS the suite reported them as failures,
+  while the Linux CI passed. The patterns now carry the leading `(`.
+- Review of the rebased branch (four lenses) found:
+  - `check_guard_parity` left out `ops-spec.sh`, a fourth writer with its own
+    copies of both name guards. Deleting its `*__*` arm reported all contracts
+    holding. It is now in the CLI tuple, with two cases that are red on the old
+    validator.
+  - `--approve` duplicated its ledger lines on a retry. A failure between writes
+    left Status DRAFT, and every retry re-appended the SPEC-APPROVED line and
+    the BAR block (measured: 3 lines and 2 blocks for one spec). A retry now
+    skips what already landed, keyed on slug + stamp.
+  - The concurrent-verdict case's detector ended the BAR block at the next
+    `## ` heading, so a row correctly appended after a trailing block read as
+    spliced, a flaky red. It now ends at `Caps:`, with both sides pinned.
+  - `stage.sh` and CYCLE.md said the Stop hook shares `stage_derive`. It does
+    not; only SessionStart calls it.
+- CLAUDE.md went over its 38000-char cap once both sides' rows were merged.
+  The base-gate row's mechanics moved to `docs/LANDMINES.md` ("base-gate: the
+  operational detail").
+
 ## [0.11.18] - 2026-09-23
 
 The v0.11.17 tag build could not ship. Its release job wrote `release-notes.md` to the

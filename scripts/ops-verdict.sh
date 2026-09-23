@@ -288,8 +288,14 @@ fallback_acquire() {
   return 0
 }
 
-# Reached only via the acquire paths' traps; the linter cannot follow a trap.
-# shellcheck disable=SC2317
+# Reached only via the acquire paths' traps (nine sites: the fallback acquire's
+# three, lock_acquire's three, and the reconcile path's three) — the linter
+# cannot follow a trap. TWO codes for the one fact, because shellcheck says it
+# twice: SC2317 (0.10, "command appears unreachable") and SC2329 (added in
+# 0.11, "this function is never invoked"). CI pins the v0.10.0 image, so only
+# the first has ever fired there; without the second the day someone bumps that
+# pin `validate` goes red on this line with no code change (#160).
+# shellcheck disable=SC2317,SC2329
 fallback_release() {
   [ "${FALLBACK_HELD:-0}" = "1" ] || return 0
   FALLBACK_HELD=0

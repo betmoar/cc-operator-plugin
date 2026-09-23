@@ -24,8 +24,9 @@ non-Anthropic model routing.
 - **`.operator/`** — the ledger: `VERDICTS.md` (append-only, one row per
   gated task), `DECISIONS.md` (append-only, one line per deviation/decision),
   `verdicts.d/` (per-session row fragments — a merge-repair backstop),
-  `pending/` (task sentinels), and `bin/` (the five gate CLIs `ops-task.sh`,
-  `ops-verdict.sh`, `ops-adopt.sh`, `ops-claims.sh` and `ops-backlog.sh`,
+  `pending/` (task sentinels), `specs/` (the spec artifacts), and `bin/` (the
+  six gate CLIs `ops-task.sh`, `ops-verdict.sh`, `ops-adopt.sh`,
+  `ops-claims.sh`, `ops-backlog.sh` and `ops-spec.sh`,
   installed so the charter's paths resolve in any project; refreshed on every
   re-run of `/cc-operator:start`).
 - A **CLAUDE.md** stanza importing the charter (`@OPERATOR.md`) so it survives
@@ -43,7 +44,7 @@ safe default, and what pre-0.4 sentinels degrade to.
 
 ## Orchestration layer (0.5.0)
 
-Six **workflows** are the operator's dispatch primitives — deterministic
+Seven **workflows** are the operator's dispatch primitives — deterministic
 scripts that fan agent seats across model tiers and converge on judgment:
 
 | Workflow | Shape | Use |
@@ -53,7 +54,8 @@ scripts that fan agent seats across model tiers and converge on judgment:
 | `cc-operator:plan` | decompose an approved spec into TDD tasks → parallel feasibility/testability vetting | after a spec is approved |
 | `cc-operator:crawl` | one cheap crawler per shard → judgment-tier merge | digesting a large corpus fast |
 | `cc-operator:debate` | 2–5 caller-named models argue blind over three rounds → reviewer synthesis, `chose` always null | a decision worth paying rival flagships to disagree about |
-| `cc-operator:dispatch` | one seat, one caller-supplied model id | running a seat on its configured tier without rendering (#55) |
+| `cc-operator:implement` | one implementer seat per task, STRICTLY SERIAL, on the IMPLEMENT tier; refuses an incomplete dispatch packet before spending a seat | the implement stage — every other stage of the cycle was already a workflow (#158) |
+| `cc-operator:dispatch` | one seat, on a caller-supplied id or a named tier; with neither, no model override at all | running a seat on its configured tier without rendering (#55, #158) |
 
 **Tier system.** Seats are pinned to tiers (`JUDGMENT`, `IMPLEMENT`,
 `MECHANICAL`, `RECON`) in each workflow; what a tier *resolves to* is layered
@@ -73,16 +75,30 @@ verbatim (pre-scrub) and cited, so evidence stays recoverable byte-for-byte — 
 spilled" rather than writing somewhere the user never asked for (0.10 removed the
 tempdir fallback). The spill root carries its own `*` ignore, and
 `.operator/.gitignore` is an allowlist: the two ledgers, the `verdicts.d/`
-fragments and `tiers.env` are tracked; everything else the plugin creates is
-ignored by default.
+fragments, `tiers.env` and `specs/` are tracked; everything else the plugin
+creates is ignored by default. The scheme is versioned — a v1 blocklist is
+REPLACED behind a verified backup (the two contradict), while a v2 allowlist
+is APPENDED to, because v3 only adds lines and a rewrite would delete allow
+lines you added by hand (#156).
 
 ## Commands
+
+Every workflow command resolves the tier bindings itself (`ops-tiers.sh --json`)
+and passes them through, so a configured `tiers.env` reaches the seats without
+the operator pasting a model id by hand (#55 at the call site).
 
 | Command | Purpose |
 |---|---|
 | `/cc-operator:start [--inline]` | Initialize the ledger + materialize the charter |
 | `/cc-operator:handoff` | Produce the six-section operator→human handoff |
 | `/cc-operator:tiers` | Resolve tier→model bindings, apply overrides, render project-layer agents |
+| `/cc-operator:brainstorm` | Diverge before a spec exists, then interview one question at a time |
+| `/cc-operator:spec` | Write, check and approve the spec — the artifact that survives a compaction |
+| `/cc-operator:plan` | Decompose an approved spec into vetted TDD tasks |
+| `/cc-operator:implement` | One implementer seat per task, serially, on the IMPLEMENT tier |
+| `/cc-operator:review` | The two-stage review panel over an artifact |
+| `/cc-operator:crawl` | Digest a large corpus by shard, cheaply |
+| `/cc-operator:debate` | 2–5 rival models argue a judgment call; you decide |
 
 ## Install
 
@@ -107,6 +123,9 @@ Or from a local checkout:
 .operator/bin/ops-adopt.sh --owner <new-id> <id>...     # re-claim your tasks after a /clear
 .operator/bin/ops-verdict.sh --reconcile                # restore rows lost to a messy merge
 .operator/bin/ops-claims.sh --since <sha> --claimed "<paths>"   # verify a DONE report against the diff
+.operator/bin/ops-spec.sh --new <slug>                          # scaffold the spec the plan stage reads
+.operator/bin/ops-spec.sh --check <slug>                        # validate its skeleton; writes nothing
+.operator/bin/ops-spec.sh --approve <slug> --owner <id>         # stamp it, log SPEC-APPROVED, emit the BAR block
 ```
 
 `ops-init.sh` (run by `/cc-operator:start`) installs those CLIs into
@@ -185,11 +204,11 @@ directly:
 .claude-plugin/marketplace.json   # standalone install path (source "./")
 templates/OPERATOR.md             # the charter (materialized by /cc-operator:start)
 templates/{VERDICTS,DECISIONS}-header.md   # ledger schemas (byte-identical to the proven originals)
-commands/{start,handoff,tiers}.md # the three slash commands
-workflows/{review,brainstorm,plan,crawl,dispatch,debate}.js  # the orchestration primitives
+commands/*.md                     # slash commands: start, handoff, tiers + one per workflow
+workflows/{review,brainstorm,plan,crawl,dispatch,debate,implement}.js  # the orchestration primitives
 agents/op-*.md                    # tier-aliased seats: author, mechanic, reviewer, scout, verifier, brainstorm, crawler, debater
 skills/chief-operator/SKILL.md    # thin router (front door only)
-scripts/ops-{init,task,verdict,adopt,claims,backlog}.sh  # the evidence-gate mechanism
+scripts/ops-{init,task,verdict,adopt,claims,backlog,spec}.sh  # the evidence-gate mechanism
 scripts/ops-install-set.sh        # the .operator/bin install manifest (both writers source it)
 scripts/ops-{stop,sessionstart}-hook.sh # completion gate + session-id injection
 scripts/lib/partition.sh          # the mine/foreign partition rule — hook + statusline share it
@@ -219,8 +238,10 @@ node tests/test_compress.mjs
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for conventions and
 [CLAUDE.md](CLAUDE.md) for the maintainer handoff (the "if you touch X, update
-Y" couplings). The design spec lives under `docs/spec/`; build and pilot
-history lives in the git history (tree ≤ v0.2.0).
+Y" couplings). Design rationale lives under `docs/` — `TAGS.md` resolves the
+charter's `[DOC:spec-*]` tags, `LANDMINES.md` holds the already-hit failure
+classes, `CYCLE.md` specifies the engagement cycle's missing spec stage; build
+and pilot history lives in the git history (tree ≤ v0.2.0).
 
 ## License
 

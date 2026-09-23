@@ -228,7 +228,9 @@ done
 
 # v1→v2 gitignore migration, every session (this is what carries a project
 # that never re-runs /cc-operator:start). The schemes contradict, so REPLACE,
-# keeping .gitignore.v1.bak; body pinned identical to ops-init's _gi_write
+# keeping .gitignore.v1.bak; body pinned identical to ops-init's _gi_write.
+# v2 -> v3 is a separate, ADDITIVE arm above it (#156): it appends, never
+# replaces, so it needs no backup and keeps the user's own allow lines
 # (check_gitignore_parity). IT MUST SAY SO (#32): the overwrite is destructive
 # and the backup is hidden by the new `*` — the notice goes to
 # additionalContext, the hook's one channel the model sees.
@@ -236,7 +238,32 @@ _gi="$cwd/.operator/.gitignore"
 _gi_migrated=0
 _gi_backup_failed=0
 _gi_write_failed=0
-if [ -f "$_gi" ] && ! grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi" 2>/dev/null; then
+_gi_upgraded=0
+_gi_upgrade_failed=0
+# v2 -> v3 is ADDITIVE (v3 is v2 plus the two specs/ allow lines), so it
+# APPENDS. The v1 -> v2 migration below REPLACES because a blocklist and an
+# allowlist contradict; replacing a v2 file would silently delete every allow
+# line the user added by hand, which is a destructive answer to a
+# non-destructive change (#156). Nothing is removed here, so no backup is
+# needed — and the marker is appended LAST, so a die mid-append leaves the
+# file unmarked and the next session retries rather than reading a
+# half-upgraded file as done.
+if [ -f "$_gi" ] && ! grep -qF '# cc-operator gitignore v3 (allowlist)' "$_gi" 2>/dev/null \
+   && grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi" 2>/dev/null; then
+  # TERMINATE THE LAST LINE FIRST — the same fusion ops-init.sh's copy
+  # guards, and this one runs every session rather than on demand. Measured:
+  # `!my-hand-added.md` with no trailing newline became
+  # `!my-hand-added.md!specs/`, destroying the user's rule while the notice
+  # below said "any allow line you added by hand is still there".
+  if [ -s "$_gi" ] && [ -n "$(tail -c 1 "$_gi")" ]; then
+    printf '\n' >> "$_gi" || true
+  fi
+  if printf '%s\n' '!specs/' '!specs/*.md' '# cc-operator gitignore v3 (allowlist)' >> "$_gi" 2>/dev/null; then
+    _gi_upgraded=1
+  else
+    _gi_upgrade_failed=1
+  fi
+elif [ -f "$_gi" ] && ! grep -qF '# cc-operator gitignore v3 (allowlist)' "$_gi" 2>/dev/null; then
   # BACKUP FIRST, overwrite ONLY on success, set the notice flag only AFTER
   # the replacement — the old order destroyed rules with no backup while
   # reporting success (#32, one layer down). No set -e: a dying hook costs the
@@ -256,10 +283,10 @@ if [ -f "$_gi" ] && ! grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi" 2
     _gi_backup_failed=1
   elif ! cp "$_gi" "$_gi.v1.bak" 2>/dev/null; then
     _gi_backup_failed=1
-  elif [ -L "$_gi.v2.tmp" ] || { [ -e "$_gi.v2.tmp" ] && [ ! -f "$_gi.v2.tmp" ]; }; then
+  elif [ -L "$_gi.v3.tmp" ] || { [ -e "$_gi.v3.tmp" ] && [ ! -f "$_gi.v3.tmp" ]; }; then
     _gi_write_failed=1
-  elif cat > "$_gi.v2.tmp" 2>/dev/null <<'EOF'
-# cc-operator gitignore v2 (allowlist)
+  elif cat > "$_gi.v3.tmp" 2>/dev/null <<'EOF'
+# cc-operator gitignore v3 (allowlist)
 # Ignore everything under .operator/ by default, then re-admit the evidence.
 # New machine state is ignored automatically — that is the point of the
 # inversion; do not add ignore lines here, add allow lines only when a NEW file
@@ -273,23 +300,25 @@ if [ -f "$_gi" ] && ! grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi" 2
 !verdicts.d/
 !verdicts.d/*.md
 !handoff-*.md
+!specs/
+!specs/*.md
 EOF
   then
     # notice flag: only after the replacement happened and the backup exists.
     # The marker grep probes the COMPLETE temp (audit F119: `[ -s ]` was true
     # for a partial write), then the same-dir mv swaps it in atomically.
-    if grep -qF '# cc-operator gitignore v2 (allowlist)' "$_gi.v2.tmp" 2>/dev/null \
-       && mv -f "$_gi.v2.tmp" "$_gi" 2>/dev/null; then
+    if grep -qF '# cc-operator gitignore v3 (allowlist)' "$_gi.v3.tmp" 2>/dev/null \
+       && mv -f "$_gi.v3.tmp" "$_gi" 2>/dev/null; then
       _gi_migrated=1
     else
-      rm -f "$_gi.v2.tmp" 2>/dev/null
+      rm -f "$_gi.v3.tmp" 2>/dev/null
       _gi_write_failed=1
     fi
   else
     # A failed temp write is REPORTED, not silent, and under its OWN flag —
     # the backup-refusal notice would claim the backup could not be written,
     # which is false here (the backup landed; the v2 write did not).
-    rm -f "$_gi.v2.tmp" 2>/dev/null
+    rm -f "$_gi.v3.tmp" 2>/dev/null
     _gi_write_failed=1
   fi
 fi
@@ -306,12 +335,89 @@ _ss_verdict="$(_ss_shq "$cwd/.operator/bin/ops-verdict.sh")"
 _ss_adopt="$(_ss_shq "$cwd/.operator/bin/ops-adopt.sh")"
 ctx="cc-operator: this session's id is ${session}. Pass --owner ${session} when opening or closing tracked tasks — ${_ss_task} <id> --owner ${session}, ${_ss_verdict} <id> ... --owner ${session}. Sentinels you open are then yours alone: the Stop hook blocks only on your own open tasks and reports other sessions' as informational. After a /clear your id changes — run ${_ss_adopt} --owner ${session} <id>... to re-claim tasks you are still working."
 
+
+# --- the derived stage (#157) ------------------------------------------------
+# The banner is the one channel a session reads before it does anything, and
+# after a compaction it is the ONLY one — which is exactly the moment the
+# RECOVERY PROTOCOL's seven prose steps depend on the operator choosing to
+# follow them. Naming the stage and the next move costs one line and removes
+# that dependency for the commonest case.
+#
+# FAIL-SILENT, and the polarity is not negotiable: a missing or unreadable lib
+# must never cost the id injection, which is the root of the whole ownership
+# mechanism. No stage line is a small loss; no banner is the mechanism.
+#
+# ONE partition rule, sourced — never a second scan written here. What this
+# hook does NOT scan is DECISIONS.md, so it passes "-" and stage_derive
+# narrows its own answer rather than claiming a clean deviation gate it never
+# checked.
+case "${BASH_SOURCE[0]}" in
+  */*) _ss_libdir="${BASH_SOURCE[0]%/*}/lib" ;;
+  *)   _ss_libdir="lib" ;;
+esac
+# `-f`, not `-r`: a permission test is INERT for uid 0 (root bypasses mode
+# bits), so it would read as a guard while guarding nothing — the validator
+# refuses one here for that reason. The type test holds on every uid, and an
+# unreadable-but-present lib is caught by the sourcing itself failing, which
+# the `|| true` below already absorbs.
+if [ -f "$_ss_libdir/partition.sh" ] && [ -f "$_ss_libdir/stage.sh" ]; then
+  # No backslash-continuation chain here: a `&& \` followed by a comment line
+  # joins into a dangling operator, which bash accepts and nobody can read.
+  # shellcheck source=/dev/null
+  . "$_ss_libdir/partition.sh" 2>/dev/null || true
+  # shellcheck source=/dev/null
+  . "$_ss_libdir/stage.sh" 2>/dev/null || true
+  if command -v scan_pending >/dev/null 2>&1 && command -v stage_derive >/dev/null 2>&1; then
+    scan_pending "$cwd/.operator" "$session" 2>/dev/null || true
+    # The SPEC summary (#155), computed HERE because stage.sh opens no file.
+    # BOUNDED: at most the first 50 specs are probed, because this runs on
+    # every session start and a directory someone filled is not a reason to
+    # stall one. Past the bound the answer stays "draft" — the conservative
+    # side, since it prescribes finishing a spec rather than planning from one
+    # that may not be approved.
+    _ss_specs="none"
+    if [ -d "$cwd/.operator/specs" ]; then
+      _ss_n=0
+      for _ss_f in "$cwd/.operator/specs"/*.md; do
+        [ -f "$_ss_f" ] || continue
+        _ss_n=$((_ss_n + 1))
+        [ "$_ss_n" -le 50 ] || break
+        _ss_specs="draft"
+        if grep -q '^Status: APPROVED' "$_ss_f" 2>/dev/null; then
+          _ss_specs="approved"
+          break
+        fi
+      done
+    fi
+    stage_derive "${MALFORMED:-0}" "${MINE:-0}" "${MINE_IDS:-}" "${FOREIGN:-0}" "-" "$_ss_specs" 2>/dev/null || true
+  fi
+  if [ -n "${STAGE:-}" ]; then
+    ctx="$ctx
+
+cc-operator: STAGE ${STAGE} — ${STAGE_NEXT}. (Derived from what is on disk, never stored: re-read it rather than remembering it.)"
+  fi
+fi
 # The migration notice (#32): name the backup path — the allowlist hides it
 # from a bare `git status`.
 if [ "$_gi_migrated" = 1 ]; then
   ctx="$ctx
 
-cc-operator: .operator/.gitignore was MIGRATED from the v1 blocklist to the v2 allowlist this session. The two schemes contradict, so the file was REPLACED, not appended — any rule you added by hand is gone from it. Your previous file is kept at .operator/.gitignore.v1.bak, which the new allowlist itself ignores (\`git status\` will not show it; use \`git status --ignored\`). If it carried a rule you still need, re-add it as an allow line (\`!<path>\`) in the v2 file."
+cc-operator: .operator/.gitignore was MIGRATED from the v1 blocklist to the v3 allowlist this session. The two schemes contradict, so the file was REPLACED, not appended — any rule you added by hand is gone from it. Your previous file is kept at .operator/.gitignore.v1.bak, which the new allowlist itself ignores (\`git status\` will not show it; use \`git status --ignored\`). If it carried a rule you still need, re-add it as an allow line (\`!<path>\`) in the v3 file."
+fi
+
+# The additive upgrade is reported too, and says what it did NOT do: a user
+# reading "upgraded" needs to know their own lines were kept, because the
+# neighbouring v1 notice says the opposite about its own path.
+if [ "$_gi_upgraded" = 1 ]; then
+  ctx="$ctx
+
+cc-operator: .operator/.gitignore was upgraded from the v2 allowlist to v3 this session — the two lines \`!specs/\` and \`!specs/*.md\` were APPENDED so \`.operator/specs/\` is tracked. Nothing was removed and no backup was needed: unlike the v1 migration, this change is additive, so any allow line you added by hand is still there."
+fi
+
+if [ "$_gi_upgrade_failed" = 1 ]; then
+  ctx="$ctx
+
+cc-operator: .operator/.gitignore is still the v2 allowlist — the v3 allow lines could not be appended this session (the file or directory may be read-only). Nothing was changed. Until this is resolved \`.operator/specs/\` is IGNORED by git, so a spec written there will not be committed."
 fi
 
 # The refusal is as reportable as the migration — silence is what let the
@@ -319,7 +425,7 @@ fi
 if [ "$_gi_backup_failed" = 1 ]; then
   ctx="$ctx
 
-cc-operator: .operator/.gitignore is still the v1 blocklist — migration to the v2 allowlist was REFUSED this session because the backup at .operator/.gitignore.v1.bak could not be written (the directory may be read-only, or something that is not a regular file already sits at that path). Nothing was overwritten. Until this is resolved the project keeps v1 semantics, which track machine state (bin/, pending/, .lock/) by default. Fix the path or the permissions and start a new session."
+cc-operator: .operator/.gitignore is still the v1 blocklist — migration to the v3 allowlist was REFUSED this session because the backup at .operator/.gitignore.v1.bak could not be written (the directory may be read-only, or something that is not a regular file already sits at that path). Nothing was overwritten. Until this is resolved the project keeps v1 semantics, which track machine state (bin/, pending/, .lock/) by default. Fix the path or the permissions and start a new session."
 fi
 
 # A failed v2 WRITE is its own notice (Copilot review on PR #97): the backup
@@ -329,7 +435,7 @@ fi
 if [ "$_gi_write_failed" = 1 ]; then
   ctx="$ctx
 
-cc-operator: .operator/.gitignore is still the v1 blocklist — the v2 allowlist could not be written this session (disk full, I/O error, or something that is not a regular file at .operator/.gitignore.v2.tmp). The v1 file is UNCHANGED and the backup at .operator/.gitignore.v1.bak is intact; the migration retries next session."
+cc-operator: .operator/.gitignore is still the v1 blocklist — the v3 allowlist could not be written this session (disk full, I/O error, or something that is not a regular file at .operator/.gitignore.v3.tmp). The v1 file is UNCHANGED and the backup at .operator/.gitignore.v1.bak is intact; the migration retries next session."
 fi
 
 if [ "$PARSER" = "jq" ]; then

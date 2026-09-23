@@ -25,9 +25,10 @@ tests/                            # bash + stdlib Python + node suites
 ```
 
 See [`CLAUDE.md`](CLAUDE.md) for the maintainer handoff: the load-bearing
-couplings and the landmines. `docs/spec/` holds the design spec — read-only
-rationale, not runtime; build and pilot history lives in the git history
-(tree ≤ v0.2.0).
+couplings and the landmines. `docs/` holds the design rationale — read-only,
+not runtime (`TAGS.md` resolves the charter's `[DOC:spec-*]` tags; the spec
+directory itself emptied in 0.11.9); build and pilot history lives in the git
+history (tree ≤ v0.2.0).
 
 ## Dev setup
 

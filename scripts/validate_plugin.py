@@ -682,7 +682,10 @@ def check_source_stamp(root, problems):
 # HANDOFF-MARK marker. The deviation gate counts ONLY the gated kinds; the
 # schema must advertise the split (#9, F30).
 DECISIONS_GATED_KINDS = ("DEVIATION", "ESCALATION", "GATE-EXCEPTION")
-DECISIONS_RECORD_KINDS = ("DECISION", "DEFERRED-VERDICT")
+# SPEC-APPROVED is a RECORD kind, never a gated one (#9): a gated kind blocks
+# Stop until the handoff presents it, and an approved spec is not a deviation
+# to answer for — it is the input the plan gate reads (#155).
+DECISIONS_RECORD_KINDS = ("DECISION", "DEFERRED-VERDICT", "SPEC-APPROVED")
 DECISIONS_MARKER_KIND = "HANDOFF-MARK"
 # The gated kinds, in order, as the hook's case-statement literal.
 DECISIONS_GATED_LITERAL = "|".join(DECISIONS_GATED_KINDS)
@@ -711,6 +714,40 @@ def check_decisions_schema(root, problems):
             f"{DECISIONS_GATED_LITERAL!r}; DECISION/DEFERRED-VERDICT are records "
             "that never block. A reader who cannot see the split mistakes a "
             "non-gated record for a kind that should block Stop (issue #9)")
+    # …and each kind must sit on the RIGHT SIDE of that split. Presence alone
+    # was the whole test until #155 added a kind: SPEC-APPROVED written onto
+    # the `gated` line satisfied every check above, and a gated kind BLOCKS
+    # Stop until the handoff presents it — so every approved spec would have
+    # wedged the session it was approved in. That is #9's defect exactly (a
+    # kind in the wrong constant is a kind the gate mishandles), and nothing
+    # here could see it, because the constants and the header were compared
+    # for membership, never for side.
+    # Classified by the LEADING LABEL, not by any occurrence of the word: the
+    # shipped marker line reads "marker (clears the gated set)", so a naive
+    # substring scan files it under BOTH and reports HANDOFF-MARK as
+    # mis-sided. The label is what the line claims to be; prose about a
+    # neighbouring side is not a claim about this one.
+    _sides = {}
+    for _line in text.splitlines():
+        _m = re.match(r"\s*#?\s*(gated|record|marker)\b", _line, re.IGNORECASE)
+        if _m:
+            _sides.setdefault(_m.group(1).lower(), []).append(_line)
+    for _kinds, _which in ((DECISIONS_GATED_KINDS, "gated"),
+                           (DECISIONS_RECORD_KINDS, "record"),
+                           ((DECISIONS_MARKER_KIND,), "marker")):
+        for _k in _kinds:
+            _here = any(_k in _l for _l in _sides.get(_which, []))
+            _elsewhere = [_w for _w in ("gated", "record", "marker")
+                          if _w != _which and any(_k in _l for _l in _sides.get(_w, []))]
+            if not _here or _elsewhere:
+                problems.append(
+                    f"templates/DECISIONS-header.md: {_k!r} is a {_which.upper()} "
+                    f"kind in validate_plugin, but the header "
+                    f"{'also lists it as ' + '/'.join(_elsewhere) if _elsewhere else 'does not list it on the ' + _which + ' line'}"
+                    f" — a kind on the wrong side of the split is a kind the gate "
+                    f"mishandles (#9): a record listed as gated blocks Stop until "
+                    f"the handoff presents it, and a gated one listed as a record "
+                    f"never blocks at all")
     # The deviation gate's SCAN lives in scripts/lib/partition.sh (0.10: the
     # hook and the bar source ONE implementation). The gated-kind and mark
     # literals must live there; the two consumers must SOURCE the lib, or the
@@ -1094,14 +1131,18 @@ def check_cr_strip_parity(root, problems):
         if not path.is_file():
             continue
         code = shell_code(path)
-        # A file with NO `_cr` strip at all is not drift — the fixture trees
-        # carry minimal stubs with no reconcile path, and reporting those would
-        # make this check fire on every good-tree test rather than on the
-        # divergence it exists for. What is refused is a site that HAS the
-        # mechanism and disagrees about it: a `_cr` counter with no conforming
-        # loop is a copy that drifted, which is the reachable failure.
-        if "_cr" not in code:
-            continue
+        # PRESENCE IS THE CLAIM, not "presence given a `_cr` counter" (PR #154
+        # review). The old guard skipped any file with no `_cr` in it, and
+        # `_cr` is what the realistic simplification takes with it: MEASURED on
+        # the real tree, ops-reverify.sh's loop replaced by the #139 issue's own
+        # rejected proposal `${row%%$'\r'*}` — which TRUNCATES the row at a
+        # mid-cell CR — with `_cr` dropped from its `local` line left
+        # `validate_plugin: all contracts hold`. (The narrower mutation, the
+        # loop deleted but `local … _cr=0` kept, fired even before this fix;
+        # only a copy with NO `_cr` anywhere was excused.) The trigger is now
+        # caps.sh owning the rule (CAPS_MAX_CR resolved above): if the rule
+        # exists, every site that exists carries it. Fixture stubs must carry
+        # it too — a stub that omits it IS the deletion.
         if not re.search(pat, code):
             problems.append(
                 f"scripts/{rel}: no bounded trailing-CR strip loop bounded by "
@@ -1304,7 +1345,11 @@ def check_guard_parity(root, problems):
     may contain. `check_bare_name` (filename safety) and `check_owner_name`
     (owner-vs-session-id) are deliberately separate — conflating them wedged
     every pre-0.4 task whose id contained a space."""
-    clis = ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh")
+    # ops-spec.sh (#155) is a FOURTH writer of the same name grammar — its slug
+    # becomes a task id and its --owner a sentinel owner — and it carried its
+    # own copy of both guards outside this tuple, so deleting its `*__*` arm
+    # was `all contracts hold` (PR #154 review, measured).
+    clis = ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh", "ops-spec.sh")
     for name in clis:
         p = root / "scripts" / name
         if not p.is_file():
@@ -2330,13 +2375,26 @@ def check_gitignore_parity(root, problems):
     reachable (exit-status-tested, non-regular .v1.bak refused); the hook
     re-stamps only after replacement and reports the refusal.
     """
-    MARK = "# cc-operator gitignore v2 (allowlist)"
+    MARK = "# cc-operator gitignore v3 (allowlist)"
+    # The PREVIOUS marker, which both writers must still RECOGNISE: v2 -> v3 is
+    # additive, so a v2 file is APPENDED to rather than replaced (#156). A
+    # writer that stopped recognising v2 would fall through to the destructive
+    # v1 arm and delete every allow line the user added by hand — the exact
+    # outcome the additive arm exists to prevent, reached by deleting a grep.
+    MARK_V2 = "# cc-operator gitignore v2 (allowlist)"
+    # The temp suffix, ONE declaration. It was hardcoded `.v2.tmp` in three
+    # regexes below, so the v3 bump unpinned the atomic write in all three at
+    # once and the validator reported the absence as three failures rather
+    # than as a silent pass — loud, but only because the suffix moved. Derive
+    # it from the marker so the next bump cannot leave a regex behind.
+    TMP_SUFFIX = ".v" + MARK.split(" gitignore v", 1)[1].split(" ", 1)[0] + ".tmp"
     IGNORE_ALL = "*"
     # `handoff-*.md` is evidence (the HANDOFF section's artifact), not machine
-    # state (#28).
+    # state (#28). `specs/` is the spec artifact's home (#155/#156) — an input
+    # to later work, so it is tracked, not machine state.
     ALLOW = ("!.gitignore", "!.gitattributes", "!VERDICTS.md", "!DECISIONS.md",
              "!tiers.env", "!verdicts.d/", "!verdicts.d/*.md",
-             "!handoff-*.md")
+             "!handoff-*.md", "!specs/", "!specs/*.md")
     sets = {}
     for name in ("ops-init.sh", "ops-sessionstart-hook.sh"):
         p = root / "scripts" / name
@@ -2344,12 +2402,26 @@ def check_gitignore_parity(root, problems):
             problems.append(f"scripts/{name}: missing — cannot check gitignore parity")
             continue
         text = p.read_text(encoding="utf-8")
+        if MARK_V2 not in text:
+            problems.append(
+                f"scripts/{name}: does not carry the PREVIOUS marker "
+                f"{MARK_V2!r} — v2 -> v3 is additive, so both writers must "
+                f"RECOGNISE a v2 file and append to it. A writer that stops "
+                f"recognising v2 falls through to the destructive v1 arm and "
+                f"deletes every allow line the user added by hand (#156)")
+        # The additive arm must APPEND, not rewrite: `>>` on the live
+        # .gitignore is the whole claim, and a `>` there is the destructive
+        # variant wearing the additive arm's comment.
+        if ">> \"$OPDIR/.gitignore\"" not in text and '>> "$_gi"' not in text:
+            problems.append(
+                f"scripts/{name}: the v2 -> v3 arm does not APPEND (`>>`) to "
+                f"the live .gitignore — an additive scheme change written as a "
+                f"rewrite loses the user's own allow lines (#156)")
         if MARK not in text:
             problems.append(
-                f"scripts/{name}: does not carry the v2 gitignore marker "
-                f"{MARK!r} — both writers must emit it AND grep for it, or a v1 "
-                f"blocklist is never migrated (it would be appended to instead, "
-                f"and the two schemes contradict)")
+                f"scripts/{name}: does not carry the CURRENT gitignore marker "
+                f"{MARK!r} — both writers must emit it AND grep for it, or an "
+                f"older file is never migrated at all)")
         # Emitting the marker and DETECTING it are two claims; assert the
         # detection grep separately (either spelling: init greps the variable,
         # the standalone hook greps the literal).
@@ -2384,19 +2456,32 @@ def check_gitignore_parity(root, problems):
         # invert the test: the target must BE the live path — a bare variable
         # expansion, or a literal ending in `/.gitignore`. Everything derived
         # from it (`$_gi.v2.tmp`, `$_gi.v1.bak`, any future suffix) is not.
-        elif not any(re.fullmatch(r"\$\{?\w+\}?", _target)
-                     or _target.endswith("/.gitignore")
-                     for _target in re.findall(
+        # TWO live reads, not one (#156). Since the additive v2 -> v3 arm
+        # landed, each writer greps the CURRENT marker against the live file
+        # TWICE: once to decide "is this already v3?" ahead of the append, and
+        # once for the destructive arm's own detection. `any()` over live
+        # targets is then satisfied by the additive arm alone — so deleting the
+        # destructive arm's detection, after which a v1 blocklist is never
+        # replaced, shipped green the moment that arm was added (measured:
+        # test_removing_only_the_DETECTION_grep_fires went from red to green
+        # with no change to the pin). A pin whose subject gained a second
+        # satisfier is vacuous for the first one; counting is what separates
+        # them, because BOTH arms genuinely need their own live read.
+        elif len([_target for _target in re.findall(
                 r"grep\s+-qF\s+(?:\"\$_GI_MARK\"|'" + re.escape(MARK) +
-                r"')\s+\"([^\"]+)\"", text)):
+                r"')\s+\"([^\"]+)\"", text)
+                  if re.fullmatch(r"\$\{?\w+\}?", _target)
+                  or _target.endswith("/.gitignore")]) < 2:
             problems.append(
-                f"scripts/{name}: emits the v2 marker but never greps for it on "
-                f"the LIVE .gitignore — without that read the writer cannot tell "
-                f"a v1 file from a v2 one, so an existing v1 blocklist is never "
-                f"migrated (it is appended to, and the two schemes contradict). "
-                f"A grep against the `.v2.tmp` path is the post-write "
-                f"CONFIRMATION, a different claim: it proves the new body "
-                f"landed, never that the old one needed replacing (#102)")
+                f"scripts/{name}: emits the current marker but does not grep "
+                f"for it on the LIVE .gitignore TWICE — the additive v2 -> v3 "
+                f"arm and the destructive v1 arm each need their OWN live read "
+                f"(#156). Without the destructive arm's, a v1 blocklist is "
+                f"never replaced at all; without the additive arm's, a v2 file "
+                f"falls through to the destructive arm and the user's own allow "
+                f"lines are deleted. A grep against the temp path is the "
+                f"post-write CONFIRMATION, a different claim: it proves the new "
+                f"body landed, never that the old one needed replacing (#102)")
         # Allow lines are line-anchored: a '!VERDICTS.md' inside prose is not a
         # heredoc body line, and would make this check vacuous.
         lines = {ln.strip() for ln in text.splitlines()}
@@ -2497,10 +2582,10 @@ def check_gitignore_parity(root, problems):
         # is one edit from vacuous. This one keys on the mechanism itself: the
         # same-dir `mv -f` from the temp onto the live path is what makes the
         # live file always either the intact v1 or the complete v2.
-        if not re.search(r'mv\s+-f\s+"\$_gi\.v2\.tmp"\s+"\$_gi"', text):
+        if not re.search(r'mv\s+-f\s+"\$_gi' + re.escape(TMP_SUFFIX) + r'"\s+"\$_gi"', text):
             problems.append(
                 "scripts/ops-sessionstart-hook.sh: the v2 gitignore write is "
-                "not ATOMIC — no `mv -f \"$_gi.v2.tmp\" \"$_gi\"` swaps a complete "
+                "not ATOMIC — no `mv -f \"$_gi" + TMP_SUFFIX + "\" \"$_gi\"` swaps a complete "
                 "temp onto the live path. Writing the heredoc straight onto "
                 ".gitignore means a `cat` that dies mid-write (ENOSPC, EIO) "
                 "leaves a truncated allowlist whose marker makes every LATER "
@@ -2514,11 +2599,11 @@ def check_gitignore_parity(root, problems):
         # argument tells them apart, so one pattern cannot stand for both.
         # UNCONDITIONAL — the `".v2.tmp" in text` gate is gone (see above).
         if not re.search(
-                r"grep\s+-qF\s+'" + re.escape(MARK) + r"'\s+\"[^\"]*\.v2\.tmp\"",
+                r"grep\s+-qF\s+'" + re.escape(MARK) + r"'\s+\"[^\"]*" + re.escape(TMP_SUFFIX) + r"\"",
                 text):
             problems.append(
                 "scripts/ops-sessionstart-hook.sh: the v2 gitignore write is "
-                "not confirmed by grepping the marker in the `.v2.tmp` temp "
+                "not confirmed by grepping the marker in the `" + TMP_SUFFIX + "` temp "
                 "before the mv — without it a heredoc that died mid-write "
                 "(ENOSPC, EIO) is moved over the live file, and the partial "
                 "body's marker makes every LATER session skip the migration "
@@ -2531,11 +2616,11 @@ def check_gitignore_parity(root, problems):
     # contracts hold" on a scratch copy of 0.11.5. Same-shape pin, init's paths.
     p = root / "scripts" / "ops-init.sh"
     if p.is_file() and not re.search(
-            r'mv\s+-f\s+"\$OPDIR/\.gitignore\.v2\.tmp"\s+"\$OPDIR/\.gitignore"',
+            r'mv\s+-f\s+"\$OPDIR/\.gitignore' + re.escape(TMP_SUFFIX) + r'"\s+"\$OPDIR/\.gitignore"',
             shell_code(p)):
         problems.append(
             "scripts/ops-init.sh: the v2 gitignore write is not ATOMIC — no "
-            "`mv -f \"$OPDIR/.gitignore.v2.tmp\" \"$OPDIR/.gitignore\"` swaps a "
+            "`mv -f \"$OPDIR/.gitignore" + TMP_SUFFIX + "\" \"$OPDIR/.gitignore\"` swaps a "
             "complete temp onto the live path. Under set -e a cat dying "
             "mid-write leaves a truncated, marker-less .gitignore, and the "
             "re-run's migration backs THAT up over the good .v1.bak (F119's "
@@ -2572,7 +2657,8 @@ CANONICAL_LOCK = (
 
 
 def check_lock_parity(root, problems):
-    """ops-verdict.sh and ops-adopt.sh must carry the SAME lock implementation,
+    """ops-verdict.sh, ops-adopt.sh and ops-spec.sh must carry the SAME lock
+    implementation,
     and it must be the RIGHT one.
 
     Both contend on `.operator/.lock`: a divergence is two different ideas of
@@ -2582,7 +2668,10 @@ def check_lock_parity(root, problems):
     in parity (F30, measured against this very check 2026-08-25).
     """
     blocks = {}
-    for name in ("ops-verdict.sh", "ops-adopt.sh"):
+    # THREE since #155: ops-spec.sh --approve appends to both ledgers, so it
+    # contends on the same lock. A writer to a locked file that does not take
+    # the lock is the case the lock cannot defend against.
+    for name in ("ops-verdict.sh", "ops-adopt.sh", "ops-spec.sh"):
         p = root / "scripts" / name
         if not p.is_file():
             return  # missing-file is already reported by check_scripts
@@ -2597,8 +2686,14 @@ def check_lock_parity(root, problems):
             return
         tool = name[:-3]  # ops-verdict.sh -> ops-verdict
         blocks[name] = text[start:end].replace(f"{tool}:", "TOOL:")
-    a, b = blocks["ops-verdict.sh"], blocks["ops-adopt.sh"]
-    if a != b:
+    # Parity is checked against ONE reference copy, so a third writer cannot
+    # drift unseen: pinning only ops-verdict vs ops-adopt left ops-spec.sh
+    # (added #155) held by the content pin alone, which uniform drift passes.
+    ref_name = "ops-verdict.sh"
+    a = blocks[ref_name]
+    for name, b in blocks.items():
+        if name == ref_name or a == b:
+            continue
         a_lines, b_lines = a.splitlines(), b.splitlines()
         detail = "differing line counts"
         for i, (x, y) in enumerate(zip(a_lines, b_lines), 1):
@@ -2606,7 +2701,7 @@ def check_lock_parity(root, problems):
                 detail = f"first difference at block line {i}: {x.strip()[:60]!r} vs {y.strip()[:60]!r}"
                 break
         problems.append(
-            f"scripts/ops-verdict.sh vs ops-adopt.sh: lock implementations have "
+            f"scripts/{ref_name} vs {name}: lock implementations have "
             f"drifted — they contend on the same lock and must be identical "
             f"({detail})")
     # The content pin runs per COPY, not on the comparison: uniform drift is
@@ -2651,8 +2746,13 @@ CANONICAL_ROOT = (
 
 
 def check_root_parity(root, problems):
-    """The three gate CLIs must resolve the project the SAME way, and it must be
+    """The gate CLIs must resolve the project the SAME way, and it must be
     the right way.
+
+    FOUR copies since #155 (ops-spec.sh joined them). The list is here rather
+    than a glob on purpose: a CLI that does NOT resolve the project — one that
+    never touches .operator/ — must not be silently excused for lacking the
+    block, and a glob cannot tell the two apart.
 
     OPDIR was relative to the caller's cwd until 0.11.3, so every CLI worked
     from the project root and nowhere else — including through the absolute
@@ -2661,7 +2761,7 @@ def check_root_parity(root, problems):
     drift the way the lock block would.
     """
     blocks = {}
-    for name in ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh"):
+    for name in ("ops-task.sh", "ops-verdict.sh", "ops-adopt.sh", "ops-spec.sh"):
         p = root / "scripts" / name
         if not p.is_file():
             return  # missing-file is already reported by check_scripts
@@ -3125,6 +3225,131 @@ def check_workflow_agent_types(root, problems):
 # commands/start.md and commands/handoff.md already use. argument-hint may be
 # an empty list (`argument-hint: []`), so the check accepts a value of `[]`.
 COMMAND_REQUIRED_KEYS = ("description", "argument-hint", "allowed-tools")
+
+
+# The implement stage's packet (#158) — a FOURTH hand-copy of the charter's
+# dispatch packet, so it is pinned rather than trusted (F30: copy-pasted
+# blocks drift uniformly, and identically-broken copies are trivially "in
+# parity"). The other three are templates/OPERATOR.md, docs/HANDOUT.md and
+# HANDOUT_PACKET_SPINE above; this one is CODE, and a field dropped here is a
+# field the implementer seat is never given.
+IMPLEMENT_PACKET_FIELDS = ("TASK", "TEXT", "SCENE", "INPUTS", "FORBIDDEN", "DONE", "REACH")
+# The charter's four-status protocol, which implement.js hands the seat as a
+# schema enum. A status the workflow cannot return is a route the operator's
+# protocol has and the workflow does not.
+IMPLEMENT_STATUSES = ("DONE", "DONE_WITH_CONCERNS", "NEEDS_CONTEXT", "BLOCKED")
+
+
+def check_implement_packet(root, problems):
+    """workflows/implement.js carries the charter's packet, and APPLIES it.
+
+    Three failures, each one a shipped-green defect in the absence of this pin:
+
+    1. A field dropped from `PACKET_FIELDS` — the refusal stops requiring it
+       and the seat stops receiving it, with every other gate green.
+    2. A field required but never SENT (validated, then dropped on the way to
+       the prompt). That is worse than one never required, because the refusal
+       implies the field was used.
+    3. A field dropped from the CHARTER while the code keeps it, or the
+       reverse. The packet is a contract between the two.
+
+    Absence of the file is a FINDING, not a skip (#114's lesson): the
+    implement stage running as a workflow is the contract, and a check that
+    silently passes when its subject is deleted is not a check.
+    """
+    wf_dir = root / "workflows"
+    files = sorted(wf_dir.glob("*.js")) if wf_dir.is_dir() else []
+    if not files:
+        return  # workflows/ is optional as a whole; check_workflows says so too
+    f = wf_dir / "implement.js"
+    if not f.is_file():
+        problems.append(
+            "workflows/implement.js: missing — the implement stage runs as a "
+            "workflow (#158). Every stage of the cycle that only READS is a "
+            "workflow with a tier map; the stage that WRITES CODE must not go "
+            "back to a plain Agent call on a hardcoded frontmatter alias, "
+            "which is how the IMPLEMENT tier came to be dispatched by nothing")
+        return
+    text = f.read_text(encoding="utf-8")
+    # Comment-stripped for the APPLICATION checks, exactly as check_workflows
+    # does (F48/F57): a call site moved into a comment must not satisfy them.
+    code = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    code = "\n".join(ln for ln in code.split("\n")
+                     if not ln.lstrip().startswith("//"))
+
+    m = re.search(r"const\s+PACKET_FIELDS\s*=\s*\[([^\]]*)\]", code)
+    if not m:
+        problems.append(
+            "workflows/implement.js: no `const PACKET_FIELDS = [...]` found — "
+            "a reshape must update this locator, not silence the packet pin "
+            "(#114: no-candidate is a finding, never a pass)")
+    else:
+        listed = [v.lower() for v in re.findall(r'"([^"]+)"', m.group(1))]
+        for field in IMPLEMENT_PACKET_FIELDS:
+            if field.lower() not in listed:
+                problems.append(
+                    f"workflows/implement.js: PACKET_FIELDS is missing "
+                    f"{field!r} — the charter's dispatch packet requires it, so "
+                    f"the refusal stops demanding it and the seat stops "
+                    f"receiving it")
+        for got in listed:
+            if got.upper() not in IMPLEMENT_PACKET_FIELDS:
+                problems.append(
+                    f"workflows/implement.js: PACKET_FIELDS carries "
+                    f"{got!r}, which the charter's packet does not — add it to "
+                    f"templates/OPERATOR.md and docs/HANDOUT.md first, or the "
+                    f"code is asking for a clause the contract never defined")
+        rest = code.replace(m.group(0), "", 1)
+        if rest.count("PACKET_FIELDS") < 2:
+            problems.append(
+                "workflows/implement.js: PACKET_FIELDS is declared but barely "
+                "used — it must drive BOTH the refusal and the prompt")
+        # The SENT half, pinned at its own call site: a field validated and
+        # then dropped on the way to the seat is the defect the refusal hides.
+        if "PACKET_FIELDS.map(" not in rest:
+            problems.append(
+                "workflows/implement.js: no `PACKET_FIELDS.map(` — the packet "
+                "must be built into the seat's prompt FROM the same list the "
+                "refusal validates, or a required field is validated and then "
+                "never sent (which reads as used)")
+
+    em = re.search(r"enum:\s*\[([^\]]*)\]", code)
+    if not em:
+        problems.append(
+            "workflows/implement.js: no status `enum: [...]` found — the "
+            "charter's four-status protocol reaches the seat as a schema, and "
+            "a reshape must update this locator rather than silence it")
+    else:
+        got = [v for v in re.findall(r'"([^"]+)"', em.group(1))]
+        for status in IMPLEMENT_STATUSES:
+            if status not in got:
+                problems.append(
+                    f"workflows/implement.js: the status enum is missing "
+                    f"{status!r} — the operator routes on the four-status "
+                    f"protocol, so a status the seat cannot return is a route "
+                    f"the workflow silently removes")
+
+    charter = root / "templates" / "OPERATOR.md"
+    if charter.is_file():
+        ctext = charter.read_text(encoding="utf-8")
+        # _packet_block returns EVERY fence that claims to be the packet, and
+        # the caller appends per block — a decoy example ahead of the real one
+        # made first-match selection read the wrong fence (#113/#124). Same
+        # contract here: every such fence must teach every field.
+        for block in _packet_block(ctext):
+            for field in IMPLEMENT_PACKET_FIELDS:
+                if field not in block:
+                    problems.append(
+                        f"templates/OPERATOR.md: the dispatch packet lost "
+                        f"{field!r}, which workflows/implement.js still "
+                        f"requires — the packet is a contract between the "
+                        f"charter and the workflow that sends it")
+        for status in IMPLEMENT_STATUSES:
+            if status not in ctext:
+                problems.append(
+                    f"templates/OPERATOR.md: the four-status protocol lost "
+                    f"{status!r}, which workflows/implement.js still offers "
+                    f"the seat as a schema enum")
 
 
 def check_commands(root, problems):
@@ -4590,6 +4815,13 @@ def _cli_flag_contract(path):
     # which commands/tiers.md correctly prescribes, as an unknown flag.
     accepted = set(re.findall(r'(?:^|;;)\s*(--[a-z][a-z-]*)(?:=\*)?\)',
                               text, re.M))
+    # ALTERNATION arms, `--new|--check|--approve)`: ops-spec.sh dispatches its
+    # three modes through one arm, and the single-flag pattern above read none
+    # of them — 10 correct prescriptions reported as unknown flags on the tree
+    # PR #154 rebased onto 0.11.18. Every `--flag` in such an arm is accepted.
+    for arm in re.findall(r'(?:^|;;)\s*((?:-{1,2}[a-z][a-z-]*\|)+'
+                          r'-{1,2}[a-z][a-z-]*)\)', text, re.M):
+        accepted |= {f for f in arm.split("|") if f.startswith("--")}
     # The `"${1:-}" = "--flag"` dispatch forms: ops-verdict.sh reaches
     # --reconcile and --mark-handoff that way, BEFORE the parse loop, so the
     # `case` arms alone miss both.
@@ -4601,7 +4833,20 @@ def _cli_flag_contract(path):
     # condemned five correct lines, the charter's among them. Duplicates are
     # harmless — the selection below takes a max.
     forms = []
-    for u in re.findall(r'usage:\s*ops-[a-z-]+\.sh((?:[^"\\\n]|\\.)*)', text):
+    # A usage HEREDOC carries one form per line: `usage: ops-x.sh --new <s>`
+    # then `       ops-x.sh --check <s>`. The one-line pattern read only the
+    # first, so ops-spec.sh's --check and --approve forms did not exist. The
+    # continuation lines are the ones directly after a `usage:` line that
+    # open with the same CLI name.
+    _usage = re.findall(r'usage:\s*ops-[a-z-]+\.sh((?:[^"\\\n]|\\.)*)', text)
+    for m in re.finditer(r'^[^\n]*usage:\s*(ops-[a-z-]+\.sh)[^\n]*\n', text,
+                         re.M):
+        for ln in text[m.end():].split("\n"):
+            c = re.match(r'\s+' + re.escape(m.group(1)) + r'\b(.*)$', ln)
+            if not c:
+                break
+            _usage.append(c.group(1))
+    for u in _usage:
         u = u.replace('\\"', '"')
         parts, buf, depth, quoted = [], "", 0, False
         for ch in u:
@@ -5138,6 +5383,7 @@ CHECKS = (
     check_workflow_parity,
     check_workflow_default_tiers,
     check_workflow_agent_types,
+    check_implement_packet,
     check_commands,
     check_release_gates_cover_validate,
     check_release_notes_outside_tree,

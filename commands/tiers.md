@@ -83,9 +83,29 @@ it. Edit `.operator/tiers.env` to set the bindings first.
 >    guard a `tiers.env` binding gets — no more and no less, so this is neither a
 >    way around `check_routable` nor a second opinion about your model choice.
 >
->    Omitting `model` is legal and falls back to the JUDGMENT tier, with a log
->    line saying so and naming the `--model` command — a silent fallback is how a
->    caller never learns they dispatched on something else.
+>    `tier` is the second route in (#158). Pass a tier NAME — `JUDGMENT`,
+>    `IMPLEMENT`, `MECHANICAL`, `RECON`, case-insensitive — and the id comes out
+>    of the `tiers` map you forwarded, so a seat can be dispatched on its own
+>    tier without resolving the id by hand first:
+>
+>    ```
+>    Workflow({ name: "dispatch", args: {
+>      seat: "mechanic", tier: "IMPLEMENT", prompt: "<the task>",
+>      tiers: { IMPLEMENT: "deepseek:deepseek-v4-flash" } } })
+>    ```
+>
+>    `model` beats `tier` when both are given, and says so in the log. An
+>    unknown tier name is REFUSED, never defaulted.
+>
+>    Omitting BOTH is legal and dispatches with **no model override at all**:
+>    the seat runs on its own configured default — the `model:` frontmatter in
+>    `agents/op-<seat>.md`, a project-layer agent written by `render` above, or
+>    `$CLAUDE_CODE_SUBAGENT_MODEL`. The log says so and names both flags. It
+>    used to fall back to the JUDGMENT tier instead, which dispatched the
+>    IMPLEMENT-bound `mechanic` seat one tier up and logged that it had —
+>    honest, not correct (#158). A workflow cannot read `tiers.env`, so the one
+>    honest answer to "no binding named" is to leave the decision where it
+>    already lives.
 >
 > **Render still beats this for repeated work.** `dispatch` is per-call and the
 > id is resolved by hand each time; `render` writes the binding into the agent
