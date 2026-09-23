@@ -9,6 +9,10 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-09-23
+
+The merge-tree classifier's last unreached branches get cases.
+
 ### Fixed
 
 - **base-gate's unreached merge-tree branches have cases (#133).** Three branches of the
