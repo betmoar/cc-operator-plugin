@@ -9,6 +9,10 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-09-23
+
+CLAUDE.md gets its headroom back, and the narrative it cut stays one grep away.
+
 ### Changed
 
 - **CLAUDE.md has headroom again (#159).** It sat at 37,980 of its 38,000-char cap, so the
