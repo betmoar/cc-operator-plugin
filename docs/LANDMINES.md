@@ -1233,8 +1233,12 @@ stdout line 1 is a sha PLUS whether the tree has any entries:
 - rc 1 + sha → a real conflict. The message says the gate CANNOT JUDGE it, never that
   the PR weakens anything: GitHub refuses to merge a conflicted PR anyway, so the only
   honest claim is that no result tree exists to read.
-- rc 1 + no sha → an unreadable object. Retained though no construction reaches it
-  (#133).
+- rc 1 + no sha → an unreadable object. No real-git construction reaches it (#133,
+  measured on git 2.43 and 2.54: object deletion, corruption, shallow and partial clones
+  all land on rc 0, rc 128, or the earlier `rev-parse` refusal). It is KEPT, not deleted:
+  it fails closed, and a future git or promisor setup could emit it. The suite reaches it,
+  and rc 129 and the catch-all, through a PATH shim that forces merge-tree's exit status —
+  that pins the classifier's answer, not a claim that git emits the status.
 - rc 128 → a FATAL git error: the repository is incomplete. This is the REACHABLE
   truncated-fetch shape that bit the #125 marker arm, and the first cut reported it as
   `--write-tree` being unavailable — blaming the runner's git version for a corrupt

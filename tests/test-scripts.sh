@@ -6754,6 +6754,45 @@ check "base-gate: an UNREADABLE object is rc 2 and names the repository, not the
      && ! printf '%s' "$BG_OUT" | grep -q 'git >= 2.38' && echo 0 || echo 1)"
 rm -rf "$BGC_D"
 
+# --- #133: the merge-tree exit codes real git will not produce here ---------
+# rc 1 with NO tree sha, rc 129 and an unrecognised rc had no case. Real git
+# does not reach the first from inside this script — measured 2026-09-23 on
+# git 2.54: partial clones (blob:none, tree:0, lazy fetch on and off, promisor
+# gone) answer a missing object with rc 128, and an unresolvable ref (rc 1, no
+# stdout) is refused by base-gate's own `rev-parse --verify` first. So a PATH
+# shim forces merge-tree's exit status and passes every other git call
+# through. This pins the CLASSIFIER's answer to each status, not a claim that
+# any git emits it; it needs no object surgery, which is what made the rc-0
+# empty-tree fixture version-dependent.
+BGS_DIR="$(mktemp -d "${TMPDIR:-/tmp}/basegate-shim.XXXXXX")"
+_bgs_git="$(command -v git)"
+cat > "$BGS_DIR/git" <<EOF
+#!/usr/bin/env bash
+for _a in "\$@"; do
+  [ "\$_a" = merge-tree ] && exit "\${BG_SHIM_MT_RC:-0}"
+done
+exec "$_bgs_git" "\$@"
+EOF
+chmod +x "$BGS_DIR/git"
+# CONTROL: the shim is transparent when merge-tree exits 0 with no output, so
+# every refusal below comes from the forced status and not from a broken shim.
+BG_OUT="$(BG_SHIM_MT_RC=0 PATH="$BGS_DIR:$PATH" bash "$BG" --base "$BG_BASE" --pr "$BG_BASE" --repo "$BGD" 2>&1)"; BG_RC=$?
+check "base-gate: #133 shim CONTROL — rc 0 with no tree is the 'no tree object' refusal, so the shim reached the classifier" \
+  "$([ "$BG_RC" = 2 ] && printf '%s' "$BG_OUT" | grep -q 'printed no tree object' && echo 0 || echo 1)"
+BG_OUT="$(BG_SHIM_MT_RC=1 PATH="$BGS_DIR:$PATH" bash "$BG" --base "$BG_BASE" --pr "$BG_BASE" --repo "$BGD" 2>&1)"; BG_RC=$?
+check "base-gate: #133 rc 1 with NO tree sha is an unreadable object, never a conflict" \
+  "$([ "$BG_RC" = 2 ] && printf '%s' "$BG_OUT" | grep -q 'could not read an object' \
+     && ! printf '%s' "$BG_OUT" | grep -q 'conflicts with the base' \
+     && ! printf '%s' "$BG_OUT" | grep -q 'BASE_GATE_FAILED' && echo 0 || echo 1)"
+BG_OUT="$(BG_SHIM_MT_RC=129 PATH="$BGS_DIR:$PATH" bash "$BG" --base "$BG_BASE" --pr "$BG_BASE" --repo "$BGD" 2>&1)"; BG_RC=$?
+check "base-gate: #133 rc 129 names the old git (--write-tree needs >= 2.38)" \
+  "$([ "$BG_RC" = 2 ] && printf '%s' "$BG_OUT" | grep -q 'git >= 2.38' && echo 0 || echo 1)"
+BG_OUT="$(BG_SHIM_MT_RC=137 PATH="$BGS_DIR:$PATH" bash "$BG" --base "$BG_BASE" --pr "$BG_BASE" --repo "$BGD" 2>&1)"; BG_RC=$?
+check "base-gate: #133 an unrecognised rc (137) is refused WITHOUT blaming the git version" \
+  "$([ "$BG_RC" = 2 ] && printf '%s' "$BG_OUT" | grep -q 'exited 137' \
+     && ! printf '%s' "$BG_OUT" | grep -q 'needs git >= 2.38' && echo 0 || echo 1)"
+rm -rf "$BGS_DIR"
+
 # --- rc 0 + git's EMPTY tree is never a legitimate subject ---
 # Its OWN scratch repo rather than $BGD: the case commits an orphan-shaped
 # root onto the base and leaves a ref no later case should have to reason
