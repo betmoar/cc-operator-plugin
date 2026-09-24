@@ -80,14 +80,22 @@ check_routable() {
 }
 
 # check_panel <label> <list>: every comma-separated entry is a model id, or
-# `persona:` + one. Same charset guard as a tier binding, no more (0.8.3).
+# `persona:` + one. Same charset guard as a tier binding, no more (0.8.3). The
+# COUNT is debate.js's: models 2-5, spares at most 5 — a list the workflow
+# refuses must die here, at the line that declared it, not after a resolve.
 check_panel() {
   case "$2" in ""|,*|*,|*,,*) die "$1='$2' is not a comma-separated list of model ids" ;; esac
-  local _e _rest="$2,"
+  local _e _n=0 _rest="$2,"
   while [ -n "$_rest" ]; do
-    _e="${_rest%%,*}"; _rest="${_rest#*,}"
+    _e="${_rest%%,*}"; _rest="${_rest#*,}"; _n=$((_n + 1))
     check_routable "$1" "${_e#persona:}"
   done
+  case "$1" in
+    PANEL) [ "$_n" -ge 2 ] && [ "$_n" -le 5 ] \
+      || die "PANEL has $_n entries; debate.js seats 2-5 (one model cannot debate)" ;;
+    PANEL_FALLBACK) [ "$_n" -le 5 ] \
+      || die "PANEL_FALLBACK has $_n entries; debate.js takes at most 5 spares" ;;
+  esac
 }
 
 set_tier() { # set_tier NAME id source
@@ -312,8 +320,12 @@ PY
 #               not the route, and no fallback may seat a family already seated.
 #   persona:  exempt from the family rule — that is its whole point — but its
 #               base id must be available.
-# Fail-OPEN: no proxy or no python3 means the declared panel is emitted as-is
-# with a note; the dispatch then reports a dead seat rather than never running.
+# Fewer than 2 seats resolved exits 3 (the JSON still printed): debate.js would
+# refuse it, and rc 0 read as a panel. Fail-OPEN: no proxy or an unreadable body
+# means every id counts as available
+# — the family rule still applies, it needs no catalogue. Only no python3 emits
+# the declared panel raw. Either way a note says so; the dispatch then reports a
+# dead seat rather than never running.
 panel_report() {
   _body=""
   if command -v python3 >/dev/null 2>&1; then
@@ -328,27 +340,28 @@ panel_report() {
   else
     echo "note: python3 not found — panel availability unchecked" >&2
   fi
-  if [ -z "$_body" ] || ! command -v python3 >/dev/null 2>&1; then
-    [ -z "$_body" ] && command -v python3 >/dev/null 2>&1 \
-      && echo "note: proxy at :$PORT did not answer /v1/models — panel availability unchecked" >&2
+  if ! command -v python3 >/dev/null 2>&1; then
     _q() { printf '"%s"' "$(printf '%s' "$1" | sed 's/,/","/g')"; }
     printf '{"models":[%s],"spares":[%s]}\n' "$(_q "$PANEL")" "$(_q "$PANEL_FALLBACK")"
     return 0
   fi
+  [ -z "$_body" ] \
+    && echo "note: proxy at :$PORT did not answer /v1/models — panel availability unchecked" >&2
   printf '%s' "$_body" | python3 -c '
 import json, re, sys
 panel, fallback = sys.argv[1].split(","), sys.argv[2].split(",")
-try:
-    data = json.load(sys.stdin).get("data")
-    assert isinstance(data, list)
-except Exception:
-    print("note: /v1/models body unreadable — panel availability unchecked", file=sys.stderr)
-    print(json.dumps({"models": panel, "spares": fallback}, separators=(",", ":"))); sys.exit(0)
-listed = {e.get("id"): e for e in data if isinstance(e, dict) and isinstance(e.get("id"), str)}
+raw, listed = sys.stdin.read(), None   # None: availability unchecked, every id counts
+if raw:
+    try:
+        data = json.loads(raw).get("data")
+        assert isinstance(data, list)
+        listed = {e.get("id"): e for e in data if isinstance(e, dict) and isinstance(e.get("id"), str)}
+    except Exception:
+        print("note: /v1/models body unreadable — panel availability unchecked", file=sys.stderr)
 def base(e): return e[len("persona:"):] if e.startswith("persona:") else e
 def available(e):
     b = base(e)
-    if b.startswith("claude-"): return True
+    if listed is None or b.startswith("claude-"): return True
     x = listed.get(b)
     return x is not None and x.get("usable") is not False
 def family(e):
@@ -376,6 +389,9 @@ for e in fallback:
 if len(seated) < len(panel):
     print(f"note: panel short — {len(seated)} of {len(panel)} seats routable", file=sys.stderr)
 print(json.dumps({"models": seated, "spares": spares}, separators=(",", ":")))
+if len(seated) < 2:   # debate.js refuses it; say so HERE, at a distinct rc (2 is a config error)
+    print(f"ops-tiers: {len(seated)} seat(s) resolved — a debate needs 2; not dispatchable", file=sys.stderr)
+    sys.exit(3)
 ' "$PANEL" "$PANEL_FALLBACK"
 }
 

@@ -2423,6 +2423,38 @@ PERR="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$PNL/empt
   "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" --panel 2>&1 >/dev/null)"; PRC=$?
 check "#172 an empty PANEL entry is refused as a malformed list, never seated as an empty model id" \
   "$([ "$PRC" -eq 2 ] && printf '%s' "$PERR" | grep -q 'is not a comma-separated list of model ids' && echo 0 || echo 1)"
+# Copilot on PR #173: check_panel judged syntax, not count. A 1- or 6-seat PANEL or a 6-entry PANEL_FALLBACK
+# resolved at rc 0 and died later in debate.js (models 2-5, spares <=5). Refused at the declaration now.
+PCNT() { CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT=/nonexistent CC_PROXY_PORT=1 \
+  "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" --set "$1" --panel; }
+PERR="$(PCNT PANEL=glm-5.3 2>&1 >/dev/null)"; PRC=$?
+check "#172 a ONE-seat PANEL is refused at resolution (rc 2), never handed to debate.js" \
+  "$([ "$PRC" -eq 2 ] && printf '%s' "$PERR" | grep -q 'PANEL has 1 entries' && echo 0 || echo 1)"
+PERR="$(PCNT PANEL=a1,b1,c1,d1,e1,f1 2>&1 >/dev/null)"; PRC=$?
+check "#172 a SIX-seat PANEL is refused at resolution (rc 2)" \
+  "$([ "$PRC" -eq 2 ] && printf '%s' "$PERR" | grep -q 'PANEL has 6 entries' && echo 0 || echo 1)"
+PERR="$(PCNT PANEL_FALLBACK=a1,b1,c1,d1,e1,f1 2>&1 >/dev/null)"; PRC=$?
+check "#172 a SIX-entry PANEL_FALLBACK is refused at resolution (rc 2)" \
+  "$([ "$PRC" -eq 2 ] && printf '%s' "$PERR" | grep -q 'PANEL_FALLBACK has 6 entries' && echo 0 || echo 1)"
+POUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT=/nonexistent CC_PROXY_PORT=1 \
+  "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" --set PANEL=a1,b1,c1,d1,e1 --set PANEL_FALLBACK=a2,b2,c2,d2,e2 --panel 2>/dev/null)"; PRC=$?
+check "#172 CONTROL — five seats and five spares are the legal maximum and resolve (rc 0)" \
+  "$([ "$PRC" -eq 0 ] && printf '%s' "$POUT" | grep -q '"models":\["a1","b1","c1","d1","e1"\]' && echo 0 || echo 1)"
+# Fewer than 2 seats RESOLVED (every non-claude id unroutable) printed a one-seat panel at rc 0 (#174 item 2).
+POUT="$(PANELQ "$PNL/glmonly.json" --set PANEL=deepseek-flash,qwen3.8-max --set PANEL_FALLBACK=glm-5.2 2>"$PNL/err")"; PRC=$?
+check "#172 a panel resolving to fewer than 2 seats exits 3 and says it is not dispatchable" \
+  "$([ "$PRC" -eq 3 ] && [ "$POUT" = '{"models":[],"spares":[]}' ] && grep -q 'not dispatchable' "$PNL/err" && echo 0 || echo 1)"
+# Copilot on PR #173: the fail-OPEN paths skipped the family rule and emitted the declared lists raw. Unchecked
+# AVAILABILITY is the fail-open; the family rule needs no catalogue and must still hold — a PANEL of glm-5.3 +
+# qwen:glm-5.3 with the proxy down seated one model family twice as two independent seats.
+POUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT=/nonexistent CC_PROXY_PORT=1 \
+  "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" --set PANEL=glm-5.3,qwen:glm-5.3,deepseek-flash --set PANEL_FALLBACK=qwen3.8-max --panel 2>"$PNL/err")"; PRC=$?
+check "#172 proxy down: the family rule still holds — qwen:glm-5.3 is skipped, the fallback seated" \
+  "$([ "$PRC" -eq 0 ] && [ "$POUT" = '{"models":["glm-5.3","deepseek-flash","qwen3.8-max"],"spares":[]}' ] \
+     && grep -q 'panel availability unchecked' "$PNL/err" && echo 0 || echo 1)"
+POUT="$(PANELQ "$PNL/garbage.json" --set PANEL=glm-5.3,qwen:glm-5.3,deepseek-flash --set PANEL_FALLBACK=qwen3.8-max 2>/dev/null)"
+check "#172 unreadable catalogue: the family rule still holds" \
+  "$([ "$POUT" = '{"models":["glm-5.3","deepseek-flash","qwen3.8-max"],"spares":[]}' ] && echo 0 || echo 1)"
 # tiers.env is shared: the renderer must SKIP the panel lines, not read them as a seat binding and die.
 printf 'PANEL=claude-opus-5,glm-5.3\nPANEL_FALLBACK=qwen3.8-max\n' > "$PNL/ok.env"
 RPOUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$PNL/ok.env" "$BASH_ABS" "$SCRIPTS/ops-render.sh" --model crawler 2>&1)"; PRC=$?

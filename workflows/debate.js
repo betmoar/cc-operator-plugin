@@ -304,6 +304,17 @@ const deadOf = (rs) => rs.filter((r) => !r || r.dead).map((r) => r?.letter ?? "?
 // checks its own survivors and returns what it has, saying what is missing.
 const MIN_PANEL = 2;
 const rounds = [];
+// What the panel actually was — carried by EVERY return, success or not: a
+// collapse is exactly when the caller needs to know a seat was re-seated.
+const panelFacts = () => ({
+  // Seats moved onto a spare at opening (#172). `seats` already carries the
+  // model each letter actually argued on.
+  reseated,
+  // How many distinct model FAMILIES argued. Lower than seats.length means a
+  // persona seat or one family over two routes — the panel is narrower than its
+  // seat count.
+  distinctModels: new Set(seats.map((x) => familyOf(x.model))).size,
+});
 const tooThin = (round, live, dead) => ({
   error:
     `debate collapsed at ${round}: ${live.length}/${seats.length} seats returned ` +
@@ -314,6 +325,7 @@ const tooThin = (round, live, dead) => ({
   case: caseText,
   seats,
   rounds,
+  ...panelFacts(),
   synthesis: null,
   chose: null,
 });
@@ -468,9 +480,14 @@ phase("Synthesis");
 // Letters only — the synthesis is not told WHICH model, only that some seats
 // share one, so it cannot count their agreement twice (#172).
 const sharedNote = (live) => {
-  const byFamily = {};
-  for (const c of live) (byFamily[familyOf(seatOf(c.letter).model)] ??= []).push(c.letter);
-  const groups = Object.values(byFamily).filter((g) => g.length > 1);
+  // A Map, never `{}`: a family is caller text, and `constructor-1` reads as
+  // family `constructor` — on a plain object that key is Object.prototype's.
+  const byFamily = new Map();
+  for (const c of live) {
+    const f = familyOf(seatOf(c.letter).model);
+    byFamily.set(f, [...(byFamily.get(f) ?? []), c.letter]);
+  }
+  const groups = [...byFamily.values()].filter((g) => g.length > 1);
   if (!groups.length) return "";
   return `\n\nNOT INDEPENDENT: seats ${groups.map((g) => g.join(" and ")).join("; ")} run on ONE ` +
     `model family (a persona seat, or the same weights over another route). Where they agree, ` +
@@ -520,6 +537,7 @@ if (synthesis == null) {
     case: caseText,
     seats,
     rounds,
+    ...panelFacts(),
     synthesis: null,
     chose: null,
   };
@@ -536,13 +554,7 @@ return {
   // narrower than the caller asked for — a clean-looking synthesis over two
   // survivors of three is not the debate that was commissioned.
   deadSeats: { opening: openDead, rebuttal: rebutDead, closing: closeDead },
-  // Seats moved onto a spare at opening (#172). `seats` above already carries
-  // the model each letter actually argued on.
-  reseated,
-  // How many distinct model FAMILIES argued. Lower than seats.length means a
-  // persona seat or one family over two routes — the panel is narrower than its
-  // seat count.
-  distinctModels: new Set(seats.map((x) => familyOf(x.model))).size,
+  ...panelFacts(),
   // ALWAYS null, and it is a field rather than an omission so the contract is
   // visible at the call site: this workflow does not choose. The whole point of
   // paying three flagships to disagree is that a human sees the disagreement;

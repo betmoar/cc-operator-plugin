@@ -2138,6 +2138,32 @@ const onceDead = (live) => { let n = 0; return { get() { return n++ === 0 ? null
   ok(rt.calls.filter((c) => c.label === "open:C").length === 1,
     "debate #172: CONTROL — without spares a dead seat is not re-dispatched");
 }
+// Copilot on PR #173: the re-seat record reached only the SUCCESS return. A collapse is when it matters most —
+// the caller must see that a seat was already moved to a spare before the panel thinned out anyway.
+{
+  const { result: r } = await run(WF("debate.js"),
+    { case: "c", models: THREE, spares: ["qwen3.8-max"] },
+    { ...FULL_PANEL, "open:B": null, "open:C": null });
+  ok(r?.error?.includes("collapsed at opening") && r?.reseated?.length === 1 && r.reseated[0].to === "qwen3.8-max"
+      && typeof r.distinctModels === "number",
+    "debate #172: a COLLAPSED run still reports its re-seats and distinctModels");
+}
+{
+  const { result: r } = await run(WF("debate.js"), { case: "c", models: THREE }, { ...FULL_PANEL, synthesis: null });
+  ok(r?.error?.includes("synthesis agent died") && Array.isArray(r?.reseated) && r?.distinctModels === 3,
+    "debate #172: a dead-synthesis return still reports reseated and distinctModels");
+}
+// Copilot on PR #173: the family accumulator was a plain `{}` keyed by caller text. `constructor-1` is family
+// `constructor`, which on `{}` is Object.prototype's function — `??=` keeps it and `.push` throws. Two such
+// seats also share a family, so the note must still NAME them.
+{
+  let r, err;
+  try {
+    ({ result: r } = await run(WF("debate.js"), { case: "c", models: ["constructor-1", "constructor-2", "glm-5.3"] }, FULL_PANEL));
+  } catch (e) { err = e; }
+  ok(!err && r?.synthesis != null && r?.distinctModels === 2,
+    `debate #172: a model id whose family is an Object.prototype key runs to synthesis (${err?.message ?? "ok"})`);
+}
 
 console.log("-- Case: debate.js pins seat identity over agent output (audit F103)");
 // The round records were built `{ letter, model, dead, ...(r ?? {}) }` — spread

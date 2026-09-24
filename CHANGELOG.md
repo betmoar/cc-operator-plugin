@@ -26,7 +26,14 @@ seats are one model.
   - Diversity is judged by model family, not by route: `qwen:glm-5.3` is GLM, so it cannot
     take a second seat beside `glm-5.3`.
   - A panel that comes up short says so on stderr.
-  - With no proxy, the declared panel is printed unchecked, with a note (fail-open).
+  - With no proxy, or an unreadable `/v1/models` body, availability goes unchecked, with a note
+    (fail-open). The family rule still applies, since it needs no catalogue. Before the Copilot
+    review, those paths printed the declared lists raw, so `glm-5.3,qwen:glm-5.3` seated one
+    family twice.
+  - A `PANEL` of fewer than 2 or more than 5 entries, or a `PANEL_FALLBACK` of more than 5, is
+    refused (rc 2) at the line that declared it. Before this they resolved at rc 0 and failed
+    later in `debate.js`. A panel that resolves to fewer than 2 seats still prints its JSON, but
+    exits 3 and says it cannot be dispatched (#174 item 2).
   - Only the list of routable ids is read, never `grade` (#121).
   - `commands/debate.md` resolves the panel instead of asking for hand-typed ids.
   - `ops-render.sh` skips the panel lines. Without that skip, every render in a project that
@@ -46,6 +53,10 @@ seats are one model.
   - A seat that dies at opening is re-seated on the next unused spare and keeps its letter. The
     move is reported in `reseated`. `agent()` returns `null` for an unroutable id rather than
     throwing (probed), which is what makes the re-seat possible.
+  - `reseated` and `distinctModels` are on every return, including a collapsed panel and a dead
+    synthesis. Those are the cases where the re-seat record matters most.
+  - The family tally is a `Map`. On a plain `{}`, an id like `constructor-1` (family
+    `constructor`) hit `Object.prototype` and threw before synthesis.
 
 ### Measured
 
