@@ -33,7 +33,8 @@ seats are one model.
   - A `PANEL` of fewer than 2 or more than 5 entries, or a `PANEL_FALLBACK` of more than 5, is
     refused (rc 2) at the line that declared it. Before this they resolved at rc 0 and failed
     later in `debate.js`. A panel that resolves to fewer than 2 seats still prints its JSON, but
-    exits 3 and says it cannot be dispatched (#174 item 2).
+    exits 3 and says it cannot be dispatched (#174 item 2). The same full entry listed twice
+    (`persona:x,persona:x`) seats once, with a note. `debate.js` refused the duplicate.
   - Only the list of routable ids is read, never `grade` (#121).
   - `commands/debate.md` resolves the panel instead of asking for hand-typed ids.
   - `ops-render.sh` skips the panel lines. Without that skip, every render in a project that
@@ -54,7 +55,8 @@ seats are one model.
     move is reported in `reseated`. `agent()` returns `null` for an unroutable id rather than
     throwing (probed), which is what makes the re-seat possible.
   - `reseated` and `distinctModels` are on every return, including a collapsed panel and a dead
-    synthesis. Those are the cases where the re-seat record matters most.
+    synthesis. Those are the cases where the re-seat record matters most. `distinctModels`
+    counts only seats whose opening returned; it used to count a dead seat's family too.
   - The family tally is a `Map`. On a plain `{}`, an id like `constructor-1` (family
     `constructor`) hit `Object.prototype` and threw before synthesis.
 

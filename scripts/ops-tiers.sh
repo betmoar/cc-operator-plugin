@@ -319,7 +319,7 @@ PY
 #               A string rule, not a catalogue: diversity is the model family,
 #               not the route, and no fallback may seat a family already seated.
 #   persona:  exempt from the family rule — that is its whole point — but its
-#               base id must be available.
+#               base id must be available, and the same full entry seats once.
 # Fewer than 2 seats resolved exits 3 (the JSON still printed): debate.js would
 # refuse it, and rc 0 read as a panel. Fail-OPEN: no proxy or an unreadable body
 # means every id counts as available
@@ -371,13 +371,19 @@ def family(e):
     m = re.match(r"[a-z]+", b)
     return m.group(0) if m else b
 seated, fams, spares = [], set(), []
+def repeat(e):   # a FULL entry twice (persona:x,persona:x) is refused by debate.js as a duplicate
+    if e in seated or e in spares:
+        print(f"note: {e} is listed twice — skipped", file=sys.stderr); return True
+    return False
 for e in panel:
+    if repeat(e): continue
     if not available(e):
         print(f"note: panel {e} is not routable — falling back", file=sys.stderr); continue
     if not e.startswith("persona:") and family(e) in fams:
         print(f"note: panel {e} repeats family {family(e)} — skipped", file=sys.stderr); continue
     seated.append(e); fams.add(family(e))
 for e in fallback:
+    if repeat(e): continue
     if not available(e):
         print(f"note: fallback {e} is not routable — skipped", file=sys.stderr); continue
     if not e.startswith("persona:") and family(e) in fams: continue

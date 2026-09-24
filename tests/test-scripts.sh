@@ -2444,6 +2444,13 @@ check "#172 CONTROL — five seats and five spares are the legal maximum and res
 POUT="$(PANELQ "$PNL/glmonly.json" --set PANEL=deepseek-flash,qwen3.8-max --set PANEL_FALLBACK=glm-5.2 2>"$PNL/err")"; PRC=$?
 check "#172 a panel resolving to fewer than 2 seats exits 3 and says it is not dispatchable" \
   "$([ "$PRC" -eq 3 ] && [ "$POUT" = '{"models":[],"spares":[]}' ] && grep -q 'not dispatchable' "$PNL/err" && echo 0 || echo 1)"
+# Copilot round 2: the persona exemption seated `persona:x` TWICE from a fallback of persona:x,persona:x, and
+# debate.js refuses a duplicate entry — the resolver handed over a panel that could not run.
+POUT="$(PANELQ "$PNL/glmonly.json" --set PANEL=claude-opus-5,deepseek-flash,qwen3.8-max \
+  --set PANEL_FALLBACK=persona:claude-opus-5,persona:claude-opus-5 2>"$PNL/err")"; PRC=$?
+check "#172 a persona entry listed twice seats ONCE, and the repeat is said" \
+  "$([ "$PRC" -eq 0 ] && [ "$POUT" = '{"models":["claude-opus-5","persona:claude-opus-5"],"spares":[]}' ] \
+     && grep -q 'listed twice' "$PNL/err" && echo 0 || echo 1)"
 # Copilot on PR #173: the fail-OPEN paths skipped the family rule and emitted the declared lists raw. Unchecked
 # AVAILABILITY is the fail-open; the family rule needs no catalogue and must still hold — a PANEL of glm-5.3 +
 # qwen:glm-5.3 with the proxy down seated one model family twice as two independent seats.

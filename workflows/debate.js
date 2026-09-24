@@ -310,10 +310,10 @@ const panelFacts = () => ({
   // Seats moved onto a spare at opening (#172). `seats` already carries the
   // model each letter actually argued on.
   reseated,
-  // How many distinct model FAMILIES argued. Lower than seats.length means a
-  // persona seat or one family over two routes — the panel is narrower than its
-  // seat count.
-  distinctModels: new Set(seats.map((x) => familyOf(x.model))).size,
+  // How many distinct model FAMILIES argued — seats whose OPENING returned,
+  // after any re-seat; a seat dead from the start never argued. Lower than
+  // seats.length also means a persona seat or one family over two routes.
+  distinctModels: new Set(alive(openings).map((o) => familyOf(o.model))).size,
 });
 const tooThin = (round, live, dead) => ({
   error:

@@ -2144,9 +2144,11 @@ const onceDead = (live) => { let n = 0; return { get() { return n++ === 0 ? null
   const { result: r } = await run(WF("debate.js"),
     { case: "c", models: THREE, spares: ["qwen3.8-max"] },
     { ...FULL_PANEL, "open:B": null, "open:C": null });
-  ok(r?.error?.includes("collapsed at opening") && r?.reseated?.length === 1 && r.reseated[0].to === "qwen3.8-max"
-      && typeof r.distinctModels === "number",
-    "debate #172: a COLLAPSED run still reports its re-seats and distinctModels");
+  ok(r?.error?.includes("collapsed at opening") && r?.reseated?.length === 1 && r.reseated[0].to === "qwen3.8-max",
+    "debate #172: a COLLAPSED run still reports its re-seats");
+  // Copilot round 2: distinctModels counted every SEAT, dead ones included — 3 here, with one voice alive.
+  ok(r?.distinctModels === 1,
+    `debate #172: distinctModels counts only seats whose opening returned (got ${r?.distinctModels})`);
 }
 {
   const { result: r } = await run(WF("debate.js"), { case: "c", models: THREE }, { ...FULL_PANEL, synthesis: null });
