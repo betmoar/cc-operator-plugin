@@ -39,6 +39,10 @@ seats are one model.
     routes (`glm-5.3` + `qwen:glm-5.3`, found in review). Family uses the same rule as
     `--panel`, because a caller passing ids by hand skips `--panel`. The result reports
     `distinctModels` as a count of families.
+  - A colon whose left side holds a `/` ends a variant tag, not a route: `z-ai/glm-5.2:free`
+    is GLM. Reading the text after the last colon made 79 of the proxy's 461 ids family `free`
+    or `batch`. Two vendors read as one, and GLM beside `glm-5.3` read as independent (found
+    in review, measured on the live catalogue; both copies of the rule now agree on all 461).
   - A seat that dies at opening is re-seated on the next unused spare and keeps its letter. The
     move is reported in `reseated`. `agent()` returns `null` for an unroutable id rather than
     throwing (probed), which is what makes the re-seat possible.

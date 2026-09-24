@@ -189,12 +189,16 @@ const PERSONAS = [
 // the argument, and it cannot know which letter is itself, so it cannot soften
 // its own critique. The mapping is kept and returned to the caller — anonymity
 // is for the panel, not for the human reading the result.
-// Model FAMILY: the id with any `lens:` and `vendor/` prefix dropped, then its
-// leading letters — glm-5.3 and qwen:glm-5.3 are one family (GLM weights over two
-// routes). The same string rule as ops-tiers.sh --panel; a caller passing ids by
-// hand bypasses --panel, so independence is judged here too, never by exact id.
+// Model FAMILY: the id with any leading `lens:` route, trailing `:tag` and `vendor/`
+// prefix dropped, then its leading letters — glm-5.3, qwen:glm-5.3 and
+// z-ai/glm-5.2:free are one family (GLM weights over three routes). A colon whose
+// left side holds a `/` ends a variant tag (`:free`, `:batch`), not a route. The
+// same string rule as ops-tiers.sh --panel; a caller passing ids by hand bypasses
+// --panel, so independence is judged here too, never by exact id.
 const familyOf = (id) => {
-  const b = id.split(":").pop().split("/").pop().toLowerCase();
+  const i = id.indexOf(":");
+  const routed = i >= 0 && !id.slice(0, i).includes("/") ? id.slice(i + 1) : id;
+  const b = routed.split(":")[0].split("/").pop().toLowerCase();
   return (/^[a-z]+/.exec(b) ?? [b])[0];
 };
 const LETTERS = ["A", "B", "C", "D", "E"];

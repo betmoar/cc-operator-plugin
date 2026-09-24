@@ -304,8 +304,10 @@ PY
 # returns the unused fallback as spares debate.js re-seats a dead seat on.
 #   available = claude-* (harness-served, absent from the catalogue by
 #               construction) OR listed in /v1/models without usable:false.
-#   family    = the id with any `lens:` and `vendor/` prefix stripped, then its
-#               leading letters: glm-5.3 -> glm, qwen:deepseek-v4-pro -> deepseek.
+#   family    = the id with any leading `lens:` route, trailing `:tag` and
+#               `vendor/` prefix stripped, then its leading letters: glm-5.3 ->
+#               glm, qwen:deepseek-v4-pro -> deepseek, z-ai/glm-5.2:free -> glm.
+#               A colon whose left side holds a `/` ends a variant tag, not a route.
 #               A string rule, not a catalogue: diversity is the model family,
 #               not the route, and no fallback may seat a family already seated.
 #   persona:  exempt from the family rule — that is its whole point — but its
@@ -350,7 +352,9 @@ def available(e):
     x = listed.get(b)
     return x is not None and x.get("usable") is not False
 def family(e):
-    b = base(e).split(":")[-1].split("/")[-1].lower()
+    head, sep, rest = base(e).partition(":")
+    b = rest if sep and "/" not in head else base(e)   # leading route: qwen:glm-5.3
+    b = b.split(":")[0].split("/")[-1].lower()         # trailing tag, then vendor/
     m = re.match(r"[a-z]+", b)
     return m.group(0) if m else b
 seated, fams, spares = [], set(), []

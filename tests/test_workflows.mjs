@@ -2065,6 +2065,22 @@ console.log("-- Case: debate.js seats a persona and re-seats the dead on spares 
   ok(r?.distinctModels === 2,
     `debate #172: distinctModels counts families, not route spellings (got ${r?.distinctModels})`);
 }
+// A trailing `:free`/`:batch` is a variant TAG, not a route prefix (PR #173 review, 79 live catalogue ids).
+// Reading the text after the last colon made every tagged id family `free`: two vendors read as one, and
+// GLM-over-OpenRouter beside glm-5.3 read as independent. Both directions, each red on the old rule.
+{
+  const { result: r, rt } = await run(WF("debate.js"),
+    { case: "c", models: ["z-ai/glm-5.2:free", "glm-5.3", "claude-opus-5"] }, FULL_PANEL);
+  ok(/NOT INDEPENDENT: seats A and B run on ONE model family/.test(rt.calls.find((c) => c.label === "synthesis")?.prompt ?? "")
+      && r?.distinctModels === 2,
+    `debate #172: vendor/glm:free + glm-5.3 is ONE family, flagged (distinctModels ${r?.distinctModels})`);
+}
+{
+  const { result: r, rt } = await run(WF("debate.js"),
+    { case: "c", models: ["qwen/qwen3.8-27b:free", "z-ai/glm-5.2:free", "claude-opus-5"] }, FULL_PANEL);
+  ok(!/NOT INDEPENDENT/.test(rt.calls.find((c) => c.label === "synthesis")?.prompt ?? "") && r?.distinctModels === 3,
+    `debate #172: two vendors sharing a :free tag are two families, not one (distinctModels ${r?.distinctModels})`);
+}
 // The one sanctioned repeat is a persona ENTRY; a plain repeat and two identical persona entries both refuse.
 await throws(() => run(WF("debate.js"), { case: "c", models: ["glm-5.3", "persona:glm-5.3", "persona:glm-5.3"] }, {}),
   "debate #172: two identical persona entries are still a duplicate", "repeats");
@@ -2089,6 +2105,21 @@ const onceDead = (live) => { let n = 0; return { get() { return n++ === 0 ? null
     "debate #172: a successful re-seat keeps the panel at full width");
   ok(r?.reseated?.[0]?.from === "deepseek-flash" && r.reseated[0].to === "qwen3.8-max" && r.reseated[0].alive,
     "debate #172: the re-seat is REPORTED, never silent");
+}
+// A PERSONA spare re-seated onto a dead letter keeps what makes it a persona: the temperament in every round
+// and the independence note. Losing either turns a second Opus seat into a phantom independent voice.
+{
+  const ret = Object.defineProperty({ ...FULL_PANEL }, "open:C", onceDead(OPEN("C")));
+  const { result: r, rt } = await run(WF("debate.js"),
+    { case: "c", models: ["claude-opus-5", "glm-5.3", "deepseek-flash"], spares: ["persona:claude-opus-5"] }, ret);
+  const opensC = rt.calls.filter((c) => c.label === "open:C");
+  ok(opensC[1]?.model === "claude-opus-5" && r?.seats?.[2]?.persona
+      && [opensC[1], ...["rebut:C", "close:C"].map((l) => rt.calls.find((c) => c.label === l))]
+        .every((c) => /YOUR ASSIGNED TEMPERAMENT/.test(c?.prompt ?? "")),
+    "debate #172: a re-seated persona spare runs on the bare id with its temperament in every round");
+  ok(/NOT INDEPENDENT: seats A and C run on ONE model/.test(rt.calls.find((c) => c.label === "synthesis")?.prompt ?? "")
+      && r?.distinctModels === 2,
+    "debate #172: a re-seated persona spare is flagged NOT INDEPENDENT of the seat it repeats");
 }
 // Spares run out: the seat stays dead and is named; nothing is seated twice.
 {

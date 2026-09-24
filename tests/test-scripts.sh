@@ -2383,6 +2383,26 @@ check "#172 a short panel SAYS it is short" \
 POUT="$(PANELQ "$PNL/all.json" --set PANEL=glm-5.3,qwen3.8-max 2>/dev/null)"
 check "#172 CONTROL — two distinct families both seat" \
   "$(printf '%s' "$POUT" | grep -q '"models":\["glm-5.3","qwen3.8-max"\]' && echo 0 || echo 1)"
+# A trailing `:free`/`:batch` is a VARIANT tag, not a route (79 of 461 live catalogue ids, PR #173 review):
+# z-ai/glm-5.2:free is GLM and qwen/qwen3.8-27b:free is Qwen. Reading the text after the LAST colon made both
+# family `free` — GLM beside glm-5.3 seated as a new vendor while Qwen was refused as a repeat of GLM.
+printf '%s' '{"data":[{"id":"glm-5.3"},{"id":"z-ai/glm-5.2:free"},{"id":"qwen/qwen3.8-27b:free"},{"id":"deepseek-flash"}]}' > "$PNL/tag.json"
+POUT="$(PANELQ "$PNL/tag.json" --set PANEL=glm-5.3,z-ai/glm-5.2:free,qwen/qwen3.8-27b:free --set PANEL_FALLBACK=deepseek-flash 2>/dev/null)"
+check "#172 a trailing :free tag is not a family — vendor/glm:free repeats glm, vendor/qwen:free is a new family" \
+  "$([ "$POUT" = '{"models":["glm-5.3","qwen/qwen3.8-27b:free","deepseek-flash"],"spares":[]}' ] && echo 0 || echo 1)"
+# The FALLBACK walk applies the family rule too: with DeepSeek down, qwen:glm-5.3 (GLM over the qwen route) must
+# not take the third seat beside glm-5.3 — the next fallback does.
+printf '%s' '{"data":[{"id":"glm-5.3"},{"id":"qwen:glm-5.3"},{"id":"qwen3.8-max"}]}' > "$PNL/fbdup.json"
+POUT="$(PANELQ "$PNL/fbdup.json" --set PANEL_FALLBACK=qwen:glm-5.3,qwen3.8-max 2>/dev/null)"
+check "#172 a FALLBACK of an already-seated family is skipped, the next fallback seated" \
+  "$([ "$POUT" = '{"models":["claude-opus-5","glm-5.3","qwen3.8-max"],"spares":[]}' ] && echo 0 || echo 1)"
+# A proxy that answers with a body that is not a catalogue is fail-OPEN like no proxy: the declared panel,
+# unchecked, with a note — never an EMPTY catalogue, which would drop every non-claude seat as unroutable.
+printf 'upstream error\n' > "$PNL/garbage.json"
+POUT="$(PANELQ "$PNL/garbage.json" 2>"$PNL/err")"; PRC=$?
+check "#172 an unreadable /v1/models body emits the declared panel unchecked, and says so" \
+  "$([ "$PRC" -eq 0 ] && [ "$POUT" = '{"models":["claude-opus-5","glm-5.3","deepseek-flash"],"spares":["qwen3.8-max","persona:claude-opus-5"]}' ] \
+     && grep -q 'body unreadable' "$PNL/err" && echo 0 || echo 1)"
 # Fail-OPEN: no catalogue means the declared panel ships unchecked, with a note — a debate then reports a dead
 # seat instead of never running.
 POUT="$(CC_PROXY_PORT=1 CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT=/nonexistent \
