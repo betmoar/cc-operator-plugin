@@ -262,6 +262,11 @@ if [ ! -f "$OPDIR/tiers.env" ]; then
 #   crawler=MECHANICAL  brainstorm=MECHANICAL
 # Example: run scout on the cheap tier too.
 #op-scout=MECHANICAL
+#
+# Debate panel (ops-tiers.sh --panel, #172): one seat per id, fallback in order
+# when one is unroutable; persona:<id> re-seats <id> under another temperament.
+#PANEL=claude-opus-5,glm-5.3,deepseek-flash
+#PANEL_FALLBACK=qwen3.8-max,persona:claude-opus-5
 EOF
   echo "created $OPDIR/tiers.env (commented defaults)"
 else

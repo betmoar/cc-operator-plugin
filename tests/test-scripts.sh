@@ -2349,6 +2349,75 @@ check "#153 the baked MECHANICAL default is glm-5.3-flash (glm-5-turbo was domin
   "$(printf '%s' "$SGDEF" | grep -q '"MECHANICAL":"glm-5.3-flash"' && echo 0 || echo 1)"
 rm -rf "$GRD" "$SGP"
 
+echo "-- Case: #172 ops-tiers --panel seats a cross-vendor panel and falls back in order"
+# The catalogue is a FIXTURE (CC_OPERATOR_CATALOGUE), never the live proxy: which seat is taken must follow the
+# catalogue each case builds. Default panel: claude-opus-5,glm-5.3,deepseek-flash; fallback qwen3.8-max, then
+# persona:claude-opus-5. claude-* is harness-served and never listed, so it is available by construction.
+PNL="$(mktemp -d "${TMPDIR:-/tmp}/opstest-panel.XXXXXX")"
+printf '%s' '{"data":[{"id":"glm-5.3"},{"id":"deepseek-flash"},{"id":"qwen3.8-max"},{"id":"qwen:glm-5.3"},{"id":"glm-5.2"}]}' > "$PNL/all.json"
+printf '%s' '{"data":[{"id":"glm-5.3"},{"id":"qwen3.8-max"}]}' > "$PNL/nods.json"
+printf '%s' '{"data":[{"id":"glm-5.3"}]}' > "$PNL/glmonly.json"
+printf '%s' '{"data":[{"id":"glm-5.3"},{"id":"deepseek-flash","usable":false},{"id":"qwen3.8-max"}]}' > "$PNL/unusable.json"
+PANELQ() { CC_OPERATOR_CATALOGUE="$1" CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT=/nonexistent \
+  "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" "${@:2}" --panel; }
+POUT="$(PANELQ "$PNL/all.json" 2>/dev/null)"; PRC=$?
+check "#172 all three vendors routable: the declared panel is seated as-is, fallback returned as spares" \
+  "$([ "$PRC" -eq 0 ] && [ "$POUT" = '{"models":["claude-opus-5","glm-5.3","deepseek-flash"],"spares":["qwen3.8-max","persona:claude-opus-5"]}' ] && echo 0 || echo 1)"
+POUT="$(PANELQ "$PNL/nods.json" 2>/dev/null)"
+check "#172 DeepSeek unroutable: qwen3.8-max takes the seat (the FIRST fallback), persona stays a spare" \
+  "$([ "$POUT" = '{"models":["claude-opus-5","glm-5.3","qwen3.8-max"],"spares":["persona:claude-opus-5"]}' ] && echo 0 || echo 1)"
+POUT="$(PANELQ "$PNL/glmonly.json" 2>/dev/null)"
+check "#172 DeepSeek AND qwen unroutable: the persona-Opus seat fills the panel, the panel never shrinks silently" \
+  "$([ "$POUT" = '{"models":["claude-opus-5","glm-5.3","persona:claude-opus-5"],"spares":[]}' ] && echo 0 || echo 1)"
+POUT="$(PANELQ "$PNL/unusable.json" 2>/dev/null)"
+check "#172 a LISTED id marked usable:false is not routable (listed is not answering)" \
+  "$([ "$POUT" = '{"models":["claude-opus-5","glm-5.3","qwen3.8-max"],"spares":["persona:claude-opus-5"]}' ] && echo 0 || echo 1)"
+# Diversity is the FAMILY, not the route: qwen:glm-5.3 is GLM weights through the qwen plan.
+POUT="$(PANELQ "$PNL/all.json" --set PANEL=glm-5.3,qwen:glm-5.3,glm-5.2 --set PANEL_FALLBACK=deepseek-flash 2>/dev/null)"
+check "#172 a second seat of an already-seated family is skipped, even through another vendor's route" \
+  "$([ "$POUT" = '{"models":["glm-5.3","deepseek-flash"],"spares":[]}' ] && echo 0 || echo 1)"
+PERR="$(PANELQ "$PNL/all.json" --set PANEL=glm-5.3,qwen:glm-5.3,glm-5.2 --set PANEL_FALLBACK=deepseek-flash 2>&1 >/dev/null)"
+check "#172 a short panel SAYS it is short" \
+  "$(printf '%s' "$PERR" | grep -q 'panel short — 2 of 3' && echo 0 || echo 1)"
+# CONTROL for the family rule: two DIFFERENT families both seat (the rule is not 'one seat per vendor route').
+POUT="$(PANELQ "$PNL/all.json" --set PANEL=glm-5.3,qwen3.8-max 2>/dev/null)"
+check "#172 CONTROL — two distinct families both seat" \
+  "$(printf '%s' "$POUT" | grep -q '"models":\["glm-5.3","qwen3.8-max"\]' && echo 0 || echo 1)"
+# Fail-OPEN: no catalogue means the declared panel ships unchecked, with a note — a debate then reports a dead
+# seat instead of never running.
+POUT="$(CC_PROXY_PORT=1 CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT=/nonexistent \
+  "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" --panel 2>"$PNL/err")"; PRC=$?
+check "#172 proxy down: --panel emits the declared panel at rc 0 and says availability was unchecked" \
+  "$([ "$PRC" -eq 0 ] && [ "$POUT" = '{"models":["claude-opus-5","glm-5.3","deepseek-flash"],"spares":["qwen3.8-max","persona:claude-opus-5"]}' ] \
+     && grep -q 'panel availability unchecked' "$PNL/err" && echo 0 || echo 1)"
+# The panel lines are parsed like any tier binding: charset-guarded, never sourced.
+# rc 2 alone is not the assertion: a resolver that does not know PANEL at all ALSO exits 2 ("unknown tier"),
+# which is how these two first passed on the pre-#172 script. The message names the rule that refused it.
+printf 'PANEL=claude-opus-5,glm 5.3\n' > "$PNL/bad.env"
+PERR="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$PNL/bad.env" CC_PROXY_PORT=1 \
+  "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" --panel 2>&1 >/dev/null)"; PRC=$?
+check "#172 a PANEL entry outside the model-id charset is refused BY the charset guard (rc 2)" \
+  "$([ "$PRC" -eq 2 ] && printf '%s' "$PERR" | grep -q "PANEL='glm 5.3' contains characters outside" && echo 0 || echo 1)"
+printf 'PANEL=claude-opus-5,,glm-5.3\n' > "$PNL/empty.env"
+PERR="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$PNL/empty.env" CC_PROXY_PORT=1 \
+  "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" --panel 2>&1 >/dev/null)"; PRC=$?
+check "#172 an empty PANEL entry is refused as a malformed list, never seated as an empty model id" \
+  "$([ "$PRC" -eq 2 ] && printf '%s' "$PERR" | grep -q 'is not a comma-separated list of model ids' && echo 0 || echo 1)"
+# tiers.env is shared: the renderer must SKIP the panel lines, not read them as a seat binding and die.
+printf 'PANEL=claude-opus-5,glm-5.3\nPANEL_FALLBACK=qwen3.8-max\n' > "$PNL/ok.env"
+RPOUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$PNL/ok.env" "$BASH_ABS" "$SCRIPTS/ops-render.sh" --model crawler 2>&1)"; PRC=$?
+check "#172 ops-render.sh skips PANEL lines (a render in a panel-declaring project does not die)" \
+  "$([ "$PRC" -eq 0 ] && [ "$RPOUT" = "glm-5.3-flash" ] && echo 0 || echo 1)"
+POUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$PNL/ok.env" CC_OPERATOR_CATALOGUE="$PNL/all.json" \
+  "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" --panel 2>/dev/null)"
+check "#172 a tiers.env PANEL line reaches --panel (the declaration is read, not only --set)" \
+  "$([ "$POUT" = '{"models":["claude-opus-5","glm-5.3"],"spares":["qwen3.8-max"]}' ] && echo 0 || echo 1)"
+( cd "$PNL" && mkdir p && cd p && "$BASH_ABS" "$SCRIPTS/ops-init.sh" >/dev/null 2>&1 )
+check "#172 the tiers.env scaffold documents the panel lines (commented, the baked defaults)" \
+  "$(grep -qx '#PANEL=claude-opus-5,glm-5.3,deepseek-flash' "$PNL/p/.operator/tiers.env" \
+     && grep -qx '#PANEL_FALLBACK=qwen3.8-max,persona:claude-opus-5' "$PNL/p/.operator/tiers.env" && echo 0 || echo 1)"
+rm -rf "$PNL"
+
 ########################################################################
 echo "-- Case: /cc-operator:tiers render branch + ops-render.sh behavior"
 # ops-render.sh renders project-layer agents (.claude/agents/op-*.md) so a plain Agent dispatch can run on a
@@ -5014,6 +5083,14 @@ check "the workflow-command loop actually ran (>=5 commanded workflows)" \
 # point must come back negative, or the greps match anything.
 check "CONTROL — commands/start.md does not resolve tiers (the greps can fail)" \
   "$(grep -q 'ops-tiers.sh --json' "$CMDDIR/start.md" && echo 1 || echo 0)"
+# #172: the debate command resolves the declared panel and passes its spares through — a command that still
+# says "pick 2-5 ids" is the hand-typed panel this issue removed, and dropping `spares` disarms the re-seat.
+check "#172 commands/debate.md resolves the panel with ops-tiers.sh --panel" \
+  "$(grep -q 'ops-tiers.sh --panel' "$CMDDIR/debate.md" && echo 0 || echo 1)"
+check "#172 commands/debate.md passes the panel's spares to the workflow" \
+  "$(grep -q 'spares: <panel.spares>' "$CMDDIR/debate.md" && echo 0 || echo 1)"
+check "#172 CONTROL — commands/brainstorm.md does not resolve a panel (the grep can fail)" \
+  "$(grep -q 'ops-tiers.sh --panel' "$CMDDIR/brainstorm.md" && echo 1 || echo 0)"
 
 ########################################################################
 echo "-- Case: skills/chief-operator/SKILL.md — the front door resolves"

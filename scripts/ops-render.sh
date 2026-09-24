@@ -9,6 +9,7 @@
 # tiers.env format (shared with ops-tiers.sh; parsed, never sourced):
 #   TIER:   JUDGMENT=claude-opus-5        (tier → model id)
 #   SEAT:   op-mechanic=MECHANICAL        (seat → tier; 'op-' prefix optional)
+#   PANEL:  PANEL=a,b,c  PANEL_FALLBACK=… (the resolver's; skipped here, #172)
 # Layering: baked → user → project. Seats merge by name.
 #
 # Usage (from the project root):
@@ -57,8 +58,12 @@ check_seat_name() { # check_seat_name <name>
   esac
 }
 is_tier_name() { case " $TIER_NAMES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+is_panel_key() { case " $PANEL_KEYS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
 TIER_NAMES="JUDGMENT IMPLEMENT MECHANICAL RECON"
+# The debate panel's keys (#172) — ops-tiers.sh owns and validates them; the
+# renderer only has to not read them as seat lines.
+PANEL_KEYS="PANEL PANEL_FALLBACK"
 # tier → model (resolved; defaults from ops-tiers.sh baked set)
 TRES_JUDGMENT="claude-opus-5"; TRES_IMPLEMENT="claude-sonnet-5"
 TRES_MECHANICAL="glm-5.3-flash"; TRES_RECON="claude-haiku-4-5-20251001"
@@ -118,6 +123,8 @@ load_file() { # load_file <path> <source-label>
       eval "TRES_$name=\$val"; eval "TSRC_$name=\$2"
       continue
     fi
+    # panel keys are the resolver's (ops-tiers.sh --panel validates them)
+    is_panel_key "$name" && continue
     # seat binding: strip an optional 'op-' prefix, must be a bare name, value a tier
     sname="${name#op-}"
     check_seat_name "$sname"

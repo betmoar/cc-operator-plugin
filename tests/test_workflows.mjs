@@ -2026,6 +2026,74 @@ ok(dbtRt.calls.find((c) => c.label === "synthesis").agentType === "cc-operator:o
   "debate: synthesis runs on op-reviewer — a debater summarizing its own debate is scoring itself");
 
 // ── audit F103: agent output must not overwrite pinned seat identity ─────────
+console.log("-- Case: debate.js seats a persona and re-seats the dead on spares (#172)");
+
+// persona:<id> seats <id> again under an assigned temperament. The model binding
+// is the BARE id; the prompt carries the temperament in every round.
+{
+  const P3 = ["claude-opus-5", "glm-5.3", "persona:claude-opus-5"];
+  const { result: r, rt } = await run(WF("debate.js"), { case: "c", models: P3 }, FULL_PANEL);
+  const openC = rt.calls.find((c) => c.label === "open:C");
+  ok(openC?.model === "claude-opus-5",
+    "debate #172: a persona:<id> seat dispatches on the BARE id (the prefix never reaches the router)");
+  ok(["open:C", "rebut:C", "close:C"].every((l) => /YOUR ASSIGNED TEMPERAMENT/.test(rt.calls.find((c) => c.label === l)?.prompt ?? "")),
+    "debate #172: the persona seat carries its temperament in all three rounds");
+  ok(["open:A", "open:B"].every((l) => !/YOUR ASSIGNED TEMPERAMENT/.test(rt.calls.find((c) => c.label === l)?.prompt ?? "")),
+    "debate #172: CONTROL — a plain seat carries no temperament");
+  const synth = rt.calls.find((c) => c.label === "synthesis")?.prompt ?? "";
+  ok(/NOT INDEPENDENT: seats A and C run on ONE model/.test(synth),
+    "debate #172: the synthesis is told which letters share one model (their agreement is one voice)");
+  ok(!/claude-opus-5/.test(synth),
+    "debate #172: the independence note names LETTERS, never the model (the synthesis stays blind)");
+  ok(r?.distinctModels === 2 && r?.seats?.[2]?.persona,
+    "debate #172: the result reports 2 distinct models for 3 seats and marks the persona seat");
+  const { rt: plainRt } = await run(WF("debate.js"), { case: "c", models: THREE }, FULL_PANEL);
+  ok(!/NOT INDEPENDENT/.test(plainRt.calls.find((c) => c.label === "synthesis")?.prompt ?? ""),
+    "debate #172: CONTROL — three distinct models get no independence note");
+}
+// The one sanctioned repeat is a persona ENTRY; a plain repeat and two identical persona entries both refuse.
+await throws(() => run(WF("debate.js"), { case: "c", models: ["glm-5.3", "persona:glm-5.3", "persona:glm-5.3"] }, {}),
+  "debate #172: two identical persona entries are still a duplicate", "repeats");
+await throws(() => run(WF("debate.js"), { case: "c", models: ["glm-5.3", "persona:"] }, {}),
+  "debate #172: an empty persona id is refused before dispatch", "outside the");
+await throws(() => run(WF("debate.js"), { case: "c", models: ["a", "b"], spares: "c" }, {}),
+  "debate #172: spares that are not an array are refused", "args.spares must be an array");
+
+// A seat dead at OPENING is re-seated on the next spare, keeping its letter. The stub keys on label, so the
+// re-dispatch (same label open:C) is told apart by call order: dead first, alive on the retry.
+const onceDead = (live) => { let n = 0; return { get() { return n++ === 0 ? null : live; }, enumerable: true }; };
+{
+  const ret = Object.defineProperty({ ...FULL_PANEL }, "open:C", onceDead(OPEN("C")));
+  const { result: r, rt } = await run(WF("debate.js"),
+    { case: "c", models: ["claude-opus-5", "glm-5.3", "deepseek-flash"], spares: ["qwen3.8-max", "persona:claude-opus-5"] }, ret);
+  const opensC = rt.calls.filter((c) => c.label === "open:C").map((c) => c.model);
+  ok(opensC.join(",") === "deepseek-flash,qwen3.8-max",
+    `debate #172: a dead opening seat is re-dispatched on the FIRST spare (got ${opensC.join(",")})`);
+  ok(r?.seats?.[2]?.model === "qwen3.8-max" && rt.calls.find((c) => c.label === "close:C")?.model === "qwen3.8-max",
+    "debate #172: the re-seated letter argues the rest of the debate on the spare");
+  ok(r?.deadSeats?.opening.length === 0 && r?.rounds?.[2]?.results.length === 3,
+    "debate #172: a successful re-seat keeps the panel at full width");
+  ok(r?.reseated?.[0]?.from === "deepseek-flash" && r.reseated[0].to === "qwen3.8-max" && r.reseated[0].alive,
+    "debate #172: the re-seat is REPORTED, never silent");
+}
+// Spares run out: the seat stays dead and is named; nothing is seated twice.
+{
+  const { result: r, rt } = await run(WF("debate.js"),
+    { case: "c", models: THREE, spares: ["glm-5.2", "qwen3.8-max"] },
+    { ...FULL_PANEL, "open:C": null, "rebut:C": null, "close:C": null });
+  ok(rt.calls.filter((c) => c.label === "open:C").length === 2,
+    "debate #172: a spare that is already SEATED is skipped, the next one tried (glm-5.2 is seat A)");
+  ok(r?.deadSeats?.opening.join(",") === "C" && r?.reseated?.length === 1 && r.reseated[0].alive === false,
+    "debate #172: when every spare dies the seat stays dead AND named, the attempt reported");
+}
+// CONTROL: no spares means today's behaviour exactly — one dispatch per seat at opening.
+{
+  const { rt } = await run(WF("debate.js"), { case: "c", models: THREE },
+    { ...FULL_PANEL, "open:C": null, "rebut:C": null, "close:C": null });
+  ok(rt.calls.filter((c) => c.label === "open:C").length === 1,
+    "debate #172: CONTROL — without spares a dead seat is not re-dispatched");
+}
+
 console.log("-- Case: debate.js pins seat identity over agent output (audit F103)");
 // The round records were built `{ letter, model, dead, ...(r ?? {}) }` — spread
 // LAST, so a return carrying its own letter/model/dead keys overwrote all three

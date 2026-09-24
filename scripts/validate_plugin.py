@@ -2888,6 +2888,29 @@ def check_resolver_renderer_parity(root, problems):
             f"ops-tiers.sh — the renderer's is_tier_name would gate seat "
             f"bindings on a stale namespace")
 
+    # PANEL_KEYS (#172): the renderer SKIPS these lines and the resolver parses
+    # them. A key the resolver learns and the renderer does not is read as a
+    # seat line and dies (`seat 'PANEL' bound to unknown tier`, measured) —
+    # every render in a project that declares its panel fails.
+    keys = {}
+    for name, text in src.items():
+        m = _single_assignment(
+            text, r"^(?:readonly\s+)?PANEL_KEYS=[\"'](.*?)[\"']",
+            name, "PANEL_KEYS", problems)
+        if not m:
+            problems.append(
+                f"scripts/{name}: no `PANEL_KEYS=\"…\"` assignment found — the "
+                f"resolver parses the panel lines and the renderer must skip "
+                f"exactly the same set")
+            return
+        keys[name] = tuple(m.split())
+    if keys["ops-tiers.sh"] != keys["ops-render.sh"]:
+        problems.append(
+            f"scripts/ops-render.sh: PANEL_KEYS={list(keys['ops-render.sh'])} "
+            f"does not match the resolver's {list(keys['ops-tiers.sh'])} — a "
+            f"panel line the renderer does not skip is read as a seat binding "
+            f"and every render dies on it")
+
 
 class _MetaBlock:
     """A stand-in for the re.Match the meta locator used to return — .group(0)
