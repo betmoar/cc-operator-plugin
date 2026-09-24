@@ -3,7 +3,7 @@ export const meta = {
   description:
     "Three-round debate panel: N flagship models argue the same case independently, then rebut each other's positions unlabelled, then close. A neutral synthesis pass separates real disagreement from wording and hands the decision to the human — it never picks a winner.",
   whenToUse:
-    "When a decision turns on judgment rather than evidence you can just go measure, and one model's answer is not enough. REQUIRED args: `case` (the question, stated so a position on it is falsifiable) and `models` (2-5 model ids — the point is that they DIFFER; resolve them with `/cc-operator:tiers`). Returns three rounds plus a synthesis; `chose` is always null.",
+    "When a decision turns on judgment rather than evidence you can just go measure, and one model's answer is not enough. REQUIRED args: `case` (the question, stated so a position on it is falsifiable) and `models` (2-5 model ids — the point is that they DIFFER; resolve the declared cross-vendor panel with `ops-tiers.sh --panel`, #172). Optional `spares`: ids that re-seat a seat dead at opening. A `persona:<id>` entry seats <id> again under an assigned temperament, and the synthesis is told that seat is not independent. Returns three rounds plus a synthesis; `chose` is always null.",
   phases: [
     { title: "Opening", detail: "each model states its position, independently" },
     { title: "Rebuttal", detail: "each sees the rivals' openings, unlabelled" },
@@ -104,14 +104,36 @@ const caseText = (() => {
 // same model three times and return a "panel" that never disagreed because it
 // could not. That is the silent-wrong shape (F37): a plausible result computed
 // from something other than what was asked for.
+// A `persona:<id>` entry (#172) is the fallback when no third vendor routes: <id>
+// seated again under an assigned temperament. It is a stance, not a model, so
+// the synthesis is told which letters share one — two seats of one model
+// agreeing is one voice, and must not read as a second.
+const PERSONA = "persona:";
+const parseEntry = (m, where) => {
+  if (typeof m !== "string" || !m.trim()) {
+    throw new Error(`${where}=${JSON.stringify(m)} is not a model id string`);
+  }
+  const entry = m.trim();
+  const persona = entry.startsWith(PERSONA);
+  const id = persona ? entry.slice(PERSONA.length) : entry;
+  // Same guard as a tiers.env binding — no more, no less (0.8.3): this file
+  // decides nothing about which ids exist, only that the string is well-formed.
+  if (!id || BAD_CHARSET.test(id)) {
+    throw new Error(
+      `${where}=${JSON.stringify(entry)} contains characters outside the ` +
+        `model-id charset [A-Za-z0-9._:/@[]-]`,
+    );
+  }
+  return { entry, id, persona };
+};
 const models = (() => {
   const raw = typeof A === "object" && !Array.isArray(A) ? A.models : undefined;
   if (raw == null) {
     throw new Error(
       "args.models is required: an array of 2-5 model ids to seat on the panel. " +
         "There is no default — a debate needs models that DIFFER, and a tier " +
-        "fallback would seat one model against itself. Resolve the ids with " +
-        "`/cc-operator:tiers` and pass them here",
+        "fallback would seat one model against itself. Resolve the declared " +
+        "cross-vendor panel with `ops-tiers.sh --panel` and pass its models here",
     );
   }
   if (!Array.isArray(raw)) {
@@ -123,26 +145,15 @@ const models = (() => {
         `debate, and past five the rebuttal packet is mostly other people's text)`,
     );
   }
-  const ids = raw.map((m, i) => {
-    if (typeof m !== "string" || !m.trim()) {
-      throw new Error(`args.models[${i}]=${JSON.stringify(m)} is not a model id string`);
-    }
-    const id = m.trim();
-    // Same guard as a tiers.env binding — no more, no less (0.8.3): this file
-    // decides nothing about which ids exist, only that the string is well-formed.
-    if (BAD_CHARSET.test(id)) {
-      throw new Error(
-        `args.models[${i}]=${JSON.stringify(id)} contains characters outside the ` +
-          `model-id charset [A-Za-z0-9._:/@[]-]`,
-      );
-    }
-    return id;
-  });
+  const ids = raw.map((m, i) => parseEntry(m, `args.models[${i}]`));
   // Duplicates are refused rather than deduped. Deduping would silently shrink
   // the panel the caller asked for; running them would stage a debate whose
   // "independent" positions come from one model twice — the result reads as
-  // agreement between peers and is agreement with itself.
-  const dupe = ids.find((id, i) => ids.indexOf(id) !== i);
+  // agreement between peers and is agreement with itself. A `persona:` entry is
+  // the one sanctioned repeat, and it is compared by ENTRY, so two identical
+  // persona entries are still refused.
+  const entries = ids.map((x) => x.entry);
+  const dupe = entries.find((e, i) => entries.indexOf(e) !== i);
   if (dupe) {
     throw new Error(
       `args.models repeats ${JSON.stringify(dupe)} — two seats on the same model ` +
@@ -152,13 +163,54 @@ const models = (() => {
   return ids;
 })();
 
+// Spares (#172): what `ops-tiers.sh --panel` did not seat. A seat that DIES AT
+// OPENING is re-seated on the next unused spare, so an unroutable or rate-
+// limited vendor does not quietly narrow the panel. Opening only: a seat
+// re-seated mid-debate would argue rounds it never saw.
+const spares = (() => {
+  const raw = typeof A === "object" && !Array.isArray(A) ? A.spares : undefined;
+  if (raw == null) return [];
+  if (!Array.isArray(raw) || raw.length > 5) {
+    throw new Error("args.spares must be an array of at most 5 model ids (the unseated panel fallback)");
+  }
+  return raw.map((m, i) => parseEntry(m, `args.spares[${i}]`));
+})();
+
+// A persona seat argues under one of these. Each is a temperament, not a
+// conclusion — it changes how the seat weighs evidence, never what it must find.
+const PERSONAS = [
+  "SKEPTIC: treat the answer you expect the other seats to give as wrong until the evidence forces it on you. Your job is to find what they will miss.",
+  "OPERATOR: argue from what ships, what it costs to run, and what breaks at 3am. An argument that ignores operating cost is incomplete.",
+  "MINORITY ADVOCATE: build the strongest case for the position you expect nobody else to take, then argue it on its merits.",
+];
+
 // Seats are addressed by LETTER in every prompt, never by model id. Two reasons:
 // a debater that knows a rival is a famous model defers to the brand rather than
 // the argument, and it cannot know which letter is itself, so it cannot soften
 // its own critique. The mapping is kept and returned to the caller — anonymity
 // is for the panel, not for the human reading the result.
+// Model FAMILY: the id with any leading `lens:` route, trailing `:tag` and `vendor/`
+// prefix dropped, then its leading letters — glm-5.3, qwen:glm-5.3 and
+// z-ai/glm-5.2:free are one family (GLM weights over three routes). A colon whose
+// left side holds a `/` ends a variant tag (`:free`, `:batch`), not a route. The
+// same string rule as ops-tiers.sh --panel; a caller passing ids by hand bypasses
+// --panel, so independence is judged here too, never by exact id.
+const familyOf = (id) => {
+  const i = id.indexOf(":");
+  const routed = i >= 0 && !id.slice(0, i).includes("/") ? id.slice(i + 1) : id;
+  const b = routed.split(":")[0].split("/").pop().toLowerCase();
+  return (/^[a-z]+/.exec(b) ?? [b])[0];
+};
 const LETTERS = ["A", "B", "C", "D", "E"];
-const seats = models.map((model, i) => ({ letter: LETTERS[i], model }));
+let _personaN = 0;
+const seatFor = (x, letter) => ({
+  letter,
+  model: x.id,
+  persona: x.persona ? PERSONAS[_personaN++ % PERSONAS.length] : null,
+});
+const seats = models.map((x, i) => seatFor(x, LETTERS[i]));
+const temperament = (s) =>
+  s.persona ? `YOUR ASSIGNED TEMPERAMENT — hold it in every round:\n${s.persona}\n\n` : "";
 
 const OPENING = {
   type: "object",
@@ -252,6 +304,17 @@ const deadOf = (rs) => rs.filter((r) => !r || r.dead).map((r) => r?.letter ?? "?
 // checks its own survivors and returns what it has, saying what is missing.
 const MIN_PANEL = 2;
 const rounds = [];
+// What the panel actually was — carried by EVERY return, success or not: a
+// collapse is exactly when the caller needs to know a seat was re-seated.
+const panelFacts = () => ({
+  // Seats moved onto a spare at opening (#172). `seats` already carries the
+  // model each letter actually argued on.
+  reseated,
+  // How many distinct model FAMILIES argued — seats whose OPENING returned,
+  // after any re-seat; a seat dead from the start never argued. Lower than
+  // seats.length also means a persona seat or one family over two routes.
+  distinctModels: new Set(alive(openings).map((o) => familyOf(o.model))).size,
+});
 const tooThin = (round, live, dead) => ({
   error:
     `debate collapsed at ${round}: ${live.length}/${seats.length} seats returned ` +
@@ -262,6 +325,7 @@ const tooThin = (round, live, dead) => ({
   case: caseText,
   seats,
   rounds,
+  ...panelFacts(),
   synthesis: null,
   chose: null,
 });
@@ -275,28 +339,51 @@ const DATA_RULE =
 // Independent by construction: no seat sees another's work, so the three
 // positions are genuinely three samples rather than one position echoed.
 phase("Opening");
-const openings = await parallel(
-  seats.map((s) => () =>
-    agent(
-      `DEBATE — ROUND 1 of 3, OPENING. You are seat ${s.letter} of ${seats.length}.\n\n` +
-        `CASE:\n${caseText}\n\n` +
-        `State your position and the evidence for it. You are arguing independently: ` +
-        `no other seat's work is available to you this round, so do not speculate about ` +
-        `what they will say. Take a position that could turn out to be wrong.\n\n` +
-        DATA_RULE,
-      {
-        agentType: "cc-operator:op-debater",
-        model: s.model,
-        effort: "high",
-        label: `open:${s.letter}`,
-        // Explicit phase, not the phase() global: inside parallel() the global
-        // races between concurrent stages (Workflow tool contract).
-        phase: "Opening",
-        schema: OPENING,
-      },
-    ).then((r) => ({ ...(r ?? {}), letter: s.letter, model: s.model, dead: r == null })),
-  ),
-);
+const openOne = (s) =>
+  agent(
+    `DEBATE — ROUND 1 of 3, OPENING. You are seat ${s.letter} of ${seats.length}.\n\n` +
+      `CASE:\n${caseText}\n\n` + temperament(s) +
+      `State your position and the evidence for it. You are arguing independently: ` +
+      `no other seat's work is available to you this round, so do not speculate about ` +
+      `what they will say. Take a position that could turn out to be wrong.\n\n` +
+      DATA_RULE,
+    {
+      agentType: "cc-operator:op-debater",
+      model: s.model,
+      effort: "high",
+      label: `open:${s.letter}`,
+      // Explicit phase, not the phase() global: inside parallel() the global
+      // races between concurrent stages (Workflow tool contract).
+      phase: "Opening",
+      schema: OPENING,
+    },
+  ).then((r) => ({ ...(r ?? {}), letter: s.letter, model: s.model, dead: r == null }));
+const openings = await parallel(seats.map((s) => () => openOne(s)));
+// Re-seat the dead on spares, in order, one attempt per spare. A spare whose
+// entry is already seated is skipped (a spare can repeat a panel id only as a
+// persona). Serial on purpose: two dead seats must not both take spare 1.
+const reseated = [];
+{
+  const seatedEntries = new Set(models.map((x) => x.entry));
+  let next = 0;
+  for (let i = 0; i < openings.length; i++) {
+    while (openings[i].dead && next < spares.length) {
+      const sp = spares[next++];
+      if (seatedEntries.has(sp.entry)) continue;
+      const fresh = seatFor(sp, seats[i].letter);
+      const r = await openOne(fresh);
+      reseated.push({ letter: fresh.letter, from: seats[i].model, to: sp.entry, alive: !r.dead });
+      if (!r.dead) {
+        seats[i] = fresh;
+        openings[i] = r;
+        seatedEntries.add(sp.entry);
+      }
+    }
+  }
+}
+if (reseated.length) {
+  log(`opening: re-seated ${reseated.map((x) => `${x.letter} ${x.from} -> ${x.to}${x.alive ? "" : " (DEAD)"}`).join(", ")}`);
+}
 const openLive = alive(openings);
 const openDead = deadOf(openings);
 log(`opening: ${openLive.length}/${seats.length} seats returned` +
@@ -309,6 +396,7 @@ if (openLive.length < MIN_PANEL) return tooThin("opening", openLive, openDead);
 // handing a seat its own position back as "a rival's" invites it to agree with
 // itself and count that as convergence.
 phase("Rebuttal");
+const seatOf = (letter) => seats.find((x) => x.letter === letter);
 const rivalsFor = (letter, pool, render) =>
   pool.filter((p) => p.letter !== letter).map(render).join("\n\n");
 
@@ -316,7 +404,7 @@ const rebuttals = await parallel(
   openLive.map((s) => () =>
     agent(
       `DEBATE — ROUND 2 of 3, REBUTTAL. You are seat ${s.letter}.\n\n` +
-        `CASE:\n${caseText}\n\n` +
+        `CASE:\n${caseText}\n\n` + temperament(seatOf(s.letter)) +
         `YOUR OPENING:\n${JSON.stringify({ position: s.position, evidence: s.evidence, keyRisk: s.keyRisk })}\n\n` +
         `RIVAL POSITIONS (authors withheld — argue the position, not its source):\n` +
         rivalsFor(s.letter, openLive, (p) =>
@@ -350,7 +438,7 @@ const closings = await parallel(
   rebutLive.map((s) => () =>
     agent(
       `DEBATE — ROUND 3 of 3, CLOSING. You are seat ${s.letter}.\n\n` +
-        `CASE:\n${caseText}\n\n` +
+        `CASE:\n${caseText}\n\n` + temperament(seatOf(s.letter)) +
         `YOUR POSITION AFTER ROUND 2:\n${s.positionNow}\n\n` +
         `WHAT THE OTHER SEATS ARGUED IN ROUND 2 (authors withheld):\n` +
         rivalsFor(s.letter, rebutLive, (p) =>
@@ -389,6 +477,25 @@ if (closeLive.length < MIN_PANEL) return tooThin("closing", closeLive, closeDead
 // Deliberately NOT one of the debaters: a seat asked to summarize a debate it
 // argued in is scoring its own position.
 phase("Synthesis");
+// Letters only — the synthesis is not told WHICH model, only that some seats
+// share one, so it cannot count their agreement twice (#172).
+const sharedNote = (live) => {
+  // A Map, never `{}`: a family is caller text, and `constructor-1` reads as
+  // family `constructor` — on a plain object that key is Object.prototype's.
+  const byFamily = new Map();
+  for (const c of live) {
+    const f = familyOf(seatOf(c.letter).model);
+    byFamily.set(f, [...(byFamily.get(f) ?? []), c.letter]);
+  }
+  const groups = [...byFamily.values()].filter((g) => g.length > 1);
+  if (!groups.length) return "";
+  // Each group carries its OWN size: "not 2" beside a three-seat group tells
+  // the synthesis to count that group's agreement as two voices.
+  return `\n\nNOT INDEPENDENT: ` +
+    groups.map((g) => `seats ${g.join(" and ")} run on ONE model family — where they agree, ` +
+      `count it as one voice, not ${g.length}`).join("; ") +
+    `. (A persona seat, or the same weights over another route.) Say so in agreed/contested.`;
+};
 const synthesis = await agent(
   `You are aligning a finished ${closeLive.length}-way debate for a human who will decide. ` +
     `You did not take part and you do NOT pick a winner — say so by producing no winner.\n\n` +
@@ -396,6 +503,7 @@ const synthesis = await agent(
     `CLOSING POSITIONS (by seat letter):\n` +
     closeLive.map((c) =>
       `[${c.letter}] ${JSON.stringify({ position: c.position, changedSince: c.changedSince, overturnedBy: c.overturnedBy })}`).join("\n\n") +
+    sharedNote(closeLive) +
     `\n\nSeparate three things that look alike in a transcript and are not:\n` +
     `- agreed: what every closing holds. Convergence, not the claim stated most confidently.\n` +
     `- contested: the same question answered differently. Name the question, then who holds ` +
@@ -432,6 +540,7 @@ if (synthesis == null) {
     case: caseText,
     seats,
     rounds,
+    ...panelFacts(),
     synthesis: null,
     chose: null,
   };
@@ -448,6 +557,7 @@ return {
   // narrower than the caller asked for — a clean-looking synthesis over two
   // survivors of three is not the debate that was commissioned.
   deadSeats: { opening: openDead, rebuttal: rebutDead, closing: closeDead },
+  ...panelFacts(),
   // ALWAYS null, and it is a field rather than an omission so the contract is
   // visible at the call site: this workflow does not choose. The whole point of
   // paying three flagships to disagree is that a human sees the disagreement;

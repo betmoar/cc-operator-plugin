@@ -15,24 +15,35 @@ it — a debate is the expensive way to be told what a command would have said.
    artifact live under `.operator/` given the allowlist migration it forces?"
    produces positions that can lose.
 
-2. **Choose the models — the point is that they DIFFER.** Resolve the ids:
+2. **Resolve the panel and the tier bindings** — two lines of JSON:
 
    ```
+   bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-tiers.sh --panel
    bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-tiers.sh --json
    ```
 
-   Pick 2-5 distinct ids from the resolved map or from what the proxy routes.
-   Two entries that resolve to the same model is one model agreeing with
-   itself, three times, at full price.
+   `--panel` seats the cross-vendor panel declared in `tiers.env` (`PANEL`,
+   default Opus + GLM + DeepSeek) against what the proxy routes, falling back
+   along `PANEL_FALLBACK` (qwen3.8-max, then a persona-Opus seat) (#172). Its
+   stderr notes say which seat fell back and whether the panel is short; relay
+   them. Exit 3 means no dispatchable panel (fewer than 2 seats resolved, or no
+   python3 to resolve it): stop and relay the notes — there is no panel to
+   dispatch. The point is that the models DIFFER: a panel on one vendor converges.
+   To debate on other models, pass your own ids as `models` instead.
 
-3. **Dispatch:**
+3. **Dispatch** with the panel's `models` and `spares` verbatim:
 
    ```
    Workflow({ name: "cc-operator:debate", args: {
      case: "<the falsifiable question>",
-     models: ["<id>", "<id>", "<id>"],
-     tiers: <the JSON from step 2> } })
+     models: <panel.models>,
+     spares: <panel.spares>,
+     tiers: <the JSON from --json> } })
    ```
+
+   A seat that dies at opening is re-seated on the next spare. A `persona:`
+   seat is the same model under a different temperament — the result's
+   `distinctModels` says how many models actually argued.
 
 **`chose` is always null, by design.** Relay where the positions actually
 disagree and what each said would overturn it. A synthesis that reads like a

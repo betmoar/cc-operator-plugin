@@ -2026,6 +2026,157 @@ ok(dbtRt.calls.find((c) => c.label === "synthesis").agentType === "cc-operator:o
   "debate: synthesis runs on op-reviewer — a debater summarizing its own debate is scoring itself");
 
 // ── audit F103: agent output must not overwrite pinned seat identity ─────────
+console.log("-- Case: debate.js seats a persona and re-seats the dead on spares (#172)");
+
+// persona:<id> seats <id> again under an assigned temperament. The model binding
+// is the BARE id; the prompt carries the temperament in every round.
+{
+  const P3 = ["claude-opus-5", "glm-5.3", "persona:claude-opus-5"];
+  const { result: r, rt } = await run(WF("debate.js"), { case: "c", models: P3 }, FULL_PANEL);
+  const openC = rt.calls.find((c) => c.label === "open:C");
+  ok(openC?.model === "claude-opus-5",
+    "debate #172: a persona:<id> seat dispatches on the BARE id (the prefix never reaches the router)");
+  ok(["open:C", "rebut:C", "close:C"].every((l) => /YOUR ASSIGNED TEMPERAMENT/.test(rt.calls.find((c) => c.label === l)?.prompt ?? "")),
+    "debate #172: the persona seat carries its temperament in all three rounds");
+  ok(["open:A", "open:B"].every((l) => !/YOUR ASSIGNED TEMPERAMENT/.test(rt.calls.find((c) => c.label === l)?.prompt ?? "")),
+    "debate #172: CONTROL — a plain seat carries no temperament");
+  const synth = rt.calls.find((c) => c.label === "synthesis")?.prompt ?? "";
+  ok(/NOT INDEPENDENT: seats A and C run on ONE model/.test(synth),
+    "debate #172: the synthesis is told which letters share one model (their agreement is one voice)");
+  ok(!/claude-opus-5/.test(synth),
+    "debate #172: the independence note names LETTERS, never the model (the synthesis stays blind)");
+  ok(r?.distinctModels === 2 && r?.seats?.[2]?.persona,
+    "debate #172: the result reports 2 distinct models for 3 seats and marks the persona seat");
+  const { rt: plainRt } = await run(WF("debate.js"), { case: "c", models: THREE }, FULL_PANEL);
+  ok(!/NOT INDEPENDENT/.test(plainRt.calls.find((c) => c.label === "synthesis")?.prompt ?? ""),
+    "debate #172: CONTROL — three distinct models get no independence note");
+}
+// Independence is judged by FAMILY, not exact id: a caller passing ids by hand bypasses --panel, and
+// glm-5.3 + qwen:glm-5.3 are the same weights over two routes (PR #173 review, reproduced).
+{
+  const { result: r, rt } = await run(WF("debate.js"),
+    { case: "c", models: ["glm-5.3", "qwen:glm-5.3", "claude-opus-5"] }, FULL_PANEL);
+  ok(/NOT INDEPENDENT: seats A and B run on ONE model family/.test(rt.calls.find((c) => c.label === "synthesis")?.prompt ?? ""),
+    "debate #172: one family over two routes (glm-5.3 + qwen:glm-5.3) is flagged NOT INDEPENDENT");
+  // The count is the GROUP's size, not the panel's: two of three seats share a family, so their agreement is
+  // "one voice, not 2" — a note saying "not 3" tells the synthesis to discount the independent third seat too.
+  ok(/count it as one voice, not 2\b/.test(rt.calls.find((c) => c.label === "synthesis")?.prompt ?? ""),
+    "debate #172: the independence note counts the shared GROUP (2), not the whole panel (3)");
+  ok(r?.distinctModels === 2,
+    `debate #172: distinctModels counts families, not route spellings (got ${r?.distinctModels})`);
+}
+// Copilot round 3: with TWO shared groups of different sizes, every group was told "not 2" — groups[0]'s size.
+// The three-seat claude group's agreement then read as two voices.
+{
+  const { rt } = await run(WF("debate.js"),
+    { case: "c", models: ["glm-5.3", "qwen:glm-5.3", "claude-opus-5", "claude-sonnet-5", "persona:claude-opus-5"] }, PANEL5);
+  const synth = rt.calls.find((c) => c.label === "synthesis")?.prompt ?? "";
+  ok(/seats A and B run on ONE model family[^;]*not 2\b/.test(synth)
+      && /seats C and D and E run on ONE model family[^;]*not 3\b/.test(synth),
+    "debate #172: each shared group is counted by its OWN size (2 and 3), not the first group's");
+}
+// A trailing `:free`/`:batch` is a variant TAG, not a route prefix (PR #173 review, 79 live catalogue ids).
+// Reading the text after the last colon made every tagged id family `free`: two vendors read as one, and
+// GLM-over-OpenRouter beside glm-5.3 read as independent. Both directions, each red on the old rule.
+{
+  const { result: r, rt } = await run(WF("debate.js"),
+    { case: "c", models: ["z-ai/glm-5.2:free", "glm-5.3", "claude-opus-5"] }, FULL_PANEL);
+  ok(/NOT INDEPENDENT: seats A and B run on ONE model family/.test(rt.calls.find((c) => c.label === "synthesis")?.prompt ?? "")
+      && r?.distinctModels === 2,
+    `debate #172: vendor/glm:free + glm-5.3 is ONE family, flagged (distinctModels ${r?.distinctModels})`);
+}
+{
+  const { result: r, rt } = await run(WF("debate.js"),
+    { case: "c", models: ["qwen/qwen3.8-27b:free", "z-ai/glm-5.2:free", "claude-opus-5"] }, FULL_PANEL);
+  ok(!/NOT INDEPENDENT/.test(rt.calls.find((c) => c.label === "synthesis")?.prompt ?? "") && r?.distinctModels === 3,
+    `debate #172: two vendors sharing a :free tag are two families, not one (distinctModels ${r?.distinctModels})`);
+}
+// The one sanctioned repeat is a persona ENTRY; a plain repeat and two identical persona entries both refuse.
+await throws(() => run(WF("debate.js"), { case: "c", models: ["glm-5.3", "persona:glm-5.3", "persona:glm-5.3"] }, {}),
+  "debate #172: two identical persona entries are still a duplicate", "repeats");
+await throws(() => run(WF("debate.js"), { case: "c", models: ["glm-5.3", "persona:"] }, {}),
+  "debate #172: an empty persona id is refused before dispatch", "outside the");
+await throws(() => run(WF("debate.js"), { case: "c", models: ["a", "b"], spares: "c" }, {}),
+  "debate #172: spares that are not an array are refused", "args.spares must be an array");
+
+// A seat dead at OPENING is re-seated on the next spare, keeping its letter. The stub keys on label, so the
+// re-dispatch (same label open:C) is told apart by call order: dead first, alive on the retry.
+const onceDead = (live) => { let n = 0; return { get() { return n++ === 0 ? null : live; }, enumerable: true }; };
+{
+  const ret = Object.defineProperty({ ...FULL_PANEL }, "open:C", onceDead(OPEN("C")));
+  const { result: r, rt } = await run(WF("debate.js"),
+    { case: "c", models: ["claude-opus-5", "glm-5.3", "deepseek-flash"], spares: ["qwen3.8-max", "persona:claude-opus-5"] }, ret);
+  const opensC = rt.calls.filter((c) => c.label === "open:C").map((c) => c.model);
+  ok(opensC.join(",") === "deepseek-flash,qwen3.8-max",
+    `debate #172: a dead opening seat is re-dispatched on the FIRST spare (got ${opensC.join(",")})`);
+  ok(r?.seats?.[2]?.model === "qwen3.8-max" && rt.calls.find((c) => c.label === "close:C")?.model === "qwen3.8-max",
+    "debate #172: the re-seated letter argues the rest of the debate on the spare");
+  ok(r?.deadSeats?.opening.length === 0 && r?.rounds?.[2]?.results.length === 3,
+    "debate #172: a successful re-seat keeps the panel at full width");
+  ok(r?.reseated?.[0]?.from === "deepseek-flash" && r.reseated[0].to === "qwen3.8-max" && r.reseated[0].alive,
+    "debate #172: the re-seat is REPORTED, never silent");
+}
+// A PERSONA spare re-seated onto a dead letter keeps what makes it a persona: the temperament in every round
+// and the independence note. Losing either turns a second Opus seat into a phantom independent voice.
+{
+  const ret = Object.defineProperty({ ...FULL_PANEL }, "open:C", onceDead(OPEN("C")));
+  const { result: r, rt } = await run(WF("debate.js"),
+    { case: "c", models: ["claude-opus-5", "glm-5.3", "deepseek-flash"], spares: ["persona:claude-opus-5"] }, ret);
+  const opensC = rt.calls.filter((c) => c.label === "open:C");
+  ok(opensC[1]?.model === "claude-opus-5" && r?.seats?.[2]?.persona
+      && [opensC[1], ...["rebut:C", "close:C"].map((l) => rt.calls.find((c) => c.label === l))]
+        .every((c) => /YOUR ASSIGNED TEMPERAMENT/.test(c?.prompt ?? "")),
+    "debate #172: a re-seated persona spare runs on the bare id with its temperament in every round");
+  ok(/NOT INDEPENDENT: seats A and C run on ONE model/.test(rt.calls.find((c) => c.label === "synthesis")?.prompt ?? "")
+      && r?.distinctModels === 2,
+    "debate #172: a re-seated persona spare is flagged NOT INDEPENDENT of the seat it repeats");
+}
+// Spares run out: the seat stays dead and is named; nothing is seated twice.
+{
+  const { result: r, rt } = await run(WF("debate.js"),
+    { case: "c", models: THREE, spares: ["glm-5.2", "qwen3.8-max"] },
+    { ...FULL_PANEL, "open:C": null, "rebut:C": null, "close:C": null });
+  ok(rt.calls.filter((c) => c.label === "open:C").length === 2,
+    "debate #172: a spare that is already SEATED is skipped, the next one tried (glm-5.2 is seat A)");
+  ok(r?.deadSeats?.opening.join(",") === "C" && r?.reseated?.length === 1 && r.reseated[0].alive === false,
+    "debate #172: when every spare dies the seat stays dead AND named, the attempt reported");
+}
+// CONTROL: no spares means today's behaviour exactly — one dispatch per seat at opening.
+{
+  const { rt } = await run(WF("debate.js"), { case: "c", models: THREE },
+    { ...FULL_PANEL, "open:C": null, "rebut:C": null, "close:C": null });
+  ok(rt.calls.filter((c) => c.label === "open:C").length === 1,
+    "debate #172: CONTROL — without spares a dead seat is not re-dispatched");
+}
+// Copilot on PR #173: the re-seat record reached only the SUCCESS return. A collapse is when it matters most —
+// the caller must see that a seat was already moved to a spare before the panel thinned out anyway.
+{
+  const { result: r } = await run(WF("debate.js"),
+    { case: "c", models: THREE, spares: ["qwen3.8-max"] },
+    { ...FULL_PANEL, "open:B": null, "open:C": null });
+  ok(r?.error?.includes("collapsed at opening") && r?.reseated?.length === 1 && r.reseated[0].to === "qwen3.8-max",
+    "debate #172: a COLLAPSED run still reports its re-seats");
+  // Copilot round 2: distinctModels counted every SEAT, dead ones included — 3 here, with one voice alive.
+  ok(r?.distinctModels === 1,
+    `debate #172: distinctModels counts only seats whose opening returned (got ${r?.distinctModels})`);
+}
+{
+  const { result: r } = await run(WF("debate.js"), { case: "c", models: THREE }, { ...FULL_PANEL, synthesis: null });
+  ok(r?.error?.includes("synthesis agent died") && Array.isArray(r?.reseated) && r?.distinctModels === 3,
+    "debate #172: a dead-synthesis return still reports reseated and distinctModels");
+}
+// Copilot on PR #173: the family accumulator was a plain `{}` keyed by caller text. `constructor-1` is family
+// `constructor`, which on `{}` is Object.prototype's function — `??=` keeps it and `.push` throws. Two such
+// seats also share a family, so the note must still NAME them.
+{
+  let r, err;
+  try {
+    ({ result: r } = await run(WF("debate.js"), { case: "c", models: ["constructor-1", "constructor-2", "glm-5.3"] }, FULL_PANEL));
+  } catch (e) { err = e; }
+  ok(!err && r?.synthesis != null && r?.distinctModels === 2,
+    `debate #172: a model id whose family is an Object.prototype key runs to synthesis (${err?.message ?? "ok"})`);
+}
+
 console.log("-- Case: debate.js pins seat identity over agent output (audit F103)");
 // The round records were built `{ letter, model, dead, ...(r ?? {}) }` — spread
 // LAST, so a return carrying its own letter/model/dead keys overwrote all three

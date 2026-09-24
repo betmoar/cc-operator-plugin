@@ -19,6 +19,8 @@
 #   ops-tiers.sh --check              → also verify against the proxy catalogue
 #   ops-tiers.sh --show               → human-readable table + provenance
 #   ops-tiers.sh --suggest            → report bindings a graded model dominates
+#   ops-tiers.sh --panel              → the debate panel (PANEL, PANEL_FALLBACK), resolved
+#                                        against what the proxy routes, as JSON (#172)
 # Tier values and their SRC_* provenance twins are set and read through `eval`
 # (bash 3.2 on macOS has no associative arrays), so shellcheck cannot see either
 # side of the use. File-scoped because the pattern recurs throughout.
@@ -44,10 +46,24 @@ RECON="claude-haiku-4-5-20251001"
 SRC_JUDGMENT="default"; SRC_IMPLEMENT="default"
 SRC_MECHANICAL="default"; SRC_RECON="default"
 
+# The debate panel (#172): comma-separated ids, one seat each. A panel on ONE
+# vendor converges (measured on #84's data: two glm models never separated a
+# mechanism), so the default spans three families. PANEL_FALLBACK is walked in
+# order when a panel seat is unroutable; a `persona:<id>` entry seats <id> again
+# with an assigned temperament, and debate.js tells the synthesis that seat is
+# not independent. The user's choice, 2026-09-24 — not a capability ranking:
+# operator reads the proxy's routable ids, never its grades (#121).
+PANEL_KEYS="PANEL PANEL_FALLBACK"
+PANEL="claude-opus-5,glm-5.3,deepseek-flash"
+PANEL_FALLBACK="qwen3.8-max,persona:claude-opus-5"
+
 die() { echo "ops-tiers: $*" >&2; exit 2; }
 
 is_tier_name() {
   case " $TIER_NAMES " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
+is_panel_key() {
+  case " $PANEL_KEYS " in *" $1 "*) return 0 ;; *) return 1 ;; esac
 }
 
 # The model-id guard: well-formedness ONLY, by design (0.8.3). The user picks
@@ -61,6 +77,25 @@ check_routable() {
       die "$1='$2' contains characters outside [A-Za-z0-9._:/@[]-] (whitespace and quotes are never valid in a model id)" ;;
   esac
   return 0
+}
+
+# check_panel <label> <list>: every comma-separated entry is a model id, or
+# `persona:` + one. Same charset guard as a tier binding, no more (0.8.3). The
+# COUNT is debate.js's: models 2-5, spares at most 5 — a list the workflow
+# refuses must die here, at the line that declared it, not after a resolve.
+check_panel() {
+  case "$2" in ""|,*|*,|*,,*) die "$1='$2' is not a comma-separated list of model ids" ;; esac
+  local _e _n=0 _rest="$2,"
+  while [ -n "$_rest" ]; do
+    _e="${_rest%%,*}"; _rest="${_rest#*,}"; _n=$((_n + 1))
+    check_routable "$1" "${_e#persona:}"
+  done
+  if [ "$1" = PANEL ] && { [ "$_n" -lt 2 ] || [ "$_n" -gt 5 ]; }; then
+    die "PANEL has $_n entries; debate.js seats 2-5 (one model cannot debate)"
+  fi
+  if [ "$1" = PANEL_FALLBACK ] && [ "$_n" -gt 5 ]; then
+    die "PANEL_FALLBACK has $_n entries; debate.js takes at most 5 spares"
+  fi
 }
 
 set_tier() { # set_tier NAME id source
@@ -108,9 +143,14 @@ load_file() { # load_file <path> <source-label>
     case "$name" in
       *[[:space:]]*) die "$1: whitespace inside tier name '$name' (known: $TIER_NAMES)" ;;
     esac
-    # tiers.env carries TWO line kinds: TIER=model-id (ours) and
-    # [op-]seat=TIER (the renderer's — skip, but validate the VALUE so a
-    # typo'd tier name dies here instead of resolving to defaults; F15).
+    # tiers.env carries THREE line kinds: TIER=model-id (ours), PANEL keys
+    # (ours, #172) and [op-]seat=TIER (the renderer's — skip, but validate the
+    # VALUE so a typo'd tier name dies here instead of resolving to defaults; F15).
+    if is_panel_key "$name"; then
+      check_panel "$name" "$val"
+      eval "$name=\$val"
+      continue
+    fi
     if ! is_tier_name "$name"; then
       is_tier_name "$val" || die "$1: unknown tier '$name' (known: $TIER_NAMES; a seat line needs a tier VALUE, e.g. op-scout=MECHANICAL)"
       continue   # a valid seat binding — the renderer's business, not ours
@@ -130,11 +170,14 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || die "--set requires NAME=model-id"
       n="${2%%=*}"; v="${2#*=}"
       [ "$n" != "$2" ] || die "--set wants NAME=model-id, got '$2'"
-      check_routable "$n" "$v"; set_tier "$n" "$v" "--set"; shift 2 ;;
+      if is_panel_key "$n"; then check_panel "$n" "$v"; eval "$n=\$v"
+      else check_routable "$n" "$v"; set_tier "$n" "$v" "--set"; fi
+      shift 2 ;;
     --check) MODE=check; shift ;;
     --show)  MODE=show;  shift ;;
     --json)  MODE=json;  shift ;;
     --suggest) MODE=suggest; shift ;;
+    --panel) MODE=panel; shift ;;
     *) die "unknown argument '$1'" ;;
   esac
 done
@@ -265,9 +308,103 @@ print(f"{found} dominated binding(s), compared against {len(table)} graded model
 PY
 }
 
+# Panel resolution (#172). Picks seats from PANEL, then PANEL_FALLBACK, and
+# returns the unused fallback as spares debate.js re-seats a dead seat on.
+#   available = claude-* (harness-served, absent from the catalogue by
+#               construction) OR listed in /v1/models without usable:false.
+#   family    = the id with any leading `lens:` route, trailing `:tag` and
+#               `vendor/` prefix stripped, then its leading letters: glm-5.3 ->
+#               glm, qwen:deepseek-v4-pro -> deepseek, z-ai/glm-5.2:free -> glm.
+#               A colon whose left side holds a `/` ends a variant tag, not a route.
+#               A string rule, not a catalogue: diversity is the model family,
+#               not the route, and no fallback may seat a family already seated.
+#   persona:  exempt from the family rule — that is its whole point — but its
+#               base id must be available, and the same full entry seats once.
+# Fewer than 2 seats resolved exits 3 (the JSON still printed): debate.js would
+# refuse it, and rc 0 read as a panel. No python3 also exits 3, with no JSON.
+# Fail-OPEN: no proxy or an unreadable body means every id counts as available
+# — the family rule still applies, it needs no catalogue. A note says so; the
+# dispatch then reports a dead seat rather than never running.
+panel_report() {
+  _body=""
+  if command -v python3 >/dev/null 2>&1; then
+    # CC_OPERATOR_CATALOGUE: a saved /v1/models body read INSTEAD of the proxy —
+    # the same seam --suggest has in CC_OPERATOR_GRADES, so a test decides the
+    # catalogue rather than whatever proxy happens to be running.
+    if [ -n "${CC_OPERATOR_CATALOGUE:-}" ]; then
+      _body="$(head -c 4194304 "$CC_OPERATOR_CATALOGUE" 2>/dev/null || true)"
+    else
+      _body="$(curl -sS -m 5 "http://127.0.0.1:${PORT}/v1/models" 2>/dev/null || true)"
+    fi
+  else
+    # NOT fail-open: the raw lists skip the family and duplicate rules, and a
+    # shell copy of the family rule would be its third hand copy. Exit 3 is
+    # "no dispatchable panel" — commands/debate.md says stop and relay.
+    echo "ops-tiers: python3 not found — the panel cannot be resolved (family and duplicate rules need it); pass models by hand" >&2
+    exit 3
+  fi
+  [ -z "$_body" ] \
+    && echo "note: proxy at :$PORT did not answer /v1/models — panel availability unchecked" >&2
+  printf '%s' "$_body" | python3 -c '
+import json, re, sys
+panel, fallback = sys.argv[1].split(","), sys.argv[2].split(",")
+raw, listed = sys.stdin.read(), None   # None: availability unchecked, every id counts
+if raw:
+    try:
+        data = json.loads(raw).get("data")
+        assert isinstance(data, list)
+        listed = {e.get("id"): e for e in data if isinstance(e, dict) and isinstance(e.get("id"), str)}
+    except Exception:
+        print("note: /v1/models body unreadable — panel availability unchecked", file=sys.stderr)
+def base(e): return e[len("persona:"):] if e.startswith("persona:") else e
+def available(e):
+    b = base(e)
+    if listed is None or b.startswith("claude-"): return True
+    x = listed.get(b)
+    return x is not None and x.get("usable") is not False
+def family(e):
+    head, sep, rest = base(e).partition(":")
+    b = rest if sep and "/" not in head else base(e)   # leading route: qwen:glm-5.3
+    b = b.split(":")[0].split("/")[-1].lower()         # trailing tag, then vendor/
+    m = re.match(r"[a-z]+", b)
+    return m.group(0) if m else b
+seated, fams, spares = [], set(), []
+def repeat(e):   # a FULL entry twice (persona:x,persona:x) is refused by debate.js as a duplicate
+    if e in seated or e in spares:
+        print(f"note: {e} is listed twice — skipped", file=sys.stderr); return True
+    return False
+for e in panel:
+    if repeat(e): continue
+    if not available(e):
+        print(f"note: panel {e} is not routable — falling back", file=sys.stderr); continue
+    if not e.startswith("persona:") and family(e) in fams:
+        print(f"note: panel {e} repeats family {family(e)} — skipped", file=sys.stderr); continue
+    seated.append(e); fams.add(family(e))
+for e in fallback:
+    if repeat(e): continue
+    if not available(e):
+        print(f"note: fallback {e} is not routable — skipped", file=sys.stderr); continue
+    if not e.startswith("persona:") and family(e) in fams: continue
+    if len(seated) < len(panel):
+        seated.append(e); fams.add(family(e))
+        print(f"note: fallback {e} seated", file=sys.stderr)
+    else:
+        spares.append(e)
+if len(seated) < len(panel):
+    print(f"note: panel short — {len(seated)} of {len(panel)} seats routable", file=sys.stderr)
+print(json.dumps({"models": seated, "spares": spares}, separators=(",", ":")))
+if len(seated) < 2:   # debate.js refuses it; say so HERE, at a distinct rc (2 is a config error)
+    print(f"ops-tiers: {len(seated)} seat(s) resolved — a debate needs 2; not dispatchable", file=sys.stderr)
+    sys.exit(3)
+' "$PANEL" "$PANEL_FALLBACK"
+}
+
 case "$MODE" in
   suggest)
     suggest_report
+    ;;
+  panel)
+    panel_report
     ;;
   show)
     printf '%-11s %-30s %s\n' TIER MODEL SOURCE

@@ -622,6 +622,7 @@ def make_good_tree(root):
         '}\n'
         'LENS_NAMESPACES="glm openrouter deepseek qwen claude"\n'
         'TIER_NAMES="JUDGMENT IMPLEMENT MECHANICAL RECON"\n'
+        'PANEL_KEYS="PANEL PANEL_FALLBACK"\n'
     )
     write(root / "scripts" / "ops-tiers.sh",
           ROUTABLE_STUB +
@@ -2577,7 +2578,8 @@ class ResolverRendererParityTest(unittest.TestCase):
     # Kept as an empty string rather than deleted: every ROUTABLE+LENS+TIERS
     # call site below stays readable.
     LENS = ''
-    TIERS = 'TIER_NAMES="JUDGMENT IMPLEMENT MECHANICAL RECON"\n'
+    TIERS = ('TIER_NAMES="JUDGMENT IMPLEMENT MECHANICAL RECON"\n'
+             'PANEL_KEYS="PANEL PANEL_FALLBACK"\n')
 
     def setUp(self):
         self.dir = pathlib.Path(tempfile.mkdtemp())
@@ -2644,6 +2646,22 @@ class ResolverRendererParityTest(unittest.TestCase):
         probs = self.problems()
         self.assertTrue(any("does not match the resolver's" in p
                             for p in probs), probs)
+
+    def test_renderer_panel_keys_drift_fires(self):
+        # #172: the resolver learns a panel key the renderer does not skip — the
+        # renderer reads it as a seat line and every render dies on it.
+        self._write(tiers=self.ROUTABLE + self.LENS +
+                    'TIER_NAMES="JUDGMENT IMPLEMENT MECHANICAL RECON"\n'
+                    'PANEL_KEYS="PANEL PANEL_FALLBACK PANEL_SIZE"\n')
+        probs = self.problems()
+        self.assertTrue(any("PANEL_KEYS=" in p and "does not match" in p
+                            for p in probs), probs)
+
+    def test_missing_panel_keys_fires(self):
+        self._write(render=self.ROUTABLE + self.LENS +
+                    'TIER_NAMES="JUDGMENT IMPLEMENT MECHANICAL RECON"\n')
+        self.assertTrue(any("no `PANEL_KEYS" in p
+                            for p in self.problems()), self.problems())
 
     def test_missing_tier_names_fires(self):
         self._write(render=self.ROUTABLE + self.LENS)
