@@ -2475,24 +2475,56 @@ printf 'PANEL=claude-opus-5,glm-5.3\nPANEL_FALLBACK=qwen3.8-max\n' > "$PNL/ok.en
 RPOUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$PNL/ok.env" "$BASH_ABS" "$SCRIPTS/ops-render.sh" --model crawler 2>&1)"; PRC=$?
 check "#172 ops-render.sh skips PANEL lines (a render in a panel-declaring project does not die)" \
   "$([ "$PRC" -eq 0 ] && [ "$RPOUT" = "glm-5.3-flash" ] && echo 0 || echo 1)"
-# The skip is a WHOLE-KEY match: a seat whose name merely CONTAINS a panel key (ANEL is inside PANEL) is a real
-# seat binding. A substring matcher would skip it silently — the seat never registers and no error says why.
+# The skip is a WHOLE-KEY match: ANEL is inside PANEL, and a substring matcher would skip that line silently.
+# Since #174 an UPPERCASE seat name is refused outright (a misspelled key, never a seat), so the line must die
+# LOUD in both parsers — a substring skip would turn that rc 2 back into a silent rc 0.
 printf 'ANEL=JUDGMENT\n' > "$PNL/seat.env"
-RPOUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$PNL/seat.env" "$BASH_ABS" "$SCRIPTS/ops-render.sh" --model ANEL 2>&1)"; PRC=$?
-check "#172 a seat whose NAME contains a panel key is still a seat (the renderer skip is whole-key, not substring)" \
-  "$([ "$PRC" -eq 0 ] && [ "$RPOUT" = "claude-opus-5" ] && echo 0 || echo 1)"
-CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$PNL/seat.env" CC_PROXY_PORT=1 \
-  "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" --json >/dev/null 2>&1; PRC=$?
-check "#172 the resolver reads that seat line as a seat line too (not as a malformed panel key)" \
-  "$([ "$PRC" -eq 0 ] && echo 0 || echo 1)"
+RPOUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$PNL/seat.env" "$BASH_ABS" "$SCRIPTS/ops-render.sh" --model crawler 2>&1)"; PRC=$?
+check "#172 a line whose NAME contains a panel key is not skipped by the renderer (whole-key, not substring)" \
+  "$([ "$PRC" -eq 2 ] && printf '%s' "$RPOUT" | grep -q "seat name 'ANEL' is not lowercase" && echo 0 || echo 1)"
+PERR="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$PNL/seat.env" CC_PROXY_PORT=1 \
+  "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" --json 2>&1 >/dev/null)"; PRC=$?
+check "#172 the resolver does not skip it either (not read as a panel key)" \
+  "$([ "$PRC" -eq 2 ] && printf '%s' "$PERR" | grep -q "'ANEL' is not a tier" && echo 0 || echo 1)"
+# #174 item 3: a misspelled panel key with a TIER-shaped value read as a seat binding — rc 0 from --panel with
+# the default panel, and a phantom seat in the renderer. Both parsers now refuse the line and name the kinds.
+printf 'PANEL_FALLBAK=RECON\n' > "$PNL/typo.env"
+PERR="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$PNL/typo.env" CC_OPERATOR_CATALOGUE="$PNL/all.json" \
+  "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" --panel 2>&1 >/dev/null)"; PRC=$?
+check "#174 a misspelled panel key with a tier value is refused by --panel (rc 2), not swallowed" \
+  "$([ "$PRC" -eq 2 ] && printf '%s' "$PERR" | grep -q "'PANEL_FALLBAK' is not a tier" && echo 0 || echo 1)"
+RPOUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$PNL/typo.env" "$BASH_ABS" "$SCRIPTS/ops-render.sh" --model PANEL_FALLBAK 2>&1)"; PRC=$?
+check "#174 the renderer resolves no phantom seat for a misspelled panel key (rc 2)" \
+  "$([ "$PRC" -eq 2 ] && [ "$RPOUT" = "${RPOUT#RECON}" ] && printf '%s' "$RPOUT" | grep -q 'not lowercase' && echo 0 || echo 1)"
+# CONTROL: a lowercase custom seat still binds in both parsers (the rule is case, not "known seats only").
+printf 'op-widget=RECON\n' > "$PNL/lc.env"
+RPOUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$PNL/lc.env" "$BASH_ABS" "$SCRIPTS/ops-render.sh" --model widget 2>&1)"; PRC=$?
+CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$PNL/lc.env" CC_PROXY_PORT=1 \
+  "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" --json >/dev/null 2>&1; TRC=$?
+check "#174 CONTROL — a lowercase custom seat still binds in the renderer and passes the resolver" \
+  "$([ "$PRC" -eq 0 ] && [ "$RPOUT" = "claude-haiku-4-5-20251001" ] && [ "$TRC" -eq 0 ] && echo 0 || echo 1)"
+# #174 item 1: a FALLBACK dropped for repeating a seated family vanished without a note (the panel side says it).
+printf '%s' '{"data":[{"id":"glm-5.3"},{"id":"deepseek-v4-pro"},{"id":"qwen:deepseek-v4.1-flash"}]}' > "$PNL/fbfam.json"
+POUT="$(PANELQ "$PNL/fbfam.json" --set PANEL=claude-opus-5,glm-5.3,deepseek-flash,qwen3.8-max \
+  --set PANEL_FALLBACK=deepseek-v4-pro,qwen:deepseek-v4.1-flash 2>"$PNL/err")"
+check "#174 a fallback skipped for repeating a seated family SAYS so on stderr" \
+  "$(grep -q 'fallback qwen:deepseek-v4.1-flash repeats family deepseek — skipped' "$PNL/err" && echo 0 || echo 1)"
+# #174 item 5: persona:persona:x reached the router as the id `persona:x`.
+PERR="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT=/nonexistent CC_PROXY_PORT=1 \
+  "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" --set PANEL_FALLBACK=persona:persona:glm-5.3 --panel 2>&1 >/dev/null)"; PRC=$?
+check "#174 a nested persona:persona: entry is refused at declaration (rc 2)" \
+  "$([ "$PRC" -eq 2 ] && printf '%s' "$PERR" | grep -q 'nests persona:' && echo 0 || echo 1)"
 POUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$PNL/ok.env" CC_OPERATOR_CATALOGUE="$PNL/all.json" \
   "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" --panel 2>/dev/null)"
 check "#172 a tiers.env PANEL line reaches --panel (the declaration is read, not only --set)" \
   "$([ "$POUT" = '{"models":["claude-opus-5","glm-5.3"],"spares":["qwen3.8-max"]}' ] && echo 0 || echo 1)"
 ( cd "$PNL" && mkdir p && cd p && "$BASH_ABS" "$SCRIPTS/ops-init.sh" >/dev/null 2>&1 )
+# #174 item 4: the scaffold's commented lines are a THIRD copy of the baked defaults — pin them to ops-tiers.sh's
+# own PANEL=/PANEL_FALLBACK= assignments, read from the script, never to a literal here (a fourth copy).
+_bp="$(grep -m1 '^PANEL=' "$SCRIPTS/ops-tiers.sh" | tr -d '"')"; _bf="$(grep -m1 '^PANEL_FALLBACK=' "$SCRIPTS/ops-tiers.sh" | tr -d '"')"
 check "#172 the tiers.env scaffold documents the panel lines (commented, the baked defaults)" \
-  "$(grep -qx '#PANEL=claude-opus-5,glm-5.3,deepseek-flash' "$PNL/p/.operator/tiers.env" \
-     && grep -qx '#PANEL_FALLBACK=qwen3.8-max,persona:claude-opus-5' "$PNL/p/.operator/tiers.env" && echo 0 || echo 1)"
+  "$([ "$_bp" != "PANEL=" ] && [ -n "$_bp" ] && [ -n "$_bf" ] && grep -qxF "#$_bp" "$PNL/p/.operator/tiers.env" \
+     && grep -qxF "#$_bf" "$PNL/p/.operator/tiers.env" && echo 0 || echo 1)"
 rm -rf "$PNL" "$NOPY"
 
 ########################################################################

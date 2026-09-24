@@ -116,6 +116,10 @@ const parseEntry = (m, where) => {
   const entry = m.trim();
   const persona = entry.startsWith(PERSONA);
   const id = persona ? entry.slice(PERSONA.length) : entry;
+  // persona:persona:x would reach the router as the id `persona:x` (#174).
+  if (persona && id.startsWith(PERSONA)) {
+    throw new Error(`${where}=${JSON.stringify(entry)} nests persona: — one prefix, then a model id`);
+  }
   // Same guard as a tiers.env binding — no more, no less (0.8.3): this file
   // decides nothing about which ids exist, only that the string is well-formed.
   if (!id || BAD_CHARSET.test(id)) {

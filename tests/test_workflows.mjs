@@ -2096,6 +2096,11 @@ await throws(() => run(WF("debate.js"), { case: "c", models: ["glm-5.3", "person
   "debate #172: two identical persona entries are still a duplicate", "repeats");
 await throws(() => run(WF("debate.js"), { case: "c", models: ["glm-5.3", "persona:"] }, {}),
   "debate #172: an empty persona id is refused before dispatch", "outside the");
+// #174 item 5: persona:persona:x reached the router as the id `persona:x`; refused in models AND spares.
+await throws(() => run(WF("debate.js"), { case: "c", models: ["glm-5.3", "persona:persona:glm-5.3"] }, {}),
+  "debate #174: a nested persona:persona: model entry is refused before dispatch", "nests persona:");
+await throws(() => run(WF("debate.js"), { case: "c", models: ["glm-5.3", "claude-opus-5"], spares: ["persona:persona:glm-5.3"] }, {}),
+  "debate #174: a nested persona:persona: spare is refused before dispatch", "nests persona:");
 await throws(() => run(WF("debate.js"), { case: "c", models: ["a", "b"], spares: "c" }, {}),
   "debate #172: spares that are not an array are refused", "args.spares must be an array");
 

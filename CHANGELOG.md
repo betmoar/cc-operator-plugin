@@ -9,6 +9,33 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.12.7] - 2026-09-24
+
+The #172 panel's review follow-ups (#174), and #138's priced omission moved into the tree.
+
+### Fixed
+
+- **A misspelled panel key is refused, not swallowed (#174 item 3).** `PANEL_FALLBAK=RECON`
+  read as a seat binding: `--panel` gave rc 0 on the default panel, and `ops-render.sh
+  --model PANEL_FALLBAK` resolved a phantom seat. Seat names are now lowercase in both
+  parsers — they name `agents/op-<seat>.md` — so an UPPERCASE non-tier, non-panel name is a
+  misspelling and dies at rc 2, naming the three line kinds. A lowercase custom seat still
+  binds (CONTROL case).
+- **A nested `persona:persona:x` is refused (#174 item 5)** in `check_panel` and in debate.js
+  `parseEntry` (models and spares). It passed both and would have sent `persona:x` to the
+  router as a model id.
+- **A fallback dropped for repeating a seated family says so (#174 item 1)**, with the same
+  `repeats family … — skipped` note the panel side already printed.
+
+### Changed
+
+- **The scaffold's commented panel defaults are pinned to `ops-tiers.sh`'s baked `PANEL=` /
+  `PANEL_FALLBACK=` (#174 item 4)**, read from the script rather than from a literal in the
+  test — the third copy now fails when the first moves.
+- The `ops-tiers.sh` panel comment cites #172's measurement, not the closed #84 (#174 item 6).
+- **#138 closes into `docs/LANDMINES.md`.** The six unpinned CR sites are a decision, not a
+  gap; the record now lives beside the code with the four reasons and the reopen condition.
+
 ## [0.12.6] - 2026-09-24
 
 A debate now seats three different model families by default, and says when two of its
