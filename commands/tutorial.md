@@ -8,7 +8,7 @@ Run the tutorial and relay its output to the user verbatim — do not summarize 
 first. The point is that they SEE the block, not that they read about it (#75):
 
 ```
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-tutorial.sh"
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-tutorial.sh" $ARGUMENTS
 ```
 
 It scaffolds a throwaway git project in a temp directory, opens a tracked task,

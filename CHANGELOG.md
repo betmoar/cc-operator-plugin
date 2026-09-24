@@ -50,6 +50,12 @@ the gate block before reading about it.
   block must now name `tutorial-demo`. A failing `ops-task.sh` or `ops-verdict.sh` was
   masked by `| sed` without `pipefail`. The tutorial now sets `pipefail`, requires the
   sentinel to exist after step 2 and the row to exist after step 4, and stops otherwise.
+- **Copilot review.** A reply holding the nonce and nothing else still made `--canary`
+  PASS, because the empty scan found no leak (reproduced). The answer must now have a
+  non-blank body after the nonce. `--derive --canary` together is refused; before, the
+  later flag silently won. `/cc-operator:tutorial` now forwards its arguments, so the
+  advertised `--keep` works. The holdout skill's `description:` is quoted: YAML read the
+  unquoted ` #112` as a comment and cut the description at "the procedure".
 
 ### Verified
 

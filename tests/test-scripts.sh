@@ -8496,6 +8496,17 @@ check "#150 --canary refuses an error printed at exit 0 (no nonce) — never a P
 HOUT="$(printf 'the spec\n' | hoq --derive --dir "$H150/empty" 2>/dev/null)"; HRC=$?
 check "#150 --derive refuses an error printed at exit 0 — the error is never handed back as a derivation" \
   "$([ "$HRC" -eq 2 ] && [ -z "$HOUT" ] && echo 0 || echo 1)"
+# Copilot, PR #176: a claude echoing the nonce and NOTHING else made the canary PASS on an empty scan (reproduced).
+printf '#!/usr/bin/env bash\nsed -n "1s/^The FIRST line of your reply must be exactly: //p"\n' > "$H150/bin/claude"
+HOUT="$(env PATH="$HPATH" "$BASH_ABS" "$HO" --canary 2>&1)"; HRC=$?
+check "#150 --canary refuses a nonce-only answer (an empty scan is not a PASS)" \
+  "$([ "$HRC" -eq 2 ] && printf '%s' "$HOUT" | grep -q 'nonce and nothing else' && ! printf '%s' "$HOUT" | grep -q 'canary PASS' && echo 0 || echo 1)"
+HOUT="$(printf 'the spec\n' | hoq --derive --dir "$H150/empty" 2>/dev/null)"; HRC=$?
+check "#150 --derive refuses a nonce-only answer (an empty derivation is not a derivation)" \
+  "$([ "$HRC" -eq 2 ] && [ -z "$HOUT" ] && echo 0 || echo 1)"
+HOUT="$(hoq --derive --canary 2>&1)"; HRC=$?
+check "#150 --derive and --canary together are refused (neither silently overrides the other)" \
+  "$([ "$HRC" -eq 2 ] && printf '%s' "$HOUT" | grep -q 'separate runs' && echo 0 || echo 1)"
 printf '#!/usr/bin/env bash\ncat >/dev/null; echo "overloaded"; exit 7\n' > "$H150/bin/claude"
 HOUT="$(printf 'the spec\n' | hoq --derive --dir "$H150/empty" 2>&1)"; HRC=$?
 check "#150 --derive surfaces claude's own non-zero exit (rc 2, the code named)" \
@@ -8554,9 +8565,25 @@ check "#75 a failing ops-task.sh stops the tutorial at step 2 (non-zero, never r
   "$([ "$TRC" -ne 0 ] && ! printf '%s' "$TOUT" | grep -q 'Stop hook exit code' && echo 0 || echo 1)"
 rm -rf "$T75"
 # shellcheck disable=SC2016  # literal placeholder text, as above.
-check "#75 commands/tutorial.md runs the script through \${CLAUDE_PLUGIN_ROOT} under a grant that covers it" \
-  "$(grep -qF 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-tutorial.sh"' "$CMDDIR/tutorial.md" \
+check "#75 commands/tutorial.md runs the script through \${CLAUDE_PLUGIN_ROOT}, forwards \$ARGUMENTS (--keep), under a grant that covers it" \
+  "$(grep -qF 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-tutorial.sh" $ARGUMENTS' "$CMDDIR/tutorial.md" \
      && awk 'BEGIN{n=0} /^---$/{n++; if(n==2) exit; next} n==1' "$CMDDIR/tutorial.md" | grep -qF 'allowed-tools: Bash(bash:*)' && echo 0 || echo 1)"
+# Copilot, PR #176: YAML reads ` #` in a PLAIN scalar as a comment, so an unquoted description citing `#112`
+# was cut at "the procedure" — the skill's trigger text silently lost its second half. Every frontmatter
+# description holding ` #` must be quoted.
+_badfm="$(grep -l '^description: [^"'"'"'].* #' "$REPO"/skills/*/SKILL.md "$REPO"/commands/*.md "$REPO"/agents/*.md 2>/dev/null)"
+check "#150 no frontmatter description carries an unquoted ' #' (YAML would truncate it as a comment)" \
+  "$([ -z "$_badfm" ] && echo 0 || echo 1)"
+_fmf="$(mktemp "${TMPDIR:-/tmp}/opstest-fm.XXXXXX")"
+printf -- '---\nname: x\ndescription: Owns the procedure #112 learned\n---\n' > "$_fmf"
+check "#150 CONTROL — the same grep DOES flag an unquoted ' #' description" \
+  "$(grep -q '^description: [^"'"'"'].* #' "$_fmf" && echo 0 || echo 1)"
+rm -f "$_fmf"
+TOUT="$("$BASH_ABS" "$SCRIPTS/ops-tutorial.sh" --keep 2>&1)"; TRC=$?
+_kept="$(printf '%s\n' "$TOUT" | sed -n 's/^tutorial project kept at: //p')"
+check "#75 --keep leaves the tutorial project on disk, with its ledger row" \
+  "$([ "$TRC" -eq 0 ] && [ -n "$_kept" ] && grep -qF '| tutorial-demo |' "$_kept/.operator/VERDICTS.md" 2>/dev/null && echo 0 || echo 1)"
+case "$_kept" in "${TMPDIR:-/tmp}"/ops-tutorial.*|/private/var/*/ops-tutorial.*|/tmp/ops-tutorial.*) rm -rf "$_kept" ;; esac
 for _rc in brainstorm plan debate review; do
   check "#75 commands/$_rc.md says where the workflow's result goes (a workflow cannot publish)" \
     "$(grep -q 'Where the result goes' "$CMDDIR/$_rc.md" && echo 0 || echo 1)"

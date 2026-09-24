@@ -41,8 +41,10 @@ DENY=(--tools "" --setting-sources "" --strict-mcp-config --no-session-persisten
 MODE=""; DIR=""; MODEL="opus"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --derive) MODE=derive; shift ;;
-    --canary) MODE=canary; shift ;;
+    # One mode per run: a second silently overrode the first (Copilot, PR #176).
+    --derive|--canary)
+      [ -z "$MODE" ] || die "--derive and --canary are separate runs — pass one"
+      MODE="${1#--}"; shift ;;
     --dir) [ $# -ge 2 ] || die "--dir requires a directory"; DIR="$2"; shift 2 ;;
     --model) [ $# -ge 2 ] || die "--model requires a model id"; MODEL="$2"; shift 2 ;;
     -h|--help) usage ;;
@@ -68,7 +70,12 @@ ask() {
   [ "$rc" -eq 0 ] || die "claude -p exited $rc: $(printf '%s' "$out" | head -c 300)"
   [ "$(printf '%s\n' "$out" | head -n 1)" = "$nonce" ] \
     || die "claude -p did not answer (no nonce on its first line) — an error or a refusal is not evidence: $(printf '%s' "$out" | head -c 300)"
-  printf '%s\n' "$out" | tail -n +2
+  # The nonce proves a model ANSWERED, not that it answered anything: a bare
+  # nonce with nothing after it made the canary PASS on an empty scan (Copilot,
+  # PR #176, reproduced). The body must be non-blank.
+  out="$(printf '%s\n' "$out" | tail -n +2)"
+  [ -n "${out//[[:space:]]/}" ] || die "claude -p answered with the nonce and nothing else — an empty answer is not evidence"
+  printf '%s\n' "$out"
 }
 
 # An ancestor CLAUDE.md is the one channel the tool denial does not close on
