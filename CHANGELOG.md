@@ -67,13 +67,24 @@ four times.
   either: one unassigned seat derived the set from the directory, which #84 lists as a
   direction that never appeared. The judge was blind to which arm a seat came from, but
   not fully to its stance: two seats echoed their stance label ("REMOVE THE CAUSE",
-  "smallest change"). A replication with tools
-  enabled, closer to the real workflow, was not usable. Of 24 seats, 8 were rate-limited,
-  1 was killed mid-run, and the other 15 returned prose instead of the schema, so none of
-  them were clustered. The evidence is that the stances change WHICH directions appear. It
-  does not show that more of them appear. It covers N=4 only. N=2 (smallest change plus
-  challenge the premise) and the detect and borrow stances are a design choice, not a
-  measurement.
+  "smallest change").
+  A second measurement ran the SHIPPED path: `brainstorm.js` through the Workflow runtime,
+  op-author seats with tools on, `glm-5.3-flash`, on a different topic (#152's packet
+  triage), unassigned (`3cfe597^`) against assigned at N=2 and N=6, one run each. All 16
+  direction seats returned the schema: none rate-limited, none dead. (With `claude -p
+  --json-schema`, 15 of 24 had returned prose.) The seats barely used the tools: 6 Bash
+  calls across 16 seats. Two blind judge runs produced the same 5 clusters. Distinct
+  mechanisms per run: N=6 3 unassigned against 4 assigned; N=2 2 against 2. The dominant
+  family, "one extra cheap seat judges the packet", held 4 of 6 unassigned seats and 3 of
+  6 assigned ones. A deterministic lint appeared only with stances (smallest change at
+  N=2, borrow at N=6). At N=2 the premise challenge landed outside the smallest-change
+  cluster. At N=6, detect-and-recover, smallest change and move-the-responsibility all
+  collapsed into the dominant family, so detect bought no mechanism of its own. Borrow
+  did.
+  Across both topics the finding is the same: stances change WHICH directions appear and
+  add at most one per run. Neither unassigned baseline reproduced #84's four-way
+  convergence, so no run shows the stances preventing it. #84 stays open on that. Model
+  diversity across vendors, the lever these runs could not test, is #172.
   What the stub suite can check is the input: N distinct stances at N=2, 4 and 6. Output
   quality is still #79's gap.
 
