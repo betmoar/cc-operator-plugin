@@ -2058,6 +2058,10 @@ console.log("-- Case: debate.js seats a persona and re-seats the dead on spares 
     { case: "c", models: ["glm-5.3", "qwen:glm-5.3", "claude-opus-5"] }, FULL_PANEL);
   ok(/NOT INDEPENDENT: seats A and B run on ONE model family/.test(rt.calls.find((c) => c.label === "synthesis")?.prompt ?? ""),
     "debate #172: one family over two routes (glm-5.3 + qwen:glm-5.3) is flagged NOT INDEPENDENT");
+  // The count is the GROUP's size, not the panel's: two of three seats share a family, so their agreement is
+  // "one voice, not 2" — a note saying "not 3" tells the synthesis to discount the independent third seat too.
+  ok(/count it as one voice, not 2\b/.test(rt.calls.find((c) => c.label === "synthesis")?.prompt ?? ""),
+    "debate #172: the independence note counts the shared GROUP (2), not the whole panel (3)");
   ok(r?.distinctModels === 2,
     `debate #172: distinctModels counts families, not route spellings (got ${r?.distinctModels})`);
 }

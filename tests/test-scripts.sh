@@ -2408,6 +2408,16 @@ printf 'PANEL=claude-opus-5,glm-5.3\nPANEL_FALLBACK=qwen3.8-max\n' > "$PNL/ok.en
 RPOUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$PNL/ok.env" "$BASH_ABS" "$SCRIPTS/ops-render.sh" --model crawler 2>&1)"; PRC=$?
 check "#172 ops-render.sh skips PANEL lines (a render in a panel-declaring project does not die)" \
   "$([ "$PRC" -eq 0 ] && [ "$RPOUT" = "glm-5.3-flash" ] && echo 0 || echo 1)"
+# The skip is a WHOLE-KEY match: a seat whose name merely CONTAINS a panel key (ANEL is inside PANEL) is a real
+# seat binding. A substring matcher would skip it silently — the seat never registers and no error says why.
+printf 'ANEL=JUDGMENT\n' > "$PNL/seat.env"
+RPOUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$PNL/seat.env" "$BASH_ABS" "$SCRIPTS/ops-render.sh" --model ANEL 2>&1)"; PRC=$?
+check "#172 a seat whose NAME contains a panel key is still a seat (the renderer skip is whole-key, not substring)" \
+  "$([ "$PRC" -eq 0 ] && [ "$RPOUT" = "claude-opus-5" ] && echo 0 || echo 1)"
+CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$PNL/seat.env" CC_PROXY_PORT=1 \
+  "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" --json >/dev/null 2>&1; PRC=$?
+check "#172 the resolver reads that seat line as a seat line too (not as a malformed panel key)" \
+  "$([ "$PRC" -eq 0 ] && echo 0 || echo 1)"
 POUT="$(CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT="$PNL/ok.env" CC_OPERATOR_CATALOGUE="$PNL/all.json" \
   "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" --panel 2>/dev/null)"
 check "#172 a tiers.env PANEL line reaches --panel (the declaration is read, not only --set)" \
