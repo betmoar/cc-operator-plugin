@@ -90,12 +90,12 @@ check_panel() {
     _e="${_rest%%,*}"; _rest="${_rest#*,}"; _n=$((_n + 1))
     check_routable "$1" "${_e#persona:}"
   done
-  case "$1" in
-    PANEL) [ "$_n" -ge 2 ] && [ "$_n" -le 5 ] \
-      || die "PANEL has $_n entries; debate.js seats 2-5 (one model cannot debate)" ;;
-    PANEL_FALLBACK) [ "$_n" -le 5 ] \
-      || die "PANEL_FALLBACK has $_n entries; debate.js takes at most 5 spares" ;;
-  esac
+  if [ "$1" = PANEL ] && { [ "$_n" -lt 2 ] || [ "$_n" -gt 5 ]; }; then
+    die "PANEL has $_n entries; debate.js seats 2-5 (one model cannot debate)"
+  fi
+  if [ "$1" = PANEL_FALLBACK ] && [ "$_n" -gt 5 ]; then
+    die "PANEL_FALLBACK has $_n entries; debate.js takes at most 5 spares"
+  fi
 }
 
 set_tier() { # set_tier NAME id source
