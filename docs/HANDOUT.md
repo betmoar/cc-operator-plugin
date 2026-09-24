@@ -30,7 +30,7 @@ one.
 | ------------- | ------------------------ | -------------------------------------- | ------------------- |
 | **JUDGMENT**  | `claude-opus-5`          | Hard calls: design, review, verdicts   | Highest / smartest  |
 | **IMPLEMENT** | `claude-sonnet-5`        | Writing real code, multi-step builds   | Mid / capable       |
-| **MECHANICAL**| `glm-5-turbo`            | Bulk generation, reading shards        | Cheap / fast        |
+| **MECHANICAL**| `glm-5.3-flash`          | Bulk generation, reading shards        | Cheap / fast        |
 | **RECON**     | `claude-haiku-4-5-…`     | Lookups, searches, "where is X?"       | Cheap / fast        |
 
 **The golden rule:** *judgment work never runs below judgment tier.* If a task
@@ -193,7 +193,7 @@ A `tiers.env` line is just `NAME=model-id`, e.g.:
 # Use a different Opus-class model for judgment calls
 JUDGMENT=claude-opus-5
 # Route cheap work to a faster local model
-MECHANICAL=glm-5-turbo
+MECHANICAL=glm-4.7
 ```
 Run `/cc-operator:tiers` to see the current bindings and provenance (where each
 value came from). Add `--check` to verify every id is actually reachable on

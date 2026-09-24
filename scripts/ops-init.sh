@@ -251,10 +251,10 @@ fi
 if [ ! -f "$OPDIR/tiers.env" ]; then
   cat > "$OPDIR/tiers.env" <<'EOF'
 # Tier → model-id bindings (cc-proxy routes by id shape: glm-*, vendor/model,
-# claude-*). Uncomment and edit to repoint a tier, e.g. MECHANICAL=glm-5-turbo.
+# claude-*). Uncomment and edit to repoint a tier, e.g. MECHANICAL=glm-4.7.
 #JUDGMENT=claude-opus-5
 #IMPLEMENT=claude-sonnet-5
-#MECHANICAL=glm-5-turbo
+#MECHANICAL=glm-5.3-flash
 #RECON=claude-haiku-4-5-20251001
 #
 # Seat → tier overrides (optional; 'op-' prefix optional). Default seats:

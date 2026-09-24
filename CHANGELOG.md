@@ -9,7 +9,88 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
-## [0.12.4] - 2026-09-23
+## [0.12.5] - 2026-09-23
+
+The cheap tier stops paying more for less, and brainstorm's seats stop giving one answer
+four times.
+
+### Added
+
+- **`ops-tiers.sh --suggest` (#153).** Reports which tier bindings are dominated, and
+  changes nothing. It reads cc-proxy's `~/.claude/cc-proxy/grades.json`, or the path in
+  `CC_OPERATOR_GRADES`. A binding counts as dominated when some graded model scores at least
+  as high and costs no more on input or output, and is strictly better on at least one of
+  the three. It does NOT pick the cheapest model above a capability floor: run over the live
+  table, that `min()` puts three of the four tiers on one model, and then the judgment seat
+  is no stronger than the seat it reviews. The report prints the table's `fetched_at`, so a
+  stale suggestion shows how stale it is, and an ungraded id is reported as ungraded. It
+  fails open: cc-proxy is optional, so an absent, oversized or unparseable table, or a
+  missing `python3`, produces a note at exit 0. The table is read where cc-proxy keeps it
+  and never copied into this repo; that copying is the class 0.8.3 removed. Every string
+  in the table is treated as untrusted. Control bytes are replaced before printing, so a
+  model key carrying terminal escapes (alternate screen, title bar) cannot repaint the
+  screen. A lone UTF-16 surrogate prints as a replacement character instead of ending the
+  report in a traceback. Both were reproduced in review. The PR review added three more.
+  - A table entry without a numeric score or price is counted in the summary line instead of
+    dropped silently. The live table has 8 such entries out of 32, so "not dominated" is now
+    qualified by what was actually compared.
+  - A bare binding matches its vendor-prefixed grade key (`z-ai/…`). The report names the key
+    it matched, and says AMBIGUOUS when two prefixed keys carry different numbers.
+  - A python failure after some rows were printed marks those rows INCOMPLETE. Before this,
+    the fallback note claimed nothing had been read at all.
+
+### Changed
+
+- **The baked MECHANICAL default is `glm-5.3-flash` (#153).** It was `glm-5-turbo`. By
+  cc-proxy's grades (fetched 2026-09-17, both entries `measured`), the old default was
+  dominated on every axis: 61.69 vs 66.04 capability, $1.20 vs $0.09 input and $4.00 vs
+  $0.30 output per Mtok. That is 13× the price for a lower score, and it applied to every
+  project that had not overridden the tier. Changed in both copies (`ops-tiers.sh`,
+  `ops-render.sh`), the `tiers.env` scaffold, and `docs/HANDOUT.md`. The default carries
+  a dated comment, so the next reader knows when it was last checked.
+- **brainstorm assigns each direction seat a stance (#84).** On a live run, four seats
+  with one shared prompt (differing only by "Direction i of N") came back with four
+  checksum schemes for a single design. The directions that questioned the premise never
+  appeared. Each seat now gets one of six generative stances: smallest change, challenge
+  the premise, remove the cause, move the responsibility, detect and recover, borrow. The
+  order is chosen so that the 2-seat minimum still keeps the premise challenge. Converge is
+  told to keep one ranked entry per direction, so it cannot flatten them back into
+  `sharedConstraints`.
+  Measured on the original #82 topic, with 16 seats (4 unassigned, 4 assigned, on each of
+  `glm-5.3-flash` and `glm-5-turbo`, with no tools and the context inlined). A blind judge
+  at judgment tier clustered them by mechanism, twice. The number of distinct mechanisms
+  per 4-seat run did NOT change: 3 unassigned, against 3 or 4 assigned. The distribution
+  did. One family, "validate the whole set before any write", held 4 of the 8 unassigned
+  seats and 0 or 1 of the 8 assigned ones, depending on the judge run. Two mechanisms
+  appeared only in the assigned arm: moving the check to build time (2 or 3 seats), and the
+  in-loop smallest fix (2 seats). This setup did not reproduce #84's four-way convergence
+  either: one unassigned seat derived the set from the directory, which #84 lists as a
+  direction that never appeared. The judge was blind to which arm a seat came from, but
+  not fully to its stance: two seats echoed their stance label ("REMOVE THE CAUSE",
+  "smallest change").
+  A second measurement ran the SHIPPED path: `brainstorm.js` through the Workflow runtime,
+  op-author seats with tools on, `glm-5.3-flash`, on a different topic (#152's packet
+  triage), unassigned (`3cfe597^`) against assigned at N=2 and N=6, one run each. All 16
+  direction seats returned the schema: none rate-limited, none dead. (With `claude -p
+  --json-schema`, 15 of 24 had returned prose.) The seats barely used the tools: 6 Bash
+  calls across 16 seats. Two blind judge runs produced the same 5 clusters. Distinct
+  mechanisms per run: N=6 3 unassigned against 4 assigned; N=2 2 against 2. The dominant
+  family, "one extra cheap seat judges the packet", held 4 of 6 unassigned seats and 3 of
+  6 assigned ones. A deterministic lint appeared only with stances (smallest change at
+  N=2, borrow at N=6). At N=2 the premise challenge landed outside the smallest-change
+  cluster. At N=6, detect-and-recover, smallest change and move-the-responsibility all
+  collapsed into the dominant family, so detect bought no mechanism of its own. Borrow
+  did.
+  Across both topics the finding is the same: stances change WHICH directions appear and
+  add at most one per run. #84's four-way convergence did not come back. The pre-#84
+  script was re-run on the #82 topic, N=4, `glm-5-turbo`, through the Workflow runtime,
+  twice. Two blind judges put at most 2 of 4 seats in one family in every run. With the
+  two no-tools baselines above, that is 1 converged run (2026-08-22) against 4 that did
+  not, so #84 is closed as not reproducible: a single run, most likely chance. The stances
+  stay, on the measured grounds above, not as a fix for #84. Model diversity across
+  vendors is #172.
+  What the stub suite can check is the input: N distinct stances at N=2, 4 and 6. Output
+  quality is still #79's gap.
 
 A criterion that stopped being answerable gets its own verdict word, and the rework cap says
 what it cannot see.

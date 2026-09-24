@@ -18,6 +18,7 @@
 #   ops-tiers.sh --set MECHANICAL=glm-4.7
 #   ops-tiers.sh --check              → also verify against the proxy catalogue
 #   ops-tiers.sh --show               → human-readable table + provenance
+#   ops-tiers.sh --suggest            → report bindings a graded model dominates
 # Tier values and their SRC_* provenance twins are set and read through `eval`
 # (bash 3.2 on macOS has no associative arrays), so shellcheck cannot see either
 # side of the use. File-scoped because the pattern recurs throughout.
@@ -29,10 +30,14 @@ USER_FILE="${CC_OPERATOR_TIERS_USER:-$HOME/.claude/cc-operator/tiers.env}"
 PROJ_FILE="${CC_OPERATOR_TIERS_PROJECT:-.operator/tiers.env}"
 
 # Baked defaults — a starting point, not a catalogue claim (see check_routable).
+# Nothing re-reads them, so each is only as current as its last check: `--suggest`
+# is that check (#153). MECHANICAL last checked 2026-09-23 against cc-proxy's
+# grades.json (fetched 2026-09-17): glm-5.3-flash 66.04 at $0.09/$0.30 dominated
+# the previous glm-5-turbo 61.69 at $1.20/$4.00 on both axes.
 TIER_NAMES="JUDGMENT IMPLEMENT MECHANICAL RECON"
 JUDGMENT="claude-opus-5"
 IMPLEMENT="claude-sonnet-5"
-MECHANICAL="glm-5-turbo"
+MECHANICAL="glm-5.3-flash"
 RECON="claude-haiku-4-5-20251001"
 
 # provenance, parallel to TIER_NAMES
@@ -129,6 +134,7 @@ while [ $# -gt 0 ]; do
     --check) MODE=check; shift ;;
     --show)  MODE=show;  shift ;;
     --json)  MODE=json;  shift ;;
+    --suggest) MODE=suggest; shift ;;
     *) die "unknown argument '$1'" ;;
   esac
 done
@@ -162,7 +168,107 @@ catalogue_note() {
 
 [ "$MODE" = check ] && catalogue_note
 
+# Dominance report (#153) — REPORT-ONLY, never a gate, never an edit. It reads
+# cc-proxy's grades table, which cc-proxy maintains and timestamps, rather than
+# copying its facts here (the class 0.8.3 removed). "Dominated" is Pareto: some
+# graded model scores at least as high AND costs no more on either axis, strictly
+# better on one. Deliberately NOT "cheapest model above a floor": that min()
+# collapses three tiers onto one model and destroys the judgment seat being
+# stronger than the seat it reviews. Fail-OPEN: cc-proxy is optional, so an
+# absent, oversized or unparseable table is a note and exit 0.
+GRADES="${CC_OPERATOR_GRADES:-$HOME/.claude/cc-proxy/grades.json}"
+suggest_report() {
+  if [ ! -f "$GRADES" ]; then
+    echo "note: no grades table at $GRADES — nothing to compare against (cc-proxy is optional)"
+    return 0
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "note: python3 not found — cannot read $GRADES; bindings unchecked"
+    return 0
+  fi
+  _pairs=""
+  for n in $TIER_NAMES; do
+    eval "id=\$$n"; eval "src=\$SRC_$n"
+    _pairs="$_pairs $n=$id=$src"
+  done
+  # shellcheck disable=SC2086  # _pairs is space-separated NAME=id=src words; ids are charset-guarded
+  # A non-zero python exit can come AFTER rows were printed (a crash mid-report),
+  # so the fallback must not read as "nothing was read": it disowns what is above.
+  python3 - "$GRADES" $_pairs <<'PY' || echo "note: --suggest failed partway reading $GRADES — any rows above are INCOMPLETE; bindings unchecked"
+import json, re, sys
+path, pairs = sys.argv[1], sys.argv[2:]
+# Every string below comes from ANOTHER system's file on its way to a terminal and
+# a model: C0/C1 controls (ESC, BEL, CSI) are replaced, so a model key cannot
+# repaint the screen; errors="replace" keeps a lone surrogate from killing print().
+if hasattr(sys.stdout, "reconfigure"):   # 3.7+; older pythons keep strict stdout
+    sys.stdout.reconfigure(errors="replace")
+def clean(v, cap=120):
+    return re.sub(r"[\x00-\x1f\x7f-\x9f]", "?", str(v))[:cap]
+with open(path, "rb") as f:
+    raw = f.read(1048577)
+if len(raw) > 1048576:
+    print(f"note: {path} exceeds 1MB — not read; bindings unchecked"); sys.exit(0)
+try:
+    doc = json.loads(raw.decode("utf-8"))
+    models = doc["models"]
+    assert isinstance(models, dict)
+except Exception:
+    print(f"note: {path} is not a grades table (no models{{}}) — bindings unchecked"); sys.exit(0)
+def num(v):
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+def graded(e):
+    if not isinstance(e, dict): return None
+    s, i, o = num(e.get("score")), num(e.get("input_price")), num(e.get("output_price"))
+    return None if None in (s, i, o) else (s, i, o, clean(e.get("evidence", "?"), 20))
+table = {k: g for k, g in ((k, graded(v)) for k, v in models.items()) if g}
+# An entry with no numeric score or prices is never compared — say how many, or
+# "not dominated" reads as checked against a table it was not (a string-typed
+# score is skipped here, never coerced: guessing at another system's format is
+# how a report goes quietly wrong).
+skipped = len(models) - len(table)
+def lookup(mid):
+    base = mid.split("[", 1)[0]
+    if base in table: return base, table[base]
+    # A vendor-prefixed key (`z-ai/glm-5.3-flash`) names the same model a bare
+    # binding does. Matched by last path segment only when the answer is unique.
+    tail = base.rsplit("/", 1)[-1]
+    hits = sorted(k for k in table if k.rsplit("/", 1)[-1] == tail)
+    if len({table[k] for k in hits}) == 1: return hits[0], table[hits[0]]
+    return (None, hits) if hits else (None, None)
+print(f"grades: {clean(path, 400)} (fetched_at {clean(doc.get('fetched_at', 'unknown'))}; "
+      f"attribution: {clean(doc.get('attribution', 'unstated'))})")
+found = 0
+for p in pairs:
+    name, mid, src = p.split("=", 2)
+    key, cur = lookup(mid)
+    if key is None and cur:
+        print(f"{name:<11} {mid} ({src}): AMBIGUOUS — graded under {', '.join(clean(k) for k in cur)} "
+              f"with different numbers; not compared"); continue
+    if cur is None:
+        print(f"{name:<11} {mid} ({src}): not graded — nothing to compare"); continue
+    s, i, o, ev = cur
+    if key != mid.split("[", 1)[0]: ev = f"{ev}, graded as {clean(key)}"
+    better = sorted(
+        (k, g) for k, g in table.items()
+        if g[0] >= s and g[1] <= i and g[2] <= o and (g[0] > s or g[1] < i or g[2] < o))
+    better.sort(key=lambda kg: (-kg[1][0], kg[1][1] + 3 * kg[1][2]))
+    if not better:
+        print(f"{name:<11} {mid} ({src}): not dominated (score {s:g}, ${i:g}/${o:g}, {ev})"); continue
+    found += 1
+    print(f"{name:<11} {mid} ({src}): DOMINATED (score {s:g}, ${i:g}/${o:g}, {ev}) by:")
+    for k, (bs, bi, bo, bev) in better[:3]:
+        print(f"              {clean(k)}  score {bs:g}, ${bi:g}/${bo:g} per Mtok in/out, {bev}")
+print(f"{found} dominated binding(s), compared against {len(table)} graded model(s)."
+      + (f" {skipped} table entr{'y' if skipped == 1 else 'ies'} lacked a numeric score or price and"
+         f" were NOT compared — a dominator among them is invisible here." if skipped else "")
+      + " Report only — nothing was changed; repoint a tier in tiers.env.")
+PY
+}
+
 case "$MODE" in
+  suggest)
+    suggest_report
+    ;;
   show)
     printf '%-11s %-30s %s\n' TIER MODEL SOURCE
     for n in $TIER_NAMES; do
