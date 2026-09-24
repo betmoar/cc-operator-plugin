@@ -56,6 +56,13 @@ the gate block before reading about it.
   later flag silently won. `/cc-operator:tutorial` now forwards its arguments, so the
   advertised `--keep` works. The holdout skill's `description:` is quoted: YAML read the
   unquoted ` #112` as a comment and cut the description at "the procedure".
+- **Copilot review, round 2.** `commands/tutorial.md` pasted `$ARGUMENTS` into a command
+  run under `Bash(bash:*)`, so `--keep; <anything>` became shell. It now offers `--keep` as
+  a literal and refuses any other argument. A mid-step abort (a `die`, a `set -e` exit)
+  printed no marker at all; one exit trap now ends every non-OK path in `TUTORIAL_FAILED`
+  with the exit code. `--derive` also refuses a directory below a `.claude/rules/`: a
+  codeword in a rules file reached a tool-denied process without `--setting-sources ""`
+  (measured, like `CLAUDE.local.md`).
 
 ### Verified
 

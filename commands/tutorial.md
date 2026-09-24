@@ -8,8 +8,19 @@ Run the tutorial and relay its output to the user verbatim — do not summarize 
 first. The point is that they SEE the block, not that they read about it (#75):
 
 ```
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-tutorial.sh" $ARGUMENTS
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-tutorial.sh"
 ```
+
+The one supported argument is `--keep`. If `$ARGUMENTS` is exactly `--keep`, run
+this instead, and never paste the argument text into the command yourself —
+this command's grant is `Bash(bash:*)`, so interpolated text would run as
+shell (Copilot, PR #176):
+
+```
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-tutorial.sh" --keep
+```
+
+Any other argument: say that `--keep` is the only option, and run neither.
 
 It scaffolds a throwaway git project in a temp directory, opens a tracked task,
 feeds the real `ops-stop-hook.sh` a Stop payload (exit 2 — blocked), records a

@@ -8460,6 +8460,11 @@ HOUT="$(printf 'the spec\n' | hoq --derive --dir "$H150/proj/sub" 2>&1)"; HRC=$?
 check "#150 --derive refuses a dir BELOW a CLAUDE.md (the walk-up path), before claude runs" \
   "$([ "$HRC" -eq 2 ] && printf '%s' "$HOUT" | grep -q 'CLAUDE.md is on the walk-up path' && [ ! -s "$H150/args" ] && echo 0 || echo 1)"
 : > "$H150/args"  # each refusal reads its OWN run: a leftover argv file fakes red on a guard that held
+mkdir -p "$H150/rp/.claude/rules" "$H150/rp/sub"; : > "$H150/args"
+HOUT="$(printf 'the spec\n' | hoq --derive --dir "$H150/rp/sub" 2>&1)"; HRC=$?
+check "#150 --derive refuses a dir below a .claude/rules/ (project memory, measured to reach the process)" \
+  "$([ "$HRC" -eq 2 ] && printf '%s' "$HOUT" | grep -q '.claude/rules is on the walk-up path' && [ ! -s "$H150/args" ] && echo 0 || echo 1)"
+: > "$H150/args"  # its OWN run: the case above leaves argv behind when its guard is absent
 HOUT="$(printf '  \n' | hoq --derive --dir "$H150/empty" 2>&1)"; HRC=$?
 check "#150 --derive refuses empty context (a derivation from the model's priors)" \
   "$([ "$HRC" -eq 2 ] && printf '%s' "$HOUT" | grep -q 'stdin was empty' && [ ! -s "$H150/args" ] && echo 0 || echo 1)"
@@ -8557,6 +8562,13 @@ printf '#!/usr/bin/env bash\ncat >/dev/null; echo "operator: auto-armed autobar"
 TOUT="$("$BASH_ABS" "$T75/scripts/ops-tutorial.sh" 2>&1)"; TRC=$?
 check "#75 a block for ANOTHER reason is not credited to the task (TUTORIAL_FAILED, on tutorial-demo: no)" \
   "$([ "$TRC" -eq 1 ] && printf '%s' "$TOUT" | grep -q 'on tutorial-demo: no' && echo 0 || echo 1)"
+# Copilot, PR #176: a die or set -e abort mid-step exited with NO marker, while the command promises one.
+printf '#!/usr/bin/env bash\nexit 9\n' > "$T75/scripts/ops-init.sh"
+cp "$SCRIPTS/ops-stop-hook.sh" "$T75/scripts/ops-stop-hook.sh"
+TOUT="$("$BASH_ABS" "$T75/scripts/ops-tutorial.sh" 2>&1)"; TRC=$?
+check "#75 an abort mid-step still ends in TUTORIAL_FAILED, naming the exit code" \
+  "$([ "$TRC" -eq 9 ] && printf '%s' "$TOUT" | grep -q 'TUTORIAL_FAILED: aborted mid-step (exit 9)' && echo 0 || echo 1)"
+cp "$SCRIPTS/ops-init.sh" "$T75/scripts/ops-init.sh"
 # A failing CLI piped through sed was masked by sed's 0 (no pipefail): the tutorial must stop AT that step.
 cp "$SCRIPTS/ops-stop-hook.sh" "$T75/scripts/ops-stop-hook.sh"
 printf '#!/usr/bin/env bash\necho "ops-task: refused" >&2; exit 9\n' > "$T75/scripts/ops-task.sh"
@@ -8565,8 +8577,9 @@ check "#75 a failing ops-task.sh stops the tutorial at step 2 (non-zero, never r
   "$([ "$TRC" -ne 0 ] && ! printf '%s' "$TOUT" | grep -q 'Stop hook exit code' && echo 0 || echo 1)"
 rm -rf "$T75"
 # shellcheck disable=SC2016  # literal placeholder text, as above.
-check "#75 commands/tutorial.md runs the script through \${CLAUDE_PLUGIN_ROOT}, forwards \$ARGUMENTS (--keep), under a grant that covers it" \
-  "$(grep -qF 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-tutorial.sh" $ARGUMENTS' "$CMDDIR/tutorial.md" \
+check "#75 commands/tutorial.md runs the script through \${CLAUDE_PLUGIN_ROOT}, offers --keep as a LITERAL (never interpolates \$ARGUMENTS under Bash(bash:*)), under a grant that covers it" \
+  "$(grep -qF 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-tutorial.sh" --keep' "$CMDDIR/tutorial.md" \
+     && ! grep -qE 'ops-tutorial\.sh"? *\$ARGUMENTS' "$CMDDIR/tutorial.md" \
      && awk 'BEGIN{n=0} /^---$/{n++; if(n==2) exit; next} n==1' "$CMDDIR/tutorial.md" | grep -qF 'allowed-tools: Bash(bash:*)' && echo 0 || echo 1)"
 # Copilot, PR #176: YAML reads ` #` in a PLAIN scalar as a comment, so an unquoted description citing `#112`
 # was cut at "the procedure" — the skill's trigger text silently lost its second half. Every frontmatter

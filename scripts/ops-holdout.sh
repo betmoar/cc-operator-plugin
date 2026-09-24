@@ -86,8 +86,10 @@ ask() {
 refuse_ancestor_memory() { # refuse_ancestor_memory <physical dir>
   local d="$1" f
   while :; do
-    for f in "$d/CLAUDE.md" "$d/CLAUDE.local.md" "$d/.claude/CLAUDE.md"; do
-      [ "$f" = "$HOME/.claude/CLAUDE.md" ] && continue
+    # .claude/rules/*.md is project memory too: measured, a rules-file codeword
+    # reached a tool-denied process without --setting-sources "" (Copilot, PR #176).
+    for f in "$d/CLAUDE.md" "$d/CLAUDE.local.md" "$d/.claude/CLAUDE.md" "$d/.claude/rules"; do
+      [ "$d" = "$HOME" ] && case "$f" in "$HOME/.claude/"*) continue ;; esac
       [ -e "$f" ] && die "$f is on the walk-up path — a derivation launched below it could inherit the project's map. Use a directory outside every project (a fresh mktemp -d)"
     done
     [ "$d" = "/" ] && break

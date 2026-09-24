@@ -37,8 +37,19 @@ command -v git >/dev/null 2>&1 || die "git not found — the tutorial project is
 
 T="$(mktemp -d "${TMPDIR:-/tmp}/ops-tutorial.XXXXXX")"
 T="$(cd -P "$T" && pwd -P)"
-if [ "$KEEP" -eq 1 ]; then echo "tutorial project kept at: $T"
-else trap 'rm -rf "$T"' EXIT; fi
+# ONE exit trap: cleanup, and the failure marker for every path that is not
+# the OK ending — a die or a set -e abort mid-step used to exit with no marker
+# at all, while commands/tutorial.md promises TUTORIAL_FAILED (Copilot, PR #176).
+DONE_OK=0
+# shellcheck disable=SC2317,SC2329  # invoked by the EXIT trap below (0.10 and 0.11 name it differently)
+on_exit() {
+  local rc=$?
+  [ "$DONE_OK" -eq 1 ] || [ "$rc" -eq 1 ] \
+    || echo "TUTORIAL_FAILED: aborted mid-step (exit $rc) — the output above names the step that failed" >&2
+  [ "$KEEP" -eq 1 ] || rm -rf "$T"
+}
+trap on_exit EXIT
+[ "$KEEP" -eq 0 ] || echo "tutorial project kept at: $T"
 SID="tutorial-session"
 step() { printf '\n== %s\n' "$*"; }
 stop_hook() { # stop_hook → sets HRC, prints the hook's stderr indented
@@ -85,6 +96,7 @@ if [ "$BLOCK_RC" -eq 2 ] && [ "$BLOCK_MINE" -eq 1 ] && [ "$ALLOW_RC" -eq 0 ]; th
   echo "TUTORIAL_OK: the Stop hook blocked on an open task (2) and allowed after its verdict (0)"
   echo "Not shown: change 2+ files with NO task open and the hook opens one for you ('autobar', #85) — the"
   echo "charter's ENGAGEMENT CONTRACT clause 1, enforced. Next: /cc-operator:start in your own project."
+  DONE_OK=1
   exit 0
 fi
 echo "TUTORIAL_FAILED: expected block=2 (on tutorial-demo) then allow=0, observed block=$BLOCK_RC (on tutorial-demo: $([ "$BLOCK_MINE" -eq 1 ] && echo yes || echo no)) allow=$ALLOW_RC — the gate did not behave as the charter says" >&2
