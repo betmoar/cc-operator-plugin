@@ -9,6 +9,47 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+A debate now seats three different model families by default, and says when two of its
+seats are one model.
+
+### Added
+
+- **A cross-vendor debate panel, declared once (#172).** `tiers.env` gains two keys:
+  `PANEL=claude-opus-5,glm-5.3,deepseek-flash` and
+  `PANEL_FALLBACK=qwen3.8-max,persona:claude-opus-5`. Those are the defaults, and they are
+  the user's choice, not a capability ranking. `ops-tiers.sh --panel` resolves them against
+  what the proxy routes and prints `{"models":[…],"spares":[…]}`.
+  - An id counts as available when it is a harness-served `claude-*` id, or when it is listed
+    in `/v1/models` and not marked `usable:false`.
+  - Diversity is judged by model family, not by route: `qwen:glm-5.3` is GLM, so it cannot
+    take a second seat beside `glm-5.3`.
+  - A panel that comes up short says so on stderr.
+  - With no proxy, the declared panel is printed unchecked, with a note (fail-open).
+  - Only the list of routable ids is read, never `grade` (#121).
+  - `commands/debate.md` resolves the panel instead of asking for hand-typed ids.
+  - `ops-render.sh` skips the panel lines. Without that skip, every render in a project that
+    declares a panel died on `seat 'PANEL' bound to unknown tier` (measured). The key set is
+    pinned in parity by `check_resolver_renderer_parity`.
+- **`debate.js` takes `persona:<id>` and `spares` (#172).**
+  - A persona seat runs on the bare id and carries an assigned temperament in all three rounds.
+  - The synthesis is told, by letter only, which seats share one model, so their agreement
+    counts as one voice. The result reports `distinctModels`.
+  - A seat that dies at opening is re-seated on the next unused spare and keeps its letter. The
+    move is reported in `reseated`. `agent()` returns `null` for an unroutable id rather than
+    throwing (probed), which is what makes the re-seat possible.
+
+### Measured
+
+- **First controlled live debate (#79).** The panel ran on Opus, GLM-5.3 and deepseek-flash,
+  with 10 agents, 0 dead and 331,598 tokens. The case carried a planted error: that
+  `CAPS_MAX_BYTES` is 64 KiB. It is 2 MiB (`scripts/lib/caps.sh:133`).
+  - All three seats refuted the error in their openings, independently, each citing
+    `caps.sh:133`. Each also named the two 65536 literals the error was built from (the cache
+    guards at `caps.sh:579` and `:608`). Checked against the code by hand.
+  - The seats disagreed where the numbers were hard. One seat withdrew its own claim about
+    which bound fires first. The synthesis kept a contested headroom figure open rather than
+    averaging it away.
+
 ## [0.12.5] - 2026-09-23
 
 The cheap tier stops paying more for less, and brainstorm's seats stop giving one answer
