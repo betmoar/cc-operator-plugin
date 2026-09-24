@@ -9,6 +9,46 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.12.8] - 2026-09-24
+
+A holdout can now be derived from inside the plugin, and a first-time user can watch
+the gate block before reading about it.
+
+### Added
+
+- **`skills/holdout` + `scripts/ops-holdout.sh` (#150).** The procedure #112 learned in
+  five rounds, as a skill: prove the denial, derive, reproduce every disagreement before
+  deciding defect vs over-assertion, dispatch repairs back (never hand-edit), cap rework
+  at two, accept only after a mutation drives it red, gate on a marker. The CLI owns the
+  one thing a skill cannot enforce, the denial itself: `--derive` runs `claude -p` with
+  `--tools ""`, `--setting-sources ""` and `--strict-mcp-config` from an EMPTY directory,
+  refusing a non-empty dir, an ancestor `CLAUDE.md` and empty context. `--canary`
+  measures the property on this machine's claude, using a planted file in the cwd and a
+  codeword in an ancestor `CLAUDE.md`. Measured live on haiku: PASS as shipped. Without
+  `--setting-sources ""` the codeword leaks (red), and with `--tools Read` the file
+  leaks (red). Also measured: `--tools ""` alone still loads the user's and the project's
+  `CLAUDE.md`, so a tool-denied process is not independent without the second flag.
+- **`/cc-operator:tutorial` + `scripts/ops-tutorial.sh` (#75).** A throwaway git project,
+  one tracked task, and the real Stop hook fed a Stop payload: exit 2 (blocked), then a
+  verdict row with evidence through the installed CLI, then exit 0. It prints
+  `TUTORIAL_OK` only when it observed both, and a copy whose hook never blocks fails it
+  with `TUTORIAL_FAILED`. The README gains a Getting started section pointing at it.
+- **Where a workflow's result goes (#75).** `commands/{brainstorm,plan,debate,review}.md`
+  each say it, because a workflow cannot publish: specs and plans are inputs to later
+  work and go in git (`plan.md` now grants `Write`). A brainstorm bundle, a debate, or a
+  panel report can be published as an artifact when the session has a tool for it.
+  Ask once per session.
+
+### Verified
+
+- **`implement` has its first controlled live run (#79).** A fixture repo carried an
+  unlabelled off-by-one (`can_afford` used `<`, `spend` gates on `>`). A held-out probe
+  the seat never saw found 21 mismatches. One mechanic seat on `claude-sonnet-5`
+  (confirmed from the agent log, 37,642 tokens, 23s) returned DONE. Checked outside its
+  report: the probe then found 0 mismatches, the diff was one line (`<` → `<=`) with
+  `spend` untouched, and its new regression test fails on the pre-fix file (1 failed,
+  2 passed).
+
 ## [0.12.7] - 2026-09-24
 
 The #172 panel's review follow-ups (#174), and #138's priced omission moved into the tree.

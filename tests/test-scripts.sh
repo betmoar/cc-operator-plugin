@@ -8418,6 +8418,109 @@ check "#148 \`[ \"\$x\" -eq \"\$y\" ]\` errors on an empty operand where \`=\` s
 rm -rf "$_V148"
 
 
+########################################################################
+echo "-- Case: #150 a holdout derives in a process that cannot read the code (--derive, --canary)"
+# The derivation's independence is the FLAG SET, so the flags are pinned by what a stub `claude` RECEIVES, never
+# by grepping the script (a comment naming a flag would satisfy a grep). No model is called: the stub records its
+# argv and answers from a script. The LIVE property (a planted file and an ancestor CLAUDE.md stay invisible) is
+# `ops-holdout.sh --canary`, measured on a real claude with each denial removed in turn (both red, PR body).
+HO="$SCRIPTS/ops-holdout.sh"
+H150="$(newproj)"; mkdir -p "$H150/bin" "$H150/empty" "$H150/proj/sub"
+# The stub PATH, built ONCE and read through printenv: a $PATH expansion here pairs with the #127 block's
+# subshell PATH= and trips SC2030/SC2031 (info) on BOTH lines.
+HPATH="$H150/bin:$(printenv PATH)"
+cat > "$H150/bin/claude" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$STUB_ARGS"; pwd -P > "$STUB_CWD"; cat > "$STUB_STDIN"; printf '%s\n' "${STUB_REPLY:-derived}"
+STUB
+chmod +x "$H150/bin/claude"
+: > "$H150/proj/CLAUDE.md"
+hoq() { env PATH="$HPATH" STUB_ARGS="$H150/args" STUB_CWD="$H150/cwd" STUB_STDIN="$H150/stdin" "$BASH_ABS" "$HO" "$@"; }
+HOUT="$(printf 'the spec\n' | hoq --derive --dir "$H150/empty" 2>&1)"; HRC=$?
+check "#150 --derive pipes the context to claude -p and prints the answer (rc 0)" \
+  "$([ "$HRC" -eq 0 ] && [ "$HOUT" = "derived" ] && [ "$(cat "$H150/stdin" 2>/dev/null)" = "the spec" ] && echo 0 || echo 1)"
+# Each denial read back from argv, as the EXACT argument pair: `--tools` followed by an EMPTY argument.
+_hargs="$(cat "$H150/args" 2>/dev/null)"
+check "#150 --derive denies every tool (--tools \"\" reaches claude as an empty argument)" \
+  "$(printf '%s\n' "$_hargs" | awk 'p=="--tools" && $0=="" {f=1} {p=$0} END {exit !f}' && echo 0 || echo 1)"
+check "#150 --derive loads no setting source (--setting-sources \"\") — no CLAUDE.md, user or project" \
+  "$(printf '%s\n' "$_hargs" | awk 'p=="--setting-sources" && $0=="" {f=1} {p=$0} END {exit !f}' && echo 0 || echo 1)"
+check "#150 --derive runs -p with --strict-mcp-config (no MCP server as a second read path)" \
+  "$(printf '%s\n' "$_hargs" | grep -qx -- '-p' && printf '%s\n' "$_hargs" | grep -qx -- '--strict-mcp-config' && echo 0 || echo 1)"
+check "#150 --derive runs FROM the empty --dir (the process's cwd holds nothing it could be shown)" \
+  "$([ "$(cat "$H150/cwd" 2>/dev/null)" = "$(cd -P "$H150/empty" && pwd -P)" ] && echo 0 || echo 1)"
+: > "$H150/args"; printf 'x\n' > "$H150/empty/leftover"
+HOUT="$(printf 'the spec\n' | hoq --derive --dir "$H150/empty" 2>&1)"; HRC=$?
+check "#150 --derive refuses a NON-EMPTY dir, before claude runs" \
+  "$([ "$HRC" -eq 2 ] && printf '%s' "$HOUT" | grep -q 'is not empty' && [ ! -s "$H150/args" ] && echo 0 || echo 1)"
+rm -f "$H150/empty/leftover"
+: > "$H150/args"  # each refusal reads its OWN run: a leftover argv file fakes red on a guard that held
+HOUT="$(printf 'the spec\n' | hoq --derive --dir "$H150/proj/sub" 2>&1)"; HRC=$?
+check "#150 --derive refuses a dir BELOW a CLAUDE.md (the walk-up path), before claude runs" \
+  "$([ "$HRC" -eq 2 ] && printf '%s' "$HOUT" | grep -q 'CLAUDE.md is on the walk-up path' && [ ! -s "$H150/args" ] && echo 0 || echo 1)"
+: > "$H150/args"  # each refusal reads its OWN run: a leftover argv file fakes red on a guard that held
+HOUT="$(printf '  \n' | hoq --derive --dir "$H150/empty" 2>&1)"; HRC=$?
+check "#150 --derive refuses empty context (a derivation from the model's priors)" \
+  "$([ "$HRC" -eq 2 ] && printf '%s' "$HOUT" | grep -q 'stdin was empty' && [ ! -s "$H150/args" ] && echo 0 || echo 1)"
+# --canary: the stub either echoes the planted tokens (a LEAK) or answers NONE. It reads the planted file and the
+# ancestor CLAUDE.md itself when STUB_LEAK is set, which is what a claude with the denial broken would do.
+cat > "$H150/bin/claude" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+case "${STUB_LEAK:-}" in
+  file) cat planted.txt ;;
+  mem) grep -ho 'HOLDOUT-MEMORY-[0-9]*-[0-9]*' ../CLAUDE.md ;;
+  *) echo NONE ;;
+esac
+STUB
+HOUT="$(env PATH="$HPATH" "$BASH_ABS" "$HO" --canary 2>&1)"; HRC=$?
+check "#150 --canary passes when neither planted token comes back (rc 0)" \
+  "$([ "$HRC" -eq 0 ] && printf '%s' "$HOUT" | grep -q 'canary PASS' && echo 0 || echo 1)"
+HOUT="$(env STUB_LEAK=file PATH="$HPATH" "$BASH_ABS" "$HO" --canary 2>&1)"; HRC=$?
+check "#150 --canary FAILS (rc 1) when the process can read a file in its cwd, and says which channel" \
+  "$([ "$HRC" -eq 1 ] && printf '%s' "$HOUT" | grep -q 'READ a file in its cwd' && echo 0 || echo 1)"
+HOUT="$(env STUB_LEAK=mem PATH="$HPATH" "$BASH_ABS" "$HO" --canary 2>&1)"; HRC=$?
+check "#150 --canary FAILS (rc 1) when the process sees an ancestor CLAUDE.md, and says which channel" \
+  "$([ "$HRC" -eq 1 ] && printf '%s' "$HOUT" | grep -q 'SAW an ancestor CLAUDE.md' && echo 0 || echo 1)"
+printf '#!/usr/bin/env bash\ncat >/dev/null\n' > "$H150/bin/claude"
+HOUT="$(env PATH="$HPATH" "$BASH_ABS" "$HO" --canary 2>&1)"; HRC=$?
+check "#150 --canary refuses an EMPTY answer (silence is not evidence of denial)" \
+  "$([ "$HRC" -eq 2 ] && printf '%s' "$HOUT" | grep -q 'returned nothing' && echo 0 || echo 1)"
+# shellcheck disable=SC2016  # the ${CLAUDE_PLUGIN_ROOT} placeholder is the LITERAL text grepped for.
+check "#150 the holdout skill ships and prescribes the CLI through \${CLAUDE_PLUGIN_ROOT}" \
+  "$(grep -q '^name: holdout$' "$REPO/skills/holdout/SKILL.md" 2>/dev/null \
+     && grep -qF 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-holdout.sh" --canary' "$REPO/skills/holdout/SKILL.md" \
+     && grep -qF 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-holdout.sh" --derive' "$REPO/skills/holdout/SKILL.md" && echo 0 || echo 1)"
+rm -rf "$H150"
+
+########################################################################
+echo "-- Case: #75 /cc-operator:tutorial shows the real Stop hook block, then clear"
+# The tutorial's acceptance criterion is the BLOCK, so the case asserts the exit codes the script observed from
+# the shipped hook, and a mutated copy whose hook never blocks must fail the tutorial (it may not narrate a block).
+TOUT="$("$BASH_ABS" "$SCRIPTS/ops-tutorial.sh" 2>&1)"; TRC=$?
+check "#75 the tutorial observes the hook BLOCK (2) on an open task and ALLOW (0) after the verdict" \
+  "$([ "$TRC" -eq 0 ] && printf '%s' "$TOUT" | grep -q 'Stop hook exit code: 2 (BLOCKED' \
+     && printf '%s' "$TOUT" | grep -q 'Stop hook exit code: 0 (allowed)' && printf '%s' "$TOUT" | grep -q '^TUTORIAL_OK' && echo 0 || echo 1)"
+check "#75 the tutorial's verdict row carries a source stamp (the row the gate accepted, not a narration)" \
+  "$(printf '%s' "$TOUT" | grep -qE '\| tutorial-demo \| .* @[0-9a-f]{12}(\+dirty)? \| PASS \|' && echo 0 || echo 1)"
+T75="$(newproj)"; mkdir -p "$T75/scripts/lib"; cp -R "$REPO/templates" "$T75/templates"
+cp "$SCRIPTS"/*.sh "$T75/scripts/"; cp "$SCRIPTS"/lib/*.sh "$T75/scripts/lib/"
+printf '#!/usr/bin/env bash\ncat >/dev/null; exit 0\n' > "$T75/scripts/ops-stop-hook.sh"
+TOUT="$("$BASH_ABS" "$T75/scripts/ops-tutorial.sh" 2>&1)"; TRC=$?
+check "#75 a hook that never blocks FAILS the tutorial (rc 1, TUTORIAL_FAILED) — it cannot narrate a block" \
+  "$([ "$TRC" -eq 1 ] && printf '%s' "$TOUT" | grep -q 'TUTORIAL_FAILED: .* block=0' && echo 0 || echo 1)"
+rm -rf "$T75"
+# shellcheck disable=SC2016  # literal placeholder text, as above.
+check "#75 commands/tutorial.md runs the script through \${CLAUDE_PLUGIN_ROOT} under a grant that covers it" \
+  "$(grep -qF 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-tutorial.sh"' "$CMDDIR/tutorial.md" \
+     && awk 'BEGIN{n=0} /^---$/{n++; if(n==2) exit; next} n==1' "$CMDDIR/tutorial.md" | grep -qF 'allowed-tools: Bash(bash:*)' && echo 0 || echo 1)"
+for _rc in brainstorm plan debate review; do
+  check "#75 commands/$_rc.md says where the workflow's result goes (a workflow cannot publish)" \
+    "$(grep -q 'Where the result goes' "$CMDDIR/$_rc.md" && echo 0 || echo 1)"
+done
+check "#75 commands/plan.md grants Write for the plan of record it prescribes writing" \
+  "$(awk 'BEGIN{n=0} /^---$/{n++; if(n==2) exit; next} n==1' "$CMDDIR/plan.md" | grep -q 'allowed-tools:.*Write' && echo 0 || echo 1)"
+
 if [ "$FAIL" -ne 0 ]; then
   echo "== failed cases =="
   printf '%s\n' "$FAILED_NAMES" | sed '/^$/d'

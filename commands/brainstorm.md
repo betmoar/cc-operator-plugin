@@ -36,3 +36,11 @@ Explore `$ARGUMENTS` with the brainstorm workflow, before a spec exists.
 4. **Write the answers down.** The approved direction is the input to the plan
    workflow, and today nothing carries it there but you: a design that lives
    only in this conversation does not survive a compaction (`docs/CYCLE.md` §2).
+
+5. **Where the result goes.** The workflow returns data and has no filesystem or
+   publishing tool, so the destination is yours to choose (#75). Ask the user
+   ONCE per session, not per run: a brainstorm bundle is read once by a human
+   and then acted on, so it suits an artifact or shared document when this
+   session has a tool that publishes one; otherwise answer inline. The approved
+   DIRECTION is different — it goes into the spec (`/cc-operator:spec`), because
+   it is an input to later work and belongs in git.

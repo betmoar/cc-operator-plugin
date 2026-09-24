@@ -43,3 +43,9 @@ command exists for.
 **A REFUTED verdict is a hard stop and cannot be outvoted.** Relay the panel's
 findings and the adversarial verdict as they come back; do not summarize a
 REFUTED into a list of concerns.
+
+
+**Where the result goes.** Findings that change code become verdict rows and
+commits, not a document. A panel report the user wants to read or share can be
+published as an artifact when this session has a tool for it (#75); ask once
+per session, and never let the published copy replace the ledger row.
