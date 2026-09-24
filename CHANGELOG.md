@@ -9,6 +9,8 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.12.6] - 2026-09-24
+
 A debate now seats three different model families by default, and says when two of its
 seats are one model.
 
