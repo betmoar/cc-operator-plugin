@@ -47,8 +47,8 @@ SRC_JUDGMENT="default"; SRC_IMPLEMENT="default"
 SRC_MECHANICAL="default"; SRC_RECON="default"
 
 # The debate panel (#172): comma-separated ids, one seat each. A panel on ONE
-# vendor converges (measured on #84's data: two glm models never separated a
-# mechanism), so the default spans three families. PANEL_FALLBACK is walked in
+# vendor converges (measured in #172: 16 seats on two glm models clustered by
+# stance arm, never by model), so the default spans three families. PANEL_FALLBACK is walked in
 # order when a panel seat is unroutable; a `persona:<id>` entry seats <id> again
 # with an assigned temperament, and debate.js tells the synthesis that seat is
 # not independent. The user's choice, 2026-09-24 — not a capability ranking:
@@ -88,6 +88,8 @@ check_panel() {
   local _e _n=0 _rest="$2,"
   while [ -n "$_rest" ]; do
     _e="${_rest%%,*}"; _rest="${_rest#*,}"; _n=$((_n + 1))
+    # persona:persona:x would reach the router as the id `persona:x` (#174)
+    case "$_e" in persona:persona:*) die "$1 entry '$_e' nests persona: — one prefix, then a model id" ;; esac
     check_routable "$1" "${_e#persona:}"
   done
   if [ "$1" = PANEL ] && { [ "$_n" -lt 2 ] || [ "$_n" -gt 5 ]; }; then
@@ -152,6 +154,10 @@ load_file() { # load_file <path> <source-label>
       continue
     fi
     if ! is_tier_name "$name"; then
+      # Seat names are lowercase (they name agents/op-<seat>.md); an UPPERCASE
+      # name is a misspelled tier or panel key, and read as a seat it would
+      # vanish silently (PANEL_FALLBAK=RECON, #174). ops-render.sh: check_seat_name.
+      case "${name#op-}" in *[[:upper:]]*) die "$1: '$name' is not a tier ($TIER_NAMES), a panel key ($PANEL_KEYS) or a lowercase seat name" ;; esac
       is_tier_name "$val" || die "$1: unknown tier '$name' (known: $TIER_NAMES; a seat line needs a tier VALUE, e.g. op-scout=MECHANICAL)"
       continue   # a valid seat binding — the renderer's business, not ours
     fi
@@ -384,7 +390,8 @@ for e in fallback:
     if repeat(e): continue
     if not available(e):
         print(f"note: fallback {e} is not routable — skipped", file=sys.stderr); continue
-    if not e.startswith("persona:") and family(e) in fams: continue
+    if not e.startswith("persona:") and family(e) in fams:
+        print(f"note: fallback {e} repeats family {family(e)} — skipped", file=sys.stderr); continue
     if len(seated) < len(panel):
         seated.append(e); fams.add(family(e))
         print(f"note: fallback {e} seated", file=sys.stderr)

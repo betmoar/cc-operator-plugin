@@ -55,6 +55,9 @@ check_seat_name() { # check_seat_name <name>
   case "$1" in
     "") die "seat name is empty" ;;
     *[!A-Za-z0-9_-]*) die "seat name '$1' contains characters outside [A-Za-z0-9_-]" ;;
+    # lowercase: an UPPERCASE name is a misspelled tier/panel key (PANEL_FALLBAK,
+    # #174), never a seat — ops-tiers.sh refuses the same line
+    *[[:upper:]]*) die "seat name '$1' is not lowercase — a misspelled tier ($TIER_NAMES) or panel key ($PANEL_KEYS)?" ;;
   esac
 }
 is_tier_name() { case " $TIER_NAMES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }

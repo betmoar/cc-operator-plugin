@@ -1469,6 +1469,43 @@ Written per-file rather than as a `*` rule: `.operator/` also holds `bin/` and `
 sentinels, and declaring those `text` invites git to rewrite bytes in files whose whole
 point is byte-fidelity.
 
+## Six CR guards left unpinned on purpose — a priced omission (#138, closed into this file)
+
+The CR strip `${x%$'\r'}` sits at six sites that parse something OTHER than a 4-cell
+ledger row, and no validator pin covers them. That is a decision, recorded here so it
+never reads as coverage:
+
+```
+scripts/ops-adopt.sh     LOCK_HOLDER_REC, FALLBACK_REC   (lock holder record)
+scripts/ops-verdict.sh   LOCK_HOLDER_REC, FALLBACK_REC   (same two)
+scripts/lib/partition.sh line="${1%$'\r'}"              (a DECISIONS line)
+scripts/statusline.sh    line="${_lines[i]%$'\r'}"      (same, the bar's copy)
+scripts/ops-render.sh    awk { sub(/\r$/, "") }          (template front matter, F29)
+```
+
+Cite them by symbol, never by line — the numbers moved twice while #138 was open.
+
+Why no pin, each reason checked when #138 was filed and still true at its close:
+
+1. **No measured defect at any of the six.** They carry the guard; a pin would be green on
+   arrival and prove only that a correct thing is still correct.
+2. **A different family.** #136's three defects (caps.sh failing OPEN, `--reconcile`
+   dropping a row, ops-reverify phantoming one) all lived in 4-cell row parsers, and those
+   are pinned by `check_cr_strip_parity`. None of these six parses a row.
+3. **An honest pin is unbuildable.** Four are bare inline expressions with no enclosing
+   function for a probe to execute, one is awk. Per F140/F144 a behavioural pin EXECUTES the
+   shipped code; a literal scan over inline expressions in two languages is the substring
+   shape that has shipped "all contracts hold" against a dead arm five times.
+4. **No shared helper can reach four of them.** They live in the install set, copied
+   standalone into `.operator/bin/` — a `lib/` CR helper is ruled out for this class.
+
+The complement shipped instead: `text eol=lf` in `.operator/.gitattributes` (#141, the
+section below) stops git producing CRLF ledgers; an editor writing CRLF in the worktree
+still reaches every reader, so the six guards stay load-bearing.
+
+**Reopen when** a defect is measured at one of the six, or a function boundary appears at
+one of them that an executing probe can call. Either makes a pin honest; neither exists.
+
 ## An arm held closed by another arm's pathspec (0.11.14, #140)
 
 `base-gate.sh` arm 3b — the rung-set comparison — shipped with the same unchecked-listing
