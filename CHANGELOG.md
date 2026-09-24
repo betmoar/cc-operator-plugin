@@ -82,9 +82,13 @@ four times.
   collapsed into the dominant family, so detect bought no mechanism of its own. Borrow
   did.
   Across both topics the finding is the same: stances change WHICH directions appear and
-  add at most one per run. Neither unassigned baseline reproduced #84's four-way
-  convergence, so no run shows the stances preventing it. #84 stays open on that. Model
-  diversity across vendors, the lever these runs could not test, is #172.
+  add at most one per run. #84's four-way convergence did not come back. The pre-#84
+  script was re-run on the #82 topic, N=4, `glm-5-turbo`, through the Workflow runtime,
+  twice. Two blind judges put at most 2 of 4 seats in one family in every run. With the
+  two no-tools baselines above, that is 1 converged run (2026-08-22) against 4 that did
+  not, so #84 is closed as not reproducible: a single run, most likely chance. The stances
+  stay, on the measured grounds above, not as a fix for #84. Model diversity across
+  vendors is #172.
   What the stub suite can check is the input: N distinct stances at N=2, 4 and 6. Output
   quality is still #79's gap.
 
