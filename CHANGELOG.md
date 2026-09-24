@@ -39,6 +39,18 @@ the gate block before reading about it.
   panel report can be published as an artifact when the session has a tool for it.
   Ask once per session.
 
+### Fixed (PR #176 review, each reproduced first)
+
+- **`--canary` could PASS without measuring.** A `claude` that prints an error at exit 0
+  ("Invalid API key", an unknown model) contains neither planted token, so it read as
+  "no leak". `--derive` handed the same error back as a derivation. Both now require a
+  random nonce on the answer's first line: an error message cannot contain it. Measured:
+  haiku and sonnet echo it with every tool denied.
+- **The tutorial could credit the wrong block.** The auto-arm (#85) also exits 2, so the
+  block must now name `tutorial-demo`. A failing `ops-task.sh` or `ops-verdict.sh` was
+  masked by `| sed` without `pipefail`. The tutorial now sets `pipefail`, requires the
+  sentinel to exist after step 2 and the row to exist after step 4, and stops otherwise.
+
 ### Verified
 
 - **`implement` has its first controlled live run (#79).** A fixture repo carried an

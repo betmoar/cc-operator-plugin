@@ -8431,14 +8431,15 @@ H150="$(newproj)"; mkdir -p "$H150/bin" "$H150/empty" "$H150/proj/sub"
 HPATH="$H150/bin:$(printenv PATH)"
 cat > "$H150/bin/claude" <<'STUB'
 #!/usr/bin/env bash
-printf '%s\n' "$@" > "$STUB_ARGS"; pwd -P > "$STUB_CWD"; cat > "$STUB_STDIN"; printf '%s\n' "${STUB_REPLY:-derived}"
+printf '%s\n' "$@" > "$STUB_ARGS"; pwd -P > "$STUB_CWD"; cat > "$STUB_STDIN"
+sed -n '1s/^The FIRST line of your reply must be exactly: //p' "$STUB_STDIN"; printf '%s\n' "${STUB_REPLY:-derived}"
 STUB
 chmod +x "$H150/bin/claude"
 : > "$H150/proj/CLAUDE.md"
 hoq() { env PATH="$HPATH" STUB_ARGS="$H150/args" STUB_CWD="$H150/cwd" STUB_STDIN="$H150/stdin" "$BASH_ABS" "$HO" "$@"; }
 HOUT="$(printf 'the spec\n' | hoq --derive --dir "$H150/empty" 2>&1)"; HRC=$?
-check "#150 --derive pipes the context to claude -p and prints the answer (rc 0)" \
-  "$([ "$HRC" -eq 0 ] && [ "$HOUT" = "derived" ] && [ "$(cat "$H150/stdin" 2>/dev/null)" = "the spec" ] && echo 0 || echo 1)"
+check "#150 --derive pipes the context to claude -p and prints the answer, nonce stripped (rc 0)" \
+  "$([ "$HRC" -eq 0 ] && [ "$HOUT" = "derived" ] && grep -qx 'the spec' "$H150/stdin" 2>/dev/null && echo 0 || echo 1)"
 # Each denial read back from argv, as the EXACT argument pair: `--tools` followed by an EMPTY argument.
 _hargs="$(cat "$H150/args" 2>/dev/null)"
 check "#150 --derive denies every tool (--tools \"\" reaches claude as an empty argument)" \
@@ -8466,7 +8467,7 @@ check "#150 --derive refuses empty context (a derivation from the model's priors
 # ancestor CLAUDE.md itself when STUB_LEAK is set, which is what a claude with the denial broken would do.
 cat > "$H150/bin/claude" <<'STUB'
 #!/usr/bin/env bash
-cat >/dev/null
+sed -n '1s/^The FIRST line of your reply must be exactly: //p'
 case "${STUB_LEAK:-}" in
   file) cat planted.txt ;;
   mem) grep -ho 'HOLDOUT-MEMORY-[0-9]*-[0-9]*' ../CLAUDE.md ;;
@@ -8485,7 +8486,37 @@ check "#150 --canary FAILS (rc 1) when the process sees an ancestor CLAUDE.md, a
 printf '#!/usr/bin/env bash\ncat >/dev/null\n' > "$H150/bin/claude"
 HOUT="$(env PATH="$HPATH" "$BASH_ABS" "$HO" --canary 2>&1)"; HRC=$?
 check "#150 --canary refuses an EMPTY answer (silence is not evidence of denial)" \
-  "$([ "$HRC" -eq 2 ] && printf '%s' "$HOUT" | grep -q 'returned nothing' && echo 0 || echo 1)"
+  "$([ "$HRC" -eq 2 ] && printf '%s' "$HOUT" | grep -q 'did not answer' && echo 0 || echo 1)"
+# PR #176 review, reproduced: a claude that PRINTS AN ERROR and exits 0 made the canary PASS (neither token in
+# "Invalid API key") and --derive return the error as the derivation. The nonce is what tells an answer from one.
+printf '#!/usr/bin/env bash\ncat >/dev/null; echo "Invalid API key - please run /login"\n' > "$H150/bin/claude"
+HOUT="$(env PATH="$HPATH" "$BASH_ABS" "$HO" --canary 2>&1)"; HRC=$?
+check "#150 --canary refuses an error printed at exit 0 (no nonce) — never a PASS it did not measure" \
+  "$([ "$HRC" -eq 2 ] && printf '%s' "$HOUT" | grep -q 'did not answer' && ! printf '%s' "$HOUT" | grep -q 'canary PASS' && echo 0 || echo 1)"
+HOUT="$(printf 'the spec\n' | hoq --derive --dir "$H150/empty" 2>/dev/null)"; HRC=$?
+check "#150 --derive refuses an error printed at exit 0 — the error is never handed back as a derivation" \
+  "$([ "$HRC" -eq 2 ] && [ -z "$HOUT" ] && echo 0 || echo 1)"
+printf '#!/usr/bin/env bash\ncat >/dev/null; echo "overloaded"; exit 7\n' > "$H150/bin/claude"
+HOUT="$(printf 'the spec\n' | hoq --derive --dir "$H150/empty" 2>&1)"; HRC=$?
+check "#150 --derive surfaces claude's own non-zero exit (rc 2, the code named)" \
+  "$([ "$HRC" -eq 2 ] && printf '%s' "$HOUT" | grep -q 'exited 7' && echo 0 || echo 1)"
+# The remaining refusals, each before claude runs (coverage review): no --dir, a SYMLINKED --dir, a bad --model,
+# an unknown flag, and no claude on PATH at all.
+: > "$H150/args"; ln -s "$H150/empty" "$H150/link"
+HOUT="$(printf 'x\n' | hoq --derive 2>&1)"; HRC=$?
+check "#150 --derive without --dir is refused" "$([ "$HRC" -eq 2 ] && printf '%s' "$HOUT" | grep -q 'requires --dir' && echo 0 || echo 1)"
+HOUT="$(printf 'x\n' | hoq --derive --dir "$H150/link" 2>&1)"; HRC=$?
+check "#150 --derive refuses a SYMLINKED --dir (its target is what the process sees)" \
+  "$([ "$HRC" -eq 2 ] && printf '%s' "$HOUT" | grep -q 'a symlink is refused' && echo 0 || echo 1)"
+HOUT="$(hoq --canary --model 'bad model' 2>&1)"; HRC=$?
+check "#150 a --model outside the id charset is refused (both forms share the guard)" \
+  "$([ "$HRC" -eq 2 ] && printf '%s' "$HOUT" | grep -q 'is not a model id' && echo 0 || echo 1)"
+HOUT="$(hoq --bogus 2>&1)"; HRC=$?
+check "#150 an unknown flag is refused with the usage" "$([ "$HRC" -eq 2 ] && printf '%s' "$HOUT" | grep -q "unknown option '--bogus'" && echo 0 || echo 1)"
+mkdir -p "$H150/noclaude"; for _t in cat head tail sed mktemp rm mkdir dirname ls; do _p="$(command -v "$_t")" && ln -s "$_p" "$H150/noclaude/$_t"; done
+HOUT="$(env PATH="$H150/noclaude" "$BASH_ABS" "$HO" --canary 2>&1)"; HRC=$?
+check "#150 no claude on PATH is refused loudly (rc 2), never a silent pass" \
+  "$([ "$HRC" -eq 2 ] && printf '%s' "$HOUT" | grep -q 'claude CLI not found' && echo 0 || echo 1)"
 # shellcheck disable=SC2016  # the ${CLAUDE_PLUGIN_ROOT} placeholder is the LITERAL text grepped for.
 check "#150 the holdout skill ships and prescribes the CLI through \${CLAUDE_PLUGIN_ROOT}" \
   "$(grep -q '^name: holdout$' "$REPO/skills/holdout/SKILL.md" 2>/dev/null \
@@ -8509,6 +8540,18 @@ printf '#!/usr/bin/env bash\ncat >/dev/null; exit 0\n' > "$T75/scripts/ops-stop-
 TOUT="$("$BASH_ABS" "$T75/scripts/ops-tutorial.sh" 2>&1)"; TRC=$?
 check "#75 a hook that never blocks FAILS the tutorial (rc 1, TUTORIAL_FAILED) — it cannot narrate a block" \
   "$([ "$TRC" -eq 1 ] && printf '%s' "$TOUT" | grep -q 'TUTORIAL_FAILED: .* block=0' && echo 0 || echo 1)"
+# PR #176 review: the block must be ON tutorial-demo. A hook that blocks for another reason (the auto-arm exits 2
+# too) passed the exit-code check alone; this one blocks every stop with a foreign message.
+printf '#!/usr/bin/env bash\ncat >/dev/null; echo "operator: auto-armed autobar" >&2; exit 2\n' > "$T75/scripts/ops-stop-hook.sh"
+TOUT="$("$BASH_ABS" "$T75/scripts/ops-tutorial.sh" 2>&1)"; TRC=$?
+check "#75 a block for ANOTHER reason is not credited to the task (TUTORIAL_FAILED, on tutorial-demo: no)" \
+  "$([ "$TRC" -eq 1 ] && printf '%s' "$TOUT" | grep -q 'on tutorial-demo: no' && echo 0 || echo 1)"
+# A failing CLI piped through sed was masked by sed's 0 (no pipefail): the tutorial must stop AT that step.
+cp "$SCRIPTS/ops-stop-hook.sh" "$T75/scripts/ops-stop-hook.sh"
+printf '#!/usr/bin/env bash\necho "ops-task: refused" >&2; exit 9\n' > "$T75/scripts/ops-task.sh"
+TOUT="$("$BASH_ABS" "$T75/scripts/ops-tutorial.sh" 2>&1)"; TRC=$?
+check "#75 a failing ops-task.sh stops the tutorial at step 2 (non-zero, never reaches the Stop hook)" \
+  "$([ "$TRC" -ne 0 ] && ! printf '%s' "$TOUT" | grep -q 'Stop hook exit code' && echo 0 || echo 1)"
 rm -rf "$T75"
 # shellcheck disable=SC2016  # literal placeholder text, as above.
 check "#75 commands/tutorial.md runs the script through \${CLAUDE_PLUGIN_ROOT} under a grant that covers it" \

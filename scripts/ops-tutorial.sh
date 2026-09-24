@@ -13,6 +13,9 @@
 # happens is the reading-about-it experience #75 exists to replace, so it
 # fails rather than narrating a block it did not observe.
 set -eu
+# pipefail: every CLI below is piped through sed for indentation, and without it a
+# failing ops-task.sh or ops-verdict.sh was masked by sed's 0 (PR #176 review).
+set -o pipefail
 
 die() { echo "ops-tutorial: $1" >&2; exit 2; }
 
@@ -40,8 +43,10 @@ SID="tutorial-session"
 step() { printf '\n== %s\n' "$*"; }
 stop_hook() { # stop_hook → sets HRC, prints the hook's stderr indented
   local err
+  HOOK_ERR=""
   err="$(printf '{"hook_event_name":"Stop","stop_hook_active":false,"cwd":"%s","session_id":"%s"}' "$T" "$SID" \
     | bash "$HOOK" 2>&1 >/dev/null)" && HRC=0 || HRC=$?
+  HOOK_ERR="$err"
   [ -z "$err" ] || printf '%s\n' "$err" | sed 's/^/   | /'
   echo "   Stop hook exit code: $HRC ($( [ "$HRC" -eq 2 ] && echo 'BLOCKED — the session cannot end' || echo 'allowed'))"
 }
@@ -53,9 +58,13 @@ echo "   $T/.operator/ holds the ledgers; the gate CLIs are installed in .operat
 
 step "2. Open a tracked task — this drops a sentinel the Stop hook will see"
 ( cd "$T" && bash .operator/bin/ops-task.sh tutorial-demo --owner "$SID" | sed 's/^/   /' )
+[ -f "$T/.operator/pending/${SID}__tutorial-demo" ] || die "ops-task.sh reported success but no sentinel exists — the gate has nothing to block on"
 
 step "3. Try to stop with the task still open"
 stop_hook; BLOCK_RC=$HRC
+# The block must be for THIS task. Another gate (the auto-arm, #85) also exits 2,
+# and a tutorial that credits its block to the task demonstrates the wrong rule.
+BLOCK_MINE=0; case "$HOOK_ERR" in *"pending verdict(s): tutorial-demo"*) BLOCK_MINE=1 ;; esac
 
 step "4. Close it the only way the gate accepts: a verdict row WITH evidence"
 # ONE changed path on purpose: two would trip the auto-arm (#85) — see the
@@ -65,17 +74,18 @@ OUT="$(cd "$T" && bash hello.sh 2>&1)"
 echo "   ran: bash hello.sh -> $OUT"
 ( cd "$T" && bash .operator/bin/ops-verdict.sh tutorial-demo "hello.sh prints hello" "bash hello.sh -> $OUT" PASS --owner "$SID" | sed 's/^/   /' )
 echo "   the row, auto-stamped with the source state that produced it:"
-grep -F 'tutorial-demo' "$T/.operator/VERDICTS.md" | tail -1 | sed 's/^/   /'
+ROW="$(grep -F '| tutorial-demo |' "$T/.operator/VERDICTS.md" | tail -n 1)" || die "ops-verdict.sh reported success but VERDICTS.md holds no tutorial-demo row"
+printf '   %s\n' "$ROW"
 
 step "5. Try to stop again"
 stop_hook; ALLOW_RC=$HRC
 
 echo
-if [ "$BLOCK_RC" -eq 2 ] && [ "$ALLOW_RC" -eq 0 ]; then
+if [ "$BLOCK_RC" -eq 2 ] && [ "$BLOCK_MINE" -eq 1 ] && [ "$ALLOW_RC" -eq 0 ]; then
   echo "TUTORIAL_OK: the Stop hook blocked on an open task (2) and allowed after its verdict (0)"
   echo "Not shown: change 2+ files with NO task open and the hook opens one for you ('autobar', #85) — the"
   echo "charter's ENGAGEMENT CONTRACT clause 1, enforced. Next: /cc-operator:start in your own project."
   exit 0
 fi
-echo "TUTORIAL_FAILED: expected block=2 then allow=0, observed block=$BLOCK_RC allow=$ALLOW_RC — the gate did not behave as the charter says" >&2
+echo "TUTORIAL_FAILED: expected block=2 (on tutorial-demo) then allow=0, observed block=$BLOCK_RC (on tutorial-demo: $([ "$BLOCK_MINE" -eq 1 ] && echo yes || echo no)) allow=$ALLOW_RC — the gate did not behave as the charter says" >&2
 exit 1

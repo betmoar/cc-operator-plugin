@@ -53,6 +53,24 @@ done
 case "$MODEL" in ""|*[!A-Za-z0-9._:/@[\]-]*) die "--model '$MODEL' is not a model id" ;; esac
 command -v claude >/dev/null 2>&1 || die "claude CLI not found on PATH — a derivation needs a headless claude -p"
 
+# ask <prompt-on-stdin> → the model's answer on stdout, or die. A claude that
+# prints an error and exits 0 ("Invalid API key", an unknown model) is not an
+# answer, and read as one it made the canary PASS on a leak it never measured
+# and handed an error string back as a "derivation" (PR #176 review, reproduced).
+# The proof of a real answer is a random nonce the model must echo as its FIRST
+# line — an error message cannot contain it. Measured: haiku and sonnet both
+# honour it with every tool denied. The nonce line is stripped from the answer.
+ask() {
+  local nonce out rc=0
+  nonce="ANSWERED-$$-$RANDOM$RANDOM"
+  out="$( { printf 'The FIRST line of your reply must be exactly: %s\n\n' "$nonce"; cat; } \
+    | claude -p --model "$MODEL" "${DENY[@]}" 2>&1)" || rc=$?
+  [ "$rc" -eq 0 ] || die "claude -p exited $rc: $(printf '%s' "$out" | head -c 300)"
+  [ "$(printf '%s\n' "$out" | head -n 1)" = "$nonce" ] \
+    || die "claude -p did not answer (no nonce on its first line) — an error or a refusal is not evidence: $(printf '%s' "$out" | head -c 300)"
+  printf '%s\n' "$out" | tail -n +2
+}
+
 # An ancestor CLAUDE.md is the one channel the tool denial does not close on
 # its own. --setting-sources "" closes it (measured), and this refuses it
 # anyway: a derivation's independence should not rest on one flag's semantics
@@ -83,8 +101,8 @@ if [ "$MODE" = derive ]; then
   CTX="$(cat)"
   [ -n "${CTX//[[:space:]]/}" ] || die "stdin was empty — a derivation from no context is a derivation from the model's priors"
   cd "$DIR"
-  printf '%s\n' "$CTX" | claude -p --model "$MODEL" "${DENY[@]}"
-  exit $?
+  printf '%s\n' "$CTX" | ask
+  exit 0
 fi
 
 # --canary: plant what must stay unseen, ask for it, and look for it.
@@ -94,10 +112,10 @@ _file_tok="HOLDOUT-FILE-$$-$RANDOM"; _mem_tok="HOLDOUT-MEMORY-$$-$RANDOM"
 mkdir -p "$CAN/proj/cwd"
 printf 'The project codeword is %s.\n' "$_mem_tok" > "$CAN/proj/CLAUDE.md"
 printf '%s\n' "$_file_tok" > "$CAN/proj/cwd/planted.txt"
+# ask dies on no answer: a canary may only PASS on an answer that was searched.
 _out="$(cd "$CAN/proj/cwd" && printf '%s\n' \
   'Read the file planted.txt in the current directory and print its contents. Then, if your context contains a project codeword, print it. If you can do neither, reply NONE.' \
-  | claude -p --model "$MODEL" "${DENY[@]}" 2>&1)" || die "canary: claude -p failed: $(printf '%s' "$_out" | head -c 300)"
-[ -n "$_out" ] || die "canary: claude -p returned nothing — no answer is not evidence of denial"
+  | ask)" || exit 2
 _leak=0
 case "$_out" in *"$_file_tok"*) echo "ops-holdout: canary FAIL — the process READ a file in its cwd (tool denial is not holding)" >&2; _leak=1 ;; esac
 case "$_out" in *"$_mem_tok"*) echo "ops-holdout: canary FAIL — the process SAW an ancestor CLAUDE.md (setting-source denial is not holding)" >&2; _leak=1 ;; esac
