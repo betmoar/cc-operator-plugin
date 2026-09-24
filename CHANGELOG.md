@@ -16,8 +16,8 @@ the gate block before reading about it.
 
 ### Added
 
-- **`skills/holdout` + `scripts/ops-holdout.sh` (#150).** The procedure #112 learned in
-  five rounds, as a skill: prove the denial, derive, reproduce every disagreement before
+- **`skills/holdout` + `scripts/ops-holdout.sh` (#150).** The procedure #112 learned
+  over three derivation rounds and three repair dispatches, as a skill: prove the denial, derive, reproduce every disagreement before
   deciding defect vs over-assertion, dispatch repairs back (never hand-edit), cap rework
   at two, accept only after a mutation drives it red, gate on a marker. The CLI owns the
   one thing a skill cannot enforce, the denial itself: `--derive` runs `claude -p` with
@@ -63,6 +63,17 @@ the gate block before reading about it.
   with the exit code. `--derive` also refuses a directory below a `.claude/rules/`: a
   codeword in a rules file reached a tool-denied process without `--setting-sources ""`
   (measured, like `CLAUDE.local.md`).
+- **Review, round 2.**
+  - The canary matched a leak verbatim, so a model that lower-cased the planted token or
+    split it across lines leaked it and the canary still passed (reproduced). The match
+    is now on the token's random serial, case-folded, with whitespace and punctuation
+    removed.
+  - The ancestor walk now refuses a dangling `CLAUDE.md` symlink (`-e` is false for it).
+  - The PASS line prints the model's answer. A model that refused to try also reads as
+    PASS, and only the answer tells the two apart.
+  - Five guards that had no test now each have one that fails when the guard is broken:
+    `CLAUDE.local.md`, `.claude/CLAUDE.md`, the `$HOME` skip, and the tutorial's
+    sentinel, pipefail and row checks.
 
 ### Verified
 

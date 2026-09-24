@@ -8464,6 +8464,27 @@ mkdir -p "$H150/rp/.claude/rules" "$H150/rp/sub"; : > "$H150/args"
 HOUT="$(printf 'the spec\n' | hoq --derive --dir "$H150/rp/sub" 2>&1)"; HRC=$?
 check "#150 --derive refuses a dir below a .claude/rules/ (project memory, measured to reach the process)" \
   "$([ "$HRC" -eq 2 ] && printf '%s' "$HOUT" | grep -q '.claude/rules is on the walk-up path' && [ ! -s "$H150/args" ] && echo 0 || echo 1)"
+# Each memory file the walk refuses gets its own fixture (round-2 review: CLAUDE.local.md and .claude/CLAUDE.md
+# were unpinned — deleting either from the list stayed green). A dangling symlink fails `-e` and was allowed.
+for _mf in CLAUDE.local.md .claude/CLAUDE.md dangling; do
+  _mr="$H150/mem-${_mf//[\/.]/_}"; mkdir -p "$_mr/sub" "$_mr/.claude"; : > "$H150/args"
+  if [ "$_mf" = dangling ]; then ln -s "$_mr/nowhere" "$_mr/CLAUDE.md"; else : > "$_mr/$_mf"; fi
+  HOUT="$(printf 'the spec\n' | hoq --derive --dir "$_mr/sub" 2>&1)"; HRC=$?
+  check "#150 --derive refuses a dir below a $_mf memory file, before claude runs" \
+    "$([ "$HRC" -eq 2 ] && printf '%s' "$HOUT" | grep -q 'is on the walk-up path' && [ ! -s "$H150/args" ] && echo 0 || echo 1)"
+done
+# The $HOME skip, both directions: the USER layer ($HOME/.claude/CLAUDE.md, excluded by --setting-sources "") is
+# allowed — every machine has one — while a CLAUDE.md sitting directly IN $HOME is a project file and refused.
+mkdir -p "$H150/home/.claude" "$H150/home/work/empty"; : > "$H150/home/.claude/CLAUDE.md"; : > "$H150/args"
+HOUT="$(printf 'the spec\n' | env HOME="$H150/home" PATH="$HPATH" STUB_ARGS="$H150/args" STUB_CWD="$H150/cwd" STUB_STDIN="$H150/stdin" \
+  "$BASH_ABS" "$HO" --derive --dir "$H150/home/work/empty" 2>&1)"; HRC=$?
+check "#150 the user-layer \$HOME/.claude/CLAUDE.md does NOT block a derivation (the flag excludes it)" \
+  "$([ "$HRC" -eq 0 ] && [ "$HOUT" = "derived" ] && echo 0 || echo 1)"
+: > "$H150/home/CLAUDE.md"; : > "$H150/args"
+HOUT="$(printf 'the spec\n' | env HOME="$H150/home" PATH="$HPATH" STUB_ARGS="$H150/args" STUB_CWD="$H150/cwd" STUB_STDIN="$H150/stdin" \
+  "$BASH_ABS" "$HO" --derive --dir "$H150/home/work/empty" 2>&1)"; HRC=$?
+check "#150 a CLAUDE.md directly in \$HOME IS refused (the skip covers \$HOME/.claude/ only)" \
+  "$([ "$HRC" -eq 2 ] && printf '%s' "$HOUT" | grep -q "$H150/home/CLAUDE.md is on the walk-up path" && [ ! -s "$H150/args" ] && echo 0 || echo 1)"
 : > "$H150/args"  # its OWN run: the case above leaves argv behind when its guard is absent
 HOUT="$(printf '  \n' | hoq --derive --dir "$H150/empty" 2>&1)"; HRC=$?
 check "#150 --derive refuses empty context (a derivation from the model's priors)" \
@@ -8475,7 +8496,7 @@ cat > "$H150/bin/claude" <<'STUB'
 sed -n '1s/^The FIRST line of your reply must be exactly: //p'
 case "${STUB_LEAK:-}" in
   file) cat planted.txt ;;
-  mem) grep -ho 'HOLDOUT-MEMORY-[0-9]*-[0-9]*' ../CLAUDE.md ;;
+  mem) grep -ho 'HOLDOUT-MEMORY-[0-9-]*' ../CLAUDE.md ;;
   *) echo NONE ;;
 esac
 STUB
@@ -8488,6 +8509,19 @@ check "#150 --canary FAILS (rc 1) when the process can read a file in its cwd, a
 HOUT="$(env STUB_LEAK=mem PATH="$HPATH" "$BASH_ABS" "$HO" --canary 2>&1)"; HRC=$?
 check "#150 --canary FAILS (rc 1) when the process sees an ancestor CLAUDE.md, and says which channel" \
   "$([ "$HRC" -eq 1 ] && printf '%s' "$HOUT" | grep -q 'SAW an ancestor CLAUDE.md' && echo 0 || echo 1)"
+# Round-2 review, reproduced: a leak the model REFORMATS (lower-cased, split across lines) passed a verbatim match.
+# LOWER, not upper: the token is already uppercase, so an upper-casing stub leaks it verbatim and proves nothing.
+for _lf in lower split; do
+  cat > "$H150/bin/claude" <<STUB
+#!/usr/bin/env bash
+sed -n '1s/^The FIRST line of your reply must be exactly: //p'
+_t="\$(cat planted.txt)"
+case $_lf in lower) printf '%s\n' "\$_t" | tr 'A-Z' 'a-z' ;; split) printf '%s\n' "\${_t%???????}" "\${_t: -7}" ;; esac
+STUB
+  HOUT="$(env PATH="$HPATH" "$BASH_ABS" "$HO" --canary 2>&1)"; HRC=$?
+  check "#150 --canary catches a REFORMATTED leak ($_lf) — rc 1, never PASS" \
+    "$([ "$HRC" -eq 1 ] && printf '%s' "$HOUT" | grep -q 'READ a file in its cwd' && ! printf '%s' "$HOUT" | grep -q 'canary PASS' && echo 0 || echo 1)"
+done
 printf '#!/usr/bin/env bash\ncat >/dev/null\n' > "$H150/bin/claude"
 HOUT="$(env PATH="$HPATH" "$BASH_ABS" "$HO" --canary 2>&1)"; HRC=$?
 check "#150 --canary refuses an EMPTY answer (silence is not evidence of denial)" \
@@ -8569,6 +8603,24 @@ TOUT="$("$BASH_ABS" "$T75/scripts/ops-tutorial.sh" 2>&1)"; TRC=$?
 check "#75 an abort mid-step still ends in TUTORIAL_FAILED, naming the exit code" \
   "$([ "$TRC" -eq 9 ] && printf '%s' "$TOUT" | grep -q 'TUTORIAL_FAILED: aborted mid-step (exit 9)' && echo 0 || echo 1)"
 cp "$SCRIPTS/ops-init.sh" "$T75/scripts/ops-init.sh"
+# Round-2 review: three tutorial guards were unpinned. Each fixture fails in the ONE way only that guard sees.
+# (a) ops-task.sh says it opened the task and wrote no sentinel.
+printf '#!/usr/bin/env bash\necho "opened tutorial-demo"\n' > "$T75/scripts/ops-task.sh"
+TOUT="$("$BASH_ABS" "$T75/scripts/ops-tutorial.sh" 2>&1)"; TRC=$?
+check "#75 a task CLI that writes no sentinel is caught at step 2, by name" \
+  "$([ "$TRC" -ne 0 ] && printf '%s' "$TOUT" | grep -q 'no sentinel exists' && echo 0 || echo 1)"
+# (b) it writes the sentinel and THEN fails: only pipefail sees the 9 through `| sed`.
+printf '#!/usr/bin/env bash\nmkdir -p .operator/pending; : > .operator/pending/tutorial-session__tutorial-demo; exit 9\n' > "$T75/scripts/ops-task.sh"
+TOUT="$("$BASH_ABS" "$T75/scripts/ops-tutorial.sh" 2>&1)"; TRC=$?
+check "#75 a CLI failing INSIDE a | sed pipe stops the tutorial (pipefail), exit code carried" \
+  "$([ "$TRC" -eq 9 ] && printf '%s' "$TOUT" | grep -q 'aborted mid-step (exit 9)' && echo 0 || echo 1)"
+cp "$SCRIPTS/ops-task.sh" "$T75/scripts/ops-task.sh"
+# (c) ops-verdict.sh clears the sentinel and writes no row.
+printf '#!/usr/bin/env bash\nrm -f .operator/pending/tutorial-session__tutorial-demo; echo "recorded"\n' > "$T75/scripts/ops-verdict.sh"
+TOUT="$("$BASH_ABS" "$T75/scripts/ops-tutorial.sh" 2>&1)"; TRC=$?
+check "#75 a verdict CLI that writes no row is caught at step 4, by name" \
+  "$([ "$TRC" -ne 0 ] && printf '%s' "$TOUT" | grep -q 'holds no tutorial-demo row' && echo 0 || echo 1)"
+cp "$SCRIPTS/ops-verdict.sh" "$T75/scripts/ops-verdict.sh"
 # A failing CLI piped through sed was masked by sed's 0 (no pipefail): the tutorial must stop AT that step.
 cp "$SCRIPTS/ops-stop-hook.sh" "$T75/scripts/ops-stop-hook.sh"
 printf '#!/usr/bin/env bash\necho "ops-task: refused" >&2; exit 9\n' > "$T75/scripts/ops-task.sh"
