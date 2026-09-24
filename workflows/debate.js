@@ -189,6 +189,14 @@ const PERSONAS = [
 // the argument, and it cannot know which letter is itself, so it cannot soften
 // its own critique. The mapping is kept and returned to the caller — anonymity
 // is for the panel, not for the human reading the result.
+// Model FAMILY: the id with any `lens:` and `vendor/` prefix dropped, then its
+// leading letters — glm-5.3 and qwen:glm-5.3 are one family (GLM weights over two
+// routes). The same string rule as ops-tiers.sh --panel; a caller passing ids by
+// hand bypasses --panel, so independence is judged here too, never by exact id.
+const familyOf = (id) => {
+  const b = id.split(":").pop().split("/").pop().toLowerCase();
+  return (/^[a-z]+/.exec(b) ?? [b])[0];
+};
 const LETTERS = ["A", "B", "C", "D", "E"];
 let _personaN = 0;
 const seatFor = (x, letter) => ({
@@ -456,13 +464,13 @@ phase("Synthesis");
 // Letters only — the synthesis is not told WHICH model, only that some seats
 // share one, so it cannot count their agreement twice (#172).
 const sharedNote = (live) => {
-  const byModel = {};
-  for (const c of live) (byModel[seatOf(c.letter).model] ??= []).push(c.letter);
-  const groups = Object.values(byModel).filter((g) => g.length > 1);
+  const byFamily = {};
+  for (const c of live) (byFamily[familyOf(seatOf(c.letter).model)] ??= []).push(c.letter);
+  const groups = Object.values(byFamily).filter((g) => g.length > 1);
   if (!groups.length) return "";
   return `\n\nNOT INDEPENDENT: seats ${groups.map((g) => g.join(" and ")).join("; ")} run on ONE ` +
-    `model under different temperaments. Where they agree, count it as one voice, not ` +
-    `${groups[0].length} — and say so in agreed/contested.`;
+    `model family (a persona seat, or the same weights over another route). Where they agree, ` +
+    `count it as one voice, not ${groups[0].length} — and say so in agreed/contested.`;
 };
 const synthesis = await agent(
   `You are aligning a finished ${closeLive.length}-way debate for a human who will decide. ` +
@@ -527,9 +535,10 @@ return {
   // Seats moved onto a spare at opening (#172). `seats` above already carries
   // the model each letter actually argued on.
   reseated,
-  // How many distinct models argued. Lower than seats.length means persona
-  // seats — the panel is narrower than its seat count.
-  distinctModels: new Set(seats.map((x) => x.model)).size,
+  // How many distinct model FAMILIES argued. Lower than seats.length means a
+  // persona seat or one family over two routes — the panel is narrower than its
+  // seat count.
+  distinctModels: new Set(seats.map((x) => familyOf(x.model))).size,
   // ALWAYS null, and it is a field rather than an omission so the contract is
   // visible at the call site: this workflow does not choose. The whole point of
   // paying three flagships to disagree is that a human sees the disagreement;

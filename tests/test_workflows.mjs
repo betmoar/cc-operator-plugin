@@ -2051,6 +2051,16 @@ console.log("-- Case: debate.js seats a persona and re-seats the dead on spares 
   ok(!/NOT INDEPENDENT/.test(plainRt.calls.find((c) => c.label === "synthesis")?.prompt ?? ""),
     "debate #172: CONTROL — three distinct models get no independence note");
 }
+// Independence is judged by FAMILY, not exact id: a caller passing ids by hand bypasses --panel, and
+// glm-5.3 + qwen:glm-5.3 are the same weights over two routes (PR #173 review, reproduced).
+{
+  const { result: r, rt } = await run(WF("debate.js"),
+    { case: "c", models: ["glm-5.3", "qwen:glm-5.3", "claude-opus-5"] }, FULL_PANEL);
+  ok(/NOT INDEPENDENT: seats A and B run on ONE model family/.test(rt.calls.find((c) => c.label === "synthesis")?.prompt ?? ""),
+    "debate #172: one family over two routes (glm-5.3 + qwen:glm-5.3) is flagged NOT INDEPENDENT");
+  ok(r?.distinctModels === 2,
+    `debate #172: distinctModels counts families, not route spellings (got ${r?.distinctModels})`);
+}
 // The one sanctioned repeat is a persona ENTRY; a plain repeat and two identical persona entries both refuse.
 await throws(() => run(WF("debate.js"), { case: "c", models: ["glm-5.3", "persona:glm-5.3", "persona:glm-5.3"] }, {}),
   "debate #172: two identical persona entries are still a duplicate", "repeats");

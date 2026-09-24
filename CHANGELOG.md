@@ -34,8 +34,11 @@ seats are one model.
     pinned in parity by `check_resolver_renderer_parity`.
 - **`debate.js` takes `persona:<id>` and `spares` (#172).**
   - A persona seat runs on the bare id and carries an assigned temperament in all three rounds.
-  - The synthesis is told, by letter only, which seats share one model, so their agreement
-    counts as one voice. The result reports `distinctModels`.
+  - The synthesis is told, by letter only, which seats share one model family, so their
+    agreement counts as one voice. That covers a persona seat and the same weights over two
+    routes (`glm-5.3` + `qwen:glm-5.3`, found in review). Family uses the same rule as
+    `--panel`, because a caller passing ids by hand skips `--panel`. The result reports
+    `distinctModels` as a count of families.
   - A seat that dies at opening is re-seated on the next unused spare and keeps its letter. The
     move is reported in `reseated`. `agent()` returns `null` for an unroutable id rather than
     throwing (probed), which is what makes the re-seat possible.
