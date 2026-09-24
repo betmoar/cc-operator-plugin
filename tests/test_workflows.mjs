@@ -2065,6 +2065,16 @@ console.log("-- Case: debate.js seats a persona and re-seats the dead on spares 
   ok(r?.distinctModels === 2,
     `debate #172: distinctModels counts families, not route spellings (got ${r?.distinctModels})`);
 }
+// Copilot round 3: with TWO shared groups of different sizes, every group was told "not 2" — groups[0]'s size.
+// The three-seat claude group's agreement then read as two voices.
+{
+  const { rt } = await run(WF("debate.js"),
+    { case: "c", models: ["glm-5.3", "qwen:glm-5.3", "claude-opus-5", "claude-sonnet-5", "persona:claude-opus-5"] }, PANEL5);
+  const synth = rt.calls.find((c) => c.label === "synthesis")?.prompt ?? "";
+  ok(/seats A and B run on ONE model family[^;]*not 2\b/.test(synth)
+      && /seats C and D and E run on ONE model family[^;]*not 3\b/.test(synth),
+    "debate #172: each shared group is counted by its OWN size (2 and 3), not the first group's");
+}
 // A trailing `:free`/`:batch` is a variant TAG, not a route prefix (PR #173 review, 79 live catalogue ids).
 // Reading the text after the last colon made every tagged id family `free`: two vendors read as one, and
 // GLM-over-OpenRouter beside glm-5.3 read as independent. Both directions, each red on the old rule.

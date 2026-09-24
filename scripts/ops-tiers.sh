@@ -321,11 +321,10 @@ PY
 #   persona:  exempt from the family rule — that is its whole point — but its
 #               base id must be available, and the same full entry seats once.
 # Fewer than 2 seats resolved exits 3 (the JSON still printed): debate.js would
-# refuse it, and rc 0 read as a panel. Fail-OPEN: no proxy or an unreadable body
-# means every id counts as available
-# — the family rule still applies, it needs no catalogue. Only no python3 emits
-# the declared panel raw. Either way a note says so; the dispatch then reports a
-# dead seat rather than never running.
+# refuse it, and rc 0 read as a panel. No python3 also exits 3, with no JSON.
+# Fail-OPEN: no proxy or an unreadable body means every id counts as available
+# — the family rule still applies, it needs no catalogue. A note says so; the
+# dispatch then reports a dead seat rather than never running.
 panel_report() {
   _body=""
   if command -v python3 >/dev/null 2>&1; then
@@ -338,12 +337,11 @@ panel_report() {
       _body="$(curl -sS -m 5 "http://127.0.0.1:${PORT}/v1/models" 2>/dev/null || true)"
     fi
   else
-    echo "note: python3 not found — panel availability unchecked" >&2
-  fi
-  if ! command -v python3 >/dev/null 2>&1; then
-    _q() { printf '"%s"' "$(printf '%s' "$1" | sed 's/,/","/g')"; }
-    printf '{"models":[%s],"spares":[%s]}\n' "$(_q "$PANEL")" "$(_q "$PANEL_FALLBACK")"
-    return 0
+    # NOT fail-open: the raw lists skip the family and duplicate rules, and a
+    # shell copy of the family rule would be its third hand copy. Exit 3 is
+    # "no dispatchable panel" — commands/debate.md says stop and relay.
+    echo "ops-tiers: python3 not found — the panel cannot be resolved (family and duplicate rules need it); pass models by hand" >&2
+    exit 3
   fi
   [ -z "$_body" ] \
     && echo "note: proxy at :$PORT did not answer /v1/models — panel availability unchecked" >&2

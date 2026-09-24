@@ -2451,6 +2451,14 @@ POUT="$(PANELQ "$PNL/glmonly.json" --set PANEL=claude-opus-5,deepseek-flash,qwen
 check "#172 a persona entry listed twice seats ONCE, and the repeat is said" \
   "$([ "$PRC" -eq 0 ] && [ "$POUT" = '{"models":["claude-opus-5","persona:claude-opus-5"],"spares":[]}' ] \
      && grep -q 'listed twice' "$PNL/err" && echo 0 || echo 1)"
+# Copilot round 3: with no python3, --panel printed the declared lists RAW at rc 0 — glm-5.3 beside qwen:glm-5.3
+# as two independent seats. It now refuses at rc 3 with no JSON: availability may fail open, the family rule may not.
+NOPY="$(mktemp -d "${TMPDIR:-/tmp}/opstest-nopy.XXXXXX")"
+for _t in sed head grep curl cat; do _p="$(command -v "$_t")" && ln -s "$_p" "$NOPY/$_t"; done
+POUT="$(PATH="$NOPY" CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT=/nonexistent CC_PROXY_PORT=1 \
+  "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" --set PANEL=glm-5.3,qwen:glm-5.3,deepseek-flash --panel 2>"$PNL/err")"; PRC=$?
+check "#172 no python3: --panel refuses at rc 3 with no JSON, never the raw lists" \
+  "$([ "$PRC" -eq 3 ] && [ -z "$POUT" ] && grep -q 'python3 not found' "$PNL/err" && echo 0 || echo 1)"
 # Copilot on PR #173: the fail-OPEN paths skipped the family rule and emitted the declared lists raw. Unchecked
 # AVAILABILITY is the fail-open; the family rule needs no catalogue and must still hold — a PANEL of glm-5.3 +
 # qwen:glm-5.3 with the proxy down seated one model family twice as two independent seats.
@@ -2485,7 +2493,7 @@ check "#172 a tiers.env PANEL line reaches --panel (the declaration is read, not
 check "#172 the tiers.env scaffold documents the panel lines (commented, the baked defaults)" \
   "$(grep -qx '#PANEL=claude-opus-5,glm-5.3,deepseek-flash' "$PNL/p/.operator/tiers.env" \
      && grep -qx '#PANEL_FALLBACK=qwen3.8-max,persona:claude-opus-5' "$PNL/p/.operator/tiers.env" && echo 0 || echo 1)"
-rm -rf "$PNL"
+rm -rf "$PNL" "$NOPY"
 
 ########################################################################
 echo "-- Case: /cc-operator:tiers render branch + ops-render.sh behavior"

@@ -29,7 +29,8 @@ seats are one model.
   - With no proxy, or an unreadable `/v1/models` body, availability goes unchecked, with a note
     (fail-open). The family rule still applies, since it needs no catalogue. Before the Copilot
     review, those paths printed the declared lists raw, so `glm-5.3,qwen:glm-5.3` seated one
-    family twice.
+    family twice. With no `python3`, `--panel` exits 3 and prints no JSON. The raw lists skip
+    both rules, and a shell copy of the family rule would be its third hand copy.
   - A `PANEL` of fewer than 2 or more than 5 entries, or a `PANEL_FALLBACK` of more than 5, is
     refused (rc 2) at the line that declared it. Before this they resolved at rc 0 and failed
     later in `debate.js`. A panel that resolves to fewer than 2 seats still prints its JSON, but
@@ -43,7 +44,8 @@ seats are one model.
 - **`debate.js` takes `persona:<id>` and `spares` (#172).**
   - A persona seat runs on the bare id and carries an assigned temperament in all three rounds.
   - The synthesis is told, by letter only, which seats share one model family, so their
-    agreement counts as one voice. That covers a persona seat and the same weights over two
+    agreement counts as one voice. Each shared group is counted by its own size; the note once
+    reused the first group's size for all of them. That covers a persona seat and the same weights over two
     routes (`glm-5.3` + `qwen:glm-5.3`, found in review). Family uses the same rule as
     `--panel`, because a caller passing ids by hand skips `--panel`. The result reports
     `distinctModels` as a count of families.

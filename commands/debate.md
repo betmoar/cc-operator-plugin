@@ -26,8 +26,9 @@ it — a debate is the expensive way to be told what a command would have said.
    default Opus + GLM + DeepSeek) against what the proxy routes, falling back
    along `PANEL_FALLBACK` (qwen3.8-max, then a persona-Opus seat) (#172). Its
    stderr notes say which seat fell back and whether the panel is short; relay
-   them. Exit 3 means fewer than 2 seats resolved: stop and relay the notes —
-   there is no panel to dispatch. The point is that the models DIFFER: a panel on one vendor converges.
+   them. Exit 3 means no dispatchable panel (fewer than 2 seats resolved, or no
+   python3 to resolve it): stop and relay the notes — there is no panel to
+   dispatch. The point is that the models DIFFER: a panel on one vendor converges.
    To debate on other models, pass your own ids as `models` instead.
 
 3. **Dispatch** with the panel's `models` and `spares` verbatim:

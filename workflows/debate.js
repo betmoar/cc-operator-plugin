@@ -489,9 +489,12 @@ const sharedNote = (live) => {
   }
   const groups = [...byFamily.values()].filter((g) => g.length > 1);
   if (!groups.length) return "";
-  return `\n\nNOT INDEPENDENT: seats ${groups.map((g) => g.join(" and ")).join("; ")} run on ONE ` +
-    `model family (a persona seat, or the same weights over another route). Where they agree, ` +
-    `count it as one voice, not ${groups[0].length} — and say so in agreed/contested.`;
+  // Each group carries its OWN size: "not 2" beside a three-seat group tells
+  // the synthesis to count that group's agreement as two voices.
+  return `\n\nNOT INDEPENDENT: ` +
+    groups.map((g) => `seats ${g.join(" and ")} run on ONE model family — where they agree, ` +
+      `count it as one voice, not ${g.length}`).join("; ") +
+    `. (A persona seat, or the same weights over another route.) Say so in agreed/contested.`;
 };
 const synthesis = await agent(
   `You are aligning a finished ${closeLive.length}-way debate for a human who will decide. ` +
