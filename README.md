@@ -44,7 +44,7 @@ Version **0.12.10**. See [CHANGELOG.md](CHANGELOG.md) for what changed, and
 | `bash` (3.2+) | every gate CLI and hook | nothing works |
 | `git` | the source stamp on each verdict row, auto-arm, `ops-claims.sh`, the tutorial | rows are stamped `@no-vcs`; auto-arm arms nothing (`ops-init.sh` warns only when git is installed and the directory is not a repository) |
 | `jq` **or** `python3` | reading the hook payload (Stop, SessionStart, statusline) | the Stop hook **fails open** (exits 0 with a warning), so a missing dependency never bricks a session |
-| `node` | the PostToolUse output compressor | the hook's `node` command fails on every matched tool call and nothing is compressed ([#178](https://github.com/betmoar/cc-operator-plugin/issues/178)) |
+| `node` | the PostToolUse output compressor | the hook checks for `node` first and exits 0 without it — a silent no-op, nothing is compressed ([#178](https://github.com/betmoar/cc-operator-plugin/issues/178)) |
 | `claude` CLI | `ops-holdout.sh` only | the holdout skill cannot derive |
 | [cc-proxy](https://github.com/betmoar/cc-proxy-plugin) *(optional)* | routing tiers to non-Anthropic models; `ops-tiers.sh --check/--suggest/--panel` | tiers use Anthropic model ids; the proxy-backed flags report and fail open |
 | [cc-status](https://github.com/betmoar/cc-status-plugin) *(optional)* | composing the status-bar segment | wire `scripts/statusline.sh` directly (see below) |

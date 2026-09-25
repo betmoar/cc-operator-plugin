@@ -2,19 +2,18 @@
 
 Read-only rationale, like everything under `docs/`. Nothing here is loaded at
 runtime. It is the design record the cycle's missing stages were built from,
-kept as one document instead of four issue descriptions. Status at 0.12.8:
+kept as one document instead of four issue descriptions. Status at 0.12.11:
 
 - **Built:** the spec artifact and its approval stamp (§3, #155:
   `commands/spec.md`, `scripts/ops-spec.sh`); the implement workflow (§5.3,
   #158: `workflows/implement.js`, `commands/implement.md`); the dispatch
   fallback fix (§5.4, #158: `workflows/dispatch.js`); the derived stage (§6,
-  #157: `scripts/lib/stage.sh`, printed by the SessionStart banner); and a
-  command for every workflow except `dispatch` (§4's second half, #75).
-- **Built as instructions, not code:** the §4 plan gate. `commands/plan.md`
-  tells the operator to refuse a spec whose `Status:` is not `APPROVED`, to take
-  the north star from the spec, and to resolve the tiers itself.
-  `workflows/plan.js` checks none of that, so the gate holds only as far as the
-  command is followed ([#177](https://github.com/betmoar/cc-operator-plugin/issues/177)).
+  #157: `scripts/lib/stage.sh`, printed by the SessionStart banner); a
+  command for every workflow except `dispatch` (§4's second half, #75); and
+  the §4 plan gate's STATUS half, enforced in `workflows/plan.js` since #177
+  (a spec whose `Status:` first token is not `APPROVED` is refused in code;
+  a spec with no Status line is the spec-less path, reported
+  `specStatus: "unstamped"` in the result).
 
 Sections that have shipped are marked BUILT inline; the rest reads as it did
 when written.
@@ -221,9 +220,12 @@ the fourth review round.
 
 ## 4. The plan gate
 
-**BUILT as command prose (#155, #75).** `commands/plan.md` carries all four
-steps; `workflows/plan.js` enforces only its own two refusals (`spec`, and a
-north star with `Missed if:`). What follows is the design record.
+**BUILT (#155, #75, #177).** `commands/plan.md` carries all four steps;
+`workflows/plan.js` enforces step 1's status half in code (a spec whose
+`Status:` first token is not `APPROVED` is refused; no Status line is the
+spec-less path, reported `specStatus: "unstamped"`) plus its own two refusals
+(`spec`, and a north star with `Missed if:`). What follows is the design
+record.
 
 `/cc-operator:plan <slug>`:
 

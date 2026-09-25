@@ -105,6 +105,33 @@ if (typeof spec !== "string" || !spec.trim()) {
 }
 const repoRoot = (typeof A === "object" ? A.repoRoot : undefined) ?? ".";
 
+// --- the spec Status gate (#177) ---------------------------------------------
+// commands/plan.md step 1 refuses a spec whose Status line is not APPROVED;
+// the workflow checked nothing, so a direct Workflow call — or a model that
+// skipped the command's step — decomposed an unapproved sketch into a plan for
+// work nobody agreed to (CYCLE §4: the gap this gate exists to stop).
+//
+// The anchor is a column-0 `Status:` line, the exact form ops-spec.sh stamps
+// (`^Status: DRAFT` -> `^Status: APPROVED @<stamp>`); a "Status:" inside prose
+// does not count. The FIRST TOKEN must be APPROVED — substring matching would
+// pass NOT-APPROVED. A spec with NO Status line is NOT refused: that is the
+// pre-#155 spec-less path (commands/plan.md step 1, "the approved design from
+// this session" — no stamp, no ledger row), legitimate and named in the result
+// so the operator sees which path ran.
+const STATUS_LINE = /^Status:[ \t]*(\S+)/m;
+const _statusMatch = STATUS_LINE.exec(spec);
+if (_statusMatch && _statusMatch[1] !== "APPROVED") {
+  throw new Error(
+    `args.spec carries 'Status: ${_statusMatch[1]}' — the plan gate requires ` +
+      "Status: APPROVED (the first token on the line; ops-spec.sh stamps exactly " +
+      "that). An unapproved spec is a sketch: decomposing it produces a plan for " +
+      "work nobody agreed to. Approve it first (/cc-operator:spec <slug> -> " +
+      "--approve), or pass the approved session design as a spec with no Status " +
+      "line.",
+  );
+}
+const specStatus = _statusMatch ? "approved" : "unstamped";
+
 // --- the north star (#58) ---------------------------------------------------
 // One sentence naming what must be true when this work is done, plus what we
 // would see if we had missed it. REQUIRED, like `spec` and the tier names above:
@@ -756,6 +783,10 @@ return {
   // it (Stage A measured that per-task seats cannot, and the whole-set check
   // that could is arithmetic over specExcerpt, not a lens — see #58, #66).
   northStar,
+  // Which path the spec took: "approved" (a stamped spec — the plan gate held
+  // in code) or "unstamped" (the spec-less path, legitimate but unevidenced —
+  // commands/plan.md makes the operator say so when reporting).
+  specStatus,
   fileStructure: decomp?.fileStructure ?? "",
   globalConstraints: globalConstraints || null,
   tasks,
