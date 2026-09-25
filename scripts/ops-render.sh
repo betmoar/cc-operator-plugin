@@ -7,7 +7,7 @@
 # everything and is warned about (M7).
 #
 # tiers.env format (shared with ops-tiers.sh; parsed, never sourced):
-#   TIER:   JUDGMENT=claude-opus-5        (tier → model id)
+#   TIER:   JUDGMENT=opus                 (tier → model id)
 #   SEAT:   op-mechanic=MECHANICAL        (seat → tier; 'op-' prefix optional)
 #   PANEL:  PANEL=a,b,c  PANEL_FALLBACK=… (the resolver's; skipped here, #172)
 # Layering: baked → user → project. Seats merge by name.
@@ -68,7 +68,7 @@ TIER_NAMES="JUDGMENT IMPLEMENT MECHANICAL RECON"
 # renderer only has to not read them as seat lines.
 PANEL_KEYS="PANEL PANEL_FALLBACK"
 # tier → model (resolved; defaults from ops-tiers.sh baked set)
-TRES_JUDGMENT="claude-opus-5"; TRES_IMPLEMENT="claude-sonnet-5"
+TRES_JUDGMENT="opus"; TRES_IMPLEMENT="claude-sonnet-5"
 TRES_MECHANICAL="glm-5.3-flash"; TRES_RECON="claude-haiku-4-5-20251001"
 TSRC_JUDGMENT=default; TSRC_IMPLEMENT=default; TSRC_MECHANICAL=default; TSRC_RECON=default
 
@@ -267,7 +267,7 @@ case "$MODE" in
     printf '%s\n' "$SEATS" | while IFS='|' read -r -n 256 sn st ss; do
       [ -n "$sn" ] || continue; eval "echo \$TRES_$st"; done \
       | sort -u | while IFS= read -r -n 256 id; do
-        case "$id" in claude-*) echo "  $id: skipped (harness-served)"; continue ;; esac
+        case "$id" in claude-*|opus|sonnet|haiku|fable) echo "  $id: skipped (harness-served)"; continue ;; esac
         code="$(curl -sS -m 8 -o /dev/null -w '%{http_code}' -X POST \
           "http://127.0.0.1:${PORT}/v1/messages" -H 'content-type: application/json' \
           -d '{"model":"'"$id"'","max_tokens":1,"messages":[{"role":"user","content":"PONG"}]}' 2>/dev/null)" || code=000

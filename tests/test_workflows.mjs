@@ -424,6 +424,29 @@ const { result: noTasksPlan } = await run(WF("plan.js"), {
 }, { decompose: { tasks: [] } });
 ok(noTasksPlan?.error != null && noTasksPlan.specStatus === "approved",
   "plan specStatus: the zero-tasks early return carries specStatus (approved)");
+// #186: the edge inputs around the Status line, each pinned in the direction it resolves. The gate is a
+// gate position, so anything ambiguous REFUSES; only "no column-0 Status line at all" takes the spec-less path.
+const sgRun = (spec) => run(WF("plan.js"), { spec, northStar: NORTH_STAR }, planFixtures);
+// The specStatus a spec resolves to, or "threw" — an ok() over a bare await would CRASH the suite on an
+// unexpected refusal, and a crash prints no FAIL line (measured while mutation-checking these cases).
+const sgStatus = async (spec) => { try { return (await sgRun(spec)).result?.specStatus; } catch { return "threw"; } };
+const BOM = "\uFEFF";
+await throws(() => sgRun(`${BOM}Status: DRAFT\n\n# SPEC — t\n`),
+  "#186 plan specStatus: a BOM before a line-1 Status: DRAFT still REFUSES (the BOM is not indentation)", "plan gate requires");
+ok(await sgStatus(`${BOM}Status: APPROVED @abc1234\n\n# SPEC — t\n`) === "approved",
+  "#186 plan specStatus: a BOM before a line-1 Status: APPROVED reads as approved, not unstamped");
+await throws(() => sgRun("# SPEC — t\r\n\r\nStatus: DRAFT\r\n"),
+  "#186 plan specStatus: a CRLF Status: DRAFT is refused", "plan gate requires");
+ok(await sgStatus("# SPEC — t\r\n\r\nStatus: APPROVED\r\n") === "approved",
+  "#186 plan specStatus: a CRLF Status: APPROVED is approved (the CR is not part of the token)");
+await throws(() => sgRun(statusSpec("approved")),
+  "#186 plan specStatus: lowercase approved is refused (ops-spec.sh stamps uppercase only)", "plan gate requires");
+await throws(() => sgRun("# SPEC — t\n\nStatus: DRAFT\nStatus: APPROVED @abc1234\n"),
+  "#186 plan specStatus: two Status lines — the FIRST decides, so DRAFT-then-APPROVED is refused", "Status: DRAFT");
+await throws(() => sgRun("# SPEC — t\n\n```\nStatus: DRAFT\n```\n"),
+  "#186 plan specStatus: a column-0 Status: DRAFT inside a fence is refused (the anchor is not fence-aware)", "plan gate requires");
+ok(await sgStatus("# SPEC — t\n\n  Status: DRAFT\n") === "unstamped",
+  "#186 plan specStatus: an INDENTED Status line is not the stamp — the spec-less path (column-0 contract)");
 
 // ── plan: the feasibility lens is given the earlier tasks' produces (#73) ────
 console.log("-- Case: plan.js feasibility lens receives earlier produces (#73)");
@@ -2159,6 +2182,20 @@ console.log("-- Case: debate.js seats a persona and re-seats the dead on spares 
     { case: "c", models: ["qwen/qwen3.8-27b:free", "z-ai/glm-5.2:free", "claude-opus-5"] }, FULL_PANEL);
   ok(!/NOT INDEPENDENT/.test(rt.calls.find((c) => c.label === "synthesis")?.prompt ?? "") && r?.distinctModels === 3,
     `debate #172: two vendors sharing a :free tag are two families, not one (distinctModels ${r?.distinctModels})`);
+}
+// A harness ALIAS (the JUDGMENT default and the panel's Anthropic seat are `opus`) is family claude: familyOf read
+// `opus` as family `opus`, so opus beside claude-sonnet-5 passed as two independent vendors (red on the old rule).
+{
+  const { result: r, rt } = await run(WF("debate.js"),
+    { case: "c", models: ["opus", "claude-sonnet-5", "glm-5.3"] }, FULL_PANEL);
+  ok(/NOT INDEPENDENT: seats A and B run on ONE model family/.test(rt.calls.find((c) => c.label === "synthesis")?.prompt ?? "")
+      && r?.distinctModels === 2,
+    `debate: a harness alias (opus) and a claude-* id are ONE family, flagged (distinctModels ${r?.distinctModels})`);
+}
+// Every alias, not only opus: four literals share the arm, and a typo in one ships green unless each is probed.
+for (const al of ["sonnet", "haiku", "fable"]) {
+  const { result: r } = await run(WF("debate.js"), { case: "c", models: [al, "claude-opus-5", "glm-5.3"] }, FULL_PANEL);
+  ok(r?.distinctModels === 2, `debate: the harness alias ${al} is family claude (distinctModels ${r?.distinctModels})`);
 }
 // The one sanctioned repeat is a persona ENTRY; a plain repeat and two identical persona entries both refuse.
 await throws(() => run(WF("debate.js"), { case: "c", models: ["glm-5.3", "persona:glm-5.3", "persona:glm-5.3"] }, {}),
