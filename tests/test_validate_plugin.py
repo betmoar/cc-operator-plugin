@@ -333,7 +333,7 @@ def make_good_tree(root):
     write(root / "templates" / "OPERATOR.md", GOOD_CHARTER)
     # Every [DOC:spec-<key>] in the charter needs a `### spec-<key>` entry in
     # the tag index (#76 step E) — the fixture cites spec-D4.
-    write(root / "docs" / "TAGS.md",
+    write(root / "docs" / "design" / "TAGS.md",
           "# Tags\n\n### spec-D4\n\nThe evidence gate.\n")
     write(root / "templates" / "VERDICTS-header.md",
           "# Verdicts\n" + vp.VERDICTS_HEADER + "\n|---|---|---|---|\n")
@@ -1095,7 +1095,7 @@ class ValidatorTest(unittest.TestCase):
                          self._IMPLEMENT_EXPECTED_FIELDS,
                          "IMPLEMENT_PACKET_FIELDS changed — update the "
                          "independent copy here, templates/OPERATOR.md, "
-                         "docs/HANDOUT.md and workflows/implement.js")
+                         "docs/guide/HANDOUT.md and workflows/implement.js")
         self.assertEqual(tuple(vp.IMPLEMENT_STATUSES),
                          self._IMPLEMENT_EXPECTED_STATUSES,
                          "IMPLEMENT_STATUSES changed — update the independent "
@@ -1196,7 +1196,7 @@ class ValidatorTest(unittest.TestCase):
         self.assertEqual(
             tuple(vp.HANDOUT_PACKET_SPINE), self._EXPECTED_SPINE,
             "HANDOUT_PACKET_SPINE changed — update _EXPECTED_SPINE too, and check "
-            "that templates/OPERATOR.md and docs/HANDOUT.md carry the new field")
+            "that templates/OPERATOR.md and docs/guide/HANDOUT.md carry the new field")
 
     def test_handout_packet_pin(self):
         # No handout: the handout half must skip (prose is optional). The charter
@@ -1207,7 +1207,7 @@ class ValidatorTest(unittest.TestCase):
         vp.check_handout_packet(self.dir, probs)
         self.assertEqual(probs, [])
         # A handout carrying the packet is clean.
-        h = self.dir / "docs" / "HANDOUT.md"
+        h = self.dir / "docs" / "guide" / "HANDOUT.md"
         write(h, "packet:\n" + self._PACKET)
         probs = []
         vp.check_handout_packet(self.dir, probs)
@@ -1226,7 +1226,7 @@ class ValidatorTest(unittest.TestCase):
         # was invisible. One assertion per field.
         c = self.dir / "templates" / "OPERATOR.md"
         write(c, c.read_text() + "\n" + self._PACKET)
-        h = self.dir / "docs" / "HANDOUT.md"
+        h = self.dir / "docs" / "guide" / "HANDOUT.md"
         for field in self._EXPECTED_SPINE:
             write(h, "packet:\n" + self._PACKET.replace(field, "«removed»"))
             probs = []
@@ -1246,7 +1246,7 @@ class ValidatorTest(unittest.TestCase):
         the pin must follow the LAST/real packet, not the first fence."""
         c = self.dir / "templates" / "OPERATOR.md"
         write(c, c.read_text() + "\n" + self._PACKET)
-        h = self.dir / "docs" / "HANDOUT.md"
+        h = self.dir / "docs" / "guide" / "HANDOUT.md"
         # Dangerous direction: decoy complete, real packet lost CHANGED.
         broken = self._PACKET.replace("CHANGED: <paths>|none", "")
         write(h, "prose example:\n" + self._PACKET + "\n\nthe packet itself:\n" + broken)
@@ -1349,20 +1349,20 @@ class ValidatorTest(unittest.TestCase):
         self.assertFires("no citation tag")
 
     def test_charter_doc_tag_without_index_entry_fires(self):
-        # A [DOC:spec-*] tag with no `### spec-*` entry in docs/TAGS.md must
+        # A [DOC:spec-*] tag with no `### spec-*` entry in docs/design/TAGS.md must
         # fail — the index is where DOC tags resolve in a clone (#76 step E).
         write(self.dir / "templates" / "OPERATOR.md",
               GOOD_CHARTER.replace("[DOC:spec-D4]", "[DOC:spec-D4] [DOC:spec-ghost]", 1))
         self.assertFires("[DOC:spec-ghost] has no `### spec-ghost` entry")
 
     def test_charter_doc_tags_with_missing_index_fires(self):
-        (self.dir / "docs" / "TAGS.md").unlink()
-        self.assertFires("docs/TAGS.md: missing")
+        (self.dir / "docs" / "design" / "TAGS.md").unlink()
+        self.assertFires("docs/design/TAGS.md: missing")
 
     def test_charter_orphan_index_entry_is_not_a_finding(self):
         # The reverse direction is deliberately unchecked: a surviving entry for a
         # retired tag is history, not rot.
-        p = self.dir / "docs" / "TAGS.md"
+        p = self.dir / "docs" / "design" / "TAGS.md"
         p.write_text(p.read_text() + "\n### spec-retired\n\nold entry.\n",
                      encoding="utf-8")
         probs = []
@@ -4527,7 +4527,7 @@ class CouplingCaseRefsTest(unittest.TestCase):
               'check "zzfixture dev[Q] mirror holds" 0\n'
               'check "a zzfixture line in probe.env is dropped by the stub" 0\n'
               + "".join(f'check "zzfixture filler {i}" 0\n' for i in range(45)))
-        write(self.dir / "docs" / "LANDMINES.md",
+        write(self.dir / "docs" / "maintainer" / "LANDMINES.md",
               "## A zzfixture landmine heading\n")
 
     def tearDown(self):
@@ -4574,7 +4574,7 @@ class CouplingCaseRefsTest(unittest.TestCase):
     def test_a_landmine_reference_resolves_against_the_landmine_file(self):
         self.assertEqual(
             self._probs(self.FILL +
-                        ' Why: `docs/LANDMINES.md` _"A zzfixture landmine heading"_.\n'),
+                        ' Why: `docs/maintainer/LANDMINES.md` _"A zzfixture landmine heading"_.\n'),
             [])
 
     def test_the_classification_is_by_context_not_by_string(self):
@@ -4589,7 +4589,7 @@ class CouplingCaseRefsTest(unittest.TestCase):
     def test_the_context_window_edge_is_pinned_at_120(self):
         """#113: the 120-char lookback IS a selection, and its edge went
         untested — measured live on 2026-09-04 (the CLAUDE.md diet): a
-        citation whose only `docs/LANDMINES.md` mention sits just OUTSIDE the
+        citation whose only `docs/maintainer/LANDMINES.md` mention sits just OUTSIDE the
         window misclassifies as tests/ and fires a FALSE 'resolves nowhere'
         against a correct table — the false-positive direction, which blocks a
         correct change. Both halves pinned: outside fires tests/, inside
@@ -4611,7 +4611,7 @@ class CouplingCaseRefsTest(unittest.TestCase):
         _W = 120  # mirrors validate_plugin.check_coupling_case_refs's window
         for gap, expect_tests in ((_W - 21, True), (_W - 22, False)):
             probs = self._probs(
-                self.FILL + f' see docs/LANDMINES.md {"y" * gap} and the '
+                self.FILL + f' see docs/maintainer/LANDMINES.md {"y" * gap} and the '
                             '_"A zzfixture landmine heading"_ ref.\n')
             hit = any("zzfixture landmine heading" in p and "tests/" in p
                       for p in probs)
@@ -5954,7 +5954,7 @@ class LineCitationTest(unittest.TestCase):
     """check_line_citations: a `file.sh:NNN` in prose must still resolve (#139 item 4).
 
     The defect is real and was found by RUNNING this check, not by mutating it:
-    on the tree as it stood, `docs/REPLAY-CHARTER.md` cited `ops-init.sh:194`,
+    on the tree as it stood, `docs/maintainer/REPLAY-CHARTER.md` cited `ops-init.sh:194`,
     which was a BLANK line — and the claim attached to it ("the install set
     lives here") had been false since #76 moved the set to
     scripts/ops-install-set.sh. Two more (`lib/partition.sh:204`,
@@ -6090,7 +6090,7 @@ class ProseInvocationTest(unittest.TestCase):
 
       templates/OPERATOR.md  --since removed        -> OPERATOR.md:109 fires
       README.md              --since removed        -> README.md:109 fires
-      docs/PLAYBOOK.md       [--since] bracketed    -> PLAYBOOK.md:565 fires
+      docs/maintainer/PLAYBOOK.md       [--since] bracketed    -> PLAYBOOK.md:565 fires
 
     The third is the one a presence test misses: the flag is NAMED, so it reads
     as prescribed, while the brackets tell the reader it is optional for a flag
@@ -6215,7 +6215,7 @@ class ProseInvocationTest(unittest.TestCase):
 
     def test_the_exemption_still_covers_the_control_it_excuses(self):
         # The other half: narrowing the exemption must not break the thing it
-        # exists for. docs/REPLAY-CHARTER.md's `--ownr` probe is deliberate.
+        # exists for. docs/maintainer/REPLAY-CHARTER.md's `--ownr` probe is deliberate.
         self.assertEqual(self._probs(
             "**Verify the parser refuses a mistyped flag** — the control:\n"
             "`ops-thing.sh --ownr S` must exit non-zero.\n"), [])
@@ -6376,7 +6376,7 @@ class ProseInvocationTest(unittest.TestCase):
         self.assertIn("--since", probs[0])
 
     def test_an_ENUMERATION_of_CLI_names_is_not_a_command_line(self):
-        # docs/REPLAY-CHARTER.md names the install set as a span of bare
+        # docs/maintainer/REPLAY-CHARTER.md names the install set as a span of bare
         # filenames; each entry reads as the next one's ARGUMENT, so the
         # flagless arm fired twice on it (measured, once the tail regex stopped
         # swallowing the following CLI). An argument that is itself a CLI name

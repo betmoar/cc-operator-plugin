@@ -9,6 +9,56 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.12.9] - 2026-09-25
+
+The documentation, audited against the code and restructured. The README is
+rewritten for the current version, and `docs/` is grouped by audience with an
+index the README links to.
+
+### Changed
+
+- **`docs/` is grouped by audience**: `guide/` (HANDOUT), `design/` (TAGS, CYCLE,
+  DECISION-ENGINE-PROBES), `maintainer/` (PLAYBOOK, LANDMINES, REPLAY-CHARTER,
+  UNKNOWNS), `history/` (CHANGELOG-archive), and `docs/README.md` indexes them.
+  Every path that named a moved file was rewired: the validator, its tests,
+  CLAUDE.md, code comments and cross-doc links.
+- **README.md rewritten for the current version.** It now covers prerequisites (git, jq or python3, node, and
+  optional cc-proxy/cc-status), what `/cc-operator:start` installs and what it
+  tracks, the four Stop-hook blocking conditions, auto-arm, the loop guard, the
+  cap detector, MOOT and `--defer`, the stage banner, hooks, tiers and
+  `tiers.env` line kinds, all four status segments, the full layout, and CI as
+  `gate-suite.sh` rungs. Every claim was checked against the code, and an
+  adversarial review pass then found 16 more false claims, each reproduced and
+  fixed.
+- **HANDOUT.md** now has 8 agents, 7 workflows, 11 commands, the cycle, and
+  the panel. **CONTRIBUTING.md** prescribes the CI rungs instead of raw suite
+  commands and describes base-gate correctly. **CYCLE.md** states what is built.
+
+### Fixed
+
+- **HANDOUT's `tiers.env` example exited 2.** A `#` after a value is part of the
+  value, and `ops-tiers.sh` refused `JUDGMENT='claude-opus-5 # …'`. Comments now go on
+  their own line; the corrected example resolves with rc 0 in both
+  `ops-tiers.sh --show` and `ops-render.sh --show`.
+- **CLAUDE.md said a shared worktree suppresses auto-arm.** `autobar_decide` has
+  no suppression (both tried rules failed open). It also named
+  `docs/audit-2026-08-09-handoff.md` as committed, but that file left in 0.10.0.
+- **Docs claimed behaviour the code does not have:** that `ops-verdict.sh` refuses to close a
+  foreign sentinel (it does only under a different `--owner`), that auto-arm
+  fires only when no task is open and once per session (it ignores open tasks,
+  and re-arms after each SessionStart), that the banner can print `HANDOFF` (the
+  banner passes `-` for deviations), that MOOT does not reset the rework cap,
+  and that base-gate checks out the PR head (it never does).
+- **Workflow comments pointed at the removed `docs/spec/`.** brainstorm.js and
+  plan.js now name `/cc-operator:spec` and `docs/plans/`.
+
+### Filed
+
+- [#177](https://github.com/betmoar/cc-operator-plugin/issues/177): the plan gate is
+  command prose, and `plan.js` accepts an unapproved spec.
+- [#178](https://github.com/betmoar/cc-operator-plugin/issues/178): without node,
+  the PostToolUse hook exits 127 on every matched tool call.
+
 ## [0.12.8] - 2026-09-24
 
 A holdout can now be derived from inside the plugin, and a first-time user can watch
@@ -2943,4 +2993,4 @@ graph work now computes the answer that issue needs.
 
 ---
 
-Older releases (0.1.0 – 0.8.4) live in [docs/CHANGELOG-archive.md](docs/CHANGELOG-archive.md).
+Older releases (0.1.0 – 0.8.4) live in [docs/history/CHANGELOG-archive.md](docs/history/CHANGELOG-archive.md).

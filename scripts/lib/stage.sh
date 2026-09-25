@@ -9,7 +9,7 @@
 # own stage can propose the next move; one that cannot needs a human holding
 # the sequence in their head.
 #
-# DERIVED, NEVER STORED. docs/UNKNOWNS.md states the rule this repo applies to
+# DERIVED, NEVER STORED. docs/maintainer/UNKNOWNS.md states the rule this repo applies to
 # itself: the moment status lives in two places, one of them is wrong and
 # nothing says which. There is no engagement.json and there must not be one.
 #

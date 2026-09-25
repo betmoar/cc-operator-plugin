@@ -361,7 +361,7 @@ return {
   references: references || null,
   bundle,
   // The operator's next move, per the charter: present bundle.openQuestions one
-  // at a time, then the ranked directions, and write the approved design to
-  // docs/spec/. A workflow cannot take mid-run user input — that gate stays
+  // at a time, then the ranked directions, and write the approved design as a
+  // spec with /cc-operator:spec (.operator/specs/<slug>.md). A workflow cannot take mid-run user input — that gate stays
   // with the operator.
 };

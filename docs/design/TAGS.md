@@ -101,7 +101,7 @@ unowned and reports foreign, unowned fails closed, `ops-adopt.sh` is the
 recovery path after an id change, and the SessionStart hook injects the id
 because `CLAUDE_SESSION_ID` is not in the Bash tool env. What a green suite
 does not prove was that document's honest register; its surviving heirs are
-the _"sentinel ownership"_ test cases and `docs/LANDMINES.md`.
+the _"sentinel ownership"_ test cases and `docs/maintainer/LANDMINES.md`.
 
 **The name is parsed by splitting on the FIRST `__`** — owner to the left,
 task id to the right. That is THE rule; everything else about a sentinel name
@@ -133,12 +133,12 @@ The unknowns discipline: surface unknowns *before* building; route by stage
 (fuzzy → interview, unfamiliar code → blindspot, ready → plan workflow,
 about-to-claim-done → adversarial seat); a reframe-invalidating unknown is a
 STOP. The register of record is GitHub issues (`label:unknown`) —
-`docs/UNKNOWNS.md` holds the convention.
+`docs/maintainer/UNKNOWNS.md` holds the convention.
 
 ### spec-wf
 
-The workflow layer: review, brainstorm, plan, crawl, dispatch, debate are
-the orchestration primitives; `/cc-operator:tiers` resolves tier→model bindings
+The workflow layer: review, brainstorm, plan, crawl, dispatch, debate,
+implement are the orchestration primitives; `/cc-operator:tiers` resolves tier→model bindings
 (the operator's job — workflows carry harness-alias defaults only, #76
 step 2). The workflows themselves are `workflows/*.js`; their guard
-architecture is in `docs/PLAYBOOK.md` ("Adding a workflow").
+architecture is in `docs/maintainer/PLAYBOOK.md` ("Adding a workflow").

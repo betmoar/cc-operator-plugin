@@ -1,6 +1,6 @@
 # Changelog archive — cc-operator 0.1.0 – 0.8.4
 
-Older release entries, split from [CHANGELOG.md](CHANGELOG.md) in 0.10.0 to
+Older release entries, split from [CHANGELOG.md](../../CHANGELOG.md) in 0.10.0 to
 keep the live file readable. Same format; nothing here is edited after the
 split.
 

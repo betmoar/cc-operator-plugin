@@ -764,7 +764,7 @@ return {
   //  1. Spec-coverage check: does every spec section map to a task? (writing-plans self-review #1)
   //  2. Resolve every `blocked` task before any implementation dispatch — a
   //     blocked task is a plan-level contradiction, which reaches the human.
-  //  3. Write the plan to docs/spec/ or docs/plans/ and open the human-review gate.
+  //  3. Write the plan (default docs/plans/<slug>.md, commands/plan.md) and open the human-review gate.
   //     Every row below carries taskIndex beside taskId (audit F110): a
   //     decomposer repeating an id is schema-legal, and bare ids collapsed the
   //     occurrences so a verdict could not name which task it was about.

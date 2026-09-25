@@ -119,7 +119,7 @@ done
 # `[ "$active" = "true" ] && exit 0` could not tell those apart, so an active
 # cc-repete loop (which blocks every Stop while it runs) disarmed this gate
 # for the whole loop window after its first turn — a fail-OPEN silent disarm,
-# the worst class in docs/LANDMINES.md.
+# the worst class in docs/maintainer/LANDMINES.md.
 #
 # The marker closes the ambiguity: we stamp .operator/.stopguard/<sid> when WE
 # block, clear it when WE allow. "Active AND my marker" = the continuation of

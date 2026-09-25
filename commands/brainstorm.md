@@ -35,7 +35,7 @@ Explore `$ARGUMENTS` with the brainstorm workflow, before a spec exists.
 
 4. **Write the answers down.** The approved direction is the input to the plan
    workflow, and today nothing carries it there but you: a design that lives
-   only in this conversation does not survive a compaction (`docs/CYCLE.md` §2).
+   only in this conversation does not survive a compaction (`docs/design/CYCLE.md` §2).
 
 5. **Where the result goes.** The workflow returns data and has no filesystem or
    publishing tool, so the destination is yours to choose (#75). Ask the user

@@ -183,7 +183,7 @@ with every binding commented out, so the baked default is what runs.
 The mechanism that follows (built in 0.12.5) is not an engine: `ops-tiers.sh --suggest` reads the
 grades file **when present**, reports dominated bindings, changes nothing. It
 consumes a table maintained elsewhere with its own timestamp, rather than copying
-facts into this repo where they rot (`docs/LANDMINES.md` § *"A catalogue of another
+facts into this repo where they rot (`docs/maintainer/LANDMINES.md` § *"A catalogue of another
 system's facts goes stale"*).
 
 A caution recorded with it: a naive `min()` over a capability floor collapses three
