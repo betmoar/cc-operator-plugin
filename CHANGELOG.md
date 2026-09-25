@@ -9,6 +9,89 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.12.8] - 2026-09-24
+
+A holdout can now be derived from inside the plugin, and a first-time user can watch
+the gate block before reading about it.
+
+### Added
+
+- **`skills/holdout` + `scripts/ops-holdout.sh` (#150).** The procedure #112 learned
+  over three derivation rounds and three repair dispatches, as a skill: prove the denial, derive, reproduce every disagreement before
+  deciding defect vs over-assertion, dispatch repairs back (never hand-edit), cap rework
+  at two, accept only after a mutation drives it red, gate on a marker. The CLI owns the
+  one thing a skill cannot enforce, the denial itself: `--derive` runs `claude -p` with
+  `--tools ""`, `--setting-sources ""` and `--strict-mcp-config` from an EMPTY directory,
+  refusing a non-empty dir, an ancestor `CLAUDE.md` and empty context. `--canary`
+  measures the property on this machine's claude, using a planted file in the cwd and a
+  codeword in an ancestor `CLAUDE.md`. Measured live on haiku: PASS as shipped. Without
+  `--setting-sources ""` the codeword leaks (red), and with `--tools Read` the file
+  leaks (red). Also measured: `--tools ""` alone still loads the user's and the project's
+  `CLAUDE.md`, so a tool-denied process is not independent without the second flag.
+- **`/cc-operator:tutorial` + `scripts/ops-tutorial.sh` (#75).** A throwaway git project,
+  one tracked task, and the real Stop hook fed a Stop payload: exit 2 (blocked), then a
+  verdict row with evidence through the installed CLI, then exit 0. It prints
+  `TUTORIAL_OK` only when it observed both, and a copy whose hook never blocks fails it
+  with `TUTORIAL_FAILED`. The README gains a Getting started section pointing at it.
+- **Where a workflow's result goes (#75).** `commands/{brainstorm,plan,debate,review}.md`
+  each say it, because a workflow cannot publish: specs and plans are inputs to later
+  work and go in git (`plan.md` now grants `Write`). A brainstorm bundle, a debate, or a
+  panel report can be published as an artifact when the session has a tool for it.
+  Ask once per session.
+
+### Fixed (PR #176 review, each reproduced first)
+
+- **`--canary` could PASS without measuring.** A `claude` that prints an error at exit 0
+  ("Invalid API key", an unknown model) contains neither planted token, so it read as
+  "no leak". `--derive` handed the same error back as a derivation. Both now require a
+  random nonce on the answer's first line: an error message cannot contain it. Measured:
+  haiku and sonnet echo it with every tool denied.
+- **The tutorial could credit the wrong block.** The auto-arm (#85) also exits 2, so the
+  block must now name `tutorial-demo`. A failing `ops-task.sh` or `ops-verdict.sh` was
+  masked by `| sed` without `pipefail`. The tutorial now sets `pipefail`, requires the
+  sentinel to exist after step 2 and the row to exist after step 4, and stops otherwise.
+- **Copilot review.** A reply holding the nonce and nothing else still made `--canary`
+  PASS, because the empty scan found no leak (reproduced). The answer must now have a
+  non-blank body after the nonce. `--derive --canary` together is refused; before, the
+  later flag silently won. `/cc-operator:tutorial` now forwards its arguments, so the
+  advertised `--keep` works. The holdout skill's `description:` is quoted: YAML read the
+  unquoted ` #112` as a comment and cut the description at "the procedure".
+- **Copilot review, round 2.** `commands/tutorial.md` pasted `$ARGUMENTS` into a command
+  run under `Bash(bash:*)`, so `--keep; <anything>` became shell. It now offers `--keep` as
+  a literal and refuses any other argument. A mid-step abort (a `die`, a `set -e` exit)
+  printed no marker at all; one exit trap now ends every non-OK path in `TUTORIAL_FAILED`
+  with the exit code. `--derive` also refuses a directory below a `.claude/rules/`: a
+  codeword in a rules file reached a tool-denied process without `--setting-sources ""`
+  (measured, like `CLAUDE.local.md`).
+- **Review, round 2.**
+  - The canary matched a leak verbatim, so a model that lower-cased the planted token or
+    split it across lines leaked it and the canary still passed (reproduced). The match
+    is now on the token's random serial, case-folded, with whitespace and punctuation
+    removed.
+  - The ancestor walk now refuses a dangling `CLAUDE.md` symlink (`-e` is false for it).
+  - The PASS line prints the model's answer. A model that refused to try also reads as
+    PASS, and only the answer tells the two apart.
+  - Five guards that had no test now each have one that fails when the guard is broken:
+    `CLAUDE.local.md`, `.claude/CLAUDE.md`, the `$HOME` skip, and the tutorial's
+    sentinel, pipefail and row checks.
+  - The tutorial's exit trap skipped the marker on exit code 1, a gap meant for its own
+    `TUTORIAL_FAILED` ending. A step that failed with its own `exit 1` (ops-init.sh's
+    missing-install-set path) therefore ended with no marker. The trap now keys on which
+    ending ran, never on the code.
+  - The blank-answer check used `${out//[[:space:]]/}`, which is quadratic on bash 3.2
+    (the #145 class). The code review measured 8 KB taking 33 s, and an 80 KB derivation
+    never came back. The check now uses `grep`.
+
+### Verified
+
+- **`implement` has its first controlled live run (#79).** A fixture repo carried an
+  unlabelled off-by-one (`can_afford` used `<`, `spend` gates on `>`). A held-out probe
+  the seat never saw found 21 mismatches. One mechanic seat on `claude-sonnet-5`
+  (confirmed from the agent log, 37,642 tokens, 23s) returned DONE. Checked outside its
+  report: the probe then found 0 mismatches, the diff was one line (`<` → `<=`) with
+  `spend` untouched, and its new regression test fails on the pre-fix file (1 failed,
+  2 passed).
+
 ## [0.12.7] - 2026-09-24
 
 The #172 panel's review follow-ups (#174), and #138's priced omission moved into the tree.

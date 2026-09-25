@@ -49,3 +49,9 @@ it — a debate is the expensive way to be told what a command would have said.
 disagree and what each said would overturn it. A synthesis that reads like a
 recommendation is you adding one, and the human asked three models precisely so
 that you would not.
+
+
+**Where the result goes.** The workflow returns data and cannot publish (#75).
+Ask the user once per session: inline, or — when this session has a tool that
+publishes one — an artifact or shared document holding the three rounds and the
+synthesis. Either way `chose` stays null.

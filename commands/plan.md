@@ -1,7 +1,7 @@
 ---
 description: Run the plan workflow — decompose an approved spec into TDD tasks, then vet each in parallel for feasibility and testability.
 argument-hint: "<path to the approved spec, or paste it>"
-allowed-tools: Bash(bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-tiers.sh:*), Read, Workflow
+allowed-tools: Bash(bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-tiers.sh:*), Read, Write, Workflow
 ---
 
 Plan `$ARGUMENTS` with the plan workflow. It refuses without both required
@@ -51,3 +51,10 @@ list — the commonest entry is a task consuming something the project already
 provides. `contractsInferred` records every place the decomposer's prose was
 parsed rather than declared, and those edges are ESTIMATED. Review the plan
 against the spec yourself; that gate is yours, not the workflow's.
+
+
+**Where the result goes.** The plan is an input to later work, so it belongs in
+git: Write it to the path the user names (default `docs/plans/<slug>.md`, beside
+the spec it came from). An artifact or shared document is an additional copy
+for reading, never the plan of record — a plan that lives only outside the repo
+is not diffable and not reviewable in a PR (#75). Ask once per session.

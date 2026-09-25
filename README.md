@@ -13,6 +13,14 @@ pre-done — and the evidence gate gates what you claim after. Sole external
 dependency: [cc-proxy](https://github.com/betmoar/cc-proxy-plugin) for
 non-Anthropic model routing.
 
+## Getting started
+
+Install (below), then run **`/cc-operator:tutorial`**. It builds a throwaway
+project and shows the real Stop hook blocking a session that has an open task,
+then letting it end once a verdict row records the evidence. Watching the block
+is the fastest way to see what the gate is for. Then run `/cc-operator:start`
+in your own project.
+
 ## What it installs into a project
 
 `/cc-operator:start` writes into the project root:
@@ -89,6 +97,7 @@ the operator pasting a model id by hand (#55 at the call site).
 
 | Command | Purpose |
 |---|---|
+| `/cc-operator:tutorial` | Watch the gate block a stop, then clear it with a verdict row |
 | `/cc-operator:start [--inline]` | Initialize the ledger + materialize the charter |
 | `/cc-operator:handoff` | Produce the six-section operator→human handoff |
 | `/cc-operator:tiers` | Resolve tier→model bindings, apply overrides, render project-layer agents |
@@ -204,15 +213,18 @@ directly:
 .claude-plugin/marketplace.json   # standalone install path (source "./")
 templates/OPERATOR.md             # the charter (materialized by /cc-operator:start)
 templates/{VERDICTS,DECISIONS}-header.md   # ledger schemas (byte-identical to the proven originals)
-commands/*.md                     # slash commands: start, handoff, tiers + one per workflow
+commands/*.md                     # slash commands: start, handoff, tiers, tutorial + one per workflow
 workflows/{review,brainstorm,plan,crawl,dispatch,debate,implement}.js  # the orchestration primitives
 agents/op-*.md                    # tier-aliased seats: author, mechanic, reviewer, scout, verifier, brainstorm, crawler, debater
 skills/chief-operator/SKILL.md    # thin router (front door only)
+skills/holdout/SKILL.md           # deriving/repairing a holdout the builder cannot read (#150)
 scripts/ops-{init,task,verdict,adopt,claims,backlog,spec}.sh  # the evidence-gate mechanism
 scripts/ops-install-set.sh        # the .operator/bin install manifest (both writers source it)
 scripts/ops-{stop,sessionstart}-hook.sh # completion gate + session-id injection
 scripts/lib/partition.sh          # the mine/foreign partition rule — hook + statusline share it
 scripts/ops-{tiers,render}.sh     # tier resolver + project-layer agent renderer
+scripts/ops-holdout.sh            # denied-context derivation + its --canary (the holdout skill's CLI)
+scripts/ops-tutorial.sh           # /cc-operator:tutorial — self-checking block-then-clear demo
 scripts/ops-compress.mjs          # input-axis compressor (PostToolUse)
 .claude-plugin/statusline.json    # cc-status segment manifest (name/render/order)
 scripts/statusline.sh             # the segment: open tasks, partitioned by owner
