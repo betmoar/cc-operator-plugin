@@ -113,7 +113,9 @@ const repoRoot = (typeof A === "object" ? A.repoRoot : undefined) ?? ".";
 //
 // The anchor is a column-0 `Status:` line, the exact form ops-spec.sh stamps
 // (`^Status: DRAFT` -> `^Status: APPROVED @<stamp>`); a "Status:" inside prose
-// does not count. The FIRST TOKEN must be APPROVED — substring matching would
+// does not count unless it sits at column 0 — the anchor is line-start, not
+// fence-aware, so a fenced column-0 Status line REFUSES (fail-closed). The
+// FIRST TOKEN must be APPROVED — substring matching would
 // pass NOT-APPROVED. A spec with NO Status line is NOT refused: that is the
 // pre-#155 spec-less path (commands/plan.md step 1, "the approved design from
 // this session" — no stamp, no ledger row), legitimate and named in the result
@@ -325,6 +327,7 @@ if (!tasks.length) {
     error: "decomposition produced no tasks — check args.spec",
     decomp,
     northStar,
+    specStatus,
     fileStructure: decomp?.fileStructure ?? "",
     tasks: [],
     vetting: [],

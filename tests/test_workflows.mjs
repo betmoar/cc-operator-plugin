@@ -385,6 +385,16 @@ await throws(() => run(WF("plan.js"), { spec: statusSpec("APPROVED-ISH"), northS
 // the FIRST TOKEN, and a substring match would have passed it.
 await throws(() => run(WF("plan.js"), { spec: statusSpec("NOT-APPROVED"), northStar: NORTH_STAR }, planFixtures),
   "plan specStatus: NOT-APPROVED → refused (token match, not substring)", "plan gate requires");
+// "before any dispatch" is the load-bearing half of the title above — the four
+// throws() calls assert only the message. Assert the SPEND: the gate sits
+// before decompose, so a refused spec must not have paid a single seat (the
+// rt attachment exists for exactly this; same shape as the #92 refusals).
+let gateSpend = null;
+try {
+  await run(WF("plan.js"), { spec: statusSpec("DRAFT"), northStar: NORTH_STAR }, planFixtures);
+} catch (e) { gateSpend = e?.rt ?? null; }
+ok(gateSpend != null && gateSpend.calls.length === 0,
+  `plan specStatus: the Status refusal spends ZERO agents (got ${gateSpend?.calls.length ?? "no rt"})`);
 const { rt: stRt, result: stPlan } = await run(WF("plan.js"), {
   spec: statusSpec("APPROVED @abc1234"),
   northStar: NORTH_STAR,
@@ -393,9 +403,10 @@ ok(stRt.calls.length > 0, "plan specStatus: an APPROVED spec dispatches normally
 ok(stPlan.specStatus === "approved",
   "plan specStatus: result reports specStatus approved for an APPROVED spec");
 // The escape hatch: a spec with NO Status line is the pre-#155 spec-less path
-// (commands/plan.md step 1: "the approved design from this session, which
-// carries no stamp"). The workflow cannot distinguish, so it proceeds and says
-// so — a refusal here would break every legitimate spec-less invocation.
+// (commands/plan.md step 1: "the approved design from this session" — neither
+// it nor a stamp carries a ledger row). The workflow cannot distinguish, so it
+// proceeds and says so — a refusal here would break every legitimate
+// spec-less invocation.
 const { result: noStPlan } = await run(WF("plan.js"), {
   spec: "free-form design text with no status line",
   northStar: NORTH_STAR,
@@ -404,6 +415,15 @@ ok(noStPlan.specStatus === "unstamped",
   "plan specStatus: no Status line → unstamped, proceeds (the spec-less path)");
 ok(statusSpec("DRAFT").includes("Status: DRAFT"),
   "plan specStatus: control — the DRAFT fixture really carries the line");
+// The zero-tasks EARLY RETURN must carry specStatus too — one workflow, one
+// result shape: the field the gate promises cannot be absent exactly on the
+// failure path (its own comment claims same-shape; the caller branches on it).
+const { result: noTasksPlan } = await run(WF("plan.js"), {
+  spec: statusSpec("APPROVED @abc1234"),
+  northStar: NORTH_STAR,
+}, { decompose: { tasks: [] } });
+ok(noTasksPlan?.error != null && noTasksPlan.specStatus === "approved",
+  "plan specStatus: the zero-tasks early return carries specStatus (approved)");
 
 // ── plan: the feasibility lens is given the earlier tasks' produces (#73) ────
 console.log("-- Case: plan.js feasibility lens receives earlier produces (#73)");

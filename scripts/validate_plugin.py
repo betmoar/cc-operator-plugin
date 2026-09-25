@@ -3520,6 +3520,23 @@ def check_compressor(root, problems):
                 problems.append("hooks/hooks.json: PostToolUse does not point at ops-compress.mjs")
             if "${CLAUDE_PLUGIN_ROOT}" not in blob:
                 problems.append("hooks/hooks.json: PostToolUse command lacks ${CLAUDE_PLUGIN_ROOT} (a bare path resolves only inside this repo)")
+            # #178: the node guard. A bare `node …` 127s on a node-less machine
+            # and the harness reports a failing hook on every matched tool call.
+            # The SHAPE is load-bearing: `&& … || exit 0` also exits 0 node-less,
+            # but swallows a REAL compressor failure when node exists, so the
+            # executing shell case (rc 0 either way) cannot distinguish them and
+            # this pin must. Anchored at the head of the command.
+            _pt_cmd = post[0]["hooks"][0].get("command", "") if (
+                isinstance(post, list) and post and isinstance(post[0], dict)
+                and isinstance(post[0].get("hooks"), list) and post[0]["hooks"]
+                and isinstance(post[0]["hooks"][0], dict)) else ""
+            if not re.match(r'^command -v node >/dev/null 2>&1 \|\| exit 0; node ', _pt_cmd):
+                problems.append(
+                    "hooks/hooks.json: PostToolUse command lacks the node guard "
+                    "`command -v node >/dev/null 2>&1 || exit 0; node …` — a bare "
+                    "node call 127s node-less, and `&& … || exit 0` (same rc-0 "
+                    "node-less, which is why the shell case cannot catch it) would "
+                    "also mask a real compressor failure")
 
     # Strip comments (BOTH syntaxes) so a regex cannot match prose that merely
     # mentions a pattern — the inverse of F48. Not a JS lexer, but no guarded

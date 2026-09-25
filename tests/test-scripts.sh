@@ -8679,19 +8679,18 @@ check "#75 commands/plan.md grants Write for the plan of record it prescribes wr
 
 # --- #178: a missing node makes the PostToolUse hook a no-op, not a 127 ------
 echo "-- Case: #178 without node, the compressor hook exits 0 (a silent no-op, not a 127 on every matched tool call)"
-# The hook command is read OUT of hooks.json (not restated here) and executed
-# under a PATH that cannot resolve node. The jq/python3-dependent hooks already
-# fail open with a warning; this one had no equivalent, so a node-less machine
-# ran a failing hook on every Bash/WebFetch/WebSearch/Grep/Glob/Agent call.
-# Read the command OUT of hooks.json (not restated here — the file is the
-# thing under test). python3, as everywhere in this suite.
+# The hook command is read OUT of hooks.json (not restated here — the file is
+# the thing under test) and executed under a PATH that cannot resolve node. The
+# jq/python3-dependent hooks already fail open with a warning; this one had no
+# equivalent, so a node-less machine ran a failing hook on every matched tool
+# call. python3, as everywhere in this suite.
 _hookcmd="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["hooks"]["PostToolUse"][0]["hooks"][0]["command"])' "$REPO/hooks/hooks.json")"
 # CONTROL 1 — the command really is the one under test: it must name
 # ops-compress.mjs, or the case below measures nothing.
 check "#178 CONTROL the PostToolUse command names ops-compress.mjs" \
   "$(printf '%s' "$_hookcmd" | grep -q 'ops-compress.mjs' && echo 0 || echo 1)"
-# A node-less PATH: only the shell builtins directory (bash, sh, cat, env,
-# dirname — the set #178 measured with). node is absent by construction.
+# A node-less PATH: only core shell/file binaries (bash, sh, cat, env, dirname,
+# grep, sed). node is absent by construction.
 _nolink="$(mktemp -d "${TMPDIR:-/tmp}/opstest-nopath.XXXXXX")"
 for _b in bash sh cat env dirname grep sed; do
   _p="$(command -v "$_b")" && ln -s "$_p" "$_nolink/$_b" 2>/dev/null

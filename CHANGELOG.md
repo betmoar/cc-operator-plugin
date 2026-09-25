@@ -23,8 +23,9 @@ Two instruction-vs-mechanism gaps closed in code (#177, #178).
   (an APPROVED spec reports `"approved"`), so the operator sees which path ran.
 - **A missing `node` makes the PostToolUse compressor hook a no-op (#178).**
   The hook command is now `command -v node >/dev/null 2>&1 || exit 0; node …` —
-  same fail-open polarity as the jq/python3 hooks. Previously a node-less
-  machine ran a hook exiting 127 on every matched tool call.
+  the same exit-0 fail-open as the jq/python3 hooks (silent here; those warn).
+  Previously a node-less machine ran a hook exiting 127 on every matched tool
+  call.
 
 ## [0.12.10] - 2026-09-25
 

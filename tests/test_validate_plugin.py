@@ -369,7 +369,7 @@ def make_good_tree(root):
             }]}],
             "PostToolUse": [{"matcher": "Bash", "hooks": [{
                 "type": "command",
-                "command": 'node "${CLAUDE_PLUGIN_ROOT}/scripts/ops-compress.mjs"',
+                "command": 'command -v node >/dev/null 2>&1 || exit 0; node "${CLAUDE_PLUGIN_ROOT}/scripts/ops-compress.mjs"',
             }]}],
         }
     }))
@@ -3001,6 +3001,57 @@ class CompressorGuardTest(unittest.TestCase):
         src = re.sub(r'\|not ok', '', self._real_comp, count=1)
         self.assertTrue(any("SALVAGE_RE omits" in p for p in self._probs(src)),
                         self._probs(src))
+
+
+class NodeGuardPinTest(unittest.TestCase):
+    """check_compressor must pin the #178 node guard's SHAPE, not just its
+    rc-0 effect. The executing shell case reads rc 0 node-less under BOTH the
+    shipped `|| exit 0;` shape and the rejected `&& … || exit 0` shape — the
+    latter also swallows a REAL compressor failure when node exists — so only
+    a literal pin can tell them apart (a pin is a hypothesis until the
+    mutation runs red)."""
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        make_good_tree(self.dir)
+        self._hook = self.dir / "hooks" / "hooks.json"
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _probs(self, command):
+        d = json.loads(self._hook.read_text())
+        d["hooks"]["PostToolUse"][0]["hooks"][0]["command"] = command
+        write(self._hook, json.dumps(d))
+        probs = []
+        vp.check_compressor(self.dir, probs)
+        return probs
+
+    def test_shipped_shape_is_clean(self):
+        self.assertEqual(self._probs(
+            'command -v node >/dev/null 2>&1 || exit 0; node "${CLAUDE_PLUGIN_ROOT}/scripts/ops-compress.mjs"'), [])
+
+    def test_bare_node_fires(self):
+        self.assertTrue(any("node guard" in p for p in self._probs(
+            'node "${CLAUDE_PLUGIN_ROOT}/scripts/ops-compress.mjs"')))
+
+    def test_masking_and_or_shape_fires(self):
+        # the shape the PR review rejected: rc-0 node-less either way, but it
+        # swallows a real failure when node EXISTS. The shell case cannot see
+        # this; the pin must.
+        self.assertTrue(any("node guard" in p for p in self._probs(
+            'command -v node >/dev/null 2>&1 && exit 0 || exit 0; node "${CLAUDE_PLUGIN_ROOT}/scripts/ops-compress.mjs"')))
+
+    def test_guard_appended_after_node_fires(self):
+        # guard too late: bare node already 127s before the probe runs
+        self.assertTrue(any("node guard" in p for p in self._probs(
+            'node "${CLAUDE_PLUGIN_ROOT}/scripts/ops-compress.mjs" || command -v node >/dev/null 2>&1 || exit 0;')))
+
+    def test_extra_guard_prefix_diverges_fires(self):
+        # an edited literal (e.g. `type node` or a reordered redirect) must
+        # not read as the pinned shape
+        self.assertTrue(any("node guard" in p for p in self._probs(
+            'command -v node || exit 0; node "${CLAUDE_PLUGIN_ROOT}/scripts/ops-compress.mjs"')))
 
 
 class ClaimsGuardTest(unittest.TestCase):
