@@ -1,21 +1,49 @@
-# CYCLE — the engagement cycle, and the two stages missing from it
+# CYCLE — the engagement cycle, and the design record behind it
 
 Read-only rationale, like everything under `docs/`. Nothing here is loaded at
-runtime and nothing here is implemented yet: this file specifies the **spec
-artifact**, its **approval stamp**, the **implement workflow** that makes the
-IMPLEMENT tier reachable at all, and the **derived-stage rule**, so the issues
-that build them argue from one document instead of four descriptions.
+runtime. It is the design record the cycle's missing stages were built from,
+kept as one document instead of four issue descriptions. Status at 0.12.8:
 
-Two stages are missing, not one. The spec stage has no artifact (§2, §3). The
-implement stage has an artifact but no workflow, which is why the one tier
-bound to the implementer is dispatched by nothing (§5).
+- **Built:** the spec artifact and its approval stamp (§3, #155:
+  `commands/spec.md`, `scripts/ops-spec.sh`); the implement workflow (§5.3,
+  #158: `workflows/implement.js`, `commands/implement.md`); the dispatch
+  fallback fix (§5.4, #158: `workflows/dispatch.js`); the derived stage (§6,
+  #157: `scripts/lib/stage.sh`, printed by the SessionStart banner); and a
+  command for every workflow except `dispatch` (§4's second half, #75).
+- **Built as instructions, not code:** the §4 plan gate. `commands/plan.md`
+  tells the operator to refuse a spec whose `Status:` is not `APPROVED`, to take
+  the north star from the spec, and to resolve the tiers itself.
+  `workflows/plan.js` checks none of that, so the gate holds only as far as the
+  command is followed.
 
-Scope discipline, stated once: `templates/OPERATOR.md` is at 144/150 lines and
-8934/9000 bytes. Nothing proposed here goes in the charter, and if something
+Sections that have shipped are marked BUILT inline; the rest reads as it did
+when written.
+
+Scope discipline, stated once: `templates/OPERATOR.md` is at 145/150 lines and
+8988/9000 bytes. Nothing proposed here goes in the charter, and if something
 needs charter bytes the design is wrong — issue #75's own acceptance criterion,
 kept.
 
-## 1. The cycle as it exists today
+## 1. The cycle today, and as it stood when this was written
+
+| Stage | Mechanism | Driven by |
+|---|---|---|
+| diverge | `workflows/brainstorm.js` → `{ranked, sharedConstraints, openQuestions}`, via `/cc-operator:brainstorm` | operator |
+| spec | `commands/spec.md` → `scripts/ops-spec.sh --new/--check/--approve` (#155) | operator, interview-driven |
+| plan | `commands/plan.md` → `workflows/plan.js`; the workflow refuses without `spec` and a `Missed if:` north star, the command (prose) refuses an unapproved spec | the command resolves tiers and the spec |
+| implement | `commands/implement.md` → `workflows/implement.js`, one implementer seat, strictly serial (#158) | operator supplies the dispatch packet |
+| review | `commands/review.md` → `workflows/review.js` | operator |
+| gate | `ops-task.sh` → `ops-verdict.sh` | operator, by hand |
+| handoff | `/cc-operator:handoff` | the one stage with a command since before #155 |
+
+Eleven commands ship (`start`, `handoff`, `tiers`, `spec`, `plan`, `implement`,
+`brainstorm`, `review`, `debate`, `crawl`, `tutorial`); `dispatch` is the one
+workflow with no command surface, by design (it is the primitive the others
+call, not an engagement-cycle stage). `scripts/lib/stage.sh` (#157) derives
+where the engagement sits from these artifacts rather than the operator
+tracking it by memory.
+
+**As it stood when this was written (pre-#155/#158), for the record:**
 
 | Stage | Mechanism | Driven by |
 |---|---|---|
@@ -27,9 +55,10 @@ kept.
 | gate | `ops-task.sh` → `ops-verdict.sh` | operator, by hand |
 | handoff | `/cc-operator:handoff` | the one stage with a command |
 
-Three commands ship (`start`, `handoff`, `tiers`). Six workflows ship with no
-command surface. Every transition between stages is the operator remembering to
-make it — which is the one thing the RECOVERY PROTOCOL says not to rely on.
+Three commands shipped then (`start`, `handoff`, `tiers`). Six workflows
+shipped with no command surface. Every transition between stages was the
+operator remembering to make it — which is the one thing the RECOVERY
+PROTOCOL says not to rely on.
 
 ## 2. Why the spec stage is the load-bearing gap
 
@@ -192,6 +221,10 @@ the fourth review round.
 
 ## 4. The plan gate
 
+**BUILT as command prose (#155, #75).** `commands/plan.md` carries all four
+steps; `workflows/plan.js` enforces only its own two refusals (`spec`, and a
+north star with `Missed if:`). What follows is the design record.
+
 `/cc-operator:plan <slug>`:
 
 1. resolves the spec, **refuses** unless `Status: APPROVED`;
@@ -274,6 +307,9 @@ route, and the only one with no deterministic script around it.
   issue #75 identified and did not fight.
 
 ### 5.4 The smaller fix, shippable first — DECIDED
+
+**BUILT (#158).** `dispatch.js`'s `DEFAULT_TIERS` and the omit-model rung below
+ship as decided. What follows is the design record.
 
 `dispatch.js`'s fallback is wrong independently of whether an implement
 workflow ever exists, and the repair is settled: **accept `args.tier`, and when

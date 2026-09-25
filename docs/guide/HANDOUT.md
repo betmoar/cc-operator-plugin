@@ -17,6 +17,10 @@ every piece of work is actually done — not just claimed to be.
 You stay in control: you give the goal, the operator does the orchestration,
 and nothing gets marked "done" without evidence you can check.
 
+**First thing to run:** `/cc-operator:tutorial` — a throwaway project where you
+*watch* the evidence gate block a stop and then release it once a verdict row
+exists. It's the fastest way to see what "gated" actually means.
+
 ---
 
 ## The 4 tiers — what they mean
@@ -24,59 +28,71 @@ and nothing gets marked "done" without evidence you can check.
 A **tier** is a job-difficulty class that maps to a specific AI model. The
 operator picks the tier by *what the task needs*, not by cost alone — but
 cheap tasks never get an expensive brain, and hard judgment never gets a cheap
-one.
+one. Which tier a given agent *seat* runs on is decided per workflow call
+site, not baked into the agent file.
 
-| Tier name     | Default model            | What it's for                          | Cost / power        |
-| ------------- | ------------------------ | -------------------------------------- | ------------------- |
-| **JUDGMENT**  | `claude-opus-5`          | Hard calls: design, review, verdicts   | Highest / smartest  |
-| **IMPLEMENT** | `claude-sonnet-5`        | Writing real code, multi-step builds   | Mid / capable       |
-| **MECHANICAL**| `glm-5.3-flash`          | Bulk generation, reading shards        | Cheap / fast        |
-| **RECON**     | `claude-haiku-4-5-…`     | Lookups, searches, "where is X?"       | Cheap / fast        |
+| Tier name     | Default model                | What it's for                          | Cost / power        |
+| ------------- | ----------------------------- | --------------------------------------- | -------------------- |
+| **JUDGMENT**  | `claude-opus-5`                | Hard calls: design, review, verdicts   | Highest / smartest  |
+| **IMPLEMENT** | `claude-sonnet-5`               | Writing real code, multi-step builds   | Mid / capable       |
+| **MECHANICAL**| `glm-5.3-flash`                 | Bulk generation, reading shards        | Cheap / fast        |
+| **RECON**     | `claude-haiku-4-5-20251001`     | Lookups, searches, "where is X?"       | Cheap / fast        |
+
+There is also a **PANEL** — not a tier, a debate line-up (default
+`claude-opus-5, glm-5.3, deepseek-flash`, with fallback spares for a dead seat)
+that feeds the debate workflow via `ops-tiers.sh --panel`.
 
 **The golden rule:** *judgment work never runs below judgment tier.* If a task
 needs taste or reasoning, it gets JUDGMENT — no exceptions. Cheap tiers are for
 volume and speed, not for decisions.
 
-> You can change which model each tier points at — see "Customizing" below.
-> You **cannot** rename the four tier names; the whole system keys off them.
+> You can change which model each tier (and the panel) points at — see
+> "Customizing" below. You **cannot** rename the four tier names; the whole
+> system keys off them.
 
 ---
 
-## The team — 7 agents
+## The team — 8 agents
 
-Each agent has a fixed job. The operator dispatches them like specialists.
+Each agent has a fixed job. The operator dispatches them like specialists;
+the tier column below is the one each seat is *typically* dispatched at by
+the shipped workflows — a seat has no tier of its own.
 
-| Agent (`op-…`)   | Tier used      | Its one job                                           |
-| ---------------- | -------------- | ----------------------------------------------------- |
-| **op-author**    | JUDGMENT       | Writes prose, design, anything needing taste          |
-| **op-verifier**  | JUDGMENT       | Adversarial check: tries to *break* your claim (REFUTED/CONFIRMED) |
-| **op-reviewer**  | JUDGMENT       | Read-only review + scoring of finished work           |
-| **op-mechanic**  | IMPLEMENT      | Scaffolds, fixtures, commits, reverts — mechanical edits |
-| **op-scout**     | RECON          | Fast searches & lookups ("where/how is X?")           |
-| **op-crawler**   | MECHANICAL     | Reads one chunk of a large codebase, returns a digest |
-| **op-brainstorm**| MECHANICAL     | Generates many candidate ideas (divergent thinking)   |
+| Agent (`op-…`)   | Typical tier    | Its one job                                           |
+| ---------------- | --------------- | ------------------------------------------------------ |
+| **op-author**    | JUDGMENT/MECH.  | Writes prose, design, anything needing taste (also drafts and merges) |
+| **op-debater**   | JUDGMENT        | Read-only debate seat — holds ONE position across rounds, revises only on evidence |
+| **op-verifier**  | JUDGMENT        | Adversarial check: tries to *break* your claim (REFUTED/CONFIRMED) |
+| **op-reviewer**  | JUDGMENT/MECH.  | Read-only review + scoring of finished work (spec/quality/scoring modes) |
+| **op-mechanic**  | IMPLEMENT       | Scaffolds, fixtures, commits, reverts — mechanical edits |
+| **op-scout**     | RECON           | Fast searches & lookups ("where/how is X?")           |
+| **op-crawler**   | MECHANICAL      | Reads one chunk of a large codebase, returns a digest |
+| **op-brainstorm**| MECHANICAL      | Generates many candidate ideas (divergent thinking)   |
 
-**Read vs. write:** scouts, crawlers, reviewers, verifiers are **read-only by
-tool policy** — their tool lists exclude Write/Edit, but any seat that carries
-Bash could still write through the shell, so the operator verifies the tree
-after read-only dispatches (`ops-claims.sh --expect-clean`) instead of trusting
-the label. Author and mechanic **write**. The operator never lets two writers
+**Read vs. write:** scouts, crawlers, reviewers, verifiers, and the debater are
+**read-only by tool policy** — Write/Edit excluded, but a seat carrying Bash
+could still write through the shell, so the operator verifies the tree after
+read-only dispatches (`ops-claims.sh --expect-clean`) rather than trusting the
+label. Author and mechanic **write**; the operator never lets two writers
 touch the same thing at once.
 
 ---
 
-## The 4 workflows — pre-built multi-agent recipes
+## The 7 workflows — pre-built multi-agent recipes
 
-A **workflow** is a canned fan-out: it spawns several agents in parallel and
-converges on an answer. You don't run these manually — the operator invokes
-them at the right moment.
+A **workflow** is a canned fan-out: it spawns one or more agents and converges
+on an answer. You don't run these manually — the operator (or the matching
+`/cc-operator:` command) invokes them at the right moment.
 
-| Workflow      | When the operator uses it                          | What happens                                            |
-| ------------- | -------------------------------------------------- | ------------------------------------------------------- |
-| **review**    | After work that will be merged/published           | Many narrow lenses (cheap) + one adversarial verifier (JUDGMENT). A **REFUTED** = hard stop, can't be outvoted |
-| **plan**      | After a spec/design is approved                    | Breaks work into bite-sized TDD tasks, vets each (feasibility + testability) |
-| **brainstorm**| At the start, before a spec exists                | Explores many directions + a blindspot scan → design options |
-| **crawl**     | When you need to digest a big codebase/text fast   | Parallel cheap readers, one shard each, merged at JUDGMENT |
+| Workflow      | When it's used                                      | What happens                                            |
+| ------------- | ---------------------------------------------------- | ---------------------------------------------------------- |
+| **brainstorm**| At the start, before a spec exists                  | N divergent directions + a blindspot scan + a reference search → ranked design options |
+| **plan**      | After a spec/design is approved                      | Decomposes into bite-sized TDD tasks (JUDGMENT), vets each (feasibility JUDGMENT + testability cheap) |
+| **implement** | Any implementation dispatch                          | One implementer seat per task, STRICTLY SERIAL, on IMPLEMENT tier; refuses an incomplete dispatch packet before spending a seat |
+| **review**    | After work that will be merged/published             | Narrow lenses in parallel (mixed tiers) + one adversarial verifier (JUDGMENT). A **REFUTED** = hard stop, can't be outvoted |
+| **debate**    | A judgment call, not a measurable fact                | 2-5 named models argue the same case over three blind rounds (opening, rebuttal, closing), then a neutral synthesis — it never picks a winner, you decide |
+| **crawl**     | When you need to digest a big codebase/text fast     | Parallel cheap-tier readers, one shard each, merged at JUDGMENT |
+| **dispatch**  | One seat on a caller-supplied model or named tier    | Plain single-agent dispatch when the enum-locked `Agent` tool can't reach a configured proxy model |
 
 **The killer feature:** in `review`, if the adversarial verifier says REFUTED,
 the work is rejected — no matter how many other agents liked it. One solid
@@ -84,13 +100,33 @@ the work is rejected — no matter how many other agents liked it. One solid
 
 ---
 
-## The 3 commands you'll type
+## The commands you'll type
 
-| Command                | When                                      |
-| ---------------------- | ----------------------------------------- |
-| `/cc-operator:start`   | **Start** a session you'll operate        |
-| `/cc-operator:tiers`   | See/resolve tier→model bindings, render agents |
-| `/cc-operator:handoff` | **End** the engagement with a clean handoff |
+Eleven `/cc-operator:` commands. `tutorial` is where to start; `start` opens
+a session; the rest map onto the cycle below or wrap a single workflow.
+
+| Command                 | When                                                       |
+| ------------------------ | ------------------------------------------------------------ |
+| `/cc-operator:tutorial`  | **Try it first** — watch the evidence gate block, then release, on a throwaway project |
+| `/cc-operator:start`     | **Start** a session you'll operate                          |
+| `/cc-operator:brainstorm`| Explore directions before a spec exists                     |
+| `/cc-operator:spec`      | Write/check/approve the engagement's spec                   |
+| `/cc-operator:plan`      | Decompose an approved spec into TDD tasks                   |
+| `/cc-operator:implement` | Run one implementer seat per task, serially                 |
+| `/cc-operator:review`    | Run the review panel over an artifact                       |
+| `/cc-operator:debate`    | Run a multi-model debate on a judgment call                 |
+| `/cc-operator:crawl`     | Digest a large corpus cheaply                                |
+| `/cc-operator:tiers`     | See/resolve tier→model bindings, render agents               |
+| `/cc-operator:handoff`   | **End** the engagement with a clean handoff                  |
+
+### The cycle
+
+Stages run **brainstorm → spec → plan → implement → review → handoff**. Small
+work can skip straight to SOLO MODE edits; anything earning a BAR block (see
+ENGAGEMENT CONTRACT in the charter) follows this path. The SessionStart banner
+prints a derived **STAGE** line (`CLEAR`, `SPEC`, `PLAN`, `IMPLEMENT`,
+`HANDOFF`, or `BLOCKED`) naming where the session stands, so you never have to
+reconstruct it from memory.
 
 ---
 
@@ -131,16 +167,15 @@ byte-identical) / REPORT (status <=30 lines, SHA, CHANGED: <paths>|none)
 The `CHANGED:` line is not decoration — on a DONE report the operator feeds it
 to `ops-claims.sh`, which checks the claimed paths against the actual diff.
 
-`REACH` is newer and answers a question the rest of the packet does not: *is this
-code on any path that ships?* Three artifacts in one engagement passed every gate
-— tests green, evidence real, verifier CONFIRMED — while nothing called them; the
-evidence was true about the unit and silent about its reach. The gate clause is
-the same question aimed at a gate: a check that has only ever gone red proves
-something about one input, not about the rule.
+`REACH` answers a question the rest of the packet does not: *is this code on
+any path that ships?* Three artifacts in one engagement passed every gate —
+tests green, evidence real, verifier CONFIRMED — while nothing called them;
+the evidence was true about the unit and silent about its reach. A check that
+has only ever gone red proves something about one input, not about the rule.
 
 ### 4. Workers report one of four statuses
 | Status              | What it means                         | What the operator does                    |
-| ------------------- | ------------------------------------- | ----------------------------------------- |
+| ------------------- | -------------------------------------- | ------------------------------------------ |
 | **DONE**            | Finished, evidence attached           | Runs the review workflow (for mergeable work) |
 | **DONE_WITH_CONCERNS** | Done, but has correctness worries  | Holds review until concerns resolve       |
 | **NEEDS_CONTEXT**   | Missing info to proceed               | Supplies it, re-dispatches                |
@@ -149,8 +184,13 @@ something about one input, not about the rule.
 ### 5. The evidence gate — proof, not promises
 A claim of "done" with no evidence is a **FAIL** by definition. The operator
 opens a tracked task, and closes it only by appending a real evidence row
-(command output, a diff, a reviewer verdict) to a ledger. While a task *you
-own* is open, the session **can't stop** — it's forced to finish honestly.
+(command output, a diff, a reviewer verdict) to a ledger. Every row carries a
+verdict word — **PASS**, **FAIL**, or **MOOT** (the criterion cannot be
+answered any more; the reason itself is the evidence). A task that's genuinely
+stuck ends honestly with `--defer "<reason>"` rather than being forced to a
+false PASS. While a task *you own* is open, the session **can't stop** — it's
+forced to finish honestly; if you forget to open one, changing two or more
+files auto-arms a task for you.
 
 > This is why you can trust the "done": there's a written record behind it.
 
@@ -169,35 +209,42 @@ next steps (each with a precheck), when to stop, and what's deliberately
 The operator has tripwires so it never spins in circles:
 
 | Cap                          | Trip                                       | Action                         |
-| ---------------------------- | ------------------------------------------ | ------------------------------ |
+| ----------------------------- | -------------------------------------------- | -------------------------------- |
 | Identical-rejection ×2       | Same reviewer rejects same target twice    | Escalate, never a 3rd loop     |
 | Same-target-rework ×2        | Two rework rounds on one thing             | Stop, log, move on / escalate  |
 | Neighbor-regressing ×2       | Two fixes each break something else        | End tuning, report             |
 
 When a cap trips, the operator stops and tells you — that's the system working
-as designed.
+as designed. (A report-only cap *detector* also scans the ledger for
+same-target-rework and surfaces it early; it never blocks by itself.)
 
 ---
 
 ## Customizing — point tiers at your own models
 
-Tier→model bindings live in a config file, layered (later wins):
+Tier→model bindings live in a config file with three line kinds, layered
+(later wins). Comments go on their own line — a `#` after a value becomes part
+of the value and the resolver refuses it:
 
 1. Built-in defaults (the table above)
 2. `~/.claude/cc-operator/tiers.env` — **your** global prefs
 3. `./.operator/tiers.env` — **this project's** overrides
 4. `--set NAME=id` — one-off for a single run
 
-A `tiers.env` line is just `NAME=model-id`, e.g.:
+A `tiers.env` line is one of:
 ```
-# Use a different Opus-class model for judgment calls
+# TIER = model-id
 JUDGMENT=claude-opus-5
-# Route cheap work to a faster local model
-MECHANICAL=glm-4.7
+# seat = TIER ('op-' prefix optional)
+op-scout=MECHANICAL
+# the debate panel, and its spares
+PANEL=claude-opus-5,glm-5.3,deepseek-flash
+PANEL_FALLBACK=qwen3.8-max
 ```
-Run `/cc-operator:tiers` to see the current bindings and provenance (where each
-value came from). Add `--check` to verify every id is actually reachable on
-your proxy before trusting it.
+Run `/cc-operator:tiers` to see the current bindings and provenance. Add
+`--check` to verify every id is reachable on your proxy, or `--suggest` for a
+report-only note about a graded model that beats a current binding on both
+score and price — it changes nothing itself.
 
 > Rules: model ids must match a routable shape (`glm-*`, `vendor/model`, or
 > `claude-*`), contain no spaces or quotes, and you can't rename the four tier

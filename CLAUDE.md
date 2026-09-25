@@ -193,7 +193,8 @@ manifests. The narrative behind each item moved to `docs/maintainer/LANDMINES.md
   fall behind. Orphan entries (a retired tag's survivor) are fine. The spec dir
   emptied in 0.11.9 (backlog-charter removed; see git history).
 - **`docs/design/CYCLE.md`** specifies the spec stage (#155, built) and the implement
-  workflow (#158, built); its §4 plan gate stays unbuilt.
+  workflow (#158, built); its §4 plan gate is command prose
+  (`commands/plan.md`), unenforced by `plan.js`.
 - **`docs/maintainer/PLAYBOOK.md`** holds the executable procedures (adding a guard, a
   reader, touching the lock), each derived from a bug that happened here.
   **Read it before your first change.** Its F01–F66 audit writeups are
@@ -203,15 +204,17 @@ manifests. The narrative behind each item moved to `docs/maintainer/LANDMINES.md
   `ops-init.sh` means updating its quoted strings by hand.
 - **`docs/design/DECISION-ENGINE-PROBES.md`** — read BEFORE #151/#152: five surfaces
   probed live, the filter that decided them, the constraints.
-- **Audit handoffs are maintainer-local and never committed**, except
-  `docs/audit-2026-08-09-handoff.md` (F67+). What else left the tree (0.3.0:
+- **Audit handoffs are maintainer-local and never committed** (the one that
+  was, `docs/audit-2026-08-09-handoff.md`, F67+, left in 0.10.0 — git history
+  at `7d2b9ae^`). What else left the tree (0.3.0:
   build ledger, plans, pilot evidence) is in git history (tree ≤ v0.2.0), the
   maintainer's `.archive/dev/`, and LANDMINES (#159).
 - **The evidence-gate opt-in gap is CLOSED in #85** (`scripts/lib/autobar.sh`):
   the Stop hook auto-arms an owned sentinel on a >=2-path delta, enforcing
   ENGAGEMENT CONTRACT clause (1) in code. Coverage is deliberately partial:
   clauses (2) and (3) stay UNCOVERED, a non-git project arms nothing, a shared
-  worktree suppresses the armer, and one throwaway deferred task satisfies it.
+  worktree can arm for a sibling's delta (no suppression — both tried rules
+  failed open), and one throwaway deferred task satisfies it.
 
 ## Operator
 
