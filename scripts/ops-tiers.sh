@@ -193,7 +193,13 @@ done
 # harness-served and absent by construction),
 # an unlisted id may still route, and upstream may alias ids. Report and emit.
 catalogue_note() {
-  body="$(curl -sS -m 5 "http://127.0.0.1:${PORT}/v1/models" 2>/dev/null || true)"
+  # CC_OPERATOR_CATALOGUE: the same saved-body seam --panel reads (a test decides
+  # the catalogue, not whatever proxy happens to be running).
+  if [ -n "${CC_OPERATOR_CATALOGUE:-}" ]; then
+    body="$(head -c 4194304 "$CC_OPERATOR_CATALOGUE" 2>/dev/null || true)"
+  else
+    body="$(curl -sS -m 5 "http://127.0.0.1:${PORT}/v1/models" 2>/dev/null || true)"
+  fi
   if [ -z "$body" ]; then
     echo "note: proxy at :$PORT did not answer /v1/models — membership unchecked" >&2
     return 0
@@ -291,6 +297,10 @@ print(f"grades: {clean(path, 400)} (fetched_at {clean(doc.get('fetched_at', 'unk
 found = 0
 for p in pairs:
     name, mid, src = p.split("=", 2)
+    # A harness alias resolves to the harness's latest model; grades key concrete
+    # ids, and mapping one to the other is a catalogue that rots. Say so.
+    if mid in ("opus", "sonnet", "haiku", "fable"):
+        print(f"{name:<11} {mid} ({src}): harness alias (latest model) — not compared"); continue
     key, cur = lookup(mid)
     if key is None and cur:
         print(f"{name:<11} {mid} ({src}): AMBIGUOUS — graded under {', '.join(clean(k) for k in cur)} "

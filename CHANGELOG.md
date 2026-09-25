@@ -27,7 +27,10 @@ The JUDGMENT tier defaults to the harness alias `opus`.
   and share family `claude` with `claude-*` ids in both family-rule copies
   (`ops-tiers.sh` `family`, `debate.js` `familyOf`). Without this the new default
   panel dropped its `opus` seat against any real catalogue, and
-  `ops-render.sh --check` refused to render.
+  `ops-render.sh --check` refused to render. `--suggest` names an alias
+  binding as an alias ("not compared") rather than "not graded": grades key
+  concrete ids, and mapping one to the other would be a catalogue that rots.
+  `--check`'s catalogue note reads `CC_OPERATOR_CATALOGUE` like `--panel` does.
 
 ### Fixed
 
@@ -38,6 +41,7 @@ The JUDGMENT tier defaults to the harness alias `opus`.
   pinned in the direction they already resolved: CRLF parses, lowercase
   `approved` refuses, the FIRST of two Status lines decides, a column-0 line
   inside a fence refuses, an indented line is not the stamp.
+
 ## [0.12.11] - 2026-09-25
 
 Two instruction-vs-mechanism gaps closed in code (#177, #178).

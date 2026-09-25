@@ -2192,6 +2192,11 @@ console.log("-- Case: debate.js seats a persona and re-seats the dead on spares 
       && r?.distinctModels === 2,
     `debate: a harness alias (opus) and a claude-* id are ONE family, flagged (distinctModels ${r?.distinctModels})`);
 }
+// Every alias, not only opus: four literals share the arm, and a typo in one ships green unless each is probed.
+for (const al of ["sonnet", "haiku", "fable"]) {
+  const { result: r } = await run(WF("debate.js"), { case: "c", models: [al, "claude-opus-5", "glm-5.3"] }, FULL_PANEL);
+  ok(r?.distinctModels === 2, `debate: the harness alias ${al} is family claude (distinctModels ${r?.distinctModels})`);
+}
 // The one sanctioned repeat is a persona ENTRY; a plain repeat and two identical persona entries both refuse.
 await throws(() => run(WF("debate.js"), { case: "c", models: ["glm-5.3", "persona:glm-5.3", "persona:glm-5.3"] }, {}),
   "debate #172: two identical persona entries are still a duplicate", "repeats");

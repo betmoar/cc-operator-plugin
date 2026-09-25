@@ -2343,6 +2343,10 @@ check "#153 ops-render's own MECHANICAL default is glm-5.3-flash (crawler seat, 
 check "#153 the tiers.env scaffold carries the same MECHANICAL default" \
   "$(grep -qx '#MECHANICAL=glm-5.3-flash' "$RDP/.operator/tiers.env" && echo 0 || echo 1)"
 rm -rf "$RDP"
+# A harness ALIAS binding (JUDGMENT defaults to `opus`) is SAID to be an alias, never "not graded": grades key
+# concrete ids (the live table carries claude-opus-5, not opus), and an alias-to-id map would be a catalogue that rots.
+check "--suggest names a harness-alias binding as an alias, not as ungraded" \
+  "$(SUGG "$GRD/g.json" --set JUDGMENT=opus --suggest 2>&1 | grep -q '^JUDGMENT  *opus (--set): harness alias (latest model) — not compared' && echo 0 || echo 1)"
 # The baked default itself: the binding #153 measured as dominated must not come back.
 SGDEF="$(SUGG "$GRD/g.json" 2>/dev/null)"
 check "#153 the baked MECHANICAL default is glm-5.3-flash (glm-5-turbo was dominated on all three axes)" \
@@ -2352,7 +2356,7 @@ rm -rf "$GRD" "$SGP"
 echo "-- Case: #172 ops-tiers --panel seats a cross-vendor panel and falls back in order"
 # The catalogue is a FIXTURE (CC_OPERATOR_CATALOGUE), never the live proxy: which seat is taken must follow the
 # catalogue each case builds. Default panel: opus,glm-5.3,deepseek-flash; fallback qwen3.8-max, then
-# persona:opus. claude-* is harness-served and never listed, so it is available by construction.
+# persona:opus. claude-* and the harness aliases are harness-served and never listed, so available by construction.
 PNL="$(mktemp -d "${TMPDIR:-/tmp}/opstest-panel.XXXXXX")"
 printf '%s' '{"data":[{"id":"glm-5.3"},{"id":"deepseek-flash"},{"id":"qwen3.8-max"},{"id":"qwen:glm-5.3"},{"id":"glm-5.2"}]}' > "$PNL/all.json"
 printf '%s' '{"data":[{"id":"glm-5.3"},{"id":"qwen3.8-max"}]}' > "$PNL/nods.json"
@@ -2534,6 +2538,20 @@ check "a harness alias (opus) in the panel is available without a catalogue entr
 POUT="$(PANELQ "$PNL/all.json" --set PANEL=opus,claude-sonnet-5,glm-5.3 --set PANEL_FALLBACK=deepseek-flash 2>/dev/null)"
 check "a harness alias and a claude-* id are ONE family (the second is skipped for the fallback)" \
   "$([ "$POUT" = '{"models":["opus","glm-5.3","deepseek-flash"],"spares":[]}' ] && echo 0 || echo 1)"
+# --check's catalogue note skips harness-served ids — every alias, not just opus (four literals share one arm, and
+# a typo in one ships green unless each is probed). A non-claude unlisted id is the CONTROL: it must still be noted.
+for _al in opus sonnet haiku fable; do
+  PERR="$(CC_OPERATOR_CATALOGUE="$PNL/all.json" CC_OPERATOR_TIERS_USER=/nonexistent CC_OPERATOR_TIERS_PROJECT=/nonexistent \
+    "$BASH_ABS" "$SCRIPTS/ops-tiers.sh" --set JUDGMENT=$_al --set MECHANICAL=glm-9-unlisted --check 2>&1 >/dev/null)"
+  check "--check does not flag the harness alias $_al as unadvertised (and still flags an unlisted non-claude id)" \
+    "$(! printf '%s' "$PERR" | grep -q "JUDGMENT='$_al'" && printf '%s' "$PERR" | grep -q "MECHANICAL='glm-9-unlisted' is not advertised" && echo 0 || echo 1)"
+  # persona: is EXEMPT from the family rule by design, so persona:$_al seats beside the bare alias; its base must
+  # still be available, which is the half a claude-*-only rule refused (unlisted alias -> not routable).
+  POUT="$(PANELQ "$PNL/all.json" --set PANEL=$_al,claude-sonnet-5,glm-5.3 --set PANEL_FALLBACK=persona:$_al 2>/dev/null)"
+  _want='{"models":["'"$_al"'","glm-5.3","persona:'"$_al"'"],"spares":[]}'
+  check "--panel: $_al is available and family claude (claude-sonnet-5 skipped); persona:$_al fills the seat" \
+    "$([ "$POUT" = "$_want" ] && echo 0 || echo 1)"
+done
 _bj="$(grep -m1 '^JUDGMENT=' "$SCRIPTS/ops-tiers.sh" | tr -d '"')"
 check "the JUDGMENT default is the opus alias, and the scaffold and renderer carry the same value" \
   "$([ "$_bj" = "JUDGMENT=opus" ] && grep -qxF "#$_bj" "$PNL/p/.operator/tiers.env" \
@@ -2682,6 +2700,10 @@ check "--check writes nothing to .claude/agents/" \
   "$([ ! -d "$CKP/.claude" ] && echo 0 || echo 1)"
 check "--check skips harness-served claude-* ids (no proxy needed for them)" \
   "$(printf '%s' "$CKOUT" | grep -q 'opus: skipped' && echo 0 || echo 1)"
+printf 'JUDGMENT=sonnet\nIMPLEMENT=haiku\nMECHANICAL=fable\nRECON=opus\n' > "$CKP/.operator/tiers.env"
+CKOUT3="$( cd "$CKP" && RENDERENV --check 2>&1 )"; CK3RC=$?
+check "--check skips every harness alias (opus/sonnet/haiku/fable) and passes against a dead proxy" \
+  "$([ "$CK3RC" -eq 0 ] && [ "$(printf '%s\n' "$CKOUT3" | grep -cE '^  (opus|sonnet|haiku|fable): skipped')" -eq 4 ] && echo 0 || echo 1)"
 # All-claude config: nothing to probe, so it passes against a dead port.
 printf 'MECHANICAL=claude-haiku-4-5-20251001\n' > "$CKP/.operator/tiers.env"
 CKOUT2="$( cd "$CKP" && RENDERENV --check 2>&1 )"; CK2RC=$?
