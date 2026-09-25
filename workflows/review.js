@@ -3,7 +3,7 @@ export const meta = {
   description:
     "Operator review panel: parallel narrow lenses, two at cheap tiers and three at judgment tier, then an adversarial verifier at judgment tier. A REFUTED verdict is a hard stop and cannot be outvoted.",
   whenToUse:
-    "After an implementation dispatch returns DONE on work that will be merged, published, or depended on by a later task. Pass the artifact path, or an array of paths, as args; pass args.doneMeans to give the spec and testability lenses the task text they ask about. For release-bound work, commit first and pass args.isolate=<sha> to run the adversarial seat in a FRESH worktree instead of the builder's tree — that buys a clean TREE (no ignored build output, no uncommitted helpers) — NOT a clean machine: $HOME, PATH and every package/toolchain cache are shared, so a poisoned global cache survives it. The sha is what the seat reports HEAD against. It does NOT arrive at that commit: the runtime creates the worktree at the default branch (#74, measured). Add args.isolateCheckout=true to have the seat detach onto the sha first, which buys real commit identity and leaves the worktree on disk.",
+    "After an implementation dispatch returns DONE on work that will be merged, published, or depended on by a later task. Pass the artifact path, or an array of paths, as args; pass args.doneMeans to give the spec and testability lenses the task text they ask about. For release-bound work, commit first and pass args.isolate=<sha> to run the adversarial seat in a FRESH worktree instead of the builder's tree — that buys a clean TREE (no ignored build output, no uncommitted helpers) — NOT a clean machine: $HOME, PATH and every package/toolchain cache are shared, so a poisoned global cache survives it. The sha is what the seat reports HEAD against. It does NOT arrive at that commit: the runtime creates the worktree at the default branch (measured). Add args.isolateCheckout=true to have the seat detach onto the sha first, which buys real commit identity and leaves the worktree on disk.",
   phases: [
     { title: "Panel", detail: "narrow lenses in parallel, mixed tiers" },
     { title: "Adversarial", detail: "re-run DONE MEANS, judgment tier" },
@@ -240,7 +240,7 @@ const isolate = (() => {
     // block exists to prevent.
     if (isolateCheckout) {
       throw new Error(
-        "args.isolateCheckout requires args.isolate=<sha> — there is no commit to check out (#74)",
+        "args.isolateCheckout requires args.isolate=<sha> — there is no commit to check out",
       );
     }
     return "";
@@ -251,7 +251,7 @@ const isolate = (() => {
   if (raw === true) {
     throw new Error(
       "args.isolate must be the commit sha the artifact is at, not `true` — an isolated worktree " +
-        "checks out HEAD, so a run with no named commit verifies an unknown tree (#23)",
+        "checks out HEAD, so a run with no named commit verifies an unknown tree",
     );
   }
   if (typeof raw !== "string" || !raw.trim()) {
@@ -614,14 +614,14 @@ return {
         atRequestedCommit,
         observedCommit,
         bound: !isolateCheckout
-          ? "same filesystem, $HOME, caches and PATH — defeats stale IN-TREE artifacts (ignored build output, uncommitted helpers), NOT a poisoned global cache, which is shared. atRequestedCommit is FALSE: the runtime creates the worktree at the DEFAULT BRANCH and cannot be pointed at a commit (#74, measured), so this verdict describes the artifact in a clean environment but NOT at requestedCommit. observedCommit is the HEAD the seat actually reported. Pass args.isolateCheckout=true for commit identity"
+          ? "same filesystem, $HOME, caches and PATH — defeats stale IN-TREE artifacts (ignored build output, uncommitted helpers), NOT a poisoned global cache, which is shared. atRequestedCommit is FALSE: the runtime creates the worktree at the DEFAULT BRANCH and cannot be pointed at a commit (measured), so this verdict describes the artifact in a clean environment but NOT at requestedCommit. observedCommit is the HEAD the seat actually reported. Pass args.isolateCheckout=true for commit identity"
           : atRequestedCommit === true
-            ? "same filesystem, $HOME, caches and PATH — defeats stale IN-TREE artifacts, NOT a poisoned global cache, which is shared. The seat detached onto requestedCommit and REPORTED the resulting HEAD, which is what observedCommit records — this is an observation, not the caller's promise. Cost: the checkout leaves the worktree changed, so the runtime does not auto-remove it (#74)"
+            ? "same filesystem, $HOME, caches and PATH — defeats stale IN-TREE artifacts, NOT a poisoned global cache, which is shared. The seat detached onto requestedCommit and REPORTED the resulting HEAD, which is what observedCommit records — this is an observation, not the caller's promise. Cost: the checkout leaves the worktree changed, so the runtime does not auto-remove it"
             : atRequestedCommit === false
-              ? "CHECKOUT REQUESTED BUT NOT CONFIRMED: the seat reported a HEAD (observedCommit) that is not requestedCommit. Treat this verdict as describing observedCommit's tree, whatever that is — the artifact you asked about may never have been verified (#74)"
-              : "CHECKOUT REQUESTED, OUTCOME UNKNOWN: the seat reported no parseable `OBSERVED_HEAD:` line, so nothing here observed which tree produced this verdict. This is NOT the same as a mismatch — it is an absence of evidence, and the identity claim is unmade (#74)",
+              ? "CHECKOUT REQUESTED BUT NOT CONFIRMED: the seat reported a HEAD (observedCommit) that is not requestedCommit. Treat this verdict as describing observedCommit's tree, whatever that is — the artifact you asked about may never have been verified"
+              : "CHECKOUT REQUESTED, OUTCOME UNKNOWN: the seat reported no parseable `OBSERVED_HEAD:` line, so nothing here observed which tree produced this verdict. This is NOT the same as a mismatch — it is an absence of evidence, and the identity claim is unmade",
       }
-    : { mode: "builder-tree", requestedCommit: null, atRequestedCommit: false, observedCommit: null, bound: "the verdict describes the artifact AS OBSERVED FROM THE BUILDER'S ENVIRONMENT; pass args.isolate=<sha> for a worktree run (#23)" },
+    : { mode: "builder-tree", requestedCommit: null, atRequestedCommit: false, observedCommit: null, bound: "the verdict describes the artifact AS OBSERVED FROM THE BUILDER'S ENVIRONMENT; pass args.isolate=<sha> for a worktree run" },
   findings: scored.map((f) => ({ ...f, bucket: bucket(f) })),
   dropped: returned.flatMap((p) => p.findings).length - scored.length,
   // Non-empty means the panel ran at reduced coverage: those lenses returned

@@ -1455,6 +1455,65 @@ class ValidatorTest(unittest.TestCase):
         write(p, p.read_text() + "\nRefer to the unknowns-harness F1 finding.\n")
         self.assertFires("build-specific naming")
 
+    # --- #180: a field an agent body names must be a field that seat is sent ---
+    def _mech_body(self, extra):
+        p = self.dir / "agents" / "op-mechanic.md"
+        write(p, p.read_text() + extra)
+
+    def _mech_sender(self, line):
+        write(self.dir / "workflows" / "send.js",
+              'export const meta = { name: "send", description: "d" };\n'
+              'const SEAT = "cc-operator:op-mechanic";\n' + line)
+
+    def _no_180(self):
+        return [x for x in self.problems() if "(#180)" in x]
+
+    def test_180_stale_done_means_fires(self):
+        # The shipped escape: op-mechanic told to run DONE MEANS, sent DONE.
+        self._mech_body("Run the DONE MEANS command.\n")
+        self.assertFires("names the dispatch field 'DONE MEANS'")
+
+    def test_180_packet_fields_are_clean(self):
+        # CONTROL: every charter packet field is always legal.
+        self._mech_body("Read INPUTS, touch nothing under FORBIDDEN, run DONE, cite REACH.\n")
+        self.assertEqual(self._no_180(), [])
+
+    def test_180_label_emitted_to_this_seat_is_clean(self):
+        # CONTROL: review.js sends op-verifier `DONE MEANS: ${…}` — legal there.
+        self._mech_body("Run the DONE MEANS command.\n")
+        self._mech_sender('const p = `DONE MEANS: ${x}`;\n')
+        self.assertEqual(self._no_180(), [])
+
+    def test_180_label_emitted_to_another_seat_fires(self):
+        # Attribution is per agent: a label sent to op-author licenses nothing
+        # in op-mechanic's body.
+        self._mech_body("Follow CONSTRAINTS literally.\n")
+        write(self.dir / "workflows" / "send.js",
+              'export const meta = { name: "send", description: "d" };\n'
+              'const SEAT = "cc-operator:op-author";\n'
+              'const p = `CONSTRAINTS:\\n${c}`;\n')
+        self.assertFires("names the dispatch field 'CONSTRAINTS'")
+
+    def test_180_label_in_a_comment_fires(self):
+        # A label quoted in a comment is sent to no one.
+        self._mech_body("Run the DONE MEANS command.\n")
+        self._mech_sender('// const p = `DONE MEANS: ${x}`;\n')
+        self.assertFires("names the dispatch field 'DONE MEANS'")
+
+    def test_180_label_in_prose_fires(self):
+        # plan.js's schema description "DONE MEANS: the command …" is prose,
+        # not a prompt label — it must not license the field.
+        self._mech_body("Run the DONE MEANS command.\n")
+        self._mech_sender('const d = "DONE MEANS: the command and its output.";\n')
+        self.assertFires("names the dispatch field 'DONE MEANS'")
+
+    def test_180_render_template_is_read(self):
+        # default.tmpl is rendered into project-layer agents; no workflow names
+        # it, so it may use packet fields only.
+        p = self.dir / "agents" / "_templates" / "default.tmpl"
+        write(p, p.read_text() + "Run the DONE MEANS command.\n")
+        self.assertFires("_templates/default.tmpl: names the dispatch field 'DONE MEANS'")
+
     # --- 7. hook ---
     def test_hook_wrong_command(self):
         p = self.dir / "hooks" / "hooks.json"

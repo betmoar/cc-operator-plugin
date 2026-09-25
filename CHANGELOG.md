@@ -24,8 +24,30 @@ A prompt audit of every model-facing surface.
   and Thought/Action/Observation rules, which nothing enforced and no session
   followed, are removed. op-author loses its self-review instruction, the
   read-only seats lose prohibitions their tool lists already enforce, and
-  issue/audit ids and version history leave model-facing text. Behaviour of the
-  removals is unverified until the live run.
+  issue/audit ids and version history leave model-facing text, including the
+  workflow `meta.whenToUse` strings (review, debate) that ride every request and
+  the review/plan result strings a seat or operator reads. Target model: Claude
+  Opus 5.5 (`claude-opus-5-5`).
+
+### Added
+
+- **`check_agent_field_labels`** (#180): an agent body (and the renderer
+  template) may name a dispatch field only if it is a charter packet field or a
+  label a workflow dispatching THAT agent actually emits. Red on the pre-fix
+  tree (op-author, op-mechanic, default.tmpl each named `DONE MEANS`); seven
+  python cases, each red case red under its own mutation.
+
+### Verified
+
+- **Live behaviour run** (#183), old (11abad5) vs new, on `claude-opus-5-5`
+  where the seat alias resolves to it: 24 headless seat runs (op-author,
+  op-mechanic, op-scout, op-brainstorm) and 12 operated sessions (6 solo, 6
+  orchestrated with an op-mechanic dispatch). No regression in any arm:
+  every fixture ended `PASS`, the FORBIDDEN file untouched, the vague packet
+  NEEDS_CONTEXT 6/6, no raw diff or transcript ingested, 0 pending sentinels.
+  The self-audit rule was the one visible behaviour change — the old charter
+  wrote it in 3/3 orchestrated sessions, the new one in 0/3 — and the T/A/O
+  trace appeared in 0 of 12 sessions under either charter.
 
 ## [0.12.9] - 2026-09-25
 

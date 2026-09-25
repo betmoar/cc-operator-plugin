@@ -144,7 +144,7 @@ if (typeof northStar !== "string" || !northStar.trim()) {
   throw new Error(
     "args.northStar is required: one sentence naming what must be true when this " +
       "work is done, then a `Missed if: …` clause naming what we would see if we " +
-      "had missed it. Decomposing without a stated goal is what #58 measured.",
+      "had missed it.",
   );
 }
 if (northStar.trim().length < NORTH_STAR_MIN_CHARS) {
