@@ -327,7 +327,7 @@ const bundle = await agent(
     `Rank the directions strongest-fit-first for THIS codebase. Keep one ranked entry per ` +
     `direction: do not merge two directions into one, and never fold a direction's premise ` +
     `into sharedConstraints — a direction that challenges the framing is exactly the one ` +
-    `the human needs to see (#84). Fold every blindspot and ` +
+    `the human needs to see. Fold every blindspot and ` +
     `reference into sharedConstraints unless it is direction-specific. Produce exactly the ` +
     `openQuestions the human must answer — each a single sentence, answerable in a sentence, ` +
     `ordered by ARCHITECTURAL BLAST RADIUS (the answer that reshapes the design comes first; ` +

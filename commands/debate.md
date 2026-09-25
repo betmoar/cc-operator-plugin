@@ -24,7 +24,7 @@ it — a debate is the expensive way to be told what a command would have said.
 
    `--panel` seats the cross-vendor panel declared in `tiers.env` (`PANEL`,
    default Opus + GLM + DeepSeek) against what the proxy routes, falling back
-   along `PANEL_FALLBACK` (qwen3.8-max, then a persona-Opus seat) (#172). Its
+   along `PANEL_FALLBACK` (qwen3.8-max, then a persona-Opus seat). Its
    stderr notes say which seat fell back and whether the panel is short; relay
    them. Exit 3 means no dispatchable panel (fewer than 2 seats resolved, or no
    python3 to resolve it): stop and relay the notes — there is no panel to
@@ -51,7 +51,7 @@ recommendation is you adding one, and the human asked three models precisely so
 that you would not.
 
 
-**Where the result goes.** The workflow returns data and cannot publish (#75).
+**Where the result goes.** The workflow returns data and cannot publish.
 Ask the user once per session: inline, or — when this session has a tool that
 publishes one — an artifact or shared document holding the three rounds and the
 synthesis. Either way `chose` stays null.

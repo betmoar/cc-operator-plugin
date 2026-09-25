@@ -40,17 +40,13 @@ copied verbatim.
      referenced file's content into context on every CLAUDE.md load, so the
      charter re-injects deterministically after a compaction — without relying on
      the operator choosing to re-read it. (A bare `Read OPERATOR.md` prose line
-     does NOT import; it only persists if the operator elects to read the file.
-     Phase-1 pilot evidence: the prose form survived compaction only via the
-     operator's agency; `@import` removes that dependency.)
+     does NOT import; it only persists if the operator elects to read the file.)
 
    - **`--inline`** (`$ARGUMENTS` contains `--inline`): instead of the pointer,
      append the full contents of `OPERATOR.md` under a `## Operator` heading in
      `CLAUDE.md`. Grep-guard on the `## Operator` heading so a re-run does not
-     append a second copy. (This is the P5 fallback path — inline is the exact
-     proven-persistent configuration; the `@import` pointer above is the
-     lighter-weight equivalent whose persistence Phase 1 A/B compares against it.)
+     append a second copy.
 
 4. **Print the next step.** Output one line confirming init, and: "Charter
-   active. Before your first non-trivial task, append a BAR block to
-   `.operator/VERDICTS.md` per OPERATOR.md § ENGAGEMENT CONTRACT."
+   active. Before your first implementation action, append a BAR block to
+   `.operator/VERDICTS.md` whenever OPERATOR.md § ENGAGEMENT CONTRACT requires one."

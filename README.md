@@ -17,7 +17,7 @@ it is not enough.
   brainstorm, plan, implement, debate, crawl, dispatch) run seats on four model
   tiers that you bind in `tiers.env`.
 
-Version **0.12.9**. See [CHANGELOG.md](CHANGELOG.md) for what changed, and
+Version **0.12.10**. See [CHANGELOG.md](CHANGELOG.md) for what changed, and
 [docs/](docs/README.md) for everything else.
 
 ---

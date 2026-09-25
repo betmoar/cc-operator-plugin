@@ -3263,6 +3263,60 @@ IMPLEMENT_PACKET_FIELDS = ("TASK", "TEXT", "SCENE", "INPUTS", "FORBIDDEN", "DONE
 IMPLEMENT_STATUSES = ("DONE", "DONE_WITH_CONCERNS", "NEEDS_CONTEXT", "BLOCKED")
 
 
+# Every dispatch-field label a seat body may name. Longest first, so "DONE MEANS"
+# is consumed before "DONE" and "FULL TASK TEXT" before "TEXT".
+AGENT_FIELD_VOCAB = ("FULL TASK TEXT", "DONE MEANS", "CONSTRAINTS", "FORBIDDEN",
+                     "INPUTS", "SCENE", "REACH", "TASK", "TEXT", "DONE")
+
+
+def check_agent_field_labels(root, problems):
+    """A field an agent body tells its seat to use must be a field that seat is
+    SENT (#180).
+
+    0.6.0 renamed the charter packet (`CONSTRAINTS` gone, `DONE MEANS` -> `DONE`)
+    and three seat bodies kept the old names for five releases with every gate
+    green: op-mechanic was told to "Run the DONE MEANS command" while
+    implement.js sends `DONE:`. A body label is legal when it is a charter
+    packet field (IMPLEMENT_PACKET_FIELDS — what a plain operator dispatch
+    carries, pinned to the charter by check_implement_packet), or when a
+    workflow that dispatches THAT agent emits it as a prompt label in code —
+    `LABEL:\\n` or `LABEL: ${…}`, comments stripped as check_workflow_agent_types
+    does. Prose that merely contains "LABEL:" (plan.js's schema description
+    "DONE MEANS: the command …") labels nothing and does not count. Renderer
+    templates (agents/_templates/*.tmpl) are read too: no workflow names them,
+    so they may use packet fields only.
+    """
+    agents_dir = root / "agents"
+    wf_dir = root / "workflows"
+    bodies = (sorted(agents_dir.glob("*.md"))
+              + sorted((agents_dir / "_templates").glob("*.tmpl"))
+              if agents_dir.is_dir() else [])
+    wf_code = {}
+    for f in (sorted(wf_dir.glob("*.js")) if wf_dir.is_dir() else []):
+        text = f.read_text(encoding="utf-8")
+        code = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+        wf_code[f.name] = "\n".join(ln for ln in code.split("\n")
+                                    if not ln.lstrip().startswith("//"))
+    packet = set(IMPLEMENT_PACKET_FIELDS)
+    vocab_re = re.compile(r"\b(" + "|".join(re.escape(v) for v in AGENT_FIELD_VOCAB)
+                          + r")\b")
+    for f in bodies:
+        text = f.read_text(encoding="utf-8")
+        fm = re.match(r"\A---\n.*?\n---\n", text, re.DOTALL)
+        body = text[fm.end():] if fm else text
+        agent_ref = f'"{PLUGIN_NAME}:{f.stem}"'
+        senders = [n for n, c in wf_code.items() if agent_ref in c]
+        for label in sorted({m.group(1) for m in vocab_re.finditer(body)} - packet):
+            emit = re.compile(r"\b" + re.escape(label)
+                              + r"\b[^:\n`\"]{0,40}:(?:\\n| ?\$\{)")
+            if not any(emit.search(wf_code[n]) for n in senders):
+                problems.append(
+                    f"agents/{f.relative_to(agents_dir)}: names the dispatch field {label!r}, which "
+                    f"is not a charter packet field and no workflow dispatching "
+                    f"{f.stem} emits a `{label}:` label "
+                    f"(dispatched by: {senders or 'no workflow'}) — the seat is "
+                    f"told to use a field it is never sent (#180)")
+
 def check_implement_packet(root, problems):
     """workflows/implement.js carries the charter's packet, and APPLIES it.
 
@@ -5572,6 +5626,7 @@ CHECKS = (
     check_workflow_default_tiers,
     check_workflow_agent_types,
     check_implement_packet,
+    check_agent_field_labels,
     check_commands,
     check_release_gates_cover_validate,
     check_release_notes_outside_tree,

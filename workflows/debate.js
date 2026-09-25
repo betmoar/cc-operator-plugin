@@ -3,7 +3,7 @@ export const meta = {
   description:
     "Three-round debate panel: N flagship models argue the same case independently, then rebut each other's positions unlabelled, then close. A neutral synthesis pass separates real disagreement from wording and hands the decision to the human — it never picks a winner.",
   whenToUse:
-    "When a decision turns on judgment rather than evidence you can just go measure, and one model's answer is not enough. REQUIRED args: `case` (the question, stated so a position on it is falsifiable) and `models` (2-5 model ids — the point is that they DIFFER; resolve the declared cross-vendor panel with `ops-tiers.sh --panel`, #172). Optional `spares`: ids that re-seat a seat dead at opening. A `persona:<id>` entry seats <id> again under an assigned temperament, and the synthesis is told that seat is not independent. Returns three rounds plus a synthesis; `chose` is always null.",
+    "When a decision turns on judgment rather than evidence you can just go measure, and one model's answer is not enough. REQUIRED args: `case` (the question, stated so a position on it is falsifiable) and `models` (2-5 model ids — the point is that they DIFFER; resolve the declared cross-vendor panel with `ops-tiers.sh --panel`). Optional `spares`: ids that re-seat a seat dead at opening. A `persona:<id>` entry seats <id> again under an assigned temperament, and the synthesis is told that seat is not independent. Returns three rounds plus a synthesis; `chose` is always null.",
   phases: [
     { title: "Opening", detail: "each model states its position, independently" },
     { title: "Rebuttal", detail: "each sees the rivals' openings, unlabelled" },

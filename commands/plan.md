@@ -15,9 +15,8 @@ arguments, before any dispatch — so assemble them first.
    `/cc-operator:spec <slug>` to finish and approve it first.
 
    If `$ARGUMENTS` names some other file, Read it and pass its content; if it
-   names nothing, use the approved design from this session. Both of those are
-   the pre-#155 path and carry no stamp, no ledger row and no north-star
-   linkage — say so when you report.
+   names nothing, use the approved design from this session. Neither carries
+   a stamp, a ledger row or north-star linkage — say so when you report.
 
 2. **The north star.** One sentence naming what must be true when this is done,
    followed by a `Missed if: …` clause. The workflow refuses without the clause
@@ -57,4 +56,4 @@ against the spec yourself; that gate is yours, not the workflow's.
 git: Write it to the path the user names (default `docs/plans/<slug>.md`, beside
 the spec it came from). An artifact or shared document is an additional copy
 for reading, never the plan of record — a plan that lives only outside the repo
-is not diffable and not reviewable in a PR (#75). Ask once per session.
+is not diffable and not reviewable in a PR. Ask once per session.

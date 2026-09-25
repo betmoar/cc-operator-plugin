@@ -5,7 +5,7 @@ allowed-tools: Bash(bash:*)
 ---
 
 Run the tutorial and relay its output to the user verbatim — do not summarize it
-first. The point is that they SEE the block, not that they read about it (#75):
+first. The point is that they SEE the block, not that they read about it:
 
 ```
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-tutorial.sh"
@@ -14,7 +14,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-tutorial.sh"
 The one supported argument is `--keep`. If `$ARGUMENTS` is exactly `--keep`, run
 this instead, and never paste the argument text into the command yourself —
 this command's grant is `Bash(bash:*)`, so interpolated text would run as
-shell (Copilot, PR #176):
+shell:
 
 ```
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/ops-tutorial.sh" --keep

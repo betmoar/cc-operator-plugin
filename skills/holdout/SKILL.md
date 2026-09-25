@@ -1,6 +1,6 @@
 ---
 name: holdout
-description: "Use when deriving, repairing or re-deriving a holdout — a check suite written from the spec by something that cannot read the code — or when a holdout check disagrees with the system, or when tempted to hand-edit one. Owns the procedure #112 learned over three derivation rounds and three repair dispatches (#150)."
+description: "Use when deriving, repairing or re-deriving a holdout — a check suite written from the spec by something that cannot read the code — or when a holdout check disagrees with the system, or when tempted to hand-edit one."
 ---
 
 A holdout is a check suite whose author could not read the implementation. Its
@@ -59,22 +59,23 @@ prompt carries three rules, each learned from a failure:
 
 1. **Reproduce it by hand** against the shipped system, and write down the
    command and its output.
-2. **Decide which side is wrong, in one line.** Measured on #112: one real
-   defect to five over-assertions. Over-assertion (widening the promise,
+2. **Decide which side is wrong, in one line.** Measured on the first holdout:
+   one real defect to five over-assertions. Over-assertion (widening the promise,
    grepping for a word) is the independent writer's characteristic failure; a
    real defect is what you are there for. Do not decide before step 1.
 3. **Dispatch the repair back** through `--derive`, carrying the measured
    output as evidence. **Never hand-edit a derived check** — ten minutes of
    editing converts the holdout into a mirror with no error anywhere.
 4. **Cap at two rework rounds on one target** (the charter's same-target-rework
-   cap). Round 3 on #112 regressed round 2's checks; the escalation was a
-   different mechanism — repair-with-evidence — not a third prompt guess.
+   cap). A third round on the first holdout regressed the second round's
+   checks; the escalation was a different mechanism — repair-with-evidence —
+   not a third prompt guess.
 
 ## 4. Acceptance: a green holdout proves nothing yet
 
 Mutate the system so a promise breaks — a CLI body replaced by `exit 0`, an
-installer that creates no ledger — and the holdout must go red. #112's 33/0 was
-false: `ops-adopt.sh` as `exit 0` still gave 33/0. Refuse any check whose PASS
+installer that creates no ledger — and the holdout must go red. The first
+holdout's 33/0 was false: `ops-adopt.sh` as `exit 0` still gave 33/0. Refuse any check whose PASS
 condition is `0`, an empty string, or an equality between two reads of a file
 that may be absent — it cannot tell success from never having measured.
 
