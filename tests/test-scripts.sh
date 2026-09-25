@@ -8489,6 +8489,21 @@ check "#150 a CLAUDE.md directly in \$HOME IS refused (the skip covers \$HOME/.c
 HOUT="$(printf '  \n' | hoq --derive --dir "$H150/empty" 2>&1)"; HRC=$?
 check "#150 --derive refuses empty context (a derivation from the model's priors)" \
   "$([ "$HRC" -eq 2 ] && printf '%s' "$HOUT" | grep -q 'stdin was empty' && [ ! -s "$H150/args" ] && echo 0 || echo 1)"
+# PR #176 code review: the blank check was ${out//[[:space:]]/}, quadratic on bash 3.2 — a 64 KB multi-line
+# answer did not finish in 300 s. A long derivation must come back in seconds (bounded: the case cannot hang).
+cat > "$H150/bin/claude" <<'STUB'
+#!/usr/bin/env bash
+sed -n '1s/^The FIRST line of your reply must be exactly: //p'
+i=0; while [ "$i" -lt 2000 ]; do printf 'check %d — a line with spaces\tand tabs é\n' "$i"; i=$((i + 1)); done
+STUB
+# A watchdog, not `timeout` (absent on stock macOS): the quadratic build HANGS here, and a hung case would take
+# the whole suite with it. The CLI runs in the background; a sleeper kills it at 20 s; wc counts what came back.
+printf 'the spec\n' > "$H150/spec.in"
+hoq --derive --dir "$H150/empty" < "$H150/spec.in" > "$H150/long.out" 2>/dev/null & _hp=$!
+( sleep 20; kill "$_hp" 2>/dev/null ) & _wp=$!
+wait "$_hp" 2>/dev/null; kill "$_wp" 2>/dev/null; wait "$_wp" 2>/dev/null
+check "#150 a ~80 KB derivation returns whole within 20 s (no quadratic blank check)" \
+  "$([ "$(wc -l < "$H150/long.out" | tr -d ' ')" = 2000 ] && echo 0 || echo 1)"
 # --canary: the stub either echoes the planted tokens (a LEAK) or answers NONE. It reads the planted file and the
 # ancestor CLAUDE.md itself when STUB_LEAK is set, which is what a claude with the denial broken would do.
 cat > "$H150/bin/claude" <<'STUB'
@@ -8588,8 +8603,8 @@ T75="$(newproj)"; mkdir -p "$T75/scripts/lib"; cp -R "$REPO/templates" "$T75/tem
 cp "$SCRIPTS"/*.sh "$T75/scripts/"; cp "$SCRIPTS"/lib/*.sh "$T75/scripts/lib/"
 printf '#!/usr/bin/env bash\ncat >/dev/null; exit 0\n' > "$T75/scripts/ops-stop-hook.sh"
 TOUT="$("$BASH_ABS" "$T75/scripts/ops-tutorial.sh" 2>&1)"; TRC=$?
-check "#75 a hook that never blocks FAILS the tutorial (rc 1, TUTORIAL_FAILED) — it cannot narrate a block" \
-  "$([ "$TRC" -eq 1 ] && printf '%s' "$TOUT" | grep -q 'TUTORIAL_FAILED: .* block=0' && echo 0 || echo 1)"
+check "#75 a hook that never blocks FAILS the tutorial (rc 1, TUTORIAL_FAILED once) — it cannot narrate a block" \
+  "$([ "$TRC" -eq 1 ] && printf '%s' "$TOUT" | grep -q 'TUTORIAL_FAILED: .* block=0' && [ "$(printf '%s\n' "$TOUT" | grep -c 'TUTORIAL_FAILED')" -eq 1 ] && echo 0 || echo 1)"
 # PR #176 review: the block must be ON tutorial-demo. A hook that blocks for another reason (the auto-arm exits 2
 # too) passed the exit-code check alone; this one blocks every stop with a foreign message.
 printf '#!/usr/bin/env bash\ncat >/dev/null; echo "operator: auto-armed autobar" >&2; exit 2\n' > "$T75/scripts/ops-stop-hook.sh"
@@ -8602,6 +8617,12 @@ cp "$SCRIPTS/ops-stop-hook.sh" "$T75/scripts/ops-stop-hook.sh"
 TOUT="$("$BASH_ABS" "$T75/scripts/ops-tutorial.sh" 2>&1)"; TRC=$?
 check "#75 an abort mid-step still ends in TUTORIAL_FAILED, naming the exit code" \
   "$([ "$TRC" -eq 9 ] && printf '%s' "$TOUT" | grep -q 'TUTORIAL_FAILED: aborted mid-step (exit 9)' && echo 0 || echo 1)"
+# PR #176 code review, reproduced: exit 1 was exempted from the marker (meant for the TUTORIAL_FAILED ending), so a
+# step failing with its OWN exit 1 — ops-init.sh's missing-install-set path — ended with no marker at all.
+printf '#!/usr/bin/env bash\necho "ops-init: install set missing" >&2; exit 1\n' > "$T75/scripts/ops-init.sh"
+TOUT="$("$BASH_ABS" "$T75/scripts/ops-tutorial.sh" 2>&1)"; TRC=$?
+check "#75 a step failing with exit 1 still ends in TUTORIAL_FAILED (the marker is not keyed on the exit code)" \
+  "$([ "$TRC" -eq 1 ] && printf '%s' "$TOUT" | grep -q 'TUTORIAL_FAILED: aborted mid-step (exit 1)' && echo 0 || echo 1)"
 cp "$SCRIPTS/ops-init.sh" "$T75/scripts/ops-init.sh"
 # Round-2 review: three tutorial guards were unpinned. Each fixture fails in the ONE way only that guard sees.
 # (a) ops-task.sh says it opened the task and wrote no sentinel.

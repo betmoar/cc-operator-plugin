@@ -78,7 +78,10 @@ ask() {
   # nonce with nothing after it made the canary PASS on an empty scan (Copilot,
   # PR #176, reproduced). The body must be non-blank.
   out="$(printf '%s\n' "$out" | tail -n +2)"
-  [ -n "${out//[[:space:]]/}" ] || die "claude -p answered with the nonce and nothing else — an empty answer is not evidence"
+  # grep, never ${out//[[:space:]]/}: that expansion is QUADRATIC on bash 3.2
+  # (#145's class; the code review of PR #176 measured 8 KB -> 33 s, and a long
+  # derivation is well past that).
+  printf '%s' "$out" | grep -q '[^[:space:]]' || die "claude -p answered with the nonce and nothing else — an empty answer is not evidence"
   printf '%s\n' "$out"
 }
 

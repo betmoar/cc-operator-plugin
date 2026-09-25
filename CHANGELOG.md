@@ -74,6 +74,13 @@ the gate block before reading about it.
   - Five guards that had no test now each have one that fails when the guard is broken:
     `CLAUDE.local.md`, `.claude/CLAUDE.md`, the `$HOME` skip, and the tutorial's
     sentinel, pipefail and row checks.
+  - The tutorial's exit trap skipped the marker on exit code 1, a gap meant for its own
+    `TUTORIAL_FAILED` ending. A step that failed with its own `exit 1` (ops-init.sh's
+    missing-install-set path) therefore ended with no marker. The trap now keys on which
+    ending ran, never on the code.
+  - The blank-answer check used `${out//[[:space:]]/}`, which is quadratic on bash 3.2
+    (the #145 class). The code review measured 8 KB taking 33 s, and an 80 KB derivation
+    never came back. The check now uses `grep`.
 
 ### Verified
 
