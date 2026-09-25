@@ -28,6 +28,16 @@ The JUDGMENT tier defaults to the harness alias `opus`.
   (`ops-tiers.sh` `family`, `debate.js` `familyOf`). Without this the new default
   panel dropped its `opus` seat against any real catalogue, and
   `ops-render.sh --check` refused to render.
+
+### Fixed
+
+- **A BOM no longer hides a spec's Status line from the plan gate (#186).** A
+  leading byte-order mark put a line-1 `Status: DRAFT` off column 0, so the
+  gate read "no Status line" and ran the unapproved spec on the spec-less path.
+  `plan.js` strips a leading BOM before matching. The other edge inputs are now
+  pinned in the direction they already resolved: CRLF parses, lowercase
+  `approved` refuses, the FIRST of two Status lines decides, a column-0 line
+  inside a fence refuses, an indented line is not the stamp.
 ## [0.12.11] - 2026-09-25
 
 Two instruction-vs-mechanism gaps closed in code (#177, #178).

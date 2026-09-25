@@ -424,6 +424,29 @@ const { result: noTasksPlan } = await run(WF("plan.js"), {
 }, { decompose: { tasks: [] } });
 ok(noTasksPlan?.error != null && noTasksPlan.specStatus === "approved",
   "plan specStatus: the zero-tasks early return carries specStatus (approved)");
+// #186: the edge inputs around the Status line, each pinned in the direction it resolves. The gate is a
+// gate position, so anything ambiguous REFUSES; only "no column-0 Status line at all" takes the spec-less path.
+const sgRun = (spec) => run(WF("plan.js"), { spec, northStar: NORTH_STAR }, planFixtures);
+// The specStatus a spec resolves to, or "threw" — an ok() over a bare await would CRASH the suite on an
+// unexpected refusal, and a crash prints no FAIL line (measured while mutation-checking these cases).
+const sgStatus = async (spec) => { try { return (await sgRun(spec)).result?.specStatus; } catch { return "threw"; } };
+const BOM = "\uFEFF";
+await throws(() => sgRun(`${BOM}Status: DRAFT\n\n# SPEC — t\n`),
+  "#186 plan specStatus: a BOM before a line-1 Status: DRAFT still REFUSES (the BOM is not indentation)", "plan gate requires");
+ok(await sgStatus(`${BOM}Status: APPROVED @abc1234\n\n# SPEC — t\n`) === "approved",
+  "#186 plan specStatus: a BOM before a line-1 Status: APPROVED reads as approved, not unstamped");
+await throws(() => sgRun("# SPEC — t\r\n\r\nStatus: DRAFT\r\n"),
+  "#186 plan specStatus: a CRLF Status: DRAFT is refused", "plan gate requires");
+ok(await sgStatus("# SPEC — t\r\n\r\nStatus: APPROVED\r\n") === "approved",
+  "#186 plan specStatus: a CRLF Status: APPROVED is approved (the CR is not part of the token)");
+await throws(() => sgRun(statusSpec("approved")),
+  "#186 plan specStatus: lowercase approved is refused (ops-spec.sh stamps uppercase only)", "plan gate requires");
+await throws(() => sgRun("# SPEC — t\n\nStatus: DRAFT\nStatus: APPROVED @abc1234\n"),
+  "#186 plan specStatus: two Status lines — the FIRST decides, so DRAFT-then-APPROVED is refused", "Status: DRAFT");
+await throws(() => sgRun("# SPEC — t\n\n```\nStatus: DRAFT\n```\n"),
+  "#186 plan specStatus: a column-0 Status: DRAFT inside a fence is refused (the anchor is not fence-aware)", "plan gate requires");
+ok(await sgStatus("# SPEC — t\n\n  Status: DRAFT\n") === "unstamped",
+  "#186 plan specStatus: an INDENTED Status line is not the stamp — the spec-less path (column-0 contract)");
 
 // ── plan: the feasibility lens is given the earlier tasks' produces (#73) ────
 console.log("-- Case: plan.js feasibility lens receives earlier produces (#73)");

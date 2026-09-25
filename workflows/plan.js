@@ -120,8 +120,10 @@ const repoRoot = (typeof A === "object" ? A.repoRoot : undefined) ?? ".";
 // pre-#155 spec-less path (commands/plan.md step 1, "the approved design from
 // this session" — no stamp, no ledger row), legitimate and named in the result
 // so the operator sees which path ran.
+// A leading BOM is invisible content, not indentation: without the strip, a
+// column-0 `Status: DRAFT` on line 1 read as no Status line and ran (#186).
 const STATUS_LINE = /^Status:[ \t]*(\S+)/m;
-const _statusMatch = STATUS_LINE.exec(spec);
+const _statusMatch = STATUS_LINE.exec(spec.replace(/^\uFEFF/, ""));
 if (_statusMatch && _statusMatch[1] !== "APPROVED") {
   throw new Error(
     `args.spec carries 'Status: ${_statusMatch[1]}' — the plan gate requires ` +
