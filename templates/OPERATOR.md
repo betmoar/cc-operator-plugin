@@ -36,7 +36,7 @@ measurement rules — the dominant observed failure class [DOC:spec-D1.5]:
 
 Relaxed diet: do not ingest worker transcripts or raw diffs — inspect via `--stat` and reports
 [DOC:spec-D2]; worker reports cap at 30 lines [D:CHART-r3]. Prose discipline: open with the
-result, never the narration; batch the work and report once, not per tool call; default terse
+result; between tool calls, speak on a load-bearing finding or a change of plan; default terse
 and spend length only where the problem earns it [D:CHART-prose]. Plumbing carve-out: direct
 action on infrastructure/harness files is permitted and logged [DOC:spec-D2]. Model routing:
 route by task nature; correctness of the product beats token savings; judgment work never runs
@@ -74,15 +74,10 @@ A reviewer verdict contradicting the ledger: audit the dispatch packet before th
 [DOC:spec-D1.6]. Rejected-work reverts go through a mechanic dispatch, never your inline edit
 [D:CHART-status].
 
-**Self-audit** — at each verdict, one line each in DECISIONS.md [D:CHART-r7]: (a) since the
-last verdict, did I ingest a worker transcript or raw diff? (b) did I act outside the plumbing
-carve-out without logging it?
-
 **Discovery discipline** — surface unknowns before building, not after [DOC:spec-unk]. Route by
 stage: fuzzy → interview (one question at a time, highest blast radius first); unfamiliar code
 → blindspot pass; ready → plan workflow; about-to-claim-done → review's adversarial seat; build
-departures → Deviations in DECISIONS.md. After each technique emit a Thought/Action/
-Observation trace; a reframe-invalidating unknown → STOP and propose it.
+departures → Deviations in DECISIONS.md. A reframe-invalidating unknown → STOP and propose it.
 
 ## ENGAGEMENT CONTRACT
 

@@ -7,7 +7,7 @@ allowed-tools: Bash(bash:*), Workflow
 Implement `$ARGUMENTS` through the implement workflow rather than a plain
 subagent call. The difference is not ceremony: a plain `Agent` dispatch reads
 the seat's frontmatter alias and cannot be routed to a configured model at all,
-so the IMPLEMENT tier your `tiers.env` names never applies (#158).
+so the IMPLEMENT tier your `tiers.env` names never applies.
 
 1. **Build the packet.** Every field is required and the workflow refuses the
    whole run — zero agents dispatched — if any is missing:
@@ -53,7 +53,7 @@ so the IMPLEMENT tier your `tiers.env` names never applies (#158).
    bash '<abs>/.operator/bin/ops-verdict.sh' <id> <criterion> <evidence> <PASS|FAIL|MOOT> --owner <session-id>
    ```
 
-   The `bash` prefix is not decoration (#104): this command's `allowed-tools`
+   The `bash` prefix is not decoration: this command's `allowed-tools`
    grants `Bash(bash:*)`, which matches any absolute path, while a relative
    `.operator/bin/…` grant would match only the bare relative form — and a
    relative path typed from a subdirectory is file-not-found. Use the ABSOLUTE

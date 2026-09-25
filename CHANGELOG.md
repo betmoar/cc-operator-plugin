@@ -9,6 +9,24 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.12.10] - 2026-09-25
+
+A prompt audit of every model-facing surface.
+
+### Changed
+
+- **Prompt audit of every model-facing surface** (agents, skills, commands,
+  the charter, workflow prompt strings) against Claude Opus 5. Seat prompts now
+  name the packet fields the workflows actually send (`DONE`, not `DONE MEANS`;
+  `CONSTRAINTS` only where a caller passes it). `/cc-operator:start` no longer
+  offers the "non-trivial" BAR exemption the charter forbids. The charter's
+  report-once rule now says when to speak between tool calls; its self-audit
+  and Thought/Action/Observation rules, which nothing enforced and no session
+  followed, are removed. op-author loses its self-review instruction, the
+  read-only seats lose prohibitions their tool lists already enforce, and
+  issue/audit ids and version history leave model-facing text. Behaviour of the
+  removals is unverified until the live run.
+
 ## [0.12.9] - 2026-09-25
 
 The documentation, audited against the code and restructured. The README is

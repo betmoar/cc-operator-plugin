@@ -7,7 +7,7 @@ allowed-tools: Bash(bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-tiers.sh:*), Bash(b
 A thin wrapper over `ops-tiers.sh` (resolve) and `ops-render.sh` (render). It
 adds no logic and validates nothing itself — those scripts' charset guard is
 the validation, applied before any id reaches a dispatch. It is a
-WELL-FORMEDNESS check and nothing more: since 0.8.3 operator does not decide
+WELL-FORMEDNESS check and nothing more: operator does not decide
 which model ids exist, so an id it has never heard of resolves and cc-proxy
 routes it or refuses it. Relay their output verbatim — never summarize,
 reformat, or edit it. Pass every non-zero exit code through unchanged and stop.
@@ -35,7 +35,7 @@ Selected by `$ARGUMENTS`:
    To persist an override across sessions, edit
    `~/.claude/cc-operator/tiers.env` or `.operator/tiers.env` directly.
 
-3. **`suggest`** — report which bindings a graded model dominates (#153). It is
+3. **`suggest`** — report which bindings a graded model dominates. It is
    report-only and changes nothing:
 
    ```
@@ -57,7 +57,7 @@ dispatched seat runs on a configured cc-proxy model without a workflow wrapping
 it. Edit `.operator/tiers.env` to set the bindings first.
 
 > **Until you render, `tiers.env` does not reach a plain `Agent` dispatch** —
-> and nothing warns you (#55). Every shipped `agents/op-<seat>.md` carries a
+> and nothing warns you. Every shipped `agents/op-<seat>.md` carries a
 > hardcoded Anthropic alias in its frontmatter (`op-mechanic: sonnet`,
 > `op-verifier: opus`, `op-reviewer: opus`), and that alias wins at dispatch
 > time. So an operator who has set `mechanic → IMPLEMENT → deepseek-v4-flash`
@@ -96,7 +96,7 @@ it. Edit `.operator/tiers.env` to set the bindings first.
 >    guard a `tiers.env` binding gets — no more and no less, so this is neither a
 >    way around `check_routable` nor a second opinion about your model choice.
 >
->    `tier` is the second route in (#158). Pass a tier NAME — `JUDGMENT`,
+>    `tier` is the second route in. Pass a tier NAME — `JUDGMENT`,
 >    `IMPLEMENT`, `MECHANICAL`, `RECON`, case-insensitive — and the id comes out
 >    of the `tiers` map you forwarded, so a seat can be dispatched on its own
 >    tier without resolving the id by hand first:
@@ -113,12 +113,9 @@ it. Edit `.operator/tiers.env` to set the bindings first.
 >    Omitting BOTH is legal and dispatches with **no model override at all**:
 >    the seat runs on its own configured default — the `model:` frontmatter in
 >    `agents/op-<seat>.md`, a project-layer agent written by `render` above, or
->    `$CLAUDE_CODE_SUBAGENT_MODEL`. The log says so and names both flags. It
->    used to fall back to the JUDGMENT tier instead, which dispatched the
->    IMPLEMENT-bound `mechanic` seat one tier up and logged that it had —
->    honest, not correct (#158). A workflow cannot read `tiers.env`, so the one
->    honest answer to "no binding named" is to leave the decision where it
->    already lives.
+>    `$CLAUDE_CODE_SUBAGENT_MODEL`. The log says so and names both flags. A
+>    workflow cannot read `tiers.env`, so the one honest answer to "no binding
+>    named" is to leave the decision where it already lives.
 >
 > **Render still beats this for repeated work.** `dispatch` is per-call and the
 > id is resolved by hand each time; `render` writes the binding into the agent
@@ -162,5 +159,4 @@ Any other `$ARGUMENTS` — print the `argument-hint` and stop.
 The four tiers: `JUDGMENT` (opus-class review/verdict), `IMPLEMENT`
 (sonnet-class authoring), `MECHANICAL` (cheap lenses, crawls, generation),
 `RECON` (haiku-class search). Rationale: `docs/design/TAGS.md` (`spec-wf`,
-`spec-D2`) — the original orchestration-design spec files were never
-committed and exist in no checkout (audit F111).
+`spec-D2`).

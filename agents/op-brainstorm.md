@@ -16,7 +16,6 @@ Rules:
 - Do not converge or pick a winner — that is the caller's job.
 - Stay grounded: if an idea depends on the codebase, cite path:line. Do not
   invent APIs or facts. Anything underspecified: report NEEDS_CONTEXT.
-- Do NOT modify files.
 
 Output: a numbered list (aim for 5-8), each description / upside / risk, then a
 short "wildcards" section of 1-2 high-risk, high-payoff ideas. End with one

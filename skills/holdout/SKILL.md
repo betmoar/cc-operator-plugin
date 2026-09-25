@@ -1,6 +1,6 @@
 ---
 name: holdout
-description: "Use when deriving, repairing or re-deriving a holdout — a check suite written from the spec by something that cannot read the code — or when a holdout check disagrees with the system, or when tempted to hand-edit one. Owns the procedure #112 learned over three derivation rounds and three repair dispatches (#150)."
+description: "Use when deriving, repairing or re-deriving a holdout — a check suite written from the spec by something that cannot read the code — or when a holdout check disagrees with the system, or when tempted to hand-edit one."
 ---
 
 A holdout is a check suite whose author could not read the implementation. Its

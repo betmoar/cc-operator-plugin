@@ -17,8 +17,8 @@ command exists for.
    Pass it through verbatim. Do NOT retype it, and do NOT skip this step
    because the defaults "look right": the defaults are harness aliases, so
    skipping it silently runs every lens on an Anthropic model while the
-   operator's `tiers.env` says otherwise (#55 — the same footgun the render
-   warning in `/cc-operator:tiers` describes, arriving at the call site).
+   operator's `tiers.env` says otherwise (the render warning in
+   `/cc-operator:tiers` describes the same footgun).
 
 2. **Dispatch:**
 
@@ -47,5 +47,5 @@ REFUTED into a list of concerns.
 
 **Where the result goes.** Findings that change code become verdict rows and
 commits, not a document. A panel report the user wants to read or share can be
-published as an artifact when this session has a tool for it (#75); ask once
+published as an artifact when this session has a tool for it; ask once
 per session, and never let the published copy replace the ledger row.

@@ -25,9 +25,8 @@ git log, write it under section 3 (Unverified) rather than asserting it.
 
 **Resolve the paths before you run anything.** Do not assume your shell sits at
 the project root — the Bash tool's cwd persists across calls, so a relative
-`.operator/bin/...` typed from a subdirectory is file-not-found, and the field
-history for that shape (#94/#95, audit F102) is the model then reporting a
-PRESENT gate as absent. Use the ABSOLUTE, single-quoted CLI path that
+`.operator/bin/...` typed from a subdirectory is file-not-found, and the model
+then reports a PRESENT gate as absent. Use the ABSOLUTE, single-quoted CLI path that
 SessionStart already printed in this session's context ("this session's id
 is …"), or the one the Stop hook named when it last blocked. If neither is in
 context, resolve it yourself: walk UP from your cwd to the nearest ancestor
