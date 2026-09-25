@@ -9,6 +9,24 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.12.11] - 2026-09-25
+
+Two instruction-vs-mechanism gaps closed in code (#177, #178).
+
+### Changed
+
+- **The plan gate is enforced in `workflows/plan.js` (#177).** A spec whose
+  column-0 `Status:` line's first token is not `APPROVED` is refused before any
+  dispatch — the exact line `ops-spec.sh --approve` stamps, previously checked
+  only by `commands/plan.md` prose. A spec with no Status line proceeds as the
+  pre-#155 spec-less path and the result reports `specStatus: "unstamped"`
+  (an APPROVED spec reports `"approved"`), so the operator sees which path ran.
+- **A missing `node` makes the PostToolUse compressor hook a no-op (#178).**
+  The hook command is now `command -v node >/dev/null 2>&1 || exit 0; node …` —
+  the same exit-0 fail-open as the jq/python3 hooks (silent here; those warn).
+  Previously a node-less machine ran a hook exiting 127 on every matched tool
+  call.
+
 ## [0.12.10] - 2026-09-25
 
 A prompt audit of every model-facing surface.

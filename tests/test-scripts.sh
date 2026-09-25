@@ -8677,6 +8677,31 @@ done
 check "#75 commands/plan.md grants Write for the plan of record it prescribes writing" \
   "$(awk 'BEGIN{n=0} /^---$/{n++; if(n==2) exit; next} n==1' "$CMDDIR/plan.md" | grep -q 'allowed-tools:.*Write' && echo 0 || echo 1)"
 
+# --- #178: a missing node makes the PostToolUse hook a no-op, not a 127 ------
+echo "-- Case: #178 without node, the compressor hook exits 0 (a silent no-op, not a 127 on every matched tool call)"
+# The hook command is read OUT of hooks.json (not restated here — the file is
+# the thing under test) and executed under a PATH that cannot resolve node. The
+# jq/python3-dependent hooks already fail open with a warning; this one had no
+# equivalent, so a node-less machine ran a failing hook on every matched tool
+# call. python3, as everywhere in this suite.
+_hookcmd="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["hooks"]["PostToolUse"][0]["hooks"][0]["command"])' "$REPO/hooks/hooks.json")"
+# CONTROL 1 — the command really is the one under test: it must name
+# ops-compress.mjs, or the case below measures nothing.
+check "#178 CONTROL the PostToolUse command names ops-compress.mjs" \
+  "$(printf '%s' "$_hookcmd" | grep -q 'ops-compress.mjs' && echo 0 || echo 1)"
+# A node-less PATH: only core shell/file binaries (bash, sh, cat, env, dirname,
+# grep, sed). node is absent by construction.
+_nolink="$(mktemp -d "${TMPDIR:-/tmp}/opstest-nopath.XXXXXX")"
+for _b in bash sh cat env dirname grep sed; do
+  _p="$(command -v "$_b")" && ln -s "$_p" "$_nolink/$_b" 2>/dev/null
+done
+printf '%s' '{"tool_name":"Bash","tool_input":{"command":"echo hi"},"tool_response":{"stdout":"hi\n"}}' \
+  | env PATH="$_nolink" bash -c "$_hookcmd" >/dev/null 2>&1
+_hrc=$?
+check "#178 without node, the hook command exits 0 (fail-open no-op)" \
+  "$_hrc"
+rm -rf "$_nolink"
+
 if [ "$FAIL" -ne 0 ]; then
   echo "== failed cases =="
   printf '%s\n' "$FAILED_NAMES" | sed '/^$/d'

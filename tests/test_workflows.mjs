@@ -356,6 +356,75 @@ ok(nsCalls.filter((c) => c.label.startsWith("feas:") || c.label.startsWith("test
 ok(plan.northStar === NORTH_STAR,
   "plan northStar: returned to the operator, so the spec-coverage check has a referent");
 
+// ── plan: the spec Status gate (#177) ────────────────────────────────────────
+console.log("-- Case: plan.js spec Status gate — refuses an unapproved spec (#177)");
+// The command layer (commands/plan.md step 1) refuses a spec whose Status line
+// is not APPROVED; the workflow checked nothing, so a direct Workflow call
+// decomposed an unapproved sketch. The anchor is column-0 `Status:`, the exact
+// line ops-spec.sh stamps (`^Status: APPROVED @$STAMP`, from `^Status: DRAFT`) —
+// prose mid-line does not count (the "dismissed if:" class from #58).
+const statusSpec = (s) => `# SPEC — t
+
+Slug: t
+Status: ${s}
+Provenance: direct
+
+## North star
+It works. Missed if: anything fails.
+
+## Done criteria
+| # | Criterion | Command | Expected |
+`;
+await throws(() => run(WF("plan.js"), { spec: statusSpec("DRAFT"), northStar: NORTH_STAR }, planFixtures),
+  "plan specStatus: Status: DRAFT → refused before any dispatch", "APPROVED");
+await throws(() => run(WF("plan.js"), { spec: statusSpec("REVIEW"), northStar: NORTH_STAR }, planFixtures),
+  "plan specStatus: a word other than APPROVED → refused", "APPROVED");
+await throws(() => run(WF("plan.js"), { spec: statusSpec("APPROVED-ISH"), northStar: NORTH_STAR }, planFixtures),
+  "plan specStatus: first token must be exactly APPROVED (prefix match refused)", "plan gate requires");
+// NOT-APPROVED is refused rather than mistaken for approved: the check is on
+// the FIRST TOKEN, and a substring match would have passed it.
+await throws(() => run(WF("plan.js"), { spec: statusSpec("NOT-APPROVED"), northStar: NORTH_STAR }, planFixtures),
+  "plan specStatus: NOT-APPROVED → refused (token match, not substring)", "plan gate requires");
+// "before any dispatch" is the load-bearing half of the title above — the four
+// throws() calls assert only the message. Assert the SPEND: the gate sits
+// before decompose, so a refused spec must not have paid a single seat (the
+// rt attachment exists for exactly this; same shape as the #92 refusals).
+let gateSpend = null;
+try {
+  await run(WF("plan.js"), { spec: statusSpec("DRAFT"), northStar: NORTH_STAR }, planFixtures);
+} catch (e) { gateSpend = e?.rt ?? null; }
+ok(gateSpend != null && gateSpend.calls.length === 0,
+  `plan specStatus: the Status refusal spends ZERO agents (got ${gateSpend?.calls.length ?? "no rt"})`);
+const { rt: stRt, result: stPlan } = await run(WF("plan.js"), {
+  spec: statusSpec("APPROVED @abc1234"),
+  northStar: NORTH_STAR,
+}, planFixtures);
+ok(stRt.calls.length > 0, "plan specStatus: an APPROVED spec dispatches normally");
+ok(stPlan.specStatus === "approved",
+  "plan specStatus: result reports specStatus approved for an APPROVED spec");
+// The escape hatch: a spec with NO Status line is the pre-#155 spec-less path
+// (commands/plan.md step 1: "the approved design from this session" — neither
+// it nor a stamp carries a ledger row). The workflow cannot distinguish, so it
+// proceeds and says so — a refusal here would break every legitimate
+// spec-less invocation.
+const { result: noStPlan } = await run(WF("plan.js"), {
+  spec: "free-form design text with no status line",
+  northStar: NORTH_STAR,
+}, planFixtures);
+ok(noStPlan.specStatus === "unstamped",
+  "plan specStatus: no Status line → unstamped, proceeds (the spec-less path)");
+ok(statusSpec("DRAFT").includes("Status: DRAFT"),
+  "plan specStatus: control — the DRAFT fixture really carries the line");
+// The zero-tasks EARLY RETURN must carry specStatus too — one workflow, one
+// result shape: the field the gate promises cannot be absent exactly on the
+// failure path (its own comment claims same-shape; the caller branches on it).
+const { result: noTasksPlan } = await run(WF("plan.js"), {
+  spec: statusSpec("APPROVED @abc1234"),
+  northStar: NORTH_STAR,
+}, { decompose: { tasks: [] } });
+ok(noTasksPlan?.error != null && noTasksPlan.specStatus === "approved",
+  "plan specStatus: the zero-tasks early return carries specStatus (approved)");
+
 // ── plan: the feasibility lens is given the earlier tasks' produces (#73) ────
 console.log("-- Case: plan.js feasibility lens receives earlier produces (#73)");
 // The lens is ASKED "is the dependency it consumes actually produced by an
