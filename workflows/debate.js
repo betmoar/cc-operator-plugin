@@ -200,6 +200,8 @@ const PERSONAS = [
 // same string rule as ops-tiers.sh --panel; a caller passing ids by hand bypasses
 // --panel, so independence is judged here too, never by exact id.
 const familyOf = (id) => {
+  // A harness alias is Anthropic's: family claude, like any claude-* id.
+  if (["opus", "sonnet", "haiku", "fable"].includes(id)) return "claude";
   const i = id.indexOf(":");
   const routed = i >= 0 && !id.slice(0, i).includes("/") ? id.slice(i + 1) : id;
   const b = routed.split(":")[0].split("/").pop().toLowerCase();

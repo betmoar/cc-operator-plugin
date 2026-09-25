@@ -37,7 +37,7 @@ PROJ_FILE="${CC_OPERATOR_TIERS_PROJECT:-.operator/tiers.env}"
 # grades.json (fetched 2026-09-17): glm-5.3-flash 66.04 at $0.09/$0.30 dominated
 # the previous glm-5-turbo 61.69 at $1.20/$4.00 on both axes.
 TIER_NAMES="JUDGMENT IMPLEMENT MECHANICAL RECON"
-JUDGMENT="claude-opus-5"
+JUDGMENT="opus"
 IMPLEMENT="claude-sonnet-5"
 MECHANICAL="glm-5.3-flash"
 RECON="claude-haiku-4-5-20251001"
@@ -54,8 +54,8 @@ SRC_MECHANICAL="default"; SRC_RECON="default"
 # not independent. The user's choice, 2026-09-24 — not a capability ranking:
 # operator reads the proxy's routable ids, never its grades (#121).
 PANEL_KEYS="PANEL PANEL_FALLBACK"
-PANEL="claude-opus-5,glm-5.3,deepseek-flash"
-PANEL_FALLBACK="qwen3.8-max,persona:claude-opus-5"
+PANEL="opus,glm-5.3,deepseek-flash"
+PANEL_FALLBACK="qwen3.8-max,persona:opus"
 
 die() { echo "ops-tiers: $*" >&2; exit 2; }
 
@@ -189,7 +189,8 @@ while [ $# -gt 0 ]; do
 done
 
 # Proxy catalogue cross-check — ADVISORY, never a gate: /v1/models covers only
-# API-backed providers (claude-* is harness-served and absent by construction),
+# API-backed providers (claude-* and the opus/sonnet/haiku/fable aliases are
+# harness-served and absent by construction),
 # an unlisted id may still route, and upstream may alias ids. Report and emit.
 catalogue_note() {
   body="$(curl -sS -m 5 "http://127.0.0.1:${PORT}/v1/models" 2>/dev/null || true)"
@@ -206,8 +207,9 @@ catalogue_note() {
     | sed -E 's/.*"([^"]+)"$/\1/')"
   for n in $TIER_NAMES; do
     eval "id=\$$n"
-    # claude-* is harness-served, not API-served: out of this catalogue's scope.
-    case "$id" in claude-*) continue ;; esac
+    # claude-* and the harness aliases are harness-served, not API-served: out
+    # of this catalogue's scope.
+    case "$id" in claude-*|opus|sonnet|haiku|fable) continue ;; esac
     base="${id%%[[]*}"   # strip a [1m]-style context-variant marker
     if ! printf '%s\n' "$listed" | grep -qxF -- "$base"; then
       echo "note: $n='$id' is not advertised by /v1/models — routable by shape, unverified by catalogue" >&2
@@ -316,7 +318,7 @@ PY
 
 # Panel resolution (#172). Picks seats from PANEL, then PANEL_FALLBACK, and
 # returns the unused fallback as spares debate.js re-seats a dead seat on.
-#   available = claude-* (harness-served, absent from the catalogue by
+#   available = claude-* or a harness alias (harness-served, absent from the catalogue by
 #               construction) OR listed in /v1/models without usable:false.
 #   family    = the id with any leading `lens:` route, trailing `:tag` and
 #               `vendor/` prefix stripped, then its leading letters: glm-5.3 ->
@@ -363,12 +365,14 @@ if raw:
     except Exception:
         print("note: /v1/models body unreadable — panel availability unchecked", file=sys.stderr)
 def base(e): return e[len("persona:"):] if e.startswith("persona:") else e
+HARNESS = ("opus", "sonnet", "haiku", "fable")   # aliases: harness-served, family claude
 def available(e):
     b = base(e)
-    if listed is None or b.startswith("claude-"): return True
+    if listed is None or b.startswith("claude-") or b in HARNESS: return True
     x = listed.get(b)
     return x is not None and x.get("usable") is not False
 def family(e):
+    if base(e) in HARNESS: return "claude"
     head, sep, rest = base(e).partition(":")
     b = rest if sep and "/" not in head else base(e)   # leading route: qwen:glm-5.3
     b = b.split(":")[0].split("/")[-1].lower()         # trailing tag, then vendor/

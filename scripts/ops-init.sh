@@ -252,7 +252,7 @@ if [ ! -f "$OPDIR/tiers.env" ]; then
   cat > "$OPDIR/tiers.env" <<'EOF'
 # Tier → model-id bindings (cc-proxy routes by id shape: glm-*, vendor/model,
 # claude-*). Uncomment and edit to repoint a tier, e.g. MECHANICAL=glm-4.7.
-#JUDGMENT=claude-opus-5
+#JUDGMENT=opus
 #IMPLEMENT=claude-sonnet-5
 #MECHANICAL=glm-5.3-flash
 #RECON=claude-haiku-4-5-20251001
@@ -265,8 +265,8 @@ if [ ! -f "$OPDIR/tiers.env" ]; then
 #
 # Debate panel (ops-tiers.sh --panel, #172): one seat per id, fallback in order
 # when one is unroutable; persona:<id> re-seats <id> under another temperament.
-#PANEL=claude-opus-5,glm-5.3,deepseek-flash
-#PANEL_FALLBACK=qwen3.8-max,persona:claude-opus-5
+#PANEL=opus,glm-5.3,deepseek-flash
+#PANEL_FALLBACK=qwen3.8-max,persona:opus
 EOF
   echo "created $OPDIR/tiers.env (commented defaults)"
 else

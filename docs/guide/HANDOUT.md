@@ -33,13 +33,13 @@ site, not baked into the agent file.
 
 | Tier name     | Default model                | What it's for                          | Cost / power        |
 | ------------- | ----------------------------- | --------------------------------------- | -------------------- |
-| **JUDGMENT**  | `claude-opus-5`                | Hard calls: design, review, verdicts   | Highest / smartest  |
+| **JUDGMENT**  | `opus` (alias → latest Opus)   | Hard calls: design, review, verdicts   | Highest / smartest  |
 | **IMPLEMENT** | `claude-sonnet-5`               | Writing real code, multi-step builds   | Mid / capable       |
 | **MECHANICAL**| `glm-5.3-flash`                 | Bulk generation, reading shards        | Cheap / fast        |
 | **RECON**     | `claude-haiku-4-5-20251001`     | Lookups, searches, "where is X?"       | Cheap / fast        |
 
 There is also a **PANEL** — not a tier, a debate line-up (default
-`claude-opus-5, glm-5.3, deepseek-flash`, with fallback spares for a dead seat)
+`opus, glm-5.3, deepseek-flash`, with fallback spares for a dead seat)
 that feeds the debate workflow via `ops-tiers.sh --panel`.
 
 **The golden rule:** *judgment work never runs below judgment tier.* If a task
@@ -236,11 +236,11 @@ of the value and the resolver refuses it:
 A `tiers.env` line is one of:
 ```
 # TIER = model-id
-JUDGMENT=claude-opus-5
+JUDGMENT=opus
 # seat = TIER ('op-' prefix optional)
 op-scout=MECHANICAL
 # the debate panel, and its spares
-PANEL=claude-opus-5,glm-5.3,deepseek-flash
+PANEL=opus,glm-5.3,deepseek-flash
 PANEL_FALLBACK=qwen3.8-max
 ```
 Run `/cc-operator:tiers` to see the current bindings and provenance. Add

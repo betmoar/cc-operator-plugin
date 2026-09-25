@@ -17,7 +17,7 @@ it is not enough.
   brainstorm, plan, implement, debate, crawl, dispatch) run seats on four model
   tiers that you bind in `tiers.env`.
 
-Version **0.12.11**. See [CHANGELOG.md](CHANGELOG.md) for what changed, and
+Version **0.12.12**. See [CHANGELOG.md](CHANGELOG.md) for what changed, and
 [docs/](docs/README.md) for everything else.
 
 ---
@@ -266,7 +266,7 @@ layered configuration, where later wins: built-ins →
 
 | Tier | Built-in default | Used for |
 |---|---|---|
-| `JUDGMENT` | `claude-opus-5` | converging, adversarial review, debate, authoring |
+| `JUDGMENT` | `opus` (harness alias — always the latest Opus) | converging, adversarial review, debate, authoring |
 | `IMPLEMENT` | `claude-sonnet-5` | implementation seats |
 | `MECHANICAL` | `glm-5.3-flash` | cheap lenses, crawlers, brainstorm directions |
 | `RECON` | `claude-haiku-4-5-20251001` | search and lookup |

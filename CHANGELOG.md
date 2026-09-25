@@ -9,6 +9,25 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.12.12] - 2026-09-26
+
+The JUDGMENT tier defaults to the harness alias `opus`.
+
+### Changed
+
+- **`JUDGMENT` defaults to `opus`, not `claude-opus-5`.** The alias always
+  resolves to the latest Opus, so the default cannot go stale — the same reason
+  the workflows' own `DEFAULT_TIERS` are aliases (#76 step 2). The baked default
+  changed in all three copies (`ops-tiers.sh`, `ops-render.sh`, the `ops-init.sh`
+  scaffold), and the debate panel's Anthropic seat followed:
+  `PANEL=opus,glm-5.3,deepseek-flash`, `PANEL_FALLBACK=qwen3.8-max,persona:opus`.
+- **A harness alias is harness-served.** `opus`/`sonnet`/`haiku`/`fable` count as
+  available without a `/v1/models` entry (`--panel`), are skipped by the
+  catalogue note (`--check`) and the liveness probe (`ops-render.sh --check`),
+  and share family `claude` with `claude-*` ids in both family-rule copies
+  (`ops-tiers.sh` `family`, `debate.js` `familyOf`). Without this the new default
+  panel dropped its `opus` seat against any real catalogue, and
+  `ops-render.sh --check` refused to render.
 ## [0.12.11] - 2026-09-25
 
 Two instruction-vs-mechanism gaps closed in code (#177, #178).

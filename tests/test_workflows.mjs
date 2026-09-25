@@ -2160,6 +2160,15 @@ console.log("-- Case: debate.js seats a persona and re-seats the dead on spares 
   ok(!/NOT INDEPENDENT/.test(rt.calls.find((c) => c.label === "synthesis")?.prompt ?? "") && r?.distinctModels === 3,
     `debate #172: two vendors sharing a :free tag are two families, not one (distinctModels ${r?.distinctModels})`);
 }
+// A harness ALIAS (the JUDGMENT default and the panel's Anthropic seat are `opus`) is family claude: familyOf read
+// `opus` as family `opus`, so opus beside claude-sonnet-5 passed as two independent vendors (red on the old rule).
+{
+  const { result: r, rt } = await run(WF("debate.js"),
+    { case: "c", models: ["opus", "claude-sonnet-5", "glm-5.3"] }, FULL_PANEL);
+  ok(/NOT INDEPENDENT: seats A and B run on ONE model family/.test(rt.calls.find((c) => c.label === "synthesis")?.prompt ?? "")
+      && r?.distinctModels === 2,
+    `debate: a harness alias (opus) and a claude-* id are ONE family, flagged (distinctModels ${r?.distinctModels})`);
+}
 // The one sanctioned repeat is a persona ENTRY; a plain repeat and two identical persona entries both refuse.
 await throws(() => run(WF("debate.js"), { case: "c", models: ["glm-5.3", "persona:glm-5.3", "persona:glm-5.3"] }, {}),
   "debate #172: two identical persona entries are still a duplicate", "repeats");
