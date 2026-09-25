@@ -41,7 +41,7 @@ Four measurements, not an opinion:
    mechanism.
 2. **`docs/spec/` does not exist.** The directory emptied in 0.11.9. Three
    tracked files still pointed at it when this document was written (`README.md`,
-   `CONTRIBUTING.md`, `docs/HANDOUT.md`), a class already fixed once as **F61**
+   `CONTRIBUTING.md`, `docs/guide/HANDOUT.md`), a class already fixed once as **F61**
    and regressed since. Those three are corrected in the same commit as this
    file; the absence of a destination is the finding, not the links.
 3. **The only artifact bridging the two stages is prose the operator retypes.**
@@ -328,7 +328,7 @@ caller precisely so the workflow never has to hold that map.
 The autonomy lever is not a scheduler. It is making the cycle able to say where
 it is and what comes next, without anyone storing that answer.
 
-**Derived, never stored.** `docs/UNKNOWNS.md` states the rule this repo applies
+**Derived, never stored.** `docs/maintainer/UNKNOWNS.md` states the rule this repo applies
 to itself: the moment status lives in two places, one of them is wrong and
 nothing says which. A `.operator/engagement.json` would be that second place. So
 the stage is a pure function of artifacts already on disk:

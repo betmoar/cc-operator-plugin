@@ -4,7 +4,7 @@ An executable protocol, not prose. Run it inside a **live Claude Code session**
 with the plugin installed, against a scratch project. Its purpose is the seam
 the bash suite cannot reach: the suite proves the *scripts* answer correctly;
 this charter proves the *harness* honors those answers — the rows in
-`docs/PLAYBOOK.md` § "What a green suite does NOT prove", exercised end to end.
+`docs/maintainer/PLAYBOOK.md` § "What a green suite does NOT prove", exercised end to end.
 PR #12's live G2 proof (2026-08-08) is the precedent; this charter is that
 method made repeatable.
 

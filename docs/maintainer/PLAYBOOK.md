@@ -1,7 +1,7 @@
 # Playbook — changing cc-operator safely
 
 For whoever maintains this next. `CLAUDE.md` is the map (what couples to what,
-with the landmine narratives in `docs/LANDMINES.md`). This file is the **procedure**: what to do,
+with the landmine narratives in `docs/maintainer/LANDMINES.md`). This file is the **procedure**: what to do,
 in order, when you touch a load-bearing component.
 
 The one thing to internalize: **this plugin has exactly one job — refuse to let a
@@ -141,7 +141,7 @@ delimited by `# >>> LOCK BLOCK` / `# <<< LOCK BLOCK`.
 
 ## Changing the Stop hook — the highest-risk file in the repo
 
-It runs on **every session's every turn-end**. Read `docs/LANDMINES.md` first; then:
+It runs on **every session's every turn-end**. Read `docs/maintainer/LANDMINES.md` first; then:
 
 1. **Bash builtins + at most one JSON parser.** No `grep`, `sed`, `awk`, `find`.
    If it depends on a binary missing from a stripped PATH, it bricks sessions.

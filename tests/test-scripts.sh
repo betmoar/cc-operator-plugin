@@ -1951,7 +1951,7 @@ check "an unowned sentinel counts as blocking, for a bystander too" \
   "$([ "$(render SESS-C "$P")" = "op[1+3*]" ] && echo 0 || echo 1)"
 rm -f "$P/.operator/pending/T-LEGACY"
 
-# Same untrusted-body rules as every other reader (docs/PLAYBOOK.md) — degrade to unowned=blocking, never believed as foreign.
+# Same untrusted-body rules as every other reader (docs/maintainer/PLAYBOOK.md) — degrade to unowned=blocking, never believed as foreign.
 printf 'session_id: ../../PWNED\n' > "$P/.operator/pending/T-EVIL"
 check "a traversal-shaped owner degrades to unowned, not foreign" \
   "$([ "$(render SESS-C "$P")" = "op[1+3*]" ] && echo 0 || echo 1)"
@@ -5067,7 +5067,7 @@ check "stage: REPORT-ONLY — no exit/return-1 in any stage_derive branch" \
   "$(grep -nE '^\s*(exit|return 1)' "$STAGELIB" | grep -qv 'return 0' && echo 1 || echo 0)"
 
 # THE SPEC RUNGS (#155 x #157): with the spec artifact on disk, the stages
-# docs/CYCLE.md §6 listed as "waiting on #155" are derivable — and the caller
+# docs/design/CYCLE.md §6 listed as "waiting on #155" are derivable — and the caller
 # computes the summary because this lib opens no file.
 check "stage: a DRAFT spec → SPEC" \
   "$([ "$(_stage_of 0 0 '' 0 0 draft)" = "SPEC" ] && echo 0 || echo 1)"

@@ -447,14 +447,14 @@ def check_charter(root, problems):
             f"templates/OPERATOR.md: only {len(tags)} citation tags for "
             f"{len(headings)} sections — every rule line must carry [D:]/[DOC:]")
     # Every [DOC:spec-<key>] must resolve to a `### spec-<key>` heading in
-    # docs/TAGS.md (#76 step E; moved from docs/spec/ in 0.11.9). Orphan
+    # docs/design/TAGS.md (#76 step E; moved from docs/spec/ in 0.11.9). Orphan
     # entries are deliberately allowed:
     # history, not rot.
     doc_keys = {t[5:-1] for t in tags if t.startswith("[DOC:")}
-    tags_md = root / "docs" / "TAGS.md"
+    tags_md = root / "docs" / "design" / "TAGS.md"
     if doc_keys and not tags_md.is_file():
         problems.append(
-            "docs/TAGS.md: missing — the charter carries "
+            "docs/design/TAGS.md: missing — the charter carries "
             f"{len(doc_keys)} [DOC:*] tags and this index is where they "
             f"resolve in a clone (the original spec files were never "
             f"committed); ship the index or drop the tags")
@@ -465,7 +465,7 @@ def check_charter(root, problems):
         for key in sorted(doc_keys - headings_md):
             problems.append(
                 f"templates/OPERATOR.md: [DOC:{key}] has no `### {key}` entry "
-                f"in docs/TAGS.md — every DOC tag must resolve in-tree; "
+                f"in docs/design/TAGS.md — every DOC tag must resolve in-tree; "
                 f"add the entry (what the rule anchors as shipped) or use a "
                 f"[D:] tag for a self-describing decision reference")
     # no ## section (other than the title) should be entirely tag-free
@@ -540,7 +540,7 @@ def check_handout_packet(root, problems):
                        "the packet is the worker-boundary contract and every field "
                        "in it is load-bearing (REACH: #57; CHANGED: the input "
                        "ops-claims.sh verifies)"),
-                      ("docs/HANDOUT.md",
+                      ("docs/guide/HANDOUT.md",
                        "the handout must teach the charter's dispatch packet "
                        "verbatim (templates/OPERATOR.md), or ops-claims.sh gets "
                        "reports it cannot check (F69)")):
@@ -548,7 +548,7 @@ def check_handout_packet(root, problems):
         # HANDOUT.md is optional prose; the charter is not. Deleting the handout
         # is a visible act, drifting it is not — same reasoning as before.
         if not f.is_file():
-            if rel == "docs/HANDOUT.md":
+            if rel == "docs/guide/HANDOUT.md":
                 continue
             problems.append(f"{rel}: missing — the charter is not optional")
             continue
@@ -1292,7 +1292,7 @@ def check_reader_bounds(root, problems):
             problems.append(
                 f"scripts/{name}: {len(unbounded)} unbounded `read -r` loop(s) — "
                 f"use `read -r -n N` (a line cap is not a byte cap; see "
-                f"docs/PLAYBOOK.md 'adding a reader of a file'): "
+                f"docs/maintainer/PLAYBOOK.md 'adding a reader of a file'): "
                 f"{unbounded[0][:70]}")
         if bounded < expected:
             problems.append(
@@ -1359,7 +1359,7 @@ def check_guard_parity(root, problems):
             if f"{fn}()" not in text:
                 problems.append(
                     f"scripts/{name}: missing {fn}() — all three CLIs must "
-                    f"carry both guards (see docs/PLAYBOOK.md)")
+                    f"carry both guards (see docs/maintainer/PLAYBOOK.md)")
         # the leading-dot rule: a dotfile sentinel is invisible to the hook's glob
         if ".*)" not in text:
             problems.append(
@@ -1647,7 +1647,7 @@ def check_guard_parity(root, problems):
                 f"scripts/{name}: no symlink (-L) rejection — `-f` follows a "
                 f"planted symlink in pending/, laundering an entry our CLIs "
                 f"never wrote into a trusted sentinel (F65/F66; the guard "
-                f"must live at every reader, see docs/PLAYBOOK.md)")
+                f"must live at every reader, see docs/maintainer/PLAYBOOK.md)")
     # F2: an -L test must guard the verdicts.d fragment path at the write and
     # both read sites — a planted symlink there launders every row for that
     # owner into an arbitrary file, exit 0 silent (F65 class).
@@ -2682,7 +2682,7 @@ def check_lock_parity(root, problems):
             problems.append(
                 f"scripts/{name}: no `# >>> LOCK BLOCK` … `# <<< LOCK BLOCK` "
                 f"markers — the shared lock must stay delimited so its parity "
-                f"with the other CLI can be checked (see docs/PLAYBOOK.md)")
+                f"with the other CLI can be checked (see docs/maintainer/PLAYBOOK.md)")
             return
         tool = name[:-3]  # ops-verdict.sh -> ops-verdict
         blocks[name] = text[start:end].replace(f"{tool}:", "TOOL:")
@@ -2773,7 +2773,7 @@ def check_root_parity(root, problems):
                 f"scripts/{name}: no `# >>> PROJECT ROOT BLOCK` … "
                 f"`# <<< PROJECT ROOT BLOCK` markers — the CLI resolves the "
                 f"project from the caller's cwd, so it works from the project "
-                f"root and nowhere else (#95; see docs/PLAYBOOK.md)")
+                f"root and nowhere else (#95; see docs/maintainer/PLAYBOOK.md)")
             return
         tool = name[:-3]
         blocks[name] = text[start:end].replace(f"{tool}:", "TOOL:")
@@ -3253,7 +3253,7 @@ COMMAND_REQUIRED_KEYS = ("description", "argument-hint", "allowed-tools")
 # The implement stage's packet (#158) — a FOURTH hand-copy of the charter's
 # dispatch packet, so it is pinned rather than trusted (F30: copy-pasted
 # blocks drift uniformly, and identically-broken copies are trivially "in
-# parity"). The other three are templates/OPERATOR.md, docs/HANDOUT.md and
+# parity"). The other three are templates/OPERATOR.md, docs/guide/HANDOUT.md and
 # HANDOUT_PACKET_SPINE above; this one is CODE, and a field dropped here is a
 # field the implementer seat is never given.
 IMPLEMENT_PACKET_FIELDS = ("TASK", "TEXT", "SCENE", "INPUTS", "FORBIDDEN", "DONE", "REACH")
@@ -3320,7 +3320,7 @@ def check_implement_packet(root, problems):
                 problems.append(
                     f"workflows/implement.js: PACKET_FIELDS carries "
                     f"{got!r}, which the charter's packet does not — add it to "
-                    f"templates/OPERATOR.md and docs/HANDOUT.md first, or the "
+                    f"templates/OPERATOR.md and docs/guide/HANDOUT.md first, or the "
                     f"code is asking for a clause the contract never defined")
         rest = code.replace(m.group(0), "", 1)
         if rest.count("PACKET_FIELDS") < 2:
@@ -4827,7 +4827,7 @@ def check_base_gate(root, problems):
 def check_line_citations(root, problems):
     """#139 item 4: a `file.sh:NNN` citation in prose has no guard, and rots.
 
-    Five such citations in docs/LANDMINES.md's #137 section were stale within
+    Five such citations in docs/maintainer/LANDMINES.md's #137 section were stale within
     two commits — read off a pre-merge copy, and at HEAD all five pointed at
     comment or control-flow lines while the validator reported "all contracts
     hold". `check_coupling_case_refs` resolves `_"…"_` case titles and has no
@@ -4919,7 +4919,7 @@ def check_claude_md_size(root, problems):
         problems.append(
             f"CLAUDE.md: {n} chars > {CLAUDE_MD_MAX_CHARS} cap — the harness "
             f"injects this file whole into every session and clips above "
-            f"40.0k; move the narrative to docs/LANDMINES.md (the 0.11.2/"
+            f"40.0k; move the narrative to docs/maintainer/LANDMINES.md (the 0.11.2/"
             f"0.11.9 extraction pattern) and keep the coupling + citations "
             f"in the row")
 
@@ -5083,7 +5083,7 @@ def check_prose_invocations(root, problems):
     gate-trespass invisible — and exits 2 without it. An operator following
     `templates/OPERATOR.md`, which CLAUDE.md calls THE PRODUCT, got a usage
     error. The fix then turned out to be one copy of three: README.md carried
-    the same broken form and docs/PLAYBOOK.md wrote `[--since <dispatch-sha>]`
+    the same broken form and docs/maintainer/PLAYBOOK.md wrote `[--since <dispatch-sha>]`
     in square brackets, marking OPTIONAL a flag the CLI refuses to run without.
 
     All 1101 shell cases passed throughout the entire period the charter was
@@ -5108,8 +5108,8 @@ def check_prose_invocations(root, problems):
     that is what a changelog is for — and a check that reports them is a check
     people route around. `docs/dev/` is working notes, same reason.
     """
-    _HISTORY = {"CHANGELOG.md", "docs/CHANGELOG-archive.md",
-                "docs/LANDMINES.md", "docs/DECISION-ENGINE-PROBES.md"}
+    _HISTORY = {"CHANGELOG.md", "docs/history/CHANGELOG-archive.md",
+                "docs/maintainer/LANDMINES.md", "docs/design/DECISION-ENGINE-PROBES.md"}
     contracts = {}
     for p in sorted(root.glob("scripts/ops-*.sh")):
         # An empty contract is NOT reported here. ops-init.sh, ops-install-set.sh
@@ -5144,7 +5144,7 @@ def check_prose_invocations(root, problems):
         _lines = text.split("\n")
         # The PARAGRAPH each line sits in — contiguous non-blank lines. The
         # deliberate-negative-control marker is looked for there, not on the
-        # line itself: docs/REPLAY-CHARTER.md's `--ownr` probe announces itself
+        # line itself: docs/maintainer/REPLAY-CHARTER.md's `--ownr` probe announces itself
         # in the sentence ABOVE ("verify the parser refuses a mistyped flag")
         # and names `unknown option` in the one below, which is how prose is
         # written. A line-only scan condemned it. A paragraph is the natural
@@ -5370,7 +5370,7 @@ def check_coupling_case_refs(root, problems):
     referenced case shipped green and left the table pointing at nothing.
 
     The reference set is classified by CONTEXT, not by string: a reference
-    whose preceding prose names docs/LANDMINES.md resolves against that file,
+    whose preceding prose names docs/maintainer/LANDMINES.md resolves against that file,
     every other one against tests/. Anchoring on the surrounding text rather
     than guessing per string is the "assert the SELECTION" rule — a checker
     that is perfectly correct about the wrong bytes reads exactly like a
@@ -5482,7 +5482,7 @@ def check_coupling_case_refs(root, problems):
         "tests/": lines_of([]) + sum((suite_lines(p) for p in sorted(
             tests_dir.rglob("*")) if p.suffix in {".sh", ".mjs", ".py"}), [])
         if tests_dir.is_dir() else [],
-        "docs/LANDMINES.md": lines_of([root / "docs" / "LANDMINES.md"]),
+        "docs/maintainer/LANDMINES.md": lines_of([root / "docs" / "maintainer" / "LANDMINES.md"]),
     }
 
     def resolves(ref, lines):
@@ -5508,7 +5508,7 @@ def check_coupling_case_refs(root, problems):
         # writes `dev\[N\] mirror` for a case named `dev[N] mirror`.
         ref = re.sub(r"\\([\[\]().*+?^$|{}\\])", r"\1", m.group(1))
         ctx = text[max(0, m.start() - 120):m.start()]
-        where = "docs/LANDMINES.md" if "LANDMINES.md" in ctx else "tests/"
+        where = "docs/maintainer/LANDMINES.md" if "LANDMINES.md" in ctx else "tests/"
         key = (where, ref)
         if key in seen:
             continue

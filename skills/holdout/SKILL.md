@@ -7,7 +7,7 @@ A holdout is a check suite whose author could not read the implementation. Its
 only property is that independence, and the cheapest wrong action — hand-editing
 a derived check — destroys it while the artifact keeps its name and keeps
 passing. This skill is the procedure; the measured history behind every rule is
-`docs/LANDMINES.md` § "The first check written by something that could not read
+`docs/maintainer/LANDMINES.md` § "The first check written by something that could not read
 the code (0.11.16, #112)".
 
 ## 0. Where the holdout lives

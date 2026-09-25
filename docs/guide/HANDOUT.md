@@ -230,4 +230,4 @@ happened.
 ---
 
 *For the full rules, the charter is `templates/OPERATOR.md`. For why every
-decision is shaped the way it is, see `docs/TAGS.md` and `docs/PLAYBOOK.md`.*
+decision is shaped the way it is, see `docs/design/TAGS.md` and `docs/maintainer/PLAYBOOK.md`.*
