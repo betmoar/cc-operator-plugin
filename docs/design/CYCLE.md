@@ -14,7 +14,7 @@ kept as one document instead of four issue descriptions. Status at 0.12.8:
   tells the operator to refuse a spec whose `Status:` is not `APPROVED`, to take
   the north star from the spec, and to resolve the tiers itself.
   `workflows/plan.js` checks none of that, so the gate holds only as far as the
-  command is followed.
+  command is followed ([#177](https://github.com/betmoar/cc-operator-plugin/issues/177)).
 
 Sections that have shipped are marked BUILT inline; the rest reads as it did
 when written.

@@ -7,8 +7,8 @@ it is not enough.
 
 - **The evidence gate.** Open a tracked task and the session cannot stop until
   a verdict row with real evidence (command output, a diff, a reviewer verdict)
-  closes it. Change two or more files without opening one, and the gate opens
-  one for you.
+  closes it. Change two or more files and the gate opens one for you at your
+  next stop, whether or not you opened one yourself.
 - **The charter.** `OPERATOR.md` (≤150 lines) sets the rules: solo mode by
   default, orchestrated mode once you dispatch subagents, loop caps, a dispatch
   packet, a four-status worker protocol and a recovery protocol for after
@@ -17,7 +17,7 @@ it is not enough.
   brainstorm, plan, implement, debate, crawl, dispatch) run seats on four model
   tiers that you bind in `tiers.env`.
 
-Version **0.12.8**. See [CHANGELOG.md](CHANGELOG.md) for what changed, and
+Version **0.12.9**. See [CHANGELOG.md](CHANGELOG.md) for what changed, and
 [docs/](docs/README.md) for everything else.
 
 ---
@@ -42,9 +42,9 @@ Version **0.12.8**. See [CHANGELOG.md](CHANGELOG.md) for what changed, and
 | Tool | Used for | If it is missing |
 |---|---|---|
 | `bash` (3.2+) | every gate CLI and hook | nothing works |
-| `git` | the source stamp on each verdict row, auto-arm, `ops-claims.sh`, the tutorial | `ops-init.sh` warns; rows are stamped `@no-vcs`; auto-arm arms nothing |
+| `git` | the source stamp on each verdict row, auto-arm, `ops-claims.sh`, the tutorial | rows are stamped `@no-vcs`; auto-arm arms nothing (`ops-init.sh` warns only when git is installed and the directory is not a repository) |
 | `jq` **or** `python3` | reading the hook payload (Stop, SessionStart, statusline) | the Stop hook **fails open** (exits 0 with a warning), so a missing dependency never bricks a session |
-| `node` | the PostToolUse output compressor | tool output is not compressed |
+| `node` | the PostToolUse output compressor | the hook's `node` command fails on every matched tool call and nothing is compressed ([#178](https://github.com/betmoar/cc-operator-plugin/issues/178)) |
 | `claude` CLI | `ops-holdout.sh` only | the holdout skill cannot derive |
 | [cc-proxy](https://github.com/betmoar/cc-proxy-plugin) *(optional)* | routing tiers to non-Anthropic models; `ops-tiers.sh --check/--suggest/--panel` | tiers use Anthropic model ids; the proxy-backed flags report and fail open |
 | [cc-status](https://github.com/betmoar/cc-status-plugin) *(optional)* | composing the status-bar segment | wire `scripts/statusline.sh` directly (see below) |
@@ -105,8 +105,9 @@ root. It is idempotent, and re-running it is also how the gate CLIs get upgraded
   | `pending/` | open-task sentinels | no |
   | `bin/` | the six installed gate CLIs (below) | no |
 
-  `.operator/.gitignore` is an allowlist: only the rows marked "yes" are
-  tracked, and everything else the plugin creates is ignored.
+  `.operator/.gitignore` is an allowlist: the rows marked "yes", plus
+  `.gitignore` and `.gitattributes` themselves, are tracked; everything else
+  the plugin creates is ignored.
 
 The CLIs are copied into `.operator/bin/` because the model's shell has no
 `${CLAUDE_PLUGIN_ROOT}`. The SessionStart hook refreshes those copies whenever
@@ -149,12 +150,16 @@ definition.
 - a gated `DECISIONS.md` deviation has not been presented to the human yet.
 
 Sentinels owned by *other* sessions in the same tree are reported but never
-block you, and `ops-verdict.sh` refuses to close them. Two sessions can
-therefore share one working tree safely.
+block you, so two sessions can share one working tree. `ops-verdict.sh` refuses
+to close another session's task when you pass your own `--owner`. Without
+`--owner` it warns and closes it anyway, which is why the charter tells you to
+always pass it.
 
 **Auto-arm.** If the working tree has two or more changed paths (outside
 `.operator/`) at stop time, the Stop hook opens a task named `autobar` for the
-session, at most once per session, and blocks. The charter's rule that
+session and blocks. It does this whether or not you already have a task open,
+and at most once between SessionStart fires (a resume, `/clear` or compaction
+re-arms it). The charter's rule that
 multi-file work needs a BAR block is enforced in code, not left as a request.
 Coverage is deliberately partial: a non-git project arms nothing, and one
 deferred task satisfies it. Because the delta is measured on the tree, in a
@@ -170,8 +175,8 @@ block (a cc-repete loop, for example) cannot switch the gate off.
 **The cap detector.** The charter's cap table (identical-rejection ×2,
 same-target-rework ×2, neighbor-regressing ×2) is reported by the Stop hook
 where it can be measured from the ledger. Today that is same-target-rework
-×2: two FAIL rows on one `(task, criterion)` without a PASS in between. It is
-report-only, and it never blocks.
+×2: two FAIL rows on one `(task, criterion)` without a PASS or MOOT in
+between. It is report-only, and it never blocks.
 
 **The source stamp.** `ops-verdict.sh` ends every evidence cell with the state
 of the tree that produced it: `@<sha>` (clean), `@<sha>+dirty` (anything
@@ -187,13 +192,16 @@ written against it keep working.
 that order. `.operator/.gitattributes` marks the ledgers `merge=union`. If
 `VERDICTS.md` still comes out of a merge wrong, resolve it any way you like
 and run `--reconcile`: rows are restored from the fragments, and hand-written
-BAR blocks are left untouched. (One known gap: a lock held longer than its
-timeout is presumed crashed and reclaimed. The timeout sits well above the
-slowest real critical section.)
+BAR blocks are left untouched. The lock asks the kernel whether its holder is
+alive: a dead holder's lock is reclaimed at once, and a live holder's lock is
+never reclaimed (after 60s the writer proceeds unlocked, with a warning). Only
+a holder that cannot be judged, such as one on another host, is presumed dead
+after 30s.
 
 **Naming rules.** Task ids and session ids become filenames, so they must be
-bare names: no `/`, no leading `.`, no `|` or newline, and no `__` (the
-separator between owner and task in a sentinel's name).
+bare names: no `/`, no leading `.`, no `|`, carriage return or newline, and
+no `__` (the separator between owner and task in a sentinel's name). The CLIs
+refuse anything else and say why.
 
 **Re-verification.** `scripts/ops-reverify.sh [--from YYYY-MM-DD] [--to YYYY-MM-DD]`
 lists the verdict rows written while HEAD sat inside a date window, such as a
@@ -202,10 +210,12 @@ release with a known defect. You can then re-run their criteria. It never writes
 ## The engagement cycle and its commands
 
 A session moves through a cycle. At each start the SessionStart banner prints
-the **derived stage**, computed from what is on disk (open tasks, deviations,
-specs, handoff marks) and never stored. The stages are `BLOCKED`,
-`IMPLEMENT`, `HANDOFF`, `SPEC`, `PLAN` and `CLEAR`, with the next move for
-each.
+the **derived stage** and the next move, computed from what is on disk (open
+and malformed sentinels, specs and their approval status) and never stored.
+The banner prints `BLOCKED`, `IMPLEMENT`, `SPEC`, `PLAN` or `CLEAR`. The
+library (`scripts/lib/stage.sh`) also defines `HANDOFF`, for unpresented
+deviations, but SessionStart does not scan `DECISIONS.md`, so the banner never
+prints it. The Stop hook checks deviations.
 
 | Command | Stage | What it does |
 |---|---|---|
@@ -294,12 +304,13 @@ Declared in [`hooks/hooks.json`](hooks/hooks.json), each run from
 **The compressor.** It scrubs, deduplicates and elides tool output that would
 otherwise be billed again on every turn. It works on a strict allowlist: never
 Read/Edit/Write/NotebookEdit, never `mcp__*` tools, and never evidence-gate
-output (ledger paths and gate CLIs are carved out by path). Elided output is
+output (the ledger paths, and the task/verdict/adopt/claims CLIs by name, are
+carved out). Elided output is
 spilled verbatim to `.operator/.compress-spill/` and the elision cites the
 spill path, so evidence can be recovered byte-for-byte. The charter requires
 evidence quoted from elided output to cite that path. A project without
-`.operator/` gets no spill and no deduplication, and the elision says "not
-spilled".
+`.operator/` gets no spill and no deduplication, and the elision says so
+("NO spill copy").
 
 ## Status bar (optional)
 
@@ -307,8 +318,8 @@ spilled".
 
 | Segment | Meaning |
 |---|---|
-| `op[2]` (red) | this session owns 2 open tasks, so your stop is blocked |
-| `op[1+2*]` (dim) | 1 is yours, and 2 belong to other sessions in the tree (informational) |
+| `op[2]` | 2 sentinels block your stop: your own, unowned and malformed ones. The count is red |
+| `op[1+2*]` | 1 blocks you; `+2*` (dim) belong to other sessions in the tree and are informational |
 | `dev[1]` (dim) | an unpresented deviation in `DECISIONS.md` that will block stop |
 | `wf 2/4` (dim) | a workflow run in flight: results/dispatches from its journal, never a percentage |
 

@@ -8,10 +8,12 @@ README. It is grouped by who reads it.
 Nothing under `docs/` is loaded at runtime. The plugin's behaviour lives in
 `templates/`, `scripts/`, `hooks/`, `workflows/`, `agents/` and `commands/`,
 and when a document here disagrees with that code, the code wins. The validator
-reads only three files in this directory: `design/TAGS.md` (every charter
+pins three files in this directory: `design/TAGS.md` (every charter
 `[DOC:spec-*]` tag must resolve there), `guide/HANDOUT.md` (its copy of the
 dispatch packet is pinned to the charter's) and `maintainer/LANDMINES.md`
-(CLAUDE.md's citations must resolve against it).
+(CLAUDE.md's citations must resolve against it). It also scans every
+`docs/**/*.md` for `file:NNN` citations that no longer resolve and for CLI
+invocations whose flags the CLI does not accept.
 
 ## guide/ — for users
 
@@ -25,7 +27,7 @@ dispatch packet is pinned to the charter's) and `maintainer/LANDMINES.md`
 |---|---|
 | [TAGS.md](design/TAGS.md) | Resolves every `[DOC:spec-*]` citation tag in the charter (`templates/OPERATOR.md`) to what the rule means as shipped. Start here when a charter rule is unclear. |
 | [CYCLE.md](design/CYCLE.md) | The engagement cycle (diverge → spec → plan → implement → review → gate → handoff): the design record for the spec stage (#155), the implement workflow (#158) and the derived stage (#157), with the plan gate still unbuilt. |
-| [DECISION-ENGINE-PROBES.md](design/DECISION-ENGINE-PROBES.md) | The measured record of whether a typed decision engine belongs in the plugin: six surfaces, the filter that decided each, and the constraints if one is ever built. Read before touching #151 or #152. |
+| [DECISION-ENGINE-PROBES.md](design/DECISION-ENGINE-PROBES.md) | The measured record of whether a typed decision engine belongs in the plugin: the surfaces probed live, the filter that decided each, and the constraints if one is ever built. Read before touching #151 or #152. |
 
 ## maintainer/ — changing the plugin
 

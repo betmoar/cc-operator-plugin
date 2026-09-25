@@ -61,7 +61,7 @@ the shipped workflows — a seat has no tier of its own.
 | Agent (`op-…`)   | Typical tier    | Its one job                                           |
 | ---------------- | --------------- | ------------------------------------------------------ |
 | **op-author**    | JUDGMENT/MECH.  | Writes prose, design, anything needing taste (also drafts and merges) |
-| **op-debater**   | JUDGMENT        | Read-only debate seat — holds ONE position across rounds, revises only on evidence |
+| **op-debater**   | the panel's ids | Read-only debate seat — holds ONE position across rounds, revises only on evidence |
 | **op-verifier**  | JUDGMENT        | Adversarial check: tries to *break* your claim (REFUTED/CONFIRMED) |
 | **op-reviewer**  | JUDGMENT/MECH.  | Read-only review + scoring of finished work (spec/quality/scoring modes) |
 | **op-mechanic**  | IMPLEMENT       | Scaffolds, fixtures, commits, reverts — mechanical edits |
@@ -124,9 +124,10 @@ a session; the rest map onto the cycle below or wrap a single workflow.
 Stages run **brainstorm → spec → plan → implement → review → handoff**. Small
 work can skip straight to SOLO MODE edits; anything earning a BAR block (see
 ENGAGEMENT CONTRACT in the charter) follows this path. The SessionStart banner
-prints a derived **STAGE** line (`CLEAR`, `SPEC`, `PLAN`, `IMPLEMENT`,
-`HANDOFF`, or `BLOCKED`) naming where the session stands, so you never have to
-reconstruct it from memory.
+prints a derived **STAGE** line (`CLEAR`, `SPEC`, `PLAN`, `IMPLEMENT` or
+`BLOCKED`) naming where the session stands, so you never have to reconstruct
+it from memory. Unpresented deviations are checked by the Stop hook, not the
+banner.
 
 ---
 
@@ -189,8 +190,9 @@ verdict word — **PASS**, **FAIL**, or **MOOT** (the criterion cannot be
 answered any more; the reason itself is the evidence). A task that's genuinely
 stuck ends honestly with `--defer "<reason>"` rather than being forced to a
 false PASS. While a task *you own* is open, the session **can't stop** — it's
-forced to finish honestly; if you forget to open one, changing two or more
-files auto-arms a task for you.
+forced to finish honestly. And if two or more files changed, the Stop hook
+opens an `autobar` task for you anyway (once between session starts), so
+multi-file work cannot slip out without a verdict.
 
 > This is why you can trust the "done": there's a written record behind it.
 
@@ -246,9 +248,9 @@ Run `/cc-operator:tiers` to see the current bindings and provenance. Add
 report-only note about a graded model that beats a current binding on both
 score and price — it changes nothing itself.
 
-> Rules: model ids must match a routable shape (`glm-*`, `vendor/model`, or
-> `claude-*`), contain no spaces or quotes, and you can't rename the four tier
-> names.
+> Rules: a model id may contain only letters, digits and `._:/@[]-` (no spaces
+> or quotes). Whether that model exists is cc-proxy's call, not the
+> resolver's. You can't rename the four tier names.
 
 ---
 
