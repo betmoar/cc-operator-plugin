@@ -325,6 +325,33 @@ ok(feasCalls.length === planFixtures.decompose.tasks.length &&
 ok(planCalls.find((c) => c.label === "decompose").prompt.includes(BIG_SPEC),
   "plan: decompose (once) is the only full-spec consumer");
 
+// ── plan: testability "external" spends no testability seat (#151) ──────────
+console.log("-- Case: plan.js testability external — no test: seat, fail-closed until scored (#151)");
+const { result: extPlan, rt: extRt } = await run(WF("plan.js"),
+  { spec: "s", northStar: NORTH_STAR, testability: "external" }, planFixtures);
+ok(extRt.calls.filter((c) => c.label.startsWith("test:")).length === 0 &&
+   extRt.calls.filter((c) => c.label.startsWith("feas:")).length === planFixtures.decompose.tasks.length,
+  "plan: testability=external dispatches ZERO test: seats and every feas: seat");
+// PR #190 review: the first cut suppressed incomplete here, so skipping commands/plan.md step 6 left
+// every task CLEAR with its testability never vetted. Fail-closed: every task not already blocked or
+// needs-info is incomplete until ops-testability.sh --plan scores it.
+const extNotBlocked = (extPlan.vetting ?? []).filter((v) =>
+  !(extPlan.blocked ?? []).some((b) => b.taskIndex === v.taskIndex) &&
+  !(extPlan.needsInfo ?? []).some((b) => b.taskIndex === v.taskIndex));
+ok(extPlan.testability === "external" && extNotBlocked.length > 0 &&
+   extNotBlocked.every((v) => (extPlan.vettingIncomplete ?? []).some((b) => b.taskIndex === v.taskIndex)) &&
+   (extPlan.vetting ?? []).every((v) => v.testable === undefined),
+  "plan: testability=external — every task not blocked/needs-info is vettingIncomplete until scored; none reads clear");
+// A DEAD feasibility seat is still incomplete under external — only the testability half moved out.
+const { result: extDead } = await run(WF("plan.js"),
+  { spec: "s", northStar: NORTH_STAR, testability: "external" }, nullFixtures);
+ok((extDead.vettingIncomplete ?? []).map((v) => v.taskId).includes("dead"),
+  "plan: testability=external — a dead feasibility seat is still vettingIncomplete");
+ok(plan.testability === "seat" && planCalls.filter((c) => c.label.startsWith("test:")).length === planFixtures.decompose.tasks.length,
+  "plan: testability defaults to seat — one test: seat per task, as before");
+await throws(() => run(WF("plan.js"), { spec: "s", northStar: NORTH_STAR, testability: "jev" }, planFixtures),
+  "plan: an unknown testability value refuses (a typo must not silently drop the lens)", "args.testability must be");
+
 // ── plan: the north star is required, and a vague one is refused (#58) ───────
 console.log("-- Case: plan.js north star — required, falsifiable, decompose-only");
 // The input saying what the work is FOR is guarded; it used to fall back to a

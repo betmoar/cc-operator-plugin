@@ -216,6 +216,21 @@ if (!missClause || missClause[1].trim().length < 10) {
 // rules, limits. Every task inherits them. Optional.
 const globalConstraints = (typeof A === "object" ? A.globalConstraints : undefined) ?? "";
 
+// args.testability (#151): "seat" (default) runs the MECHANICAL lens per task;
+// "external" skips it because commands/plan.md vets every testCycle in ONE
+// typed-decision call after this returns (scripts/ops-testability.sh — this
+// sandbox has no network). Under "external" a task's `testable` stays
+// undefined HERE and every task is vetting-incomplete until the script scores
+// it — nothing reads as clear if that step is skipped. Any other value
+// refuses — a typo silently dropping the lens would read as a clean plan.
+const testability = (typeof A === "object" ? A.testability : undefined) ?? "seat";
+if (testability !== "seat" && testability !== "external") {
+  throw new Error(
+    `args.testability must be "seat" or "external", got ${JSON.stringify(testability)}`,
+  );
+}
+const externalTestability = testability === "external";
+
 // --- Phase 1: decompose ----------------------------------------------------
 // One judgment-tier pass turns the spec into a task list. A task is the
 // smallest unit that carries its own test cycle and is worth a fresh
@@ -477,7 +492,9 @@ const vetted = await pipeline(
             `Cite path:line for each issue. You are read-only.`,
           { agentType: "cc-operator:op-reviewer", model: JUDGMENT, label: `feas:${task.id}`, phase: "Vet", schema: VET },
         ),
-      () =>
+      // Under args.testability="external" the lens is not dispatched at all:
+      // ops-testability.sh answers it for every task in one call (#151).
+      () => externalTestability ? Promise.resolve(undefined) :
         agent(
           `Vet ONE implementation task for TESTABILITY. Does its testCycle name an OBSERVABLE ` +
             `acceptance criterion — a real command and its expected output? Or does it assert behavior ` +
@@ -501,6 +518,11 @@ const vetted = await pipeline(
       // bucket. A task whose vetting never ran would then report as having
       // PASSED vetting and proceed toward implementation unflagged, defeating
       // the point of the phase. Make the gap explicit instead of inferred.
+      // Under "external" the testability slot is never dispatched, so every
+      // task is vetting-incomplete HERE, fail-closed: ops-testability.sh --plan
+      // lifts a task out only when it scored it AND its feasibility seat
+      // returned. Skipping that step leaves nothing reading as clear (PR #190
+      // review: the first cut suppressed this and 24/24 tasks read clear).
       vettingIncomplete: f == null || t == null,
       issues: [...(f?.issues ?? []), ...(t?.issues ?? [])],
     })),
@@ -524,7 +546,8 @@ log(
   `vet: ${flat.length}/${vetted.length} vetted — ${blocked.length} blocked, ` +
     `${needsInfo.length} needs-info, ${incomplete.length} vetting-incomplete, ` +
     `${flat.length - blocked.length - needsInfo.length - incomplete.length} clear` +
-    (lost ? ` (${lost} task(s) LOST to dispatch failure)` : ""),
+    (lost ? ` (${lost} task(s) LOST to dispatch failure)` : "") +
+    (externalTestability ? " — testability PENDING: every task stays vetting-incomplete until ops-testability.sh --plan scores it" : ""),
 );
 
 // --- The plan graph: edges, concurrency, and the ceiling (#66) --------------
@@ -792,6 +815,10 @@ return {
   // in code) or "unstamped" (the spec-less path, legitimate but unevidenced —
   // commands/plan.md makes the operator say so when reporting).
   specStatus,
+  // "seat" or "external" (#151). Under "external" every `testable` below is
+  // unset and every task is in vettingIncomplete until
+  // scripts/ops-testability.sh --plan merges the typed answers.
+  testability,
   fileStructure: decomp?.fileStructure ?? "",
   globalConstraints: globalConstraints || null,
   tasks,
