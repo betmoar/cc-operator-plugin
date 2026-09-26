@@ -1,7 +1,7 @@
 ---
 description: Run the plan workflow — decompose an approved spec into TDD tasks, then vet each in parallel for feasibility and testability.
 argument-hint: "<path to the approved spec, or paste it>"
-allowed-tools: Bash(bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-tiers.sh:*), Read, Write, Workflow
+allowed-tools: Bash(bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-tiers.sh:*), Bash(bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-testability.sh:*), Read, Write, Workflow
 ---
 
 Plan `$ARGUMENTS` with the plan workflow. It refuses without both required
@@ -36,14 +36,35 @@ arguments, before any dispatch — so assemble them first.
    bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-tiers.sh --json
    ```
 
-4. **Dispatch:**
+4. **Choose the testability lens** (#151):
+
+   ```
+   bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-testability.sh --available
+   ```
+
+   rc 0 → pass `testability: "external"` below: one typed-decision call vets
+   every testCycle instead of one MECHANICAL seat per task (measured 24/24 vs
+   23/24, ~3000× cheaper — DECISION-ENGINE-PROBES.md, Surface 7). Any other rc
+   → omit it; the seat runs as before. Opting in is the user's
+   (`CC_OPERATOR_JEV=1`): task titles, files and testCycles leave the machine.
+
+5. **Dispatch:**
 
    ```
    Workflow({ name: "cc-operator:plan", args: {
      spec: "<the spec content>",
      northStar: "<the sentence> Missed if: <the falsifying condition>",
-     tiers: <the JSON from step 3> } })
+     tiers: <the JSON from step 3>,
+     testability: "external" /* only if step 4 returned rc 0 */ } })
    ```
+
+6. **External testability only:** Write the workflow's result JSON to a
+   scratch file and run
+   `bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-testability.sh --plan <that file>`.
+   Its stdout is the plan with `testable`, `blocked` and `vettingIncomplete`
+   filled in, and it is the result you review. rc 3 means some tasks went
+   UNVETTED (engine down, bad answer); they sit in `vettingIncomplete`, never
+   clear. Until this step runs, no task's testability is known.
 
 **Read the graph for what it is.** `consumesNoTaskProduces` is not a defect
 list — the commonest entry is a task consuming something the project already

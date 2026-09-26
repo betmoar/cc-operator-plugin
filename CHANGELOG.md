@@ -9,6 +9,27 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.12.13] - 2026-09-26
+
+The plan workflow's testability lens can run as one typed-decision call (#151).
+
+### Added
+
+- **`scripts/ops-testability.sh`** vets every task's testCycle in ONE Jev
+  (`jev-1.13.0`) call instead of one MECHANICAL seat per task. Measured on 24
+  hashed labels: 24/24 live (3 runs) against the seat's 23/24, about $0.00015
+  and under half a second against $0.46 and 102 s (DECISION-ENGINE-PROBES.md,
+  Surface 7). **Opt-in** (`CC_OPERATOR_JEV=1`, the user's to set: task titles,
+  files and testCycles leave the machine). **Fails toward unvetted**: no key, no
+  network, a non-200 or a malformed score puts the task in `vettingIncomplete`,
+  never clear, at rc 3. The key reaches curl through a 0600 header file, never
+  argv. Tasks are named by position only: with the task id in the state, a
+  question about `T8` was answered for the task named `t08` (10/24 live).
+- **`plan.js` `args.testability`**: `"seat"` (default, unchanged) or
+  `"external"`, which dispatches no testability seat and leaves `testable` for
+  the script to fill. Any other value refuses. `commands/plan.md` checks
+  `--available` and wires both.
+
 ## [0.12.12] - 2026-09-26
 
 The JUDGMENT tier defaults to the harness alias `opus`.

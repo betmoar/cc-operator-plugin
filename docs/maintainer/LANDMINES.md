@@ -2058,6 +2058,9 @@ mechanics.
   LAST assignment and refuse any floors.env line that is not blank, a comment, or exactly
   `FLOOR_<name>=<digits>` — SOURCED, fail-OPEN. The registry arm refuses a second
   column-0 `CHECKS =`.
+- **Arm 3 asks the TREE** (`ls-tree` at the MERGED TREE), never the diff's status letter;
+  the SUBJECT is `merge-tree --write-tree`'s tree, not the PR head (#130). Moved from the
+  CLAUDE.md row in #151 to pay for that release's row under the 38000 cap.
 - **Arm independence (#140).** An arm must never depend on WHICH OTHER ARM dies first.
 
 ## Extracted from CLAUDE.md (#159)

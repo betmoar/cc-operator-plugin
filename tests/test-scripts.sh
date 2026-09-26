@@ -8738,6 +8738,71 @@ check "#178 without node, the hook command exits 0 (fail-open no-op)" \
   "$_hrc"
 rm -rf "$_nolink"
 
+echo "-- Case: #151 ops-testability.sh vets testCycles in one typed call, fail toward UNVETTED"
+# A fake curl on PATH: records argv and the request body, replays a canned answer. Hermetic — the live
+# engine is measured in DECISION-ENGINE-PROBES.md Surface 7, never from this suite.
+TSB="$(mktemp -d "${TMPDIR:-/tmp}/opstest-jev.XXXXXX")"; mkdir -p "$TSB/bin"
+# Read through printenv, once: a $PATH expansion here trips SC2030/SC2031 against the #127 block (see #150's HPATH).
+TSPATH="$TSB/bin:$(printenv PATH)"
+cat > "$TSB/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$TSB_LOG/argv"; out=""; prev=""
+for a in "$@"; do
+  case "$prev" in -o) out="$a" ;; --data-binary) cp "${a#@}" "$TSB_LOG/body" ;; -H) case "$a" in @*) cp "${a#@}" "$TSB_LOG/hdr" ;; esac ;; esac
+  prev="$a"
+done
+[ -n "$out" ] && cp "$TSB_RESP" "$out"; printf '%s' "${TSB_CODE:-200}"
+STUB
+chmod +x "$TSB/bin/curl"
+printf 'OTHER=1\nexport TYPESAFE_API_KEY="tsk-FIXTURE-SECRET-42"\n' > "$TSB/env"
+cat > "$TSB/plan.json" <<'PLAN'
+{"testability":"external","tasks":[
+ {"id":"dup","title":"a","files":[],"testCycle":"x → exit 0"},
+ {"id":"dup","title":"b","files":[],"testCycle":"works correctly"},
+ {"id":"gone","title":"c","files":[],"testCycle":"y"},
+ {"id":"str","title":"d","files":[],"testCycle":"z"},
+ {"id":"range","title":"e","files":[],"testCycle":"w"},
+ {"id":"feasno","title":"f","files":[],"testCycle":"vague"}],
+ "vetting":[{"taskId":"feasno","taskIndex":5,"feasible":"no","issues":[{"kind":"gap","detail":"g"}]}],
+ "blocked":[{"taskId":"feasno","taskIndex":5,"issues":[{"kind":"gap","detail":"g"}]}],
+ "vettingIncomplete":[]}
+PLAN
+printf '%s' '{"model":"jev-1.13.0","answers":{"T0":{"type":"noul","noul":0.91},"T1":{"type":"noul","noul":0.12},"T3":{"type":"noul","noul":"0.9"},"T4":{"type":"noul","noul":1.5},"T5":{"type":"noul","noul":0.05}}}' > "$TSB/resp.json"
+# TST <opt-in 0|1> <args…> — the caller's TYPESAFE_API_KEY never leaks in: the key comes from the fixture file only.
+TST() { local _in="$1"; shift; env -u TYPESAFE_API_KEY -u CC_OPERATOR_JEV ${_in:+CC_OPERATOR_JEV=$_in} \
+  PATH="$TSPATH" TSB_LOG="$TSB" TSB_RESP="$TSB/resp.json" TSB_CODE="${TSB_CODE:-200}" \
+  CC_OPERATOR_JEV_KEYFILE="${TSB_KEYFILE:-$TSB/env}" "$BASH_ABS" "$SCRIPTS/ops-testability.sh" "$@"; }
+TSQ() { python3 -c 'import json,sys; o=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$@"; }
+_o="$( TST "" --available 2>&1 )"; _rc=$?
+check "#151 --available is rc 3 without the user's opt-in, even with a key on disk" \
+  "$([ "$_rc" -eq 3 ] && printf '%s' "$_o" | grep -q 'not opted in' && echo 0 || echo 1)"
+_o="$( TSB_KEYFILE=/nonexistent TST 1 --available 2>&1 )"; _rc=$?
+check "#151 --available is rc 3 opted in but keyless" \
+  "$([ "$_rc" -eq 3 ] && printf '%s' "$_o" | grep -q 'no TYPESAFE_API_KEY' && echo 0 || echo 1)"
+rm -f "$TSB/argv" "$TSB/body" "$TSB/hdr"
+TST 1 --plan "$TSB/plan.json" > "$TSB/out.json" 2>"$TSB/err"; _rc=$?
+check "#151 --plan merges: >= threshold is testable, < threshold is blocked 'untestable' (index-keyed, dup ids apart)" \
+  "$(TSQ "$TSB/out.json" '[v["testable"] for v in sorted(o["vetting"],key=lambda v:v["taskIndex"])][:2]==["yes","no"] and any(b["taskIndex"]==1 and b["issues"][0]["kind"]=="untestable" for b in o["blocked"]) and not any(b["taskIndex"]==0 for b in o["blocked"])' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
+check "#151 a missing, non-numeric or out-of-range answer is UNVETTED -> vettingIncomplete, rc 3 — never testable" \
+  "$([ "$_rc" -eq 3 ] && TSQ "$TSB/out.json" 'sorted(b["taskIndex"] for b in o["vettingIncomplete"])==[2,3,4] and all(v["testable"]=="unvetted" for v in o["vetting"] if v["taskIndex"] in (2,3,4))' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
+check "#151 a task already blocked on feasibility gains the untestable issue, no second blocked row" \
+  "$(TSQ "$TSB/out.json" '[b for b in o["blocked"] if b["taskIndex"]==5]' 2>/dev/null | python3 -c 'import sys,ast; r=ast.literal_eval(sys.stdin.read()); print(len(r)==1 and [i["kind"] for i in r[0]["issues"]]==["gap","untestable"])' | grep -qx True && echo 0 || echo 1)"
+check "#151 the key reaches curl only through the header file — never argv, never stdout" \
+  "$( ! grep -q 'tsk-FIXTURE-SECRET-42' "$TSB/argv" && grep -qx 'Authorization: Bearer tsk-FIXTURE-SECRET-42' "$TSB/hdr" \
+     && ! grep -q 'tsk-FIXTURE-SECRET-42' "$TSB/out.json" "$TSB/err" && echo 0 || echo 1)"
+# Measured: with the task's own id in the state, a question about T8 was answered for the task named t08
+# (10/24 live). Position is the only name a task may carry.
+check "#151 the request names tasks by position only — no task id, no specExcerpt leaves the machine" \
+  "$(TSQ "$TSB/body" '"\"id\"" not in o["state"] and "specExcerpt" not in o["state"] and sorted(o["questions"])==["T0","T1","T2","T3","T4","T5"] and o["model"]=="jev-1.13.0"' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
+TSB_CODE=503 TST 1 --plan "$TSB/plan.json" > "$TSB/down.json" 2>/dev/null; _rc=$?
+check "#151 a non-200 leaves EVERY task unvetted (feasibility-blocked stays blocked), rc 3, stdout still the plan" \
+  "$([ "$_rc" -eq 3 ] && TSQ "$TSB/down.json" 'sorted(b["taskIndex"] for b in o["vettingIncomplete"])==[0,1,2,3,4] and [b["taskIndex"] for b in o["blocked"]]==[5] and "503" in o["testability"]["note"]' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
+rm -f "$TSB/argv"
+TST "" --plan "$TSB/plan.json" > "$TSB/off.json" 2>/dev/null; _rc=$?
+check "#151 not opted in: --plan sends NOTHING and reports every task unvetted" \
+  "$([ "$_rc" -eq 3 ] && [ ! -e "$TSB/argv" ] && TSQ "$TSB/off.json" 'len(o["vettingIncomplete"])==5' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
+rm -rf "$TSB"
+
 if [ "$FAIL" -ne 0 ]; then
   echo "== failed cases =="
   printf '%s\n' "$FAILED_NAMES" | sed '/^$/d'
