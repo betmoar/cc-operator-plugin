@@ -46,7 +46,7 @@ EOF
 read_key() {
   KEY="${TYPESAFE_API_KEY:-}"
   [ -n "$KEY" ] && return 0
-  [ -f "$KEYFILE" ] && [ ! -L "$KEYFILE" ] || return 1
+  { [ -f "$KEYFILE" ] && [ ! -L "$KEYFILE" ]; } || return 1
   local _line _n=0
   while IFS= read -r -n 4096 _line || [ -n "$_line" ]; do
     _n=$((_n + 1)); [ "$_n" -gt 500 ] && break
@@ -84,7 +84,7 @@ if [ "$MODE" = available ]; then
   unavailable "$_why"; exit 3
 fi
 
-[ -f "$PLAN" ] && [ ! -L "$PLAN" ] || die "--plan '$PLAN' is not a regular file"
+{ [ -f "$PLAN" ] && [ ! -L "$PLAN" ]; } || die "--plan '$PLAN' is not a regular file"
 command -v python3 >/dev/null 2>&1 || die "python3 not found — cannot read the plan; re-run the workflow without testability=\"external\""
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/ops-testability.XXXXXX")"
