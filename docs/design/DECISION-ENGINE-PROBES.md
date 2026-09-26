@@ -300,6 +300,11 @@ vague control 0.05, + "(observable: run it and see)" 0.07. The largest move is +
 all far below 0.45. The testCycle is authored by the judgment-tier decompose seat,
 not by a party that benefits from the verdict.
 
+**Naming matters.** A first cut of the script put each task's own id (`t01`…) in the state
+beside the positional question key (`T0`…). Live, it agreed on **10/24**: the answer to `T8`
+tracked the task named `t08`, not the ninth task. Dropping the id restored 24/24 over three
+runs (`testability/merged-with-ids.json` is that 10/24 output). One name per task.
+
 **What this does NOT show.** 24 synthetic tasks are not real `plan.js` decompositions;
 the seat's per-call overhead inside the Workflow runtime differs from `claude -p`'s
 (~9.8k input tokens per seat here). **Placement:** the sandbox has no `fetch`
