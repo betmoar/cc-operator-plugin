@@ -1,0 +1,580 @@
+{
+ "testability": {
+  "engine": "jev-1.13.0",
+  "threshold": 0.6,
+  "unvetted": 0,
+  "note": null
+ },
+ "tasks": [
+  {
+   "id": "t01",
+   "title": "Add --target to ops-verdict.sh",
+   "files": [
+    "scripts/ops-verdict.sh"
+   ],
+   "testCycle": "bash tests/test-scripts.sh 2>&1 | grep -- '-- Case: --target keys the cap' ; expect the case to print PASS and the summary line '0 failed'"
+  },
+  {
+   "id": "t02",
+   "title": "Strip the trailing CR run in ops-reverify.sh",
+   "files": [
+    "scripts/ops-reverify.sh"
+   ],
+   "testCycle": "printf '| a | b | c | PASS |\\r\\r\\n' > /tmp/l && bash scripts/ops-reverify.sh /tmp/l \u2192 prints 'a PASS' identical to the LF twin; exit 0"
+  },
+  {
+   "id": "t03",
+   "title": "Improve the cap detector",
+   "files": [
+    "scripts/lib/caps.sh"
+   ],
+   "testCycle": "The detector works correctly and handles edge cases."
+  },
+  {
+   "id": "t04",
+   "title": "Refactor the statusline",
+   "files": [
+    "scripts/statusline.sh"
+   ],
+   "testCycle": "Run the tests."
+  },
+  {
+   "id": "t05",
+   "title": "BOM-proof the plan Status gate",
+   "files": [
+    "workflows/plan.js"
+   ],
+   "testCycle": "node tests/test_workflows.mjs \u2192 the 'spec Status gate: a leading BOM' assertion prints ok and the summary reports 0 failures"
+  },
+  {
+   "id": "t06",
+   "title": "Guard the compressor hook without node",
+   "files": [
+    "hooks/hooks.json"
+   ],
+   "testCycle": "PATH=/usr/bin:/bin bash -c \"$(jq -r '.hooks.PostToolUse[0].hooks[0].command' hooks/hooks.json)\" </dev/null; echo $? \u2192 prints 0"
+  },
+  {
+   "id": "t07",
+   "title": "Make error handling robust",
+   "files": [
+    "scripts/ops-task.sh"
+   ],
+   "testCycle": "Errors are handled gracefully and the user sees a helpful message."
+  },
+  {
+   "id": "t08",
+   "title": "Add MOOT verdict word",
+   "files": [
+    "scripts/ops-verdict.sh",
+    "scripts/lib/caps.sh"
+   ],
+   "testCycle": "ops-verdict.sh x crit ev MOOT --owner s writes a row ending '| MOOT |'; grep -c MOOT .operator/VERDICTS.md goes from 0 to 1"
+  },
+  {
+   "id": "t09",
+   "title": "Speed up the shell suite",
+   "files": [
+    "tests/test-scripts.sh"
+   ],
+   "testCycle": "The suite should be noticeably faster."
+  },
+  {
+   "id": "t10",
+   "title": "Pin JUDGMENT to the opus alias",
+   "files": [
+    "scripts/ops-tiers.sh"
+   ],
+   "testCycle": "bash scripts/ops-tiers.sh --json | jq -r .JUDGMENT \u2192 opus"
+  },
+  {
+   "id": "t11",
+   "title": "Validate model ids",
+   "files": [
+    "scripts/ops-tiers.sh"
+   ],
+   "testCycle": "bash scripts/ops-tiers.sh --check"
+  },
+  {
+   "id": "t12",
+   "title": "Document the landmines",
+   "files": [
+    "docs/maintainer/LANDMINES.md"
+   ],
+   "testCycle": "Output should be correct."
+  },
+  {
+   "id": "t13",
+   "title": "Refuse a symlinked sentinel",
+   "files": [
+    "scripts/ops-verdict.sh"
+   ],
+   "testCycle": "ln -s /etc/passwd .operator/pending/x && ops-verdict.sh x c e PASS; expect exit 1, stderr contains 'non-regular', VERDICTS.md byte count unchanged"
+  },
+  {
+   "id": "t14",
+   "title": "Add holdout canary",
+   "files": [
+    "scripts/ops-holdout.sh"
+   ],
+   "testCycle": "Verify the canary behaves as expected by running it."
+  },
+  {
+   "id": "t15",
+   "title": "Floors for the node suite",
+   "files": [
+    "tests/floors.env"
+   ],
+   "testCycle": "bash scripts/gate-suite.sh workflows exits 0 and prints 'workflows: 492 passed'; lowering FLOOR_WORKFLOWS above the count makes it exit 1"
+  },
+  {
+   "id": "t16",
+   "title": "Clean up plan.js",
+   "files": [
+    "workflows/plan.js"
+   ],
+   "testCycle": "node tests/test_workflows.mjs passes and the code is cleaner and easier to read."
+  },
+  {
+   "id": "t17",
+   "title": "Session banner uses absolute paths",
+   "files": [
+    "scripts/ops-sessionstart-hook.sh"
+   ],
+   "testCycle": "echo '{\"session_id\":\"s\",\"cwd\":\"/tmp/p\"}' | bash scripts/ops-sessionstart-hook.sh | jq -r .hookSpecificOutput.additionalContext | grep -c \"'/tmp/p/.operator/bin/ops-task.sh'\" \u2192 1"
+  },
+  {
+   "id": "t18",
+   "title": "Better debate synthesis",
+   "files": [
+    "workflows/debate.js"
+   ],
+   "testCycle": "The synthesis is higher quality and separates real disagreement."
+  },
+  {
+   "id": "t19",
+   "title": "Stop hook loop guard",
+   "files": [
+    "scripts/ops-stop-hook.sh"
+   ],
+   "testCycle": "Run the stop hook twice with stop_hook_active=true and check it does the right thing."
+  },
+  {
+   "id": "t20",
+   "title": "Reject __ in task names",
+   "files": [
+    "scripts/ops-task.sh"
+   ],
+   "testCycle": "bash scripts/ops-task.sh a__b --owner s; expect exit 2 and stderr 'must not contain __'; ls .operator/pending shows no new entry"
+  },
+  {
+   "id": "t21",
+   "title": "Add a --suggest flag",
+   "files": [
+    "scripts/ops-tiers.sh"
+   ],
+   "testCycle": "`ops-tiers.sh --suggest` should print suggestions."
+  },
+  {
+   "id": "t22",
+   "title": "Performance of caps cache",
+   "files": [
+    "scripts/lib/caps.sh"
+   ],
+   "testCycle": "time bash -c 'source scripts/lib/caps.sh; scan_caps_cached big.md' on a 4096-row ledger: second run under 50ms real, output identical to first"
+  },
+  {
+   "id": "t23",
+   "title": "Normalize workflow args",
+   "files": [
+    "workflows/brainstorm.js"
+   ],
+   "testCycle": "Passing a string topic works. Passing an object works too."
+  },
+  {
+   "id": "t24",
+   "title": "Release gate checks CHANGELOG",
+   "files": [
+    "scripts/release_gate.py"
+   ],
+   "testCycle": "python3 scripts/release_gate.py with plugin.json at 9.9.9 and no '## [9.9.9]' heading \u2192 exit 1, stderr names 9.9.9"
+  }
+ ],
+ "vetting": [
+  {
+   "taskId": "t01",
+   "taskIndex": 0,
+   "feasible": "yes",
+   "issues": [],
+   "testable": "yes",
+   "testabilityNoul": 0.96
+  },
+  {
+   "taskId": "t02",
+   "taskIndex": 1,
+   "feasible": "yes",
+   "issues": [],
+   "testable": "yes",
+   "testabilityNoul": 0.93
+  },
+  {
+   "taskId": "t03",
+   "taskIndex": 2,
+   "feasible": "yes",
+   "issues": [],
+   "testable": "yes",
+   "testabilityNoul": 0.62
+  },
+  {
+   "taskId": "t04",
+   "taskIndex": 3,
+   "feasible": "yes",
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "jev-1.13.0 scored the testCycle 0.16 < 0.6: it names no command with an observable expected output"
+    }
+   ],
+   "testable": "no",
+   "testabilityNoul": 0.16
+  },
+  {
+   "taskId": "t05",
+   "taskIndex": 4,
+   "feasible": "yes",
+   "issues": [],
+   "testable": "yes",
+   "testabilityNoul": 0.69
+  },
+  {
+   "taskId": "t06",
+   "taskIndex": 5,
+   "feasible": "yes",
+   "issues": [],
+   "testable": "yes",
+   "testabilityNoul": 0.91
+  },
+  {
+   "taskId": "t07",
+   "taskIndex": 6,
+   "feasible": "yes",
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "jev-1.13.0 scored the testCycle 0.55 < 0.6: it names no command with an observable expected output"
+    }
+   ],
+   "testable": "no",
+   "testabilityNoul": 0.55
+  },
+  {
+   "taskId": "t08",
+   "taskIndex": 7,
+   "feasible": "yes",
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "jev-1.13.0 scored the testCycle 0.53 < 0.6: it names no command with an observable expected output"
+    }
+   ],
+   "testable": "no",
+   "testabilityNoul": 0.53
+  },
+  {
+   "taskId": "t09",
+   "taskIndex": 8,
+   "feasible": "yes",
+   "issues": [],
+   "testable": "yes",
+   "testabilityNoul": 0.86
+  },
+  {
+   "taskId": "t10",
+   "taskIndex": 9,
+   "feasible": "yes",
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "jev-1.13.0 scored the testCycle 0.46 < 0.6: it names no command with an observable expected output"
+    }
+   ],
+   "testable": "no",
+   "testabilityNoul": 0.46
+  },
+  {
+   "taskId": "t11",
+   "taskIndex": 10,
+   "feasible": "yes",
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "jev-1.13.0 scored the testCycle 0.50 < 0.6: it names no command with an observable expected output"
+    }
+   ],
+   "testable": "no",
+   "testabilityNoul": 0.5
+  },
+  {
+   "taskId": "t12",
+   "taskIndex": 11,
+   "feasible": "yes",
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "jev-1.13.0 scored the testCycle 0.35 < 0.6: it names no command with an observable expected output"
+    }
+   ],
+   "testable": "no",
+   "testabilityNoul": 0.35
+  },
+  {
+   "taskId": "t13",
+   "taskIndex": 12,
+   "feasible": "yes",
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "jev-1.13.0 scored the testCycle 0.59 < 0.6: it names no command with an observable expected output"
+    }
+   ],
+   "testable": "no",
+   "testabilityNoul": 0.59
+  },
+  {
+   "taskId": "t14",
+   "taskIndex": 13,
+   "feasible": "yes",
+   "issues": [],
+   "testable": "yes",
+   "testabilityNoul": 0.91
+  },
+  {
+   "taskId": "t15",
+   "taskIndex": 14,
+   "feasible": "yes",
+   "issues": [],
+   "testable": "yes",
+   "testabilityNoul": 0.61
+  },
+  {
+   "taskId": "t16",
+   "taskIndex": 15,
+   "feasible": "yes",
+   "issues": [],
+   "testable": "yes",
+   "testabilityNoul": 0.92
+  },
+  {
+   "taskId": "t17",
+   "taskIndex": 16,
+   "feasible": "yes",
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "jev-1.13.0 scored the testCycle 0.48 < 0.6: it names no command with an observable expected output"
+    }
+   ],
+   "testable": "no",
+   "testabilityNoul": 0.48
+  },
+  {
+   "taskId": "t18",
+   "taskIndex": 17,
+   "feasible": "yes",
+   "issues": [],
+   "testable": "yes",
+   "testabilityNoul": 0.91
+  },
+  {
+   "taskId": "t19",
+   "taskIndex": 18,
+   "feasible": "yes",
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "jev-1.13.0 scored the testCycle 0.19 < 0.6: it names no command with an observable expected output"
+    }
+   ],
+   "testable": "no",
+   "testabilityNoul": 0.19
+  },
+  {
+   "taskId": "t20",
+   "taskIndex": 19,
+   "feasible": "yes",
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "jev-1.13.0 scored the testCycle 0.18 < 0.6: it names no command with an observable expected output"
+    }
+   ],
+   "testable": "no",
+   "testabilityNoul": 0.18
+  },
+  {
+   "taskId": "t21",
+   "taskIndex": 20,
+   "feasible": "yes",
+   "issues": [],
+   "testable": "yes",
+   "testabilityNoul": 0.93
+  },
+  {
+   "taskId": "t22",
+   "taskIndex": 21,
+   "feasible": "yes",
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "jev-1.13.0 scored the testCycle 0.33 < 0.6: it names no command with an observable expected output"
+    }
+   ],
+   "testable": "no",
+   "testabilityNoul": 0.33
+  },
+  {
+   "taskId": "t23",
+   "taskIndex": 22,
+   "feasible": "yes",
+   "issues": [],
+   "testable": "yes",
+   "testabilityNoul": 0.87
+  },
+  {
+   "taskId": "t24",
+   "taskIndex": 23,
+   "feasible": "yes",
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "jev-1.13.0 scored the testCycle 0.33 < 0.6: it names no command with an observable expected output"
+    }
+   ],
+   "testable": "no",
+   "testabilityNoul": 0.33
+  }
+ ],
+ "blocked": [
+  {
+   "taskId": "t04",
+   "taskIndex": 3,
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "jev-1.13.0 scored the testCycle 0.16 < 0.6: it names no command with an observable expected output"
+    }
+   ]
+  },
+  {
+   "taskId": "t07",
+   "taskIndex": 6,
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "jev-1.13.0 scored the testCycle 0.55 < 0.6: it names no command with an observable expected output"
+    }
+   ]
+  },
+  {
+   "taskId": "t08",
+   "taskIndex": 7,
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "jev-1.13.0 scored the testCycle 0.53 < 0.6: it names no command with an observable expected output"
+    }
+   ]
+  },
+  {
+   "taskId": "t10",
+   "taskIndex": 9,
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "jev-1.13.0 scored the testCycle 0.46 < 0.6: it names no command with an observable expected output"
+    }
+   ]
+  },
+  {
+   "taskId": "t11",
+   "taskIndex": 10,
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "jev-1.13.0 scored the testCycle 0.50 < 0.6: it names no command with an observable expected output"
+    }
+   ]
+  },
+  {
+   "taskId": "t12",
+   "taskIndex": 11,
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "jev-1.13.0 scored the testCycle 0.35 < 0.6: it names no command with an observable expected output"
+    }
+   ]
+  },
+  {
+   "taskId": "t13",
+   "taskIndex": 12,
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "jev-1.13.0 scored the testCycle 0.59 < 0.6: it names no command with an observable expected output"
+    }
+   ]
+  },
+  {
+   "taskId": "t17",
+   "taskIndex": 16,
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "jev-1.13.0 scored the testCycle 0.48 < 0.6: it names no command with an observable expected output"
+    }
+   ]
+  },
+  {
+   "taskId": "t19",
+   "taskIndex": 18,
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "jev-1.13.0 scored the testCycle 0.19 < 0.6: it names no command with an observable expected output"
+    }
+   ]
+  },
+  {
+   "taskId": "t20",
+   "taskIndex": 19,
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "jev-1.13.0 scored the testCycle 0.18 < 0.6: it names no command with an observable expected output"
+    }
+   ]
+  },
+  {
+   "taskId": "t22",
+   "taskIndex": 21,
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "jev-1.13.0 scored the testCycle 0.33 < 0.6: it names no command with an observable expected output"
+    }
+   ]
+  },
+  {
+   "taskId": "t24",
+   "taskIndex": 23,
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "jev-1.13.0 scored the testCycle 0.33 < 0.6: it names no command with an observable expected output"
+    }
+   ]
+  }
+ ],
+ "vettingIncomplete": []
+}

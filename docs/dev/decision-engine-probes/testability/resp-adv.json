@@ -1,0 +1,1 @@
+{"model":"jev-1.13.0","answers":{"a1_ctl":{"type":"noul","noul":0.04},"a2_claim":{"type":"noul","noul":0.1},"a3_sys":{"type":"noul","noul":0.06},"a4_cmdish":{"type":"noul","noul":0.17},"a5_ctl":{"type":"noul","noul":0.05},"a6_subtle":{"type":"noul","noul":0.07}},"usage":{"input_tokens":994,"output_tokens":114}}
