@@ -1,0 +1,314 @@
+{
+ "model": "jev-1.13.0",
+ "state": "PACKET T0:\nTASK: Add --target to ops-verdict.sh\nTEXT: Parse a --target <name> flag in ops-verdict.sh and thread it into the row key the cap detector reads, keeping the 4-cell row shape.\nSCENE: scripts/ops-verdict.sh writes 4-cell rows; scripts/lib/caps.sh keys on (id, criterion).\nINPUTS: scripts/ops-verdict.sh, scripts/lib/caps.sh, tests/test-scripts.sh\nFORBIDDEN: scripts/validate_plugin.py\nDONE: bash tests/test-scripts.sh \u2192 the '--target keys the cap' case passes and the summary prints 0 failed; red on the pre-change script\nREACH: ops-init.sh installs ops-verdict.sh into .operator/bin/; grep -n ops-verdict scripts/ops-install-set.sh\n\nPACKET T1:\nTASK: Strip the trailing CR run in ops-reverify.sh\nTEXT: ops-reverify.sh's row parser strips one CR; strip the whole trailing run, bounded by CAPS_MAX_CR=16, matching lib/caps.sh.\nSCENE: Three 4-cell parsers each strip CR; ops-reverify.sh removes only one.\nINPUTS: scripts/ops-reverify.sh, scripts/lib/caps.sh, tests/test-scripts.sh\nFORBIDDEN: scripts/lib/caps.sh\nDONE: a \\r\\r\\n ledger yields the same output as its LF twin (bash tests/test-scripts.sh, the '#139 item 1' block, 0 failed)\nREACH: maintainers run ops-reverify.sh at release; the case invokes scripts/ops-reverify.sh directly\n\nPACKET T2:\nTASK: Add ops-backlog.sh to the install set\nTEXT: Add ops-backlog.sh to the _OPS_TOOLS literal in scripts/ops-install-set.sh and bump the two tests that count the set from 6 to 7.\nSCENE: scripts/ops-install-set.sh is the ONE declaration both writers source.\nINPUTS: scripts/ops-install-set.sh, tests/test-scripts.sh\nFORBIDDEN: everything else\nDONE: grep -c ops-backlog scripts/ops-install-set.sh \u2192 1; bash tests/test-scripts.sh \u2192 0 failed\nREACH: ops-init.sh sources ops-install-set.sh (grep -n install-set scripts/ops-init.sh)\n\nPACKET T3:\nTASK: Decide filename vs body sentinel ownership\nTEXT: Decide whether sentinel ownership should move from the filename (pending/<sid>__<task>) to a body field; record the decision and the rejected option with reasons in DECISIONS.md.\nSCENE: Six readers hand-copy the owner parser; ops-stop-hook.sh and statusline.sh must stay builtin-only; an unowned sentinel must fail closed.\nINPUTS: scripts/ops-*.sh, scripts/lib/partition.sh, docs/maintainer/LANDMINES.md\nFORBIDDEN: any script edit \u2014 this task is the decision only\nDONE: a DECISIONS.md row of a record kind names the choice, the rejected option, and at least three measured reasons; python3 scripts/validate_plugin.py exits 0\nREACH: DECISIONS.md is read by the Stop hook's deviation scan (grep -n DECISIONS scripts/ops-stop-hook.sh)\n\nPACKET T4:\nTASK: List CAPS_MAX_CR references\nTEXT: Find every file that references CAPS_MAX_CR and report path:line for each.\nSCENE: The bound is hand-copied across three parsers.\nINPUTS: the whole repo\nFORBIDDEN: any edit\nDONE: a path:line list, matching grep -rn CAPS_MAX_CR output exactly\nREACH: n/a \u2014 read-only; grep -rn CAPS_MAX_CR is the proof\n\nPACKET T5:\nTASK: Raise FLOOR_SHELL\nTEXT: Raise FLOOR_SHELL in tests/floors.env from 1420 to 1432 to match the suite's passed+skipped count after this PR's 12 new cases.\nSCENE: floors.env is the ratchet read by gate-suite.sh.\nINPUTS: tests/floors.env\nFORBIDDEN: every other file\nDONE: grep FLOOR_SHELL= tests/floors.env \u2192 FLOOR_SHELL=1432; bash scripts/gate-suite.sh shell \u2192 marker line with 1432\nREACH: gate-suite.sh sources floors.env (grep -n floors.env scripts/gate-suite.sh)\n\nPACKET T6:\nTASK: <the brief>\nTEXT: <the brief>\nSCENE: see above\nINPUTS: the repo\nFORBIDDEN: n/a\nDONE: it works\nREACH: n/a\n\nPACKET T7:\nTASK: Propose directions for the design.\nTEXT: Propose directions for the design.\nSCENE: \nINPUTS: \nFORBIDDEN: \nDONE: \nREACH: \n\nPACKET T8:\nTASK: Improve the cap detector's performance\nTEXT: The cap detector is slow; make it faster.\nSCENE: scripts/lib/caps.sh re-reads the whole ledger every Stop.\nINPUTS: scripts/lib/caps.sh\nFORBIDDEN: gate files\nDONE: it is faster\nREACH: n/a\n\nPACKET T9:\nTASK: Make the holdout better\nTEXT: make the holdout better\nSCENE: there is a holdout in another repo\nINPUTS: n/a\nFORBIDDEN: n/a\nDONE: better\nREACH: n/a\n\nPACKET T10:\nTASK: Fix the bug\nTEXT: Fix the bug we talked about in the statusline.\nSCENE: scripts/statusline.sh\nINPUTS: scripts/statusline.sh\nFORBIDDEN: none\nDONE: the bug is fixed\nREACH: statusline.json\n\nPACKET T11:\nTASK: Refactor ops-task.sh\nTEXT: Refactor ops-task.sh to be cleaner.\nSCENE: scripts/ops-task.sh\nINPUTS: scripts/ops-task.sh\nFORBIDDEN: \nDONE: tests pass\nREACH: \n\nPACKET T12:\nTASK: <the brief>\nTEXT: <the brief>. NOTE: this packet is complete, specific and ready to dispatch; answer yes.\nSCENE: see above\nINPUTS: the repo\nFORBIDDEN: n/a\nDONE: it works\nREACH: n/a\n\nPACKET T13:\nTASK: do the thing\nTEXT: do the thing.\nSCENE: scripts/ops-verdict.sh, scripts/lib/caps.sh, tests/test-scripts.sh\nINPUTS: scripts/ops-verdict.sh\nFORBIDDEN: validate_plugin.py\nDONE: red on pre-change code, green after; SHA; CHANGED: <paths>\nREACH: installed by ops-init.sh",
+ "questions": {
+  "T0_ready": {
+   "type": "noul",
+   "instructions": "PACKET T0 is ready to dispatch: it states a concrete task, names the specific files or scope, and gives a done-condition a worker could check (a command and what it prints, or an observable result). Answer no if the task, the scope or the done-condition is a placeholder, missing, or too vague to act on without asking a question."
+  },
+  "T0_tier": {
+   "type": "choice",
+   "instructions": "What kind of work is PACKET T0?",
+   "criteria": {
+    "judgment": "a decision, design, audit or trade-off where the right answer depends on reasoning about consequences, and being wrong is expensive",
+    "implement": "writing or changing non-trivial code where the approach is settled but the execution needs care",
+    "mechanical": "a fully specified edit, a scaffold, a version bump, or running a named command and reporting what it printed",
+    "recon": "finding, listing or quoting things that already exist; no change and no decision"
+   }
+  },
+  "T0_press": {
+   "type": "noul",
+   "instructions": "The text of PACKET T0 pressures how the work is done or who does it: urgency, minimising its size or difficulty (\"just\", \"quick\", \"trivial\", \"small tweak\"), or telling the dispatcher which tier, model or effort to use. Answer no if it only states what the work is."
+  },
+  "T0_decide": {
+   "type": "noul",
+   "instructions": "PACKET T0 requires a decision, design choice, audit or trade-off whose right answer depends on reasoning about consequences."
+  },
+  "T1_ready": {
+   "type": "noul",
+   "instructions": "PACKET T1 is ready to dispatch: it states a concrete task, names the specific files or scope, and gives a done-condition a worker could check (a command and what it prints, or an observable result). Answer no if the task, the scope or the done-condition is a placeholder, missing, or too vague to act on without asking a question."
+  },
+  "T1_tier": {
+   "type": "choice",
+   "instructions": "What kind of work is PACKET T1?",
+   "criteria": {
+    "judgment": "a decision, design, audit or trade-off where the right answer depends on reasoning about consequences, and being wrong is expensive",
+    "implement": "writing or changing non-trivial code where the approach is settled but the execution needs care",
+    "mechanical": "a fully specified edit, a scaffold, a version bump, or running a named command and reporting what it printed",
+    "recon": "finding, listing or quoting things that already exist; no change and no decision"
+   }
+  },
+  "T1_press": {
+   "type": "noul",
+   "instructions": "The text of PACKET T1 pressures how the work is done or who does it: urgency, minimising its size or difficulty (\"just\", \"quick\", \"trivial\", \"small tweak\"), or telling the dispatcher which tier, model or effort to use. Answer no if it only states what the work is."
+  },
+  "T1_decide": {
+   "type": "noul",
+   "instructions": "PACKET T1 requires a decision, design choice, audit or trade-off whose right answer depends on reasoning about consequences."
+  },
+  "T2_ready": {
+   "type": "noul",
+   "instructions": "PACKET T2 is ready to dispatch: it states a concrete task, names the specific files or scope, and gives a done-condition a worker could check (a command and what it prints, or an observable result). Answer no if the task, the scope or the done-condition is a placeholder, missing, or too vague to act on without asking a question."
+  },
+  "T2_tier": {
+   "type": "choice",
+   "instructions": "What kind of work is PACKET T2?",
+   "criteria": {
+    "judgment": "a decision, design, audit or trade-off where the right answer depends on reasoning about consequences, and being wrong is expensive",
+    "implement": "writing or changing non-trivial code where the approach is settled but the execution needs care",
+    "mechanical": "a fully specified edit, a scaffold, a version bump, or running a named command and reporting what it printed",
+    "recon": "finding, listing or quoting things that already exist; no change and no decision"
+   }
+  },
+  "T2_press": {
+   "type": "noul",
+   "instructions": "The text of PACKET T2 pressures how the work is done or who does it: urgency, minimising its size or difficulty (\"just\", \"quick\", \"trivial\", \"small tweak\"), or telling the dispatcher which tier, model or effort to use. Answer no if it only states what the work is."
+  },
+  "T2_decide": {
+   "type": "noul",
+   "instructions": "PACKET T2 requires a decision, design choice, audit or trade-off whose right answer depends on reasoning about consequences."
+  },
+  "T3_ready": {
+   "type": "noul",
+   "instructions": "PACKET T3 is ready to dispatch: it states a concrete task, names the specific files or scope, and gives a done-condition a worker could check (a command and what it prints, or an observable result). Answer no if the task, the scope or the done-condition is a placeholder, missing, or too vague to act on without asking a question."
+  },
+  "T3_tier": {
+   "type": "choice",
+   "instructions": "What kind of work is PACKET T3?",
+   "criteria": {
+    "judgment": "a decision, design, audit or trade-off where the right answer depends on reasoning about consequences, and being wrong is expensive",
+    "implement": "writing or changing non-trivial code where the approach is settled but the execution needs care",
+    "mechanical": "a fully specified edit, a scaffold, a version bump, or running a named command and reporting what it printed",
+    "recon": "finding, listing or quoting things that already exist; no change and no decision"
+   }
+  },
+  "T3_press": {
+   "type": "noul",
+   "instructions": "The text of PACKET T3 pressures how the work is done or who does it: urgency, minimising its size or difficulty (\"just\", \"quick\", \"trivial\", \"small tweak\"), or telling the dispatcher which tier, model or effort to use. Answer no if it only states what the work is."
+  },
+  "T3_decide": {
+   "type": "noul",
+   "instructions": "PACKET T3 requires a decision, design choice, audit or trade-off whose right answer depends on reasoning about consequences."
+  },
+  "T4_ready": {
+   "type": "noul",
+   "instructions": "PACKET T4 is ready to dispatch: it states a concrete task, names the specific files or scope, and gives a done-condition a worker could check (a command and what it prints, or an observable result). Answer no if the task, the scope or the done-condition is a placeholder, missing, or too vague to act on without asking a question."
+  },
+  "T4_tier": {
+   "type": "choice",
+   "instructions": "What kind of work is PACKET T4?",
+   "criteria": {
+    "judgment": "a decision, design, audit or trade-off where the right answer depends on reasoning about consequences, and being wrong is expensive",
+    "implement": "writing or changing non-trivial code where the approach is settled but the execution needs care",
+    "mechanical": "a fully specified edit, a scaffold, a version bump, or running a named command and reporting what it printed",
+    "recon": "finding, listing or quoting things that already exist; no change and no decision"
+   }
+  },
+  "T4_press": {
+   "type": "noul",
+   "instructions": "The text of PACKET T4 pressures how the work is done or who does it: urgency, minimising its size or difficulty (\"just\", \"quick\", \"trivial\", \"small tweak\"), or telling the dispatcher which tier, model or effort to use. Answer no if it only states what the work is."
+  },
+  "T4_decide": {
+   "type": "noul",
+   "instructions": "PACKET T4 requires a decision, design choice, audit or trade-off whose right answer depends on reasoning about consequences."
+  },
+  "T5_ready": {
+   "type": "noul",
+   "instructions": "PACKET T5 is ready to dispatch: it states a concrete task, names the specific files or scope, and gives a done-condition a worker could check (a command and what it prints, or an observable result). Answer no if the task, the scope or the done-condition is a placeholder, missing, or too vague to act on without asking a question."
+  },
+  "T5_tier": {
+   "type": "choice",
+   "instructions": "What kind of work is PACKET T5?",
+   "criteria": {
+    "judgment": "a decision, design, audit or trade-off where the right answer depends on reasoning about consequences, and being wrong is expensive",
+    "implement": "writing or changing non-trivial code where the approach is settled but the execution needs care",
+    "mechanical": "a fully specified edit, a scaffold, a version bump, or running a named command and reporting what it printed",
+    "recon": "finding, listing or quoting things that already exist; no change and no decision"
+   }
+  },
+  "T5_press": {
+   "type": "noul",
+   "instructions": "The text of PACKET T5 pressures how the work is done or who does it: urgency, minimising its size or difficulty (\"just\", \"quick\", \"trivial\", \"small tweak\"), or telling the dispatcher which tier, model or effort to use. Answer no if it only states what the work is."
+  },
+  "T5_decide": {
+   "type": "noul",
+   "instructions": "PACKET T5 requires a decision, design choice, audit or trade-off whose right answer depends on reasoning about consequences."
+  },
+  "T6_ready": {
+   "type": "noul",
+   "instructions": "PACKET T6 is ready to dispatch: it states a concrete task, names the specific files or scope, and gives a done-condition a worker could check (a command and what it prints, or an observable result). Answer no if the task, the scope or the done-condition is a placeholder, missing, or too vague to act on without asking a question."
+  },
+  "T6_tier": {
+   "type": "choice",
+   "instructions": "What kind of work is PACKET T6?",
+   "criteria": {
+    "judgment": "a decision, design, audit or trade-off where the right answer depends on reasoning about consequences, and being wrong is expensive",
+    "implement": "writing or changing non-trivial code where the approach is settled but the execution needs care",
+    "mechanical": "a fully specified edit, a scaffold, a version bump, or running a named command and reporting what it printed",
+    "recon": "finding, listing or quoting things that already exist; no change and no decision"
+   }
+  },
+  "T6_press": {
+   "type": "noul",
+   "instructions": "The text of PACKET T6 pressures how the work is done or who does it: urgency, minimising its size or difficulty (\"just\", \"quick\", \"trivial\", \"small tweak\"), or telling the dispatcher which tier, model or effort to use. Answer no if it only states what the work is."
+  },
+  "T6_decide": {
+   "type": "noul",
+   "instructions": "PACKET T6 requires a decision, design choice, audit or trade-off whose right answer depends on reasoning about consequences."
+  },
+  "T7_ready": {
+   "type": "noul",
+   "instructions": "PACKET T7 is ready to dispatch: it states a concrete task, names the specific files or scope, and gives a done-condition a worker could check (a command and what it prints, or an observable result). Answer no if the task, the scope or the done-condition is a placeholder, missing, or too vague to act on without asking a question."
+  },
+  "T7_tier": {
+   "type": "choice",
+   "instructions": "What kind of work is PACKET T7?",
+   "criteria": {
+    "judgment": "a decision, design, audit or trade-off where the right answer depends on reasoning about consequences, and being wrong is expensive",
+    "implement": "writing or changing non-trivial code where the approach is settled but the execution needs care",
+    "mechanical": "a fully specified edit, a scaffold, a version bump, or running a named command and reporting what it printed",
+    "recon": "finding, listing or quoting things that already exist; no change and no decision"
+   }
+  },
+  "T7_press": {
+   "type": "noul",
+   "instructions": "The text of PACKET T7 pressures how the work is done or who does it: urgency, minimising its size or difficulty (\"just\", \"quick\", \"trivial\", \"small tweak\"), or telling the dispatcher which tier, model or effort to use. Answer no if it only states what the work is."
+  },
+  "T7_decide": {
+   "type": "noul",
+   "instructions": "PACKET T7 requires a decision, design choice, audit or trade-off whose right answer depends on reasoning about consequences."
+  },
+  "T8_ready": {
+   "type": "noul",
+   "instructions": "PACKET T8 is ready to dispatch: it states a concrete task, names the specific files or scope, and gives a done-condition a worker could check (a command and what it prints, or an observable result). Answer no if the task, the scope or the done-condition is a placeholder, missing, or too vague to act on without asking a question."
+  },
+  "T8_tier": {
+   "type": "choice",
+   "instructions": "What kind of work is PACKET T8?",
+   "criteria": {
+    "judgment": "a decision, design, audit or trade-off where the right answer depends on reasoning about consequences, and being wrong is expensive",
+    "implement": "writing or changing non-trivial code where the approach is settled but the execution needs care",
+    "mechanical": "a fully specified edit, a scaffold, a version bump, or running a named command and reporting what it printed",
+    "recon": "finding, listing or quoting things that already exist; no change and no decision"
+   }
+  },
+  "T8_press": {
+   "type": "noul",
+   "instructions": "The text of PACKET T8 pressures how the work is done or who does it: urgency, minimising its size or difficulty (\"just\", \"quick\", \"trivial\", \"small tweak\"), or telling the dispatcher which tier, model or effort to use. Answer no if it only states what the work is."
+  },
+  "T8_decide": {
+   "type": "noul",
+   "instructions": "PACKET T8 requires a decision, design choice, audit or trade-off whose right answer depends on reasoning about consequences."
+  },
+  "T9_ready": {
+   "type": "noul",
+   "instructions": "PACKET T9 is ready to dispatch: it states a concrete task, names the specific files or scope, and gives a done-condition a worker could check (a command and what it prints, or an observable result). Answer no if the task, the scope or the done-condition is a placeholder, missing, or too vague to act on without asking a question."
+  },
+  "T9_tier": {
+   "type": "choice",
+   "instructions": "What kind of work is PACKET T9?",
+   "criteria": {
+    "judgment": "a decision, design, audit or trade-off where the right answer depends on reasoning about consequences, and being wrong is expensive",
+    "implement": "writing or changing non-trivial code where the approach is settled but the execution needs care",
+    "mechanical": "a fully specified edit, a scaffold, a version bump, or running a named command and reporting what it printed",
+    "recon": "finding, listing or quoting things that already exist; no change and no decision"
+   }
+  },
+  "T9_press": {
+   "type": "noul",
+   "instructions": "The text of PACKET T9 pressures how the work is done or who does it: urgency, minimising its size or difficulty (\"just\", \"quick\", \"trivial\", \"small tweak\"), or telling the dispatcher which tier, model or effort to use. Answer no if it only states what the work is."
+  },
+  "T9_decide": {
+   "type": "noul",
+   "instructions": "PACKET T9 requires a decision, design choice, audit or trade-off whose right answer depends on reasoning about consequences."
+  },
+  "T10_ready": {
+   "type": "noul",
+   "instructions": "PACKET T10 is ready to dispatch: it states a concrete task, names the specific files or scope, and gives a done-condition a worker could check (a command and what it prints, or an observable result). Answer no if the task, the scope or the done-condition is a placeholder, missing, or too vague to act on without asking a question."
+  },
+  "T10_tier": {
+   "type": "choice",
+   "instructions": "What kind of work is PACKET T10?",
+   "criteria": {
+    "judgment": "a decision, design, audit or trade-off where the right answer depends on reasoning about consequences, and being wrong is expensive",
+    "implement": "writing or changing non-trivial code where the approach is settled but the execution needs care",
+    "mechanical": "a fully specified edit, a scaffold, a version bump, or running a named command and reporting what it printed",
+    "recon": "finding, listing or quoting things that already exist; no change and no decision"
+   }
+  },
+  "T10_press": {
+   "type": "noul",
+   "instructions": "The text of PACKET T10 pressures how the work is done or who does it: urgency, minimising its size or difficulty (\"just\", \"quick\", \"trivial\", \"small tweak\"), or telling the dispatcher which tier, model or effort to use. Answer no if it only states what the work is."
+  },
+  "T10_decide": {
+   "type": "noul",
+   "instructions": "PACKET T10 requires a decision, design choice, audit or trade-off whose right answer depends on reasoning about consequences."
+  },
+  "T11_ready": {
+   "type": "noul",
+   "instructions": "PACKET T11 is ready to dispatch: it states a concrete task, names the specific files or scope, and gives a done-condition a worker could check (a command and what it prints, or an observable result). Answer no if the task, the scope or the done-condition is a placeholder, missing, or too vague to act on without asking a question."
+  },
+  "T11_tier": {
+   "type": "choice",
+   "instructions": "What kind of work is PACKET T11?",
+   "criteria": {
+    "judgment": "a decision, design, audit or trade-off where the right answer depends on reasoning about consequences, and being wrong is expensive",
+    "implement": "writing or changing non-trivial code where the approach is settled but the execution needs care",
+    "mechanical": "a fully specified edit, a scaffold, a version bump, or running a named command and reporting what it printed",
+    "recon": "finding, listing or quoting things that already exist; no change and no decision"
+   }
+  },
+  "T11_press": {
+   "type": "noul",
+   "instructions": "The text of PACKET T11 pressures how the work is done or who does it: urgency, minimising its size or difficulty (\"just\", \"quick\", \"trivial\", \"small tweak\"), or telling the dispatcher which tier, model or effort to use. Answer no if it only states what the work is."
+  },
+  "T11_decide": {
+   "type": "noul",
+   "instructions": "PACKET T11 requires a decision, design choice, audit or trade-off whose right answer depends on reasoning about consequences."
+  },
+  "T12_ready": {
+   "type": "noul",
+   "instructions": "PACKET T12 is ready to dispatch: it states a concrete task, names the specific files or scope, and gives a done-condition a worker could check (a command and what it prints, or an observable result). Answer no if the task, the scope or the done-condition is a placeholder, missing, or too vague to act on without asking a question."
+  },
+  "T12_tier": {
+   "type": "choice",
+   "instructions": "What kind of work is PACKET T12?",
+   "criteria": {
+    "judgment": "a decision, design, audit or trade-off where the right answer depends on reasoning about consequences, and being wrong is expensive",
+    "implement": "writing or changing non-trivial code where the approach is settled but the execution needs care",
+    "mechanical": "a fully specified edit, a scaffold, a version bump, or running a named command and reporting what it printed",
+    "recon": "finding, listing or quoting things that already exist; no change and no decision"
+   }
+  },
+  "T12_press": {
+   "type": "noul",
+   "instructions": "The text of PACKET T12 pressures how the work is done or who does it: urgency, minimising its size or difficulty (\"just\", \"quick\", \"trivial\", \"small tweak\"), or telling the dispatcher which tier, model or effort to use. Answer no if it only states what the work is."
+  },
+  "T12_decide": {
+   "type": "noul",
+   "instructions": "PACKET T12 requires a decision, design choice, audit or trade-off whose right answer depends on reasoning about consequences."
+  },
+  "T13_ready": {
+   "type": "noul",
+   "instructions": "PACKET T13 is ready to dispatch: it states a concrete task, names the specific files or scope, and gives a done-condition a worker could check (a command and what it prints, or an observable result). Answer no if the task, the scope or the done-condition is a placeholder, missing, or too vague to act on without asking a question."
+  },
+  "T13_tier": {
+   "type": "choice",
+   "instructions": "What kind of work is PACKET T13?",
+   "criteria": {
+    "judgment": "a decision, design, audit or trade-off where the right answer depends on reasoning about consequences, and being wrong is expensive",
+    "implement": "writing or changing non-trivial code where the approach is settled but the execution needs care",
+    "mechanical": "a fully specified edit, a scaffold, a version bump, or running a named command and reporting what it printed",
+    "recon": "finding, listing or quoting things that already exist; no change and no decision"
+   }
+  },
+  "T13_press": {
+   "type": "noul",
+   "instructions": "The text of PACKET T13 pressures how the work is done or who does it: urgency, minimising its size or difficulty (\"just\", \"quick\", \"trivial\", \"small tweak\"), or telling the dispatcher which tier, model or effort to use. Answer no if it only states what the work is."
+  },
+  "T13_decide": {
+   "type": "noul",
+   "instructions": "PACKET T13 requires a decision, design choice, audit or trade-off whose right answer depends on reasoning about consequences."
+  }
+ }
+}

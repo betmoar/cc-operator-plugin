@@ -1,0 +1,222 @@
+{
+ "model": "jev-1.13.0",
+ "state": "FINDING F0:\nThe BAD_CHARSET regex `/[^\\w./:@[\\]-]/` used across workflows/review.js, plan.js, crawl.js, and brainstorm.js does not escape `[`/`]` correctly inside the character class, so `]` is not actually included in the allowed set, and a model id containing brackets like `glm-5.2[1m]` would be mis-validated.\nEVIDENCE CITED: workflows/review.js:34 (also plan.js:22, crawl.js:24, brainstorm.js:34)\n\nFINDING F1:\nThe charset guard glob `*[!A-Za-z0-9._:/@[\\]-]*` in ops-tiers.sh and ops-render.sh does not actually include a literal `]` in the allowlist, so ids containing a bracket marker may be mis-validated.\nEVIDENCE CITED: scripts/ops-tiers.sh:62 (also scripts/ops-render.sh:72)\n\nFINDING F2:\nThe allowed-tools syntax in commands/tiers.md doesn't match the other commands' established Bash(bash:...) form, so the harness likely won't parse it as a bash: restriction, defeating the intent of tightly scoping the grant.\nEVIDENCE CITED: commands/tiers.md:4\n\nFINDING F3:\nThe `dead: true` error string returned by dispatch.js appears cut off, ending mid-clause, which makes the returned error confusing and looks like an accidental truncation.\nEVIDENCE CITED: workflows/dispatch.js:180\n\nFINDING F4:\nThe derived window pair `_W = 120` in CouplingCaseRefsTest is a mirror of the production literal rather than a read of it, so a change to the production value could leave this boundary silently dead without the test noticing.\nEVIDENCE CITED: validate_plugin.py:3792 / CouplingCaseRefsTest\n\nFINDING F5:\nArm 3b's unguarded git show of a CI file in base-gate.sh's core-file diff check is exploitable, allowing an attacker to route a malicious CI change around the content-diff comparison.\nEVIDENCE CITED: scripts/base-gate.sh (arm 3b)\n\nFINDING F6:\nThe F5 fix's inode-comparison bug was caused by GNU stat -f '%i' returning an EMPTY string on Linux, making the two inode checks compare an empty string to itself.\nEVIDENCE CITED: scripts/ops-verdict.sh (F5 inode check)\n\nFINDING F7:\ncheck_gitignore_parity never actually verifies that the bare `*` line, which the v2 allowlist's load-bearing half depends on, is present in either writer script.\nEVIDENCE CITED: scripts/validate_plugin.py:1136\n\nFINDING F8:\nIn a fresh scratch project, the REPLAY-CHARTER.md replay steps expect the SessionStart hook to have already injected a session id before /cc-operator:start scaffolds .operator/, but the hook exits silently when .operator/ is absent and the slash command does not rerun SessionStart, so the described sequence cannot actually assert session identity at that point.\nEVIDENCE CITED: docs/REPLAY-CHARTER.md:46 (also lines 59, 95)\n\nFINDING F9:\nops-init.sh is not installed into .operator/bin/ (the install set contains only verdict/task/adopt/claims/backlog), so the REPLAY-CHARTER.md command that invokes it from that path always fails.\nEVIDENCE CITED: docs/REPLAY-CHARTER.md:60\n\nFINDING F10:\ncheck_gitignore_parity's docstring claims both writer scripts must emit the v2 gitignore marker AND grep for it to detect a v1 migration, but the check only searches for the marker text anywhere in the file, so removing the migration grep from a writer still passes validation while existing v1 projects silently stop being detected.\nEVIDENCE CITED: scripts/validate_plugin.py:1059\n\nFINDING F11:\nops-sessionstart-hook.sh's v1-to-v2 gitignore migration can destroy the user's existing rules without preserving the promised backup: the hook does not use set -e, so if creating .gitignore.v1.bak fails but .gitignore remains writable, the replacement still proceeds, and the migrated flag is set before either operation has actually succeeded.\nEVIDENCE CITED: scripts/ops-sessionstart-hook.sh:239\n\nFINDING F12:\nops-compress.mjs's spill fallback stores pre-scrub tool output under a predictable shared-temp path with default (world-readable) directory and file modes, so another local user on a multi-user host could derive the path from the cwd hash and read the spilled data, or pre-plant a symlink at the shared root.\nEVIDENCE CITED: scripts/ops-compress.mjs:178\n\nFINDING F13:\nops-verdict.sh's sentinel check uses -e, which treats a directory or device at pending/<id> as an armed sentinel even though the rest of the system defines a sentinel as only a non-symlink regular file, so a directory there could suppress the GATE-EXCEPTION path while still letting the verdict row be written.\nEVIDENCE CITED: scripts/ops-verdict.sh:775\n\nFINDING F14:\nops-spec.sh's open-questions check can produce a false name in its refusal message: an empty-cell scan flags the wrong column, so a fully answered question whose Resolution is filled but whose Decided-by is blank gets reported as having an empty Resolution cell.\nEVIDENCE CITED: scripts/ops-spec.sh:497\n\nFINDING F15:\nops-spec.sh's open-questions grep filters for the skeleton table's header and separator lines assume a `||` prefix shape, but the actual skeleton emits single-pipe rows, so the filters may not exclude the header/separator and could be counted as empty cells causing false failures.\nEVIDENCE CITED: scripts/ops-spec.sh:497\n\nFINDING F16:\nA test assertion meant to distinguish an omitted model option from an explicit model: undefined checks `model !== undefined` on the recorded call, but the stub always writes the model property regardless, so the assertion would still pass even if the workflow sent a model key with an undefined value, defeating the intended \"no model key\" check.\nEVIDENCE CITED: tests/test_workflows.mjs:1495\n\nFINDING F17:\ncheck_panel in ops-tiers.sh validates the syntax of a tiers.env panel definition but not the cardinalities the debate workflow actually consumes, so a syntactically valid tiers.env could emit fewer than 2 or more than 5 models (or more than 5 spares), which debate.js would then reject after resolution instead of the resolver catching it earlier.\nEVIDENCE CITED: scripts/ops-tiers.sh:92\n\nFINDING F18:\nfamilyOf in debate.js is derived from caller-supplied model ids and used as a key into a plain object accumulator, so an id such as constructor-1 or __proto__ could resolve to an inherited Object.prototype property and cause .push to throw before synthesis completes.\nEVIDENCE CITED: workflows/debate.js:471 (also 475, 545)\n\nFINDING F19:\ndebate.js's distinctModels diagnostic is described as counting the number of families that actually argued, but it counts every seat including ones whose opening returned null and had no spare successfully replace it, overstating the panel's diversity in the collapsed return.\nEVIDENCE CITED: workflows/debate.js:316 (also line 492)\n\nFINDING F20:\nops-holdout.sh's canary nonce check only validates the first line of a reply, so a claude process that echoes the nonce and exits 0 without producing any further answer makes ask() return an effectively empty response, and --canary can then report PASS without the denial actually being demonstrated.\nEVIDENCE CITED: scripts/ops-holdout.sh:71\n\nFINDING F21:\nThe /cc-operator:tutorial command documentation advertises a --keep flag, but the command's invocation never forwards $ARGUMENTS to ops-tutorial.sh, so passing --keep has no effect and the temporary project is always deleted.\nEVIDENCE CITED: commands/tutorial.md:11\n\nFINDING F22:\ncommands/tutorial.md inserts $ARGUMENTS unquoted into a shell command, so an invocation containing shell metacharacters could inject additional shell syntax before ops-tutorial.sh gets a chance to validate the argument, which is especially risky given the command's broad Bash(bash:*) grant.\nEVIDENCE CITED: commands/tutorial.md:12\n\nFINDING F23:\nThe statusline's continuation-accumulation loop over long ledger rows uses a plain while read loop without the usual `|| [ -n \"$line\" ]` guard, so a final unterminated row from tail (no trailing newline) can make read return non-zero and the last chunk goes unprocessed, causing the deviation counter to undercount or miss a trailing DEVIATION/HANDOFF-MARK row.\nEVIDENCE CITED: scripts/statusline.sh:316\n\nFINDING F24:\nThe stdin-payload byte-cap exemption in validate_plugin.py's NUL-probe check applies to every bare read -r -d '' line, not only the intended stdin payload read, so removing -n 512 from an unrelated NUL probe leaves it unmatched by the bounded-read scan and lets an uncapped multi-megabyte slurp pass validation.\nEVIDENCE CITED: scripts/validate_plugin.py:962\n\nFINDING F25:\nvalidate_plugin.py's release-note suite-coverage check (live()) treats any occurrence of a suite name inside a step's name, env, if condition, echo text, or shell comment as proof that suite was executed, and it scans every line in the workflow file rather than only the publishing job, so mentioning a suite without running it can satisfy the coverage requirement.\nEVIDENCE CITED: scripts/validate_plugin.py:2223\n\nFINDING F26:\nThe Stop hook's block message composition at ops-stop-hook.sh has an escaping gap when embedding untrusted project data (paths/ledger content) into the message text read back by the model.\nEVIDENCE CITED: scripts/ops-stop-hook.sh:197",
+ "questions": {
+  "F0_real": {
+   "type": "noul",
+   "instructions": "FINDING F0 describes a real defect: if the code behaves as the finding says, something observably goes wrong (a wrong result, a gate that passes when it should fail, a crash, a lost write). Answer no if the claim misreads the code's intent, describes intended behaviour, or its failure cannot actually occur."
+  },
+  "F0_ev": {
+   "type": "noul",
+   "instructions": "FINDING F0 is backed by concrete evidence \u2014 a file:line, a command and its output, or a reproduced run \u2014 rather than an assertion."
+  },
+  "F1_real": {
+   "type": "noul",
+   "instructions": "FINDING F1 describes a real defect: if the code behaves as the finding says, something observably goes wrong (a wrong result, a gate that passes when it should fail, a crash, a lost write). Answer no if the claim misreads the code's intent, describes intended behaviour, or its failure cannot actually occur."
+  },
+  "F1_ev": {
+   "type": "noul",
+   "instructions": "FINDING F1 is backed by concrete evidence \u2014 a file:line, a command and its output, or a reproduced run \u2014 rather than an assertion."
+  },
+  "F2_real": {
+   "type": "noul",
+   "instructions": "FINDING F2 describes a real defect: if the code behaves as the finding says, something observably goes wrong (a wrong result, a gate that passes when it should fail, a crash, a lost write). Answer no if the claim misreads the code's intent, describes intended behaviour, or its failure cannot actually occur."
+  },
+  "F2_ev": {
+   "type": "noul",
+   "instructions": "FINDING F2 is backed by concrete evidence \u2014 a file:line, a command and its output, or a reproduced run \u2014 rather than an assertion."
+  },
+  "F3_real": {
+   "type": "noul",
+   "instructions": "FINDING F3 describes a real defect: if the code behaves as the finding says, something observably goes wrong (a wrong result, a gate that passes when it should fail, a crash, a lost write). Answer no if the claim misreads the code's intent, describes intended behaviour, or its failure cannot actually occur."
+  },
+  "F3_ev": {
+   "type": "noul",
+   "instructions": "FINDING F3 is backed by concrete evidence \u2014 a file:line, a command and its output, or a reproduced run \u2014 rather than an assertion."
+  },
+  "F4_real": {
+   "type": "noul",
+   "instructions": "FINDING F4 describes a real defect: if the code behaves as the finding says, something observably goes wrong (a wrong result, a gate that passes when it should fail, a crash, a lost write). Answer no if the claim misreads the code's intent, describes intended behaviour, or its failure cannot actually occur."
+  },
+  "F4_ev": {
+   "type": "noul",
+   "instructions": "FINDING F4 is backed by concrete evidence \u2014 a file:line, a command and its output, or a reproduced run \u2014 rather than an assertion."
+  },
+  "F5_real": {
+   "type": "noul",
+   "instructions": "FINDING F5 describes a real defect: if the code behaves as the finding says, something observably goes wrong (a wrong result, a gate that passes when it should fail, a crash, a lost write). Answer no if the claim misreads the code's intent, describes intended behaviour, or its failure cannot actually occur."
+  },
+  "F5_ev": {
+   "type": "noul",
+   "instructions": "FINDING F5 is backed by concrete evidence \u2014 a file:line, a command and its output, or a reproduced run \u2014 rather than an assertion."
+  },
+  "F6_real": {
+   "type": "noul",
+   "instructions": "FINDING F6 describes a real defect: if the code behaves as the finding says, something observably goes wrong (a wrong result, a gate that passes when it should fail, a crash, a lost write). Answer no if the claim misreads the code's intent, describes intended behaviour, or its failure cannot actually occur."
+  },
+  "F6_ev": {
+   "type": "noul",
+   "instructions": "FINDING F6 is backed by concrete evidence \u2014 a file:line, a command and its output, or a reproduced run \u2014 rather than an assertion."
+  },
+  "F7_real": {
+   "type": "noul",
+   "instructions": "FINDING F7 describes a real defect: if the code behaves as the finding says, something observably goes wrong (a wrong result, a gate that passes when it should fail, a crash, a lost write). Answer no if the claim misreads the code's intent, describes intended behaviour, or its failure cannot actually occur."
+  },
+  "F7_ev": {
+   "type": "noul",
+   "instructions": "FINDING F7 is backed by concrete evidence \u2014 a file:line, a command and its output, or a reproduced run \u2014 rather than an assertion."
+  },
+  "F8_real": {
+   "type": "noul",
+   "instructions": "FINDING F8 describes a real defect: if the code behaves as the finding says, something observably goes wrong (a wrong result, a gate that passes when it should fail, a crash, a lost write). Answer no if the claim misreads the code's intent, describes intended behaviour, or its failure cannot actually occur."
+  },
+  "F8_ev": {
+   "type": "noul",
+   "instructions": "FINDING F8 is backed by concrete evidence \u2014 a file:line, a command and its output, or a reproduced run \u2014 rather than an assertion."
+  },
+  "F9_real": {
+   "type": "noul",
+   "instructions": "FINDING F9 describes a real defect: if the code behaves as the finding says, something observably goes wrong (a wrong result, a gate that passes when it should fail, a crash, a lost write). Answer no if the claim misreads the code's intent, describes intended behaviour, or its failure cannot actually occur."
+  },
+  "F9_ev": {
+   "type": "noul",
+   "instructions": "FINDING F9 is backed by concrete evidence \u2014 a file:line, a command and its output, or a reproduced run \u2014 rather than an assertion."
+  },
+  "F10_real": {
+   "type": "noul",
+   "instructions": "FINDING F10 describes a real defect: if the code behaves as the finding says, something observably goes wrong (a wrong result, a gate that passes when it should fail, a crash, a lost write). Answer no if the claim misreads the code's intent, describes intended behaviour, or its failure cannot actually occur."
+  },
+  "F10_ev": {
+   "type": "noul",
+   "instructions": "FINDING F10 is backed by concrete evidence \u2014 a file:line, a command and its output, or a reproduced run \u2014 rather than an assertion."
+  },
+  "F11_real": {
+   "type": "noul",
+   "instructions": "FINDING F11 describes a real defect: if the code behaves as the finding says, something observably goes wrong (a wrong result, a gate that passes when it should fail, a crash, a lost write). Answer no if the claim misreads the code's intent, describes intended behaviour, or its failure cannot actually occur."
+  },
+  "F11_ev": {
+   "type": "noul",
+   "instructions": "FINDING F11 is backed by concrete evidence \u2014 a file:line, a command and its output, or a reproduced run \u2014 rather than an assertion."
+  },
+  "F12_real": {
+   "type": "noul",
+   "instructions": "FINDING F12 describes a real defect: if the code behaves as the finding says, something observably goes wrong (a wrong result, a gate that passes when it should fail, a crash, a lost write). Answer no if the claim misreads the code's intent, describes intended behaviour, or its failure cannot actually occur."
+  },
+  "F12_ev": {
+   "type": "noul",
+   "instructions": "FINDING F12 is backed by concrete evidence \u2014 a file:line, a command and its output, or a reproduced run \u2014 rather than an assertion."
+  },
+  "F13_real": {
+   "type": "noul",
+   "instructions": "FINDING F13 describes a real defect: if the code behaves as the finding says, something observably goes wrong (a wrong result, a gate that passes when it should fail, a crash, a lost write). Answer no if the claim misreads the code's intent, describes intended behaviour, or its failure cannot actually occur."
+  },
+  "F13_ev": {
+   "type": "noul",
+   "instructions": "FINDING F13 is backed by concrete evidence \u2014 a file:line, a command and its output, or a reproduced run \u2014 rather than an assertion."
+  },
+  "F14_real": {
+   "type": "noul",
+   "instructions": "FINDING F14 describes a real defect: if the code behaves as the finding says, something observably goes wrong (a wrong result, a gate that passes when it should fail, a crash, a lost write). Answer no if the claim misreads the code's intent, describes intended behaviour, or its failure cannot actually occur."
+  },
+  "F14_ev": {
+   "type": "noul",
+   "instructions": "FINDING F14 is backed by concrete evidence \u2014 a file:line, a command and its output, or a reproduced run \u2014 rather than an assertion."
+  },
+  "F15_real": {
+   "type": "noul",
+   "instructions": "FINDING F15 describes a real defect: if the code behaves as the finding says, something observably goes wrong (a wrong result, a gate that passes when it should fail, a crash, a lost write). Answer no if the claim misreads the code's intent, describes intended behaviour, or its failure cannot actually occur."
+  },
+  "F15_ev": {
+   "type": "noul",
+   "instructions": "FINDING F15 is backed by concrete evidence \u2014 a file:line, a command and its output, or a reproduced run \u2014 rather than an assertion."
+  },
+  "F16_real": {
+   "type": "noul",
+   "instructions": "FINDING F16 describes a real defect: if the code behaves as the finding says, something observably goes wrong (a wrong result, a gate that passes when it should fail, a crash, a lost write). Answer no if the claim misreads the code's intent, describes intended behaviour, or its failure cannot actually occur."
+  },
+  "F16_ev": {
+   "type": "noul",
+   "instructions": "FINDING F16 is backed by concrete evidence \u2014 a file:line, a command and its output, or a reproduced run \u2014 rather than an assertion."
+  },
+  "F17_real": {
+   "type": "noul",
+   "instructions": "FINDING F17 describes a real defect: if the code behaves as the finding says, something observably goes wrong (a wrong result, a gate that passes when it should fail, a crash, a lost write). Answer no if the claim misreads the code's intent, describes intended behaviour, or its failure cannot actually occur."
+  },
+  "F17_ev": {
+   "type": "noul",
+   "instructions": "FINDING F17 is backed by concrete evidence \u2014 a file:line, a command and its output, or a reproduced run \u2014 rather than an assertion."
+  },
+  "F18_real": {
+   "type": "noul",
+   "instructions": "FINDING F18 describes a real defect: if the code behaves as the finding says, something observably goes wrong (a wrong result, a gate that passes when it should fail, a crash, a lost write). Answer no if the claim misreads the code's intent, describes intended behaviour, or its failure cannot actually occur."
+  },
+  "F18_ev": {
+   "type": "noul",
+   "instructions": "FINDING F18 is backed by concrete evidence \u2014 a file:line, a command and its output, or a reproduced run \u2014 rather than an assertion."
+  },
+  "F19_real": {
+   "type": "noul",
+   "instructions": "FINDING F19 describes a real defect: if the code behaves as the finding says, something observably goes wrong (a wrong result, a gate that passes when it should fail, a crash, a lost write). Answer no if the claim misreads the code's intent, describes intended behaviour, or its failure cannot actually occur."
+  },
+  "F19_ev": {
+   "type": "noul",
+   "instructions": "FINDING F19 is backed by concrete evidence \u2014 a file:line, a command and its output, or a reproduced run \u2014 rather than an assertion."
+  },
+  "F20_real": {
+   "type": "noul",
+   "instructions": "FINDING F20 describes a real defect: if the code behaves as the finding says, something observably goes wrong (a wrong result, a gate that passes when it should fail, a crash, a lost write). Answer no if the claim misreads the code's intent, describes intended behaviour, or its failure cannot actually occur."
+  },
+  "F20_ev": {
+   "type": "noul",
+   "instructions": "FINDING F20 is backed by concrete evidence \u2014 a file:line, a command and its output, or a reproduced run \u2014 rather than an assertion."
+  },
+  "F21_real": {
+   "type": "noul",
+   "instructions": "FINDING F21 describes a real defect: if the code behaves as the finding says, something observably goes wrong (a wrong result, a gate that passes when it should fail, a crash, a lost write). Answer no if the claim misreads the code's intent, describes intended behaviour, or its failure cannot actually occur."
+  },
+  "F21_ev": {
+   "type": "noul",
+   "instructions": "FINDING F21 is backed by concrete evidence \u2014 a file:line, a command and its output, or a reproduced run \u2014 rather than an assertion."
+  },
+  "F22_real": {
+   "type": "noul",
+   "instructions": "FINDING F22 describes a real defect: if the code behaves as the finding says, something observably goes wrong (a wrong result, a gate that passes when it should fail, a crash, a lost write). Answer no if the claim misreads the code's intent, describes intended behaviour, or its failure cannot actually occur."
+  },
+  "F22_ev": {
+   "type": "noul",
+   "instructions": "FINDING F22 is backed by concrete evidence \u2014 a file:line, a command and its output, or a reproduced run \u2014 rather than an assertion."
+  },
+  "F23_real": {
+   "type": "noul",
+   "instructions": "FINDING F23 describes a real defect: if the code behaves as the finding says, something observably goes wrong (a wrong result, a gate that passes when it should fail, a crash, a lost write). Answer no if the claim misreads the code's intent, describes intended behaviour, or its failure cannot actually occur."
+  },
+  "F23_ev": {
+   "type": "noul",
+   "instructions": "FINDING F23 is backed by concrete evidence \u2014 a file:line, a command and its output, or a reproduced run \u2014 rather than an assertion."
+  },
+  "F24_real": {
+   "type": "noul",
+   "instructions": "FINDING F24 describes a real defect: if the code behaves as the finding says, something observably goes wrong (a wrong result, a gate that passes when it should fail, a crash, a lost write). Answer no if the claim misreads the code's intent, describes intended behaviour, or its failure cannot actually occur."
+  },
+  "F24_ev": {
+   "type": "noul",
+   "instructions": "FINDING F24 is backed by concrete evidence \u2014 a file:line, a command and its output, or a reproduced run \u2014 rather than an assertion."
+  },
+  "F25_real": {
+   "type": "noul",
+   "instructions": "FINDING F25 describes a real defect: if the code behaves as the finding says, something observably goes wrong (a wrong result, a gate that passes when it should fail, a crash, a lost write). Answer no if the claim misreads the code's intent, describes intended behaviour, or its failure cannot actually occur."
+  },
+  "F25_ev": {
+   "type": "noul",
+   "instructions": "FINDING F25 is backed by concrete evidence \u2014 a file:line, a command and its output, or a reproduced run \u2014 rather than an assertion."
+  },
+  "F26_real": {
+   "type": "noul",
+   "instructions": "FINDING F26 describes a real defect: if the code behaves as the finding says, something observably goes wrong (a wrong result, a gate that passes when it should fail, a crash, a lost write). Answer no if the claim misreads the code's intent, describes intended behaviour, or its failure cannot actually occur."
+  },
+  "F26_ev": {
+   "type": "noul",
+   "instructions": "FINDING F26 is backed by concrete evidence \u2014 a file:line, a command and its output, or a reproduced run \u2014 rather than an assertion."
+  }
+ }
+}

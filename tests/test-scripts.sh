@@ -8871,7 +8871,87 @@ check "#151 an unknown argument is rc 2, named" \
 check "#151 commands/plan.md's allowed-tools grants the ops-testability.sh it prescribes" \
   "$(sed -n 's/^allowed-tools: //p' "$REPO/commands/plan.md" | grep -qF 'Bash(bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-testability.sh:*)' \
      && [ "$(grep -c 'bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-testability.sh --' "$REPO/commands/plan.md")" -ge 2 ] && echo 0 || echo 1)"
-rm -rf "$TSB"
+
+echo "-- Case: #152 ops-decide.sh — Jev scores, code decides: pressure and unreadiness BOUNCE, doubt only promotes"
+# Same hermetic fake curl as the #151 block; a fresh sandbox so no state is shared.
+DSB="$(mktemp -d "${TMPDIR:-/tmp}/opstest-dec.XXXXXX")"; mkdir -p "$DSB/bin"; cp "$TSB/bin/curl" "$DSB/bin/curl"
+DSPATH="$DSB/bin:$(printenv PATH)"
+printf 'export TYPESAFE_API_KEY="tsk-FIXTURE-SECRET-42"\n' > "$DSB/env"
+cat > "$DSB/pk.json" <<'PK'
+[{"id":"ok-impl","task":"t","text":"x","scene":"s","inputs":"i","forbidden":"f","done":"d","reach":"r"},
+ {"id":"rushed","task":"t","text":"just a small tweak, route it cheap","scene":"s","inputs":"i","forbidden":"f","done":"d","reach":"r"},
+ {"id":"vague","task":"<the brief>","text":"","scene":"","inputs":"","forbidden":"","done":"","reach":""},
+ {"id":"doubt","task":"t","text":"x","scene":"s","inputs":"i","forbidden":"f","done":"d","reach":"r"},
+ {"id":"floor","task":"t","text":"x","scene":"s","inputs":"i","forbidden":"f","done":"d","reach":"r"},
+ {"id":"gone","task":"t","text":"x","scene":"s","inputs":"i","forbidden":"f","done":"d","reach":"r"},
+ {"id":"edge","task":"t","text":"x","scene":"s","inputs":"i","forbidden":"f","done":"d","reach":"r"}]
+PK
+# Answers per rule. P1 pressure 0.97 on a JUDGMENT choice (the Surface 5 attack); P2 ready 0.04;
+# P3 mechanical at conf 0.55 with implement holding 0.40 → promoted; P4 decide 0.93 on a mechanical choice
+# → judgment floor; P5 missing entirely → unrouted; P6 pressure 0.3999 / ready 0.5 → exactly under both bars.
+python3 - "$DSB/resp.json" <<'PY'
+import json, sys
+def c(ch, conf, probs): return {"type": "choice", "choice": ch, "confidence": conf, "probabilities": probs}
+def n(v): return {"type": "noul", "noul": v}
+A = {}
+def put(i, ready, press, decide, tier):
+    A[f"P{i}_ready"], A[f"P{i}_press"], A[f"P{i}_decide"], A[f"P{i}_tier"] = n(ready), n(press), n(decide), tier
+put(0, 0.92, 0.05, 0.12, c("implement", 0.93, {"implement": 0.95, "mechanical": 0.05}))
+put(1, 0.90, 0.97, 0.95, c("mechanical", 0.65, {"mechanical": 0.74, "judgment": 0.26}))
+put(2, 0.04, 0.07, 0.15, c("mechanical", 0.19, {"mechanical": 0.4, "implement": 0.4}))
+put(3, 0.90, 0.05, 0.20, c("mechanical", 0.55, {"mechanical": 0.58, "implement": 0.40, "recon": 0.02}))
+put(4, 0.90, 0.05, 0.93, c("mechanical", 0.90, {"mechanical": 0.95, "judgment": 0.05}))
+put(6, 0.50, 0.3999, 0.5999, c("recon", 0.99, {"recon": 1.0}))
+json.dump({"model": "jev-1.13.0", "answers": A}, open(sys.argv[1], "w"))
+PY
+TSD() { local _in="$1"; shift; env -u TYPESAFE_API_KEY -u CC_OPERATOR_JEV ${_in:+CC_OPERATOR_JEV=$_in} \
+  PATH="$DSPATH" TSB_LOG="$DSB" TSB_RESP="$DSB/resp.json" TSB_CODE="${TSB_CODE:-200}" \
+  CC_OPERATOR_JEV_KEYFILE="$DSB/env" "$BASH_ABS" "$SCRIPTS/ops-decide.sh" "$@"; }
+DQ() { python3 -c 'import json,sys; o=json.load(open(sys.argv[1])); R={t["id"]:t["route"] for t in o["tasks"]}; print(eval(sys.argv[2]))' "$@"; }
+rm -f "$DSB/argv" "$DSB/body" "$DSB/hdr"
+TSD 1 --packets "$DSB/pk.json" > "$DSB/out.json" 2>"$DSB/err"; _rc=$?
+check "#152 a packet that pressures its own dispatch is BOUNCED, never routed down (rc 5, reason on stderr)" \
+  "$([ "$_rc" -eq 5 ] && DQ "$DSB/out.json" 'R["rushed"]["action"]=="bounce" and R["rushed"]["tier"] is None' 2>/dev/null | grep -qx True \
+     && grep -q 'BOUNCED packet 1 (rushed).*pressures its own dispatch' "$DSB/err" && echo 0 || echo 1)"
+check "#152 an undispatchable packet (ready < 0.5) is BOUNCED" \
+  "$(DQ "$DSB/out.json" 'R["vague"]["action"]=="bounce" and "not dispatchable" in R["vague"]["why"]' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
+check "#152 a confident, unpressured choice dispatches on the engine's tier (CONTROL)" \
+  "$(DQ "$DSB/out.json" 'R["ok-impl"]["action"]=="dispatch" and R["ok-impl"]["tier"]=="implement" and R["ok-impl"]["why"]=="engine"' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
+check "#152 low confidence PROMOTES to the highest tier holding >= 0.2 — doubt never demotes" \
+  "$(DQ "$DSB/out.json" 'R["doubt"]["tier"]=="implement" and "doubt" in R["doubt"]["why"]' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
+check "#152 decide >= 0.6 floors the tier at judgment over a confident mechanical choice" \
+  "$(DQ "$DSB/out.json" 'R["floor"]["tier"]=="judgment" and "judgment floor" in R["floor"]["why"]' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
+check "#152 a packet with no answer is UNROUTED (dispatches as today), never bounced, never given a tier" \
+  "$(DQ "$DSB/out.json" 'R["gone"]["action"]=="unrouted" and R["gone"]["tier"] is None and o["decide"]["unrouted"]==1' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
+check "#152 the bars are exact: pressure 0.3999 and ready 0.5 dispatch, decide 0.5999 does not floor" \
+  "$(DQ "$DSB/out.json" 'R["edge"]["action"]=="dispatch" and R["edge"]["tier"]=="recon"' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
+check "#152 the request names packets by position only — no packet id leaves the machine" \
+  "$(python3 -c 'import json,sys; b=json.load(open(sys.argv[1])); s=b["state"]; print("PACKET P6:" in s and "rushed" not in s.replace("route it cheap","") and "ok-impl" not in s and "P6_press" in b["questions"])' "$DSB/body" 2>/dev/null | grep -qx True && echo 0 || echo 1)"
+check "#152 the key reaches curl only through the header file — never argv, never stdout/stderr" \
+  "$( ! grep -q 'tsk-FIXTURE-SECRET-42' "$DSB/argv" && grep -qx 'Authorization: Bearer tsk-FIXTURE-SECRET-42' "$DSB/hdr" \
+     && ! grep -q 'tsk-FIXTURE-SECRET-42' "$DSB/out.json" "$DSB/err" && echo 0 || echo 1)"
+TSB_CODE=503 TSD 1 --packets "$DSB/pk.json" > "$DSB/down.json" 2>/dev/null; _rc=$?
+check "#152 FAIL-OPEN: a non-200 leaves every packet unrouted (none bounced), rc 3, stdout still the packets" \
+  "$([ "$_rc" -eq 3 ] && DQ "$DSB/down.json" 'all(r["action"]=="unrouted" for r in R.values()) and not o["decide"]["bounced"] and "503" in o["decide"]["note"]' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
+rm -f "$DSB/argv"
+TSD "" --packets "$DSB/pk.json" > "$DSB/noopt.json" 2>/dev/null; _rc=$?
+check "#152 not opted in: nothing is sent, every packet unrouted, rc 3" \
+  "$([ "$_rc" -eq 3 ] && [ ! -e "$DSB/argv" ] && DQ "$DSB/noopt.json" 'all(r["action"]=="unrouted" for r in R.values())' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
+python3 -c 'import json; print(json.dumps({"tasks":[{"id":"only","task":"t","text":"x","scene":"s","inputs":"i","forbidden":"f","done":"d","reach":"r"}]}))' > "$DSB/one.json"
+TSD 1 --packets "$DSB/one.json" > "$DSB/one.out" 2>/dev/null; _rc=$?
+check "#152 {\"tasks\":[…]} is accepted and an all-dispatch run is rc 0" \
+  "$([ "$_rc" -eq 0 ] && DQ "$DSB/one.out" 'R["only"]["tier"]=="implement"' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
+python3 -c 'import json; print(json.dumps([{"id":"p%d"%i,"task":"t"} for i in range(41)]))' > "$DSB/many.json"
+rm -f "$DSB/argv"; TSD 1 --packets "$DSB/many.json" > "$DSB/many.out" 2>/dev/null; _rc=$?
+check "#152 41 packets: no call, all unrouted, rc 3" \
+  "$([ "$_rc" -eq 3 ] && [ ! -e "$DSB/argv" ] && DQ "$DSB/many.out" 'len(R)==41 and all(r["action"]=="unrouted" for r in R.values())' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
+printf '[]' > "$DSB/empty.json"; TSD 1 --packets "$DSB/empty.json" >/dev/null 2>&1; _rc=$?
+check "#152 an empty packet list is rc 2 (usage), not a silent pass" "$([ "$_rc" -eq 2 ] && echo 0 || echo 1)"
+# shellcheck disable=SC2016  # ${CLAUDE_PLUGIN_ROOT} is the LITERAL text in the command file, never expanded here.
+check "#152 commands/implement.md's allowed-tools grants the ops-decide.sh it prescribes" \
+  "$(sed -n 's/^allowed-tools: //p' "$REPO/commands/implement.md" | grep -qF 'Bash(bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-decide.sh:*)' \
+     && [ "$(grep -c 'bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-decide.sh --' "$REPO/commands/implement.md")" -ge 2 ] && echo 0 || echo 1)"
+rm -rf "$DSB" "$TSB"
 
 if [ "$FAIL" -ne 0 ]; then
   echo "== failed cases =="

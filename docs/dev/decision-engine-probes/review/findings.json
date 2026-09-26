@@ -1,0 +1,191 @@
+[
+ {
+  "pr": 7,
+  "finding": "The BAD_CHARSET regex `/[^\\w./:@[\\]-]/` used across workflows/review.js, plan.js, crawl.js, and brainstorm.js does not escape `[`/`]` correctly inside the character class, so `]` is not actually included in the allowed set, and a model id containing brackets like `glm-5.2[1m]` would be mis-validated.",
+  "evidence": "workflows/review.js:34 (also plan.js:22, crawl.js:24, brainstorm.js:34)",
+  "label": "false",
+  "why": "Author reply: \"Not correct \u2014 `\\]` inside a JavaScript character class *is* a literal `]`, so the character is in the allowed set.\" with measured node output showing `glm-5.2[1m]` is NOT rejected."
+ },
+ {
+  "pr": 7,
+  "finding": "The charset guard glob `*[!A-Za-z0-9._:/@[\\]-]*` in ops-tiers.sh and ops-render.sh does not actually include a literal `]` in the allowlist, so ids containing a bracket marker may be mis-validated.",
+  "evidence": "scripts/ops-tiers.sh:62 (also scripts/ops-render.sh:72)",
+  "label": "false",
+  "why": "Author reply: \"Not correct \u2014 `[\\]` inside a shell bracket expression includes a literal `]`, so bracket-marked ids validate fine,\" with a measured `case` loop showing `glm-5.2[1m]` accepted."
+ },
+ {
+  "pr": 7,
+  "finding": "The allowed-tools syntax in commands/tiers.md doesn't match the other commands' established Bash(bash:...) form, so the harness likely won't parse it as a bash: restriction, defeating the intent of tightly scoping the grant.",
+  "evidence": "commands/tiers.md:4",
+  "label": "false",
+  "why": "Author reply: \"This has it backwards \u2014 the form used here is the documented best practice, and `Bash(bash:*)` in the other commands is the broader grant,\" citing the Anthropic command-frontmatter reference recommending exact invocation-prefix scoping."
+ },
+ {
+  "pr": 71,
+  "finding": "The `dead: true` error string returned by dispatch.js appears cut off, ending mid-clause, which makes the returned error confusing and looks like an accidental truncation.",
+  "evidence": "workflows/dispatch.js:180",
+  "label": "false",
+  "why": "Author reply: \"It was not truncated \u2014 the sentence ended on the clause '\u2026names which,' which reads as a cut-off. Same information, reordered...\""
+ },
+ {
+  "pr": 124,
+  "finding": "The derived window pair `_W = 120` in CouplingCaseRefsTest is a mirror of the production literal rather than a read of it, so a change to the production value could leave this boundary silently dead without the test noticing.",
+  "evidence": "validate_plugin.py:3792 / CouplingCaseRefsTest",
+  "label": "false",
+  "why": "Self-review note: \"Checked and NOT a finding (measured before claiming, so recording the negative)... I mutated validate_plugin.py:3792 to 200 expecting a silently dead boundary. It fails loud... Restored byte-identical. No change needed.\""
+ },
+ {
+  "pr": 132,
+  "finding": "Arm 3b's unguarded git show of a CI file in base-gate.sh's core-file diff check is exploitable, allowing an attacker to route a malicious CI change around the content-diff comparison.",
+  "evidence": "scripts/base-gate.sh (arm 3b)",
+  "label": "false",
+  "why": "Review reply: \"### Not reproduced \u2014 Three constructions all died closed at arm 5 (rc 2); the attacked file's own content change is what routes through the content diff. Not filed as a defect \u2014 the suggested guard is still two cheap lines if wanted.\""
+ },
+ {
+  "pr": 125,
+  "finding": "The F5 fix's inode-comparison bug was caused by GNU stat -f '%i' returning an EMPTY string on Linux, making the two inode checks compare an empty string to itself.",
+  "evidence": "scripts/ops-verdict.sh (F5 inode check)",
+  "label": "false",
+  "why": "Follow-up: \"The F5 fix is right; its stated mechanism is not.... Measured here: `$ x=\"$(stat -f '%i' scripts/ops-verdict.sh 2>/dev/null)\"; echo \"${#x}\"` -> `237`. GNU reads `-f` as FILESYSTEM, errors on stderr, and still prints the filesystem table on stdout.\""
+ },
+ {
+  "pr": 12,
+  "finding": "check_gitignore_parity never actually verifies that the bare `*` line, which the v2 allowlist's load-bearing half depends on, is present in either writer script.",
+  "evidence": "scripts/validate_plugin.py:1136",
+  "label": "false",
+  "why": "Reply: \"Not reproducible \u2014 the bare `*` is pinned.\" Reproduced by removing `*` from ops-init.sh's heredoc, which fails the build with the exact message the comment claimed was missing; \"That check landed in `90094f8`... This looks like a review against a stale diff.\""
+ },
+ {
+  "pr": 12,
+  "finding": "In a fresh scratch project, the REPLAY-CHARTER.md replay steps expect the SessionStart hook to have already injected a session id before /cc-operator:start scaffolds .operator/, but the hook exits silently when .operator/ is absent and the slash command does not rerun SessionStart, so the described sequence cannot actually assert session identity at that point.",
+  "evidence": "docs/REPLAY-CHARTER.md:46 (also lines 59, 95)",
+  "label": "real",
+  "why": "Reviewer comment stands unrebutted, explicitly listed under a later PR's \"### Not addressed\" section: \"The three docs/REPLAY-CHARTER.md sequencing comments (R0/R2 ordering, ops-init.sh not being in the install set, SessionStart timing in a fresh project). They read as correct, but that file is a live-session protocol whose claims cannot be verified from a batch run.\""
+ },
+ {
+  "pr": 12,
+  "finding": "ops-init.sh is not installed into .operator/bin/ (the install set contains only verdict/task/adopt/claims/backlog), so the REPLAY-CHARTER.md command that invokes it from that path always fails.",
+  "evidence": "docs/REPLAY-CHARTER.md:60",
+  "label": "real",
+  "why": "Same later-PR note lists this among the three sequencing comments that \"read as correct\" and are tracked for the next replay pass rather than disputed."
+ },
+ {
+  "pr": 12,
+  "finding": "check_gitignore_parity's docstring claims both writer scripts must emit the v2 gitignore marker AND grep for it to detect a v1 migration, but the check only searches for the marker text anywhere in the file, so removing the migration grep from a writer still passes validation while existing v1 projects silently stop being detected.",
+  "evidence": "scripts/validate_plugin.py:1059",
+  "label": "real",
+  "why": "Author reply: \"Your other point in this area was right, though, and is now fixed (1e5308a): the message claims both writers must \\\"emit it AND grep for it\\\" while only testing MARK in text... Detection is now asserted separately, per writer, with a mutation test per writer.\""
+ },
+ {
+  "pr": 12,
+  "finding": "ops-sessionstart-hook.sh's v1-to-v2 gitignore migration can destroy the user's existing rules without preserving the promised backup: the hook does not use set -e, so if creating .gitignore.v1.bak fails but .gitignore remains writable, the replacement still proceeds, and the migrated flag is set before either operation has actually succeeded.",
+  "evidence": "scripts/ops-sessionstart-hook.sh:239",
+  "label": "real",
+  "why": "Reply: \"Confirmed and fixed in 97fd908... Reproduced exactly as described: `.operator/` non-writable, `.gitignore` still writable -> `cp` fails silently, `cat >` succeeds, the user's rules are destroyed, no backup exists, and the context reports both migration and backup succeeded.\""
+ },
+ {
+  "pr": 12,
+  "finding": "ops-compress.mjs's spill fallback stores pre-scrub tool output under a predictable shared-temp path with default (world-readable) directory and file modes, so another local user on a multi-user host could derive the path from the cwd hash and read the spilled data, or pre-plant a symlink at the shared root.",
+  "evidence": "scripts/ops-compress.mjs:178",
+  "label": "real",
+  "why": "Reply: \"Confirmed and fixed in 97fd908. The symlink half is not theoretical \u2014 demonstrated: ... attacker reads: PRE-SCRUB TOOL OUTPUT ... file mode: 644\""
+ },
+ {
+  "pr": 12,
+  "finding": "ops-verdict.sh's sentinel check uses -e, which treats a directory or device at pending/<id> as an armed sentinel even though the rest of the system defines a sentinel as only a non-symlink regular file, so a directory there could suppress the GATE-EXCEPTION path while still letting the verdict row be written.",
+  "evidence": "scripts/ops-verdict.sh:775",
+  "label": "real",
+  "why": "Reply: \"Confirmed and fixed in 97fd908. Reproduced with a directory at pending/<id>... the GATE-EXCEPTION was suppressed, the row was appended anyway, and rm -f then failed \u2014 a non-zero exit with the ledger already mutated and no audit line.\""
+ },
+ {
+  "pr": 154,
+  "finding": "ops-spec.sh's open-questions check can produce a false name in its refusal message: an empty-cell scan flags the wrong column, so a fully answered question whose Resolution is filled but whose Decided-by is blank gets reported as having an empty Resolution cell.",
+  "evidence": "scripts/ops-spec.sh:497",
+  "label": "real",
+  "why": "Follow-up: \"The second half is right and it was the worse half... an answered question that names nobody was refused under the Resolution message... The third row is a real refusal... but the message sends the operator to fix a cell that is already correct. That is worse than no message.\""
+ },
+ {
+  "pr": 154,
+  "finding": "ops-spec.sh's open-questions grep filters for the skeleton table's header and separator lines assume a `||` prefix shape, but the actual skeleton emits single-pipe rows, so the filters may not exclude the header/separator and could be counted as empty cells causing false failures.",
+  "evidence": "scripts/ops-spec.sh:497",
+  "label": "false",
+  "why": "Reply: \"Half right \u2014 fixed in f025c04, but the premise is wrong... The '||' claim does not hold... Measured on a fresh skeleton: ... ops-spec: no done criterion carries a real command... No open-questions false positive.\""
+ },
+ {
+  "pr": 154,
+  "finding": "A test assertion meant to distinguish an omitted model option from an explicit model: undefined checks `model !== undefined` on the recorded call, but the stub always writes the model property regardless, so the assertion would still pass even if the workflow sent a model key with an undefined value, defeating the intended \"no model key\" check.",
+  "evidence": "tests/test_workflows.mjs:1495",
+  "label": "real",
+  "why": "Reply: \"Correct, and worse than stated \u2014 fixed in f025c04. `\\\"model\\\" in dFallCall` asks the record, not the options object... Mutating workflows/dispatch.js's rung 3 to send the key explicitly... the whole suite green while the workflow does the exact thing this assertion exists to forbid.\""
+ },
+ {
+  "pr": 173,
+  "finding": "check_panel in ops-tiers.sh validates the syntax of a tiers.env panel definition but not the cardinalities the debate workflow actually consumes, so a syntactically valid tiers.env could emit fewer than 2 or more than 5 models (or more than 5 spares), which debate.js would then reject after resolution instead of the resolver catching it earlier.",
+  "evidence": "scripts/ops-tiers.sh:92",
+  "label": "real",
+  "why": "Not disputed in the captured thread; stated as a concrete boundary-alignment gap between the resolver and the workflow's own MIN/MAX enforcement."
+ },
+ {
+  "pr": 173,
+  "finding": "familyOf in debate.js is derived from caller-supplied model ids and used as a key into a plain object accumulator, so an id such as constructor-1 or __proto__ could resolve to an inherited Object.prototype property and cause .push to throw before synthesis completes.",
+  "evidence": "workflows/debate.js:471 (also 475, 545)",
+  "label": "real",
+  "why": "Not disputed in the captured thread; a concrete prototype-pollution-shaped crash vector on caller-controlled model ids."
+ },
+ {
+  "pr": 173,
+  "finding": "debate.js's distinctModels diagnostic is described as counting the number of families that actually argued, but it counts every seat including ones whose opening returned null and had no spare successfully replace it, overstating the panel's diversity in the collapsed return.",
+  "evidence": "workflows/debate.js:316 (also line 492)",
+  "label": "real",
+  "why": "Not disputed in the captured thread; the reviewer traces the exact counting mismatch between dead seats and the openings array that should be the source of truth."
+ },
+ {
+  "pr": 176,
+  "finding": "ops-holdout.sh's canary nonce check only validates the first line of a reply, so a claude process that echoes the nonce and exits 0 without producing any further answer makes ask() return an effectively empty response, and --canary can then report PASS without the denial actually being demonstrated.",
+  "evidence": "scripts/ops-holdout.sh:71",
+  "label": "real",
+  "why": "Reply: \"Fixed in 3134474, reproduced first. ask() now refuses a reply with nothing after the nonce, for --canary and --derive.\" The finder had reproduced rc 0 / canary PASS with a stub before the fix."
+ },
+ {
+  "pr": 176,
+  "finding": "The /cc-operator:tutorial command documentation advertises a --keep flag, but the command's invocation never forwards $ARGUMENTS to ops-tutorial.sh, so passing --keep has no effect and the temporary project is always deleted.",
+  "evidence": "commands/tutorial.md:11",
+  "label": "real",
+  "why": "Reply: \"Fixed in 3134474, reproduced first. commands/tutorial.md now forwards $ARGUMENTS. A new case runs --keep and asserts the project and its ledger row survive.\""
+ },
+ {
+  "pr": 176,
+  "finding": "commands/tutorial.md inserts $ARGUMENTS unquoted into a shell command, so an invocation containing shell metacharacters could inject additional shell syntax before ops-tutorial.sh gets a chance to validate the argument, which is especially risky given the command's broad Bash(bash:*) grant.",
+  "evidence": "commands/tutorial.md:12",
+  "label": "real",
+  "why": "Reply: \"Fixed in 487e3ed. The command now offers --keep only as a fixed literal, refuses any other argument, and never interpolates $ARGUMENTS.\""
+ },
+ {
+  "pr": 10,
+  "finding": "The statusline's continuation-accumulation loop over long ledger rows uses a plain while read loop without the usual `|| [ -n \"$line\" ]` guard, so a final unterminated row from tail (no trailing newline) can make read return non-zero and the last chunk goes unprocessed, causing the deviation counter to undercount or miss a trailing DEVIATION/HANDOFF-MARK row.",
+  "evidence": "scripts/statusline.sh:316",
+  "label": "real",
+  "why": "Filed as an unresolved Copilot review finding on the long-row accumulation fix; no rebuttal or fix commit was captured in the thread contradicting it, and it names a concrete missing guard idiom against a specific loop."
+ },
+ {
+  "pr": 87,
+  "finding": "The stdin-payload byte-cap exemption in validate_plugin.py's NUL-probe check applies to every bare read -r -d '' line, not only the intended stdin payload read, so removing -n 512 from an unrelated NUL probe leaves it unmatched by the bounded-read scan and lets an uncapped multi-megabyte slurp pass validation.",
+  "evidence": "scripts/validate_plugin.py:962",
+  "label": "real",
+  "why": "Not disputed in the captured thread; the reviewer traces the exact code path showing the exemption applies too broadly, matching this repo's known F30-shaped pattern of a check pinning the wrong invariant."
+ },
+ {
+  "pr": 87,
+  "finding": "validate_plugin.py's release-note suite-coverage check (live()) treats any occurrence of a suite name inside a step's name, env, if condition, echo text, or shell comment as proof that suite was executed, and it scans every line in the workflow file rather than only the publishing job, so mentioning a suite without running it can satisfy the coverage requirement.",
+  "evidence": "scripts/validate_plugin.py:2223",
+  "label": "real",
+  "why": "Not disputed in the captured thread; the reviewer demonstrates the exact substring-match escape (name/env/if/echo/comment) against the actual code shown."
+ },
+ {
+  "pr": 88,
+  "finding": "The Stop hook's block message composition at ops-stop-hook.sh has an escaping gap when embedding untrusted project data (paths/ledger content) into the message text read back by the model.",
+  "evidence": "scripts/ops-stop-hook.sh:197",
+  "label": "real",
+  "why": "The finding corresponds directly to CLAUDE.md's documented coupling rule for this exact file (\"the Stop hook's block MESSAGE ... is composed from UNTRUSTED project data and read back by the model, so both halves are guarded (PR #88 review)\"), confirming it was accepted and fixed rather than disputed."
+ }
+]
