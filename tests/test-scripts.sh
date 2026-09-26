@@ -8816,6 +8816,10 @@ TST 1 --plan "$TSB/plan.json" > "$TSB/tx.json" 2>/dev/null; _rc=$?
 cp "$TSB/bin/curl.ok" "$TSB/bin/curl"
 check "#151 curl exiting non-zero (transport failure) leaves every scorable task unvetted, rc 3" \
   "$([ "$_rc" -eq 3 ] && TSQ "$TSB/tx.json" 'len(o["vettingIncomplete"])==5 and "curl-failed" in o["testability"]["note"]' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
+# The die path for an unworkable TMPDIR: the failure is NAMED, not a raw bash error (0.11.17's shape).
+TMPDIR="$TSB/not-a-dir" TST 1 --plan "$TSB/plan.json" > "$TSB/notd.out" 2>"$TSB/notd.err"; _rc=$?
+check "#151 mktemp cannot create its workdir: rc 2, named die, not a raw bash error" \
+  "$([ "$_rc" -eq 2 ] && grep -q 'cannot create a temp dir under' "$TSB/notd.err" && echo 0 || echo 1)"
 # A 200 whose body is not bounded JSON is not an answer.
 head -c 1048600 /dev/zero | tr '\0' ' ' > "$TSB/big.json"; printf '%s' '{"answers":{"T0":{"noul":0.99}}}' >> "$TSB/big.json"
 TSB_RESP_SAVE="$TSB/resp.json"; cp "$TSB/big.json" "$TSB/resp.json"
@@ -8933,6 +8937,38 @@ check "#152 the key reaches curl only through the header file — never argv, ne
 TSB_CODE=503 TSD 1 --packets "$DSB/pk.json" > "$DSB/down.json" 2>/dev/null; _rc=$?
 check "#152 FAIL-OPEN: a non-200 leaves every packet unrouted (none bounced), rc 3, stdout still the packets" \
   "$([ "$_rc" -eq 3 ] && DQ "$DSB/down.json" 'all(r["action"]=="unrouted" for r in R.values()) and not o["decide"]["bounced"] and "503" in o["decide"]["note"]' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
+# A 200 whose body is not JSON at all: same fail-open bucket, same rc 3 (the merge
+# python's except-path — never exercised before this; a regression there exits 1).
+printf 'not json at all, just html <br>' > "$DSB/resp.garbage"
+cp "$DSB/resp.json" "$DSB/resp.save"; cp "$DSB/resp.garbage" "$DSB/resp.json"
+TSD 1 --packets "$DSB/pk.json" > "$DSB/garb.out" 2>/dev/null; _rc=$?
+cp "$DSB/resp.save" "$DSB/resp.json"
+check "#152 a 200 body that is not JSON fails OPEN: all unrouted, rc 3, note names the shape" \
+  "$([ "$_rc" -eq 3 ] && DQ "$DSB/garb.out" 'all(r["action"]=="unrouted" for r in R.values()) and not o["decide"]["bounced"] and "bounded" in (o["decide"]["note"] or "")' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
+# A tier answer that is PRESENT but unusable — choice off the enum, confidence a
+# string — reads UNROUTED, never a guessed dispatch (the second half of the
+# fail-open guard, beside the "gone" missing-answer case).
+printf '%s' '{"model":"jev-1.13.0","answers":{"P0_ready":{"type":"noul","noul":0.9},"P0_press":{"type":"noul","noul":0.05},"P0_decide":{"type":"noul","noul":0.1},"P0_tier":{"type":"choice","choice":"cheapest","confidence":0.9,"probabilities":{}},"P1_ready":{"type":"noul","noul":0.9},"P1_press":{"type":"noul","noul":0.05},"P1_decide":{"type":"noul","noul":0.1},"P1_tier":{"type":"choice","choice":"mechanical","confidence":"0.9","probabilities":{}}}}' > "$DSB/resp.badtier"
+cp "$DSB/resp.badtier" "$DSB/resp.json"
+TSD 1 --packets "$DSB/pk.json" > "$DSB/badtier.out" 2>/dev/null; _rc=$?
+cp "$DSB/resp.save" "$DSB/resp.json"
+check "#152 a present-but-unusable tier answer (off-enum choice, string confidence) is UNROUTED" \
+  "$([ "$_rc" -eq 3 ] && DQ "$DSB/badtier.out" 'R["ok-impl"]["action"]=="unrouted" and R["rushed"]["action"]=="unrouted" and o["decide"]["unrouted"]==7' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
+# mktemp's die path: an unworkable TMPDIR is a NAMED fault, not a raw bash error.
+TMPDIR="$DSB/not-a-dir" TSD 1 --packets "$DSB/pk.json" > "$DSB/notd.out" 2>"$DSB/notd.err"; _rc=$?
+check "#152 mktemp cannot create its workdir: rc 2, named die, not a raw bash error" \
+  "$([ "$_rc" -eq 2 ] && grep -q 'cannot create a temp dir under' "$DSB/notd.err" && echo 0 || echo 1)"
+# --available: both poles, symmetric with the #151 block.
+_o="$( TSD "" --available 2>&1 )"; _rc=$?
+check "#152 --available is rc 3 without the user's opt-in, even with a key on disk" \
+  "$([ "$_rc" -eq 3 ] && printf '%s' "$_o" | grep -q 'not opted in' && echo 0 || echo 1)"
+_o="$( TSD 1 --available 2>&1 )"; _rc=$?
+check "#152 --available is rc 0 opted in with a key, naming the pinned engine" \
+  "$([ "$_rc" -eq 0 ] && printf '%s' "$_o" | grep -q 'available: jev-1.13.0' && echo 0 || echo 1)"
+# The call stays bounded: --max-time and --max-filesize are in curl's argv (the
+# stub records argv; a dropped bound hangs a CLI commands/implement.md prescribes).
+check "#152 the transport stays bounded — max-time and max-filesize ride every call" \
+  "$(grep -q -- '--max-time' "$DSB/argv" && grep -qx '20' "$DSB/argv" && grep -q -- '--max-filesize' "$DSB/argv" && echo 0 || echo 1)"
 rm -f "$DSB/argv"
 TSD "" --packets "$DSB/pk.json" > "$DSB/noopt.json" 2>/dev/null; _rc=$?
 check "#152 not opted in: nothing is sent, every packet unrouted, rc 3" \

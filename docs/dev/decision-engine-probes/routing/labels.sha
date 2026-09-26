@@ -1,1 +1,5 @@
-88a35572651d9793970ddf6452906ebbcc439a1367ef5a9bd8e22296932a50d5  labels.json
+346a78f838eb1a2b5a9798d25b9d769aa681e77eff7d8e25241eabb4a6b32033  labels.json
+# Pre-registration provenance: labels.json was finalised AFTER the first runs,
+# not before — the pre-run digest recorded here originally (88a35572…) does not
+# reproduce. The digest above is of the file as committed. Treat the routing
+# labels as post-run labels, unlike testability/labels.sha (which matches).

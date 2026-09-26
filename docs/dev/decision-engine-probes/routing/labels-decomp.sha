@@ -1,1 +1,3 @@
-428e2c10af827ee5b858227ad71066f92d568200447ffc1fc5225957d5b7e413  labels-decomp.json
+9ddf8873914eae4e3da64e2204d7abc96065670d2aa7e68f17a40641b307a001  labels-decomp.json
+# Same provenance as labels.sha: the pre-run digest (428e2c10…) does not
+# reproduce; the digest above is of labels-decomp.json as committed.

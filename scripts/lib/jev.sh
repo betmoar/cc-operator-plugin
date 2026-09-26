@@ -60,7 +60,7 @@ jev_post() {
     unset KEY
     _code="$(curl -sS --max-time 20 --max-filesize "$JEV_MAX_RESP_BYTES" -X POST "$JEV_URL" -H @"$_w/hdr" \
       -H 'Content-Type: application/json' --data-binary @"$_w/req.json" -o "$_w/resp.json" \
-      -w '%{http_code}' 2>"$_w/curl.err")" || _code="curl-failed"
+      -w '%{http_code}' 2>"$_w/curl.err")" || _code="curl-failed:$(head -c 120 "$_w/curl.err" 2>/dev/null | tr '\n' ' ')"
     rm -f "$_w/hdr"
     if [ "$_code" = 200 ]; then JEV_NOTE=""; else JEV_NOTE="the engine answered '$_code'"; : > "$_w/resp.json"; fi
   else

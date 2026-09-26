@@ -11,12 +11,13 @@ export const meta = {
 // The workflow sandbox forbids import() (measured 2026-07-30), so this block is
 // copy-pasted across every workflow; check_workflow_parity holds BAD_CHARSET
 // byte-identical across the copies.
-// DEFAULTS ARE HARNESS ALIASES, NOT MODEL IDS (#76 step 2). Exactly the tiers
-// this workflow can dispatch: IMPLEMENT (mechanic) and JUDGMENT (author) — the
-// two tiers ops-render.sh binds the two implementer seats to. IMPLEMENT is the
-// point: until #158 no workflow dispatched it at all, so a tiers.env binding
-// for the implementer reached a seat only through `render` plus a session
-// restart (`grep -rn IMPLEMENT workflows/` returned nothing).
+// DEFAULTS ARE HARNESS ALIASES, NOT MODEL IDS (#76 step 2). The four tiers this
+// workflow can dispatch: IMPLEMENT (mechanic) and JUDGMENT (author) — the two
+// ops-render.sh binds the implementer seats to — plus MECHANICAL and RECON,
+// added by routing (#152): an ops-decide route can send a packet to either.
+// IMPLEMENT is the point: until #158 no workflow dispatched it at all, so a
+// tiers.env binding for the implementer reached a seat only through `render`
+// plus a session restart (`grep -rn IMPLEMENT workflows/` returned nothing).
 const DEFAULT_TIERS = {
   IMPLEMENT: "sonnet",
   JUDGMENT: "opus",
