@@ -12,11 +12,8 @@
 #   ops-testability.sh --available        → rc 0 if opted in and runnable, else rc 3 + reason
 #   ops-testability.sh --plan <file>      → the plan result JSON, testability merged, on stdout
 #
-# Opt-in is the USER's: CC_OPERATOR_JEV=1 in the environment (settings.json
-# `env`). Task text leaves the machine, so a model running this cannot grant it.
-# The key is TYPESAFE_API_KEY from the environment, else the line of that name in
-# ~/.env (parsed, never sourced). It reaches curl through a 0600 header file,
-# never argv, and is never printed.
+# Opt-in, key handling and the bounded call live in scripts/lib/jev.sh, shared
+# with ops-decide.sh.
 #
 # FAIL TOWARD UNVETTED. plan.js under "external" puts EVERY task in
 # `vettingIncomplete`; this script lifts a task out only when Jev scored it at or
@@ -27,15 +24,18 @@
 # lens, not a gate: nothing here touches a sentinel, a ledger row or Stop.
 set -eu
 
-MODEL="jev-1.13.0"   # pinned: `jev-latest` moves when a release ships
-URL="${CC_OPERATOR_JEV_URL:-https://api.typesafe.ai/v1/systemone}"
+case "${BASH_SOURCE[0]}" in
+  */*) _libdir="${BASH_SOURCE[0]%/*}/lib" ;;
+  *)   _libdir="lib" ;;
+esac
+# shellcheck source=/dev/null
+. "$_libdir/jev.sh" || { echo "ops-testability: cannot source $_libdir/jev.sh" >&2; exit 2; }
+MODEL="$JEV_MODEL"
 # Measured separation on the Surface 7 fixture: every "no" <= 0.41 (probe
 # request) / <= 0.42 (this script's id-less request), every "yes" >= 0.87.
 THRESHOLD="0.6"
 MAX_TASKS=60          # one call: 64k tokens/request, 32k of them state
-MAX_RESP_BYTES=1048576 # an answer for 60 Nouls is ~5 KB. Two bounds: curl --max-filesize (only
-                       # when Content-Length is sent) and the merge step's size check (always).
-KEYFILE="${CC_OPERATOR_JEV_KEYFILE:-$HOME/.env}"
+MAX_RESP_BYTES="$JEV_MAX_RESP_BYTES" # an answer for 60 Nouls is ~5 KB
 
 die() { echo "ops-testability: $*" >&2; exit 2; }
 unavailable() { echo "ops-testability: unavailable — $*" >&2; }
@@ -46,32 +46,6 @@ usage: ops-testability.sh --available
        ops-testability.sh --plan <file>
 EOF
   exit 2
-}
-
-# read_key: env first, then one bounded parse of KEYFILE. Prints nothing; sets KEY.
-read_key() {
-  KEY="${TYPESAFE_API_KEY:-}"
-  [ -n "$KEY" ] && return 0
-  { [ -f "$KEYFILE" ] && [ ! -L "$KEYFILE" ]; } || return 1
-  local _line _n=0
-  while IFS= read -r -n 4096 _line || [ -n "$_line" ]; do
-    _n=$((_n + 1)); [ "$_n" -gt 500 ] && break
-    case "$_line" in
-      TYPESAFE_API_KEY=*|"export TYPESAFE_API_KEY="*)
-        KEY="${_line#*TYPESAFE_API_KEY=}"; KEY="${KEY%$'\r'}"; KEY="${KEY%\"}"; KEY="${KEY#\"}"
-        KEY="${KEY%\'}"; KEY="${KEY#\'}" ;;
-    esac
-  done < "$KEYFILE"
-  [ -n "$KEY" ]
-}
-
-# why_unavailable: prints the first missing precondition, rc 1; rc 0 when runnable.
-why_unavailable() {
-  [ "${CC_OPERATOR_JEV:-}" = 1 ] || { echo "not opted in (the user sets CC_OPERATOR_JEV=1)"; return 1; }
-  command -v curl >/dev/null 2>&1 || { echo "curl not found"; return 1; }
-  command -v python3 >/dev/null 2>&1 || { echo "python3 not found"; return 1; }
-  read_key || { echo "no TYPESAFE_API_KEY in the environment or $KEYFILE"; return 1; }
-  return 0
 }
 
 MODE=""; PLAN=""
@@ -86,7 +60,7 @@ done
 [ -n "$MODE" ] || usage
 
 if [ "$MODE" = available ]; then
-  if _why="$(why_unavailable)"; then echo "available: $MODEL at threshold $THRESHOLD"; exit 0; fi
+  if _why="$(jev_why_unavailable)"; then echo "available: $MODEL at threshold $THRESHOLD"; exit 0; fi
   unavailable "$_why"; exit 3
 fi
 
@@ -135,20 +109,11 @@ PY
   || die "--plan '$PLAN' is not a plan result (needs a non-empty tasks array)"
 
 RC=0; ENGINE_NOTE=""
-# why_unavailable runs in a subshell under $( ), so KEY does not survive it —
-# read it again here, in this shell, where the header file needs it.
 if [ "$_BUILD" -eq 4 ]; then
   ENGINE_NOTE="more than $MAX_TASKS tasks — one call carries at most $MAX_TASKS, nothing was sent"
   : > "$WORK/resp.json"
-elif ENGINE_NOTE="$(why_unavailable)" && read_key; then
-  ( umask 077; printf 'Authorization: Bearer %s\n' "$KEY" > "$WORK/hdr" )
-  unset KEY
-  _code="$(curl -sS --max-time 20 --max-filesize "$MAX_RESP_BYTES" -X POST "$URL" -H @"$WORK/hdr" -H 'Content-Type: application/json' \
-    --data-binary @"$WORK/req.json" -o "$WORK/resp.json" -w '%{http_code}' 2>"$WORK/curl.err")" || _code="curl-failed"
-  rm -f "$WORK/hdr"
-  if [ "$_code" = 200 ]; then ENGINE_NOTE=""; else ENGINE_NOTE="the engine answered '$_code'"; : > "$WORK/resp.json"; fi
 else
-  : > "$WORK/resp.json"
+  jev_post "$WORK"; ENGINE_NOTE="$JEV_NOTE"
 fi
 
 # Merge. Every task gets testable yes|no|unvetted in `vetting`; no → `blocked`

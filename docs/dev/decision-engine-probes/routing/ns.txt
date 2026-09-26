@@ -1,0 +1,1 @@
+Sentinel ownership lives where six readers and three writers agree on it, and the Stop gate still blocks on mine + unowned. Missed if: any reader and writer disagree on an owner, or an unowned sentinel stops blocking.

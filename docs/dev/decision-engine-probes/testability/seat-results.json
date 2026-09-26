@@ -1,0 +1,1004 @@
+{
+ "t01": {
+  "structured_output": {
+   "feasible": "needs-info",
+   "issues": [
+    {
+     "detail": "tests/test-scripts.sh contains no case labeled '-- Case: --target keys the cap', and the task's files list is scripts/ops-verdict.sh only \u2014 nobody writes the test case the testCycle greps for. Either add tests/test-scripts.sh to the task's files (with the case asserting an observable effect, e.g. `./ops-verdict.sh --target staging --json` output contains '\"cap\":' with the staging-scoped value and exit 0) or change testCycle to an existing observable command. As written, the cycle cannot pass.",
+     "kind": "gap"
+    },
+    {
+     "detail": "The expected output is secondhand ('expect the case to print PASS'), not a directly observed artifact. Pass/fail comes from the harness's internal comparison, which is untestable until the case exists and its assertions themselves name observable behavior (real command invocation + expected stdout/exit code of ops-verdict.sh --target).",
+     "kind": "untestable"
+    },
+    {
+     "detail": "--target is undefined: no CLI syntax (flag value, required vs optional), no semantics (what it keys/changes in the verdict/cap), no invalid-input behavior. The cycle specifies no observable result of the feature itself, only that a (nonexistent) harness case prints PASS.",
+     "kind": "gap"
+    },
+    {
+     "detail": "tests/test-scripts.sh was not found in the workspace (cwd /private/tmp/.../scratchpad/tp) \u2014 verify the harness's real path and grep token ('Case:' label format) before relying on this cycle.",
+     "kind": "dependency-missing"
+    }
+   ],
+   "testable": "no"
+  },
+  "usage": {
+   "input_tokens": 9080,
+   "cache_creation_input_tokens": 0,
+   "cache_read_input_tokens": 8640,
+   "output_tokens": 1114,
+   "output_tokens_details": {
+    "thinking_tokens": 0
+   },
+   "server_tool_use": {
+    "web_search_requests": 0,
+    "web_fetch_requests": 0
+   },
+   "service_tier": "standard",
+   "cache_creation": {
+    "ephemeral_1h_input_tokens": 0,
+    "ephemeral_5m_input_tokens": 0
+   },
+   "inference_geo": "",
+   "iterations": [],
+   "speed": "standard"
+  },
+  "total_cost_usd": 0.031028,
+  "seconds": 28,
+  "model": [
+   "glm-5.3-flash"
+  ]
+ },
+ "t02": {
+  "structured_output": {
+   "feasible": "yes",
+   "issues": [
+    {
+     "detail": "Expected output is concrete (command `printf '| a | b | c | PASS |\\r\\r\\n' > /tmp/l && bash scripts/ops-reverify.sh /tmp/l`), but the pass criterion has two ambiguities: (1) \"prints 'a PASS'\" \u2014 is that the full stdout line or just a substring, and does the real script emit extra columns/counts? (2) \"identical to the LF twin\" \u2014 the twin fixture is never created in the test cycle; it must be defined as `printf '| a | b | c | PASS |\\n' > /tmp/lf` and compared via `diff <(bash scripts/ops-reverify.sh /tmp/lf) <(bash scripts/ops-reverify.sh /tmp/l)` for the claim to be checkable. Make both explicit and the cycle is fully observable.",
+     "kind": "untestable"
+    }
+   ],
+   "testable": "yes"
+  },
+  "usage": {
+   "input_tokens": 8671,
+   "cache_creation_input_tokens": 0,
+   "cache_read_input_tokens": 0,
+   "output_tokens": 526,
+   "output_tokens_details": {
+    "thinking_tokens": 0
+   },
+   "server_tool_use": {
+    "web_search_requests": 0,
+    "web_fetch_requests": 0
+   },
+   "service_tier": "standard",
+   "cache_creation": {
+    "ephemeral_1h_input_tokens": 0,
+    "ephemeral_5m_input_tokens": 0
+   },
+   "inference_geo": "",
+   "iterations": [],
+   "speed": "standard"
+  },
+  "total_cost_usd": 0.022602,
+  "seconds": 18,
+  "model": [
+   "glm-5.3-flash"
+  ]
+ },
+ "t03": {
+  "structured_output": {
+   "feasible": "needs-info",
+   "issues": [
+    {
+     "detail": "testCycle says \"The detector works correctly and handles edge cases\" \u2014 no command, no input, no expected output. \"Works correctly\" and \"handles edge cases\" are both unverifiable assertions; nothing in the cycle can pass or fail observably. The task is only feasible once the detector's actual behavior is specified (what it detects, on what input, what it returns). An observable testCycle would look like: \"Run `bash scripts/lib/caps.sh detect <fixture>` / `source scripts/lib/caps.sh && detect_caps <input>`; expect exit 0 and output `cap:none` for a fixture with no cap, and exit 1 with `cap:<name>` for a fixture containing <the capped pattern>.\" Even with that, the task as written also needs a definition of what \"improve\" means \u2014 fix a known bug, add detection of a new cap type, or reduce false positives \u2014 otherwise there is no criterion the improved behavior must meet.",
+     "kind": "untestable"
+    }
+   ],
+   "testable": "no"
+  },
+  "usage": {
+   "input_tokens": 8623,
+   "cache_creation_input_tokens": 0,
+   "cache_read_input_tokens": 0,
+   "output_tokens": 465,
+   "output_tokens_details": {
+    "thinking_tokens": 0
+   },
+   "server_tool_use": {
+    "web_search_requests": 0,
+    "web_fetch_requests": 0
+   },
+   "service_tier": "standard",
+   "cache_creation": {
+    "ephemeral_1h_input_tokens": 0,
+    "ephemeral_5m_input_tokens": 0
+   },
+   "inference_geo": "",
+   "iterations": [],
+   "speed": "standard"
+  },
+  "total_cost_usd": 0.021896000000000002,
+  "seconds": 20,
+  "model": [
+   "glm-5.3-flash"
+  ]
+ },
+ "t04": {
+  "structured_output": {
+   "feasible": "yes",
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "testCycle \"Run the tests.\" names no command, no expected output, no pass/fail criterion. A refactor task must pin observable behavior: e.g. `bash scripts/statusline.sh test-input.json` produces identical stdout before vs. after (byte-for-byte), or `bats scripts/statusline.bats` \u2192 N/N pass. Replace with a concrete command + expected output (or a golden-output diff against the pre-refactor script), otherwise 'works after refactor' is unverifiable."
+    },
+    {
+     "kind": "gap",
+     "detail": "No test suite for scripts/statusline.sh exists in the workspace, so 'Run the tests.' refers to nothing. Before refactoring, capture the current output as a baseline/golden file and make the testCycle: run statusline.sh against a fixed sample input and diff stdout against the golden file \u2014 zero diffs expected."
+    }
+   ],
+   "testable": "no"
+  },
+  "usage": {
+   "input_tokens": 8617,
+   "cache_creation_input_tokens": 0,
+   "cache_read_input_tokens": 0,
+   "output_tokens": 479,
+   "output_tokens_details": {
+    "thinking_tokens": 0
+   },
+   "server_tool_use": {
+    "web_search_requests": 0,
+    "web_fetch_requests": 0
+   },
+   "service_tier": "standard",
+   "cache_creation": {
+    "ephemeral_1h_input_tokens": 0,
+    "ephemeral_5m_input_tokens": 0
+   },
+   "inference_geo": "",
+   "iterations": [],
+   "speed": "standard"
+  },
+  "total_cost_usd": 0.022024,
+  "seconds": 16,
+  "model": [
+   "glm-5.3-flash"
+  ]
+ },
+ "t05": {
+  "structured_output": {
+   "feasible": "yes",
+   "issues": [
+    {
+     "detail": "tests/test_workflows.mjs contains no assertion named 'spec Status gate: a leading BOM' (grep -c 'leading BOM' = 0) and has no BOM-related coverage at all. The testCycle's expected output can only be produced after the assertion is written and the fix lands. The task (or testCycle) should state explicitly that the task includes adding that assertion to tests/test_workflows.mjs; as written it reads as if the assertion already exists.",
+     "kind": "gap"
+    },
+    {
+     "kind": "risk",
+     "detail": "Reproduction input is undefined: a UTF-8 BOM (EF BB BF) must be present at byte 0 of the spec file the Status gate reads. The test needs a BOM-prefixed fixture (writing one with String.fromCharCode(0xFEFF) is the usual trap \u2014 that writes U+FEFF as UTF-8 bytes EF BB BF only if the file is written UTF-8 without escaping; verify with xxd/od). Without a named fixture step, the assertion is well-formed but the BOM condition could be satisfied by accident."
+    },
+    {
+     "kind": "untestable",
+     "detail": "'the summary reports 0 failures' is only observable if the runner prints a failure count; node --test's TAP reporter prints '# fail 0' at the end, so this is observable \u2014 provided the suite is run with node --test (or the runner emits a count). If tests/test_workflows.mjs is a bare script without a summary line, that half of the expected output has nothing to attach to."
+    }
+   ],
+   "testable": "yes"
+  },
+  "usage": {
+   "input_tokens": 8649,
+   "cache_creation_input_tokens": 0,
+   "cache_read_input_tokens": 0,
+   "output_tokens": 886,
+   "output_tokens_details": {
+    "thinking_tokens": 0
+   },
+   "server_tool_use": {
+    "web_search_requests": 0,
+    "web_fetch_requests": 0
+   },
+   "service_tier": "standard",
+   "cache_creation": {
+    "ephemeral_1h_input_tokens": 0,
+    "ephemeral_5m_input_tokens": 0
+   },
+   "inference_geo": "",
+   "iterations": [],
+   "speed": "standard"
+  },
+  "total_cost_usd": 0.026158,
+  "seconds": 22,
+  "model": [
+   "glm-5.3-flash"
+  ]
+ },
+ "t06": {
+  "structured_output": {
+   "feasible": "yes",
+   "issues": [
+    {
+     "detail": "Verified hooks/hooks.json: .hooks.PostToolUse[0].hooks[0].command resolves to the real guard entry (`bash \"$CLAUDE_PROJECT_DIR/hooks/compressor-guard.sh\"` with JSON-stdin parsing). testCycle executes that exact command string via bash -c under PATH=/usr/bin:/bin (node excluded), feeds </dev/null, and asserts `echo $?` prints 0 \u2014 a real command with a specific expected output, not vague behavior. It is a genuine red/green test: the pre-fix guard fails under a node-less PATH, the fixed one passes.",
+     "kind": "untestable"
+    }
+   ],
+   "testable": "yes"
+  },
+  "usage": {
+   "input_tokens": 8660,
+   "cache_creation_input_tokens": 0,
+   "cache_read_input_tokens": 0,
+   "output_tokens": 1289,
+   "output_tokens_details": {
+    "thinking_tokens": 0
+   },
+   "server_tool_use": {
+    "web_search_requests": 0,
+    "web_fetch_requests": 0
+   },
+   "service_tier": "standard",
+   "cache_creation": {
+    "ephemeral_1h_input_tokens": 0,
+    "ephemeral_5m_input_tokens": 0
+   },
+   "inference_geo": "",
+   "iterations": [],
+   "speed": "standard"
+  },
+  "total_cost_usd": 0.03021,
+  "seconds": 38,
+  "model": [
+   "glm-5.3-flash"
+  ]
+ },
+ "t07": {
+  "structured_output": {
+   "feasible": "yes",
+   "issues": [
+    {
+     "detail": "testCycle asserts no observable behavior: no command is run, no error scenario is specified (missing file? bad flag? empty input?), and 'gracefully'/'helpful message' have no concrete check \u2014 no exit code, no stderr text to match. 'Errors are handled gracefully' can never pass or fail.",
+     "kind": "untestable"
+    },
+    {
+     "detail": "scripts/ops-task.sh \u2014 could not verify it exists in the workspace (read-only vetting did not find it listed); if absent, the task is a gap, not just a testability one.",
+     "kind": "risk"
+    },
+    {
+     "detail": "To make it testable, name concrete invocations with expected observable output, e.g.: `scripts/ops-task.sh --config /nonexistent` \u2192 exit code 2 and stderr matches 'config not found'; `scripts/ops-task.sh` with no args \u2192 exit code 1 and stderr prints usage line; `scripts/ops-task.sh < missing-input.txt` \u2192 non-zero exit, no partial side effects (output file unchanged).",
+     "kind": "gap"
+    }
+   ],
+   "testable": "no"
+  },
+  "usage": {
+   "input_tokens": 8625,
+   "cache_creation_input_tokens": 0,
+   "cache_read_input_tokens": 0,
+   "output_tokens": 666,
+   "output_tokens_details": {
+    "thinking_tokens": 0
+   },
+   "server_tool_use": {
+    "web_search_requests": 0,
+    "web_fetch_requests": 0
+   },
+   "service_tier": "standard",
+   "cache_creation": {
+    "ephemeral_1h_input_tokens": 0,
+    "ephemeral_5m_input_tokens": 0
+   },
+   "inference_geo": "",
+   "iterations": [],
+   "speed": "standard"
+  },
+  "total_cost_usd": 0.02391,
+  "seconds": 30,
+  "model": [
+   "glm-5.3-flash"
+  ]
+ },
+ "t08": {
+  "structured_output": {
+   "feasible": "yes",
+   "issues": [
+    {
+     "detail": "Testable: cycle names two observable checks \u2014 (1) run `ops-verdict.sh x crit ev MOOT --owner s` and assert the appended VERDICTS.md row ends with '| MOOT |'; (2) `grep -c MOOT .operator/VERDICTS.md` counts 0 before, 1 after. Real command, real expected output.",
+     "kind": "gap"
+    },
+    {
+     "detail": "Working dir (scratchpad, not a git repo) contains no scripts/ops-verdict.sh or .operator/VERDICTS.md, so the command syntax (`x crit ev MOOT --owner s`), the row format ('| MOOT |' as the final column), and the exact VERDICTS.md path could not be verified against the real CLI. If the script's verdict word is validated against a fixed set in caps.sh, adding MOOT there is implied but the cycle doesn't assert it; observable acceptance is still fully specified.",
+     "kind": "dependency-missing"
+    }
+   ],
+   "testable": "yes"
+  },
+  "usage": {
+   "input_tokens": 8663,
+   "cache_creation_input_tokens": 0,
+   "cache_read_input_tokens": 0,
+   "output_tokens": 622,
+   "output_tokens_details": {
+    "thinking_tokens": 0
+   },
+   "server_tool_use": {
+    "web_search_requests": 0,
+    "web_fetch_requests": 0
+   },
+   "service_tier": "standard",
+   "cache_creation": {
+    "ephemeral_1h_input_tokens": 0,
+    "ephemeral_5m_input_tokens": 0
+   },
+   "inference_geo": "",
+   "iterations": [],
+   "speed": "standard"
+  },
+  "total_cost_usd": 0.023546,
+  "seconds": 24,
+  "model": [
+   "glm-5.3-flash"
+  ]
+ },
+ "t09": {
+  "structured_output": {
+   "feasible": "yes",
+   "issues": [
+    {
+     "detail": "testCycle asserts a subjective performance claim with no measurement, baseline, or threshold \u2014 'noticeably faster' cannot pass or fail. A testable version: (1) record baseline before the change: `time bash tests/test-scripts.sh` (capture seconds and pass/fail counts); (2) acceptance = after the change, `bash tests/test-scripts.sh` still exits 0 with the identical pass/fail counts, AND its wall-clock time is \u2264 70% of the recorded baseline (or a fixed absolute cap, e.g. < 10s). Without a named command, expected exit code, and a numeric speedup target, the cycle is untestable.",
+     "kind": "untestable"
+    },
+    {
+     "detail": "No stated constraint that suite behavior must be preserved \u2014 a 'faster' suite that skips tests would satisfy the goal as written. The observable criterion must pin the output invariant (same pass count, exit 0) alongside the timing target.",
+     "kind": "gap"
+    }
+   ],
+   "testable": "no"
+  },
+  "usage": {
+   "input_tokens": 9707,
+   "cache_creation_input_tokens": 0,
+   "cache_read_input_tokens": 7808,
+   "output_tokens": 691,
+   "output_tokens_details": {
+    "thinking_tokens": 0
+   },
+   "server_tool_use": {
+    "web_search_requests": 0,
+    "web_fetch_requests": 0
+   },
+   "service_tier": "standard",
+   "cache_creation": {
+    "ephemeral_1h_input_tokens": 0,
+    "ephemeral_5m_input_tokens": 0
+   },
+   "inference_geo": "",
+   "iterations": [],
+   "speed": "standard"
+  },
+  "total_cost_usd": 0.0278856,
+  "seconds": 25,
+  "model": [
+   "glm-5.3-flash"
+  ]
+ },
+ "t10": {
+  "structured_output": {
+   "feasible": "yes",
+   "issues": [
+    {
+     "detail": "Feasibility of the testCycle rests on scripts/ops-tiers.sh already implementing --json and emitting a JUDGMENT key. I could not verify from the task packet alone; the vet was of the acceptance criterion, which is fully observable: exact command `bash scripts/ops-tiers.sh --json | jq -r .JUDGMENT` with exact expected stdout `opus`. If --json/JUDGMENT are not yet implemented, the criterion still correctly defines the post-implementation check \u2014 no vagueness to fix.",
+     "kind": "risk"
+    }
+   ],
+   "testable": "yes"
+  },
+  "usage": {
+   "input_tokens": 837,
+   "cache_creation_input_tokens": 0,
+   "cache_read_input_tokens": 7808,
+   "output_tokens": 485,
+   "output_tokens_details": {
+    "thinking_tokens": 0
+   },
+   "server_tool_use": {
+    "web_search_requests": 0,
+    "web_fetch_requests": 0
+   },
+   "service_tier": "standard",
+   "cache_creation": {
+    "ephemeral_1h_input_tokens": 0,
+    "ephemeral_5m_input_tokens": 0
+   },
+   "inference_geo": "",
+   "iterations": [],
+   "speed": "standard"
+  },
+  "total_cost_usd": 0.0080856,
+  "seconds": 46,
+  "model": [
+   "glm-5.3-flash"
+  ]
+ },
+ "t11": {
+  "structured_output": {
+   "feasible": "yes",
+   "issues": [
+    {
+     "detail": "testCycle names a runnable command (bash scripts/ops-tiers.sh --check) but no expected output or exit code. 'Validate model ids' does not define what validation means: which ids are valid, which are rejected, what the tool prints/succeeds on vs fails on. Pass/fail cannot be judged from the command alone. Observable version: e.g. 'bash scripts/ops-tiers.sh --check exits 0 and prints nothing on a valid ids file; with id \"gpt-4\" in ops-tiers list, it exits 1 and prints \"invalid model id: gpt-4\" (to stderr)'.",
+     "kind": "untestable"
+    },
+    {
+     "detail": "scripts/ops-tiers.sh does not exist in the current workspace (cwd is a scratchpad, not the repo tree), so --check cannot be run as-is. If the task is evaluated in the repo that owns scripts/ops-tiers.sh this is moot; otherwise the task must also create the file \u2014 the file list says 'scripts/ops-tiers.sh' which could mean creating it, in which case the testCycle needs input data: a sample valid and a sample invalid ops-tiers file to check against.",
+     "kind": "dependency-missing"
+    }
+   ],
+   "testable": "no"
+  },
+  "usage": {
+   "input_tokens": 8622,
+   "cache_creation_input_tokens": 0,
+   "cache_read_input_tokens": 0,
+   "output_tokens": 473,
+   "output_tokens_details": {
+    "thinking_tokens": 0
+   },
+   "server_tool_use": {
+    "web_search_requests": 0,
+    "web_fetch_requests": 0
+   },
+   "service_tier": "standard",
+   "cache_creation": {
+    "ephemeral_1h_input_tokens": 0,
+    "ephemeral_5m_input_tokens": 0
+   },
+   "inference_geo": "",
+   "iterations": [],
+   "speed": "standard"
+  },
+  "total_cost_usd": 0.021974,
+  "seconds": 18,
+  "model": [
+   "glm-5.3-flash"
+  ]
+ },
+ "t12": {
+  "structured_output": {
+   "feasible": "yes",
+   "issues": [
+    {
+     "detail": "testCycle 'Output should be correct.' names no observable command and no expected output; it can never fail, so it verifies nothing. Observable alternative: e.g. `test -f docs/maintainer/LANDMINES.md && ! grep -qi 'TODO\\|TBD' docs/maintainer/LANDMINES.md` plus per-item checks like `grep -qi '<named pitfall>' docs/maintainer/LANDMINES.md` for each required landmine, or a markdownlint run with expected exit 0.",
+     "kind": "untestable"
+    },
+    {
+     "detail": "'the landmines' is undefined \u2014 the task does not enumerate which pitfalls must be documented, so any non-empty file at that path trivially passes. Fix by listing the specific landmines (or their source: e.g. 'one entry per WARNING/quirk noted in code comments and maintainer docs') in the task or testCycle.",
+     "kind": "gap"
+    }
+   ],
+   "testable": "no"
+  },
+  "usage": {
+   "input_tokens": 815,
+   "cache_creation_input_tokens": 0,
+   "cache_read_input_tokens": 7808,
+   "output_tokens": 899,
+   "output_tokens_details": {
+    "thinking_tokens": 0
+   },
+   "server_tool_use": {
+    "web_search_requests": 0,
+    "web_fetch_requests": 0
+   },
+   "service_tier": "standard",
+   "cache_creation": {
+    "ephemeral_1h_input_tokens": 0,
+    "ephemeral_5m_input_tokens": 0
+   },
+   "inference_geo": "",
+   "iterations": [],
+   "speed": "standard"
+  },
+  "total_cost_usd": 0.012181599999999999,
+  "seconds": 23,
+  "model": [
+   "glm-5.3-flash"
+  ]
+ },
+ "t13": {
+  "structured_output": {
+   "feasible": "yes",
+   "issues": [
+    {
+     "detail": "testCycle runs `ln -s /etc/passwd .operator/pending/x` but never creates the directory; cold-run fails at ln. Prefix with `mkdir -p .operator/pending`.",
+     "kind": "gap"
+    },
+    {
+     "detail": "VERDICTS.md byte-count check is only meaningful if the file pre-exists with content; assert `wc -c` baseline is captured before invocation, otherwise an absent file trivially passes (0 == 0).",
+     "kind": "gap"
+    },
+    {
+     "detail": "Invocation `ops-verdict.sh x c e PASS` assumes the script is on PATH or cwd-relative; name the explicit path (./scripts/ops-verdict.sh) so the cycle is runnable as written.",
+     "kind": "risk"
+    }
+   ],
+   "testable": "yes"
+  },
+  "usage": {
+   "input_tokens": 8658,
+   "cache_creation_input_tokens": 0,
+   "cache_read_input_tokens": 0,
+   "output_tokens": 1423,
+   "output_tokens_details": {
+    "thinking_tokens": 0
+   },
+   "server_tool_use": {
+    "web_search_requests": 0,
+    "web_fetch_requests": 0
+   },
+   "service_tier": "standard",
+   "cache_creation": {
+    "ephemeral_1h_input_tokens": 0,
+    "ephemeral_5m_input_tokens": 0
+   },
+   "inference_geo": "",
+   "iterations": [],
+   "speed": "standard"
+  },
+  "total_cost_usd": 0.031546000000000005,
+  "seconds": 38,
+  "model": [
+   "glm-5.3-flash"
+  ]
+ },
+ "t14": {
+  "structured_output": {
+   "feasible": "yes",
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "testCycle 'Verify the canary behaves as expected by running it' names no observable criterion: no command with arguments, no expected stdout/exit code, no artifact to diff. 'Behaves as expected' is undefined \u2014 there is no stated spec of what the holdout canary must do (e.g., probe a holdout endpoint, emit a status JSON, exit 0 on success / non-zero on failure). Testable rewrite example: 'bash scripts/ops-holdout.sh --dry-run exits 0 and prints CANARY OK; against a dead endpoint it exits non-zero and prints CANARY FAIL'. Also unresolved dependency: the target file scripts/ops-holdout.sh is the artifact being created, so the cycle cannot 'run it' until a contract (arguments, output format, exit codes) is defined elsewhere."
+    }
+   ],
+   "testable": "no"
+  },
+  "usage": {
+   "input_tokens": 8627,
+   "cache_creation_input_tokens": 0,
+   "cache_read_input_tokens": 0,
+   "output_tokens": 544,
+   "output_tokens_details": {
+    "thinking_tokens": 0
+   },
+   "server_tool_use": {
+    "web_search_requests": 0,
+    "web_fetch_requests": 0
+   },
+   "service_tier": "standard",
+   "cache_creation": {
+    "ephemeral_1h_input_tokens": 0,
+    "ephemeral_5m_input_tokens": 0
+   },
+   "inference_geo": "",
+   "iterations": [],
+   "speed": "standard"
+  },
+  "total_cost_usd": 0.022694,
+  "seconds": 21,
+  "model": [
+   "glm-5.3-flash"
+  ]
+ },
+ "t15": {
+  "structured_output": {
+   "feasible": "yes",
+   "issues": [
+    {
+     "kind": "gap",
+     "detail": "testCycle says 'lowering FLOOR_WORKFLOWS above the count makes it exit 1' \u2014 direction is contradictory. Making the floor exceed the count is *raising* it (or 'setting it above the count'), not lowering it; literal lowering would move the floor below the count and keep exit 0. Fix wording: 'setting FLOOR_WORKFLOWS above the count makes it exit 1'. This is likely a typo, not an untestable assertion \u2014 both branches are otherwise concretely observable."
+    },
+    {
+     "kind": "dependency-missing",
+     "detail": "Testability depends on scripts/gate-suite.sh existing and printing the exact format 'workflows: 492 passed'. Verify the script exists and emits that literal string, and that tests/floors.env defines FLOOR_WORKFLOWS, before treating the cycle as runnable. Unverified from here \u2014 I did not locate the files in this environment. If gate-suite.sh emits a different count string, the expected output must be updated to match real output."
+    }
+   ],
+   "testable": "yes"
+  },
+  "usage": {
+   "input_tokens": 843,
+   "cache_creation_input_tokens": 0,
+   "cache_read_input_tokens": 7808,
+   "output_tokens": 455,
+   "output_tokens_details": {
+    "thinking_tokens": 0
+   },
+   "server_tool_use": {
+    "web_search_requests": 0,
+    "web_fetch_requests": 0
+   },
+   "service_tier": "standard",
+   "cache_creation": {
+    "ephemeral_1h_input_tokens": 0,
+    "ephemeral_5m_input_tokens": 0
+   },
+   "inference_geo": "",
+   "iterations": [],
+   "speed": "standard"
+  },
+  "total_cost_usd": 0.0077976,
+  "seconds": 17,
+  "model": [
+   "glm-5.3-flash"
+  ]
+ },
+ "t16": {
+  "structured_output": {
+   "feasible": "yes",
+   "testable": "no",
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "The testCycle is half observable, half vague. 'node tests/test_workflows.mjs passes' is a real command with a binary, checkable outcome (exit 0 / suite green). But 'the code is cleaner and easier to read' asserts no observable criterion at all \u2014 cleanliness has no command, no expected output, and no pass/fail definition; any reviewer can disagree and neither side is wrong. The measurable part only certifies behavior-preservation, which is a side effect of cleanup, not the cleanup itself. To make it testable, replace the subjective clause with an observable proxy, e.g.: 'node tests/test_workflows.mjs passes with identical pass/fail counts before and after (baseline: N passing, 0 failing), AND line count of workflows/plan.js decreases (state the target, e.g. wc -l workflows/plan.js < X), AND node -e \"import('./workflows/plan.js')\" still loads without error' \u2014 or split t16 into t16a 'plan.js: no behavior change, suite green' (already testable) and t16b with a concrete metric (dead code removed: named exports/functions deleted and grep confirms zero remaining references)."
+    },
+    {
+     "kind": "dependency-missing",
+     "detail": "tests/test_workflows.mjs and workflows/plan.js do not exist under the current working directory (checked: no tests/ or workflows/ anywhere in /private/tmp/claude-501/.../tp). The command cannot run from here, so even the objective half of the testCycle is unverifiable in this environment \u2014 it presumably resolves against a repo root not present in this scratchpad. Before execution the task needs the correct repo root, and before signing off on the suite-passing clause a baseline run must be recorded (per verification rules: record pass/fail counts before the refactor, report the delta after)."
+    }
+   ]
+  },
+  "usage": {
+   "input_tokens": 823,
+   "cache_creation_input_tokens": 0,
+   "cache_read_input_tokens": 7808,
+   "output_tokens": 724,
+   "output_tokens_details": {
+    "thinking_tokens": 0
+   },
+   "server_tool_use": {
+    "web_search_requests": 0,
+    "web_fetch_requests": 0
+   },
+   "service_tier": "standard",
+   "cache_creation": {
+    "ephemeral_1h_input_tokens": 0,
+    "ephemeral_5m_input_tokens": 0
+   },
+   "inference_geo": "",
+   "iterations": [],
+   "speed": "standard"
+  },
+  "total_cost_usd": 0.0104476,
+  "seconds": 24,
+  "model": [
+   "glm-5.3-flash"
+  ]
+ },
+ "t17": {
+  "structured_output": {
+   "feasible": "yes",
+   "issues": [
+    {
+     "detail": "The grep pattern asserts the path is wrapped in literal single quotes ('/tmp/p/.operator/bin/ops-task.sh'). That is only correct as an acceptance criterion if the banner contract mandates shell-quoting of the path; if the implementation is only required to use the absolute path, the quote characters make the test fail on a valid implementation. If quoting is the contract, the criterion is fine as written.",
+     "kind": "risk"
+    },
+    {
+     "kind": "dependency-missing",
+     "detail": "Test requires jq on PATH; fine on this machine, but the cycle has no fallback if absent (failure mode: jq: command not found, grep -c reads empty input \u2192 0, indistinguishable from a wrong banner). Minor."
+    }
+   ],
+   "testable": "yes"
+  },
+  "usage": {
+   "input_tokens": 866,
+   "cache_creation_input_tokens": 0,
+   "cache_read_input_tokens": 7808,
+   "output_tokens": 940,
+   "output_tokens_details": {
+    "thinking_tokens": 0
+   },
+   "server_tool_use": {
+    "web_search_requests": 0,
+    "web_fetch_requests": 0
+   },
+   "service_tier": "standard",
+   "cache_creation": {
+    "ephemeral_1h_input_tokens": 0,
+    "ephemeral_5m_input_tokens": 0
+   },
+   "inference_geo": "",
+   "iterations": [],
+   "speed": "standard"
+  },
+  "total_cost_usd": 0.0126936,
+  "seconds": 29,
+  "model": [
+   "glm-5.3-flash"
+  ]
+ },
+ "t18": {
+  "structured_output": {
+   "feasible": "yes",
+   "issues": [
+    {
+     "kind": "untestable",
+     "detail": "testCycle asserts \"higher quality and separates real disagreement\" \u2014 both subjective, no command, no expected output, no fixture. 'Quality' has no pass/fail oracle. To make it testable: check in a fixture transcript with a seeded real disagreement and seeded agreement, then run e.g. `node workflows/debate.js fixtures/debate-transcript.md` (or invoke the synthesis function via a small harness) and assert against concrete output: (1) exit 0; (2) the output's disagreement section names the seeded point of contention (exact phrase or id); (3) the seeded agreement topic does NOT appear in the disagreement section. Optionally a structural check (output contains a dedicated 'disagreements'/'points of agreement' split with non-empty disagreement list) \u2014 but the content assertions against the fixture are what make it an observable criterion."
+    }
+   ],
+   "testable": "no"
+  },
+  "usage": {
+   "input_tokens": 814,
+   "cache_creation_input_tokens": 0,
+   "cache_read_input_tokens": 7808,
+   "output_tokens": 577,
+   "output_tokens_details": {
+    "thinking_tokens": 0
+   },
+   "server_tool_use": {
+    "web_search_requests": 0,
+    "web_fetch_requests": 0
+   },
+   "service_tier": "standard",
+   "cache_creation": {
+    "ephemeral_1h_input_tokens": 0,
+    "ephemeral_5m_input_tokens": 0
+   },
+   "inference_geo": "",
+   "iterations": [],
+   "speed": "standard"
+  },
+  "total_cost_usd": 0.008959600000000002,
+  "seconds": 20,
+  "model": [
+   "glm-5.3-flash"
+  ]
+ },
+ "t19": {
+  "structured_output": {
+   "feasible": "yes",
+   "issues": [
+    {
+     "detail": "testCycle t19 says 'run the stop hook twice with stop_hook_active=true and check it does the right thing' \u2014 'the right thing' is never defined. No expected exit code, no expected stdout/stderr, no expected file effects. For a Claude Code Stop hook the observable contract is concrete and nameable: pipe the hook JSON twice, e.g. `printf '{\"stop_hook_active\":true,\"session_id\":\"test\",\"transcript_path\":\"/tmp/t.jsonl\",\"cwd\":\"%s\"}' \"$PWD\" | bash scripts/ops-stop-hook.sh; echo \"exit=$?\"` run twice, and assert the second run exits 0 with no blocking decision JSON / no suppression message emitted (i.e. the loop guard fires on run 2, not run 1 \u2014 also assert run 1's behavior differs or matches the documented contract). Rewrite testCycle to state: exact stdin payload, expected exit code (0), and expected empty stdout on the guarded invocation.",
+     "kind": "untestable"
+    },
+    {
+     "detail": "The cycle also omits the input contract: how stop_hook_active=true is delivered (stdin JSON per Claude Code hook protocol) is unstated, and 'twice' implies state must persist between invocations (transcript/session file?) which is unverified \u2014 the test cannot be reproduced as written because the mechanism for counting 'two runs' is unspecified.",
+     "kind": "gap"
+    }
+   ],
+   "testable": "no"
+  },
+  "usage": {
+   "input_tokens": 824,
+   "cache_creation_input_tokens": 0,
+   "cache_read_input_tokens": 7808,
+   "output_tokens": 615,
+   "output_tokens_details": {
+    "thinking_tokens": 0
+   },
+   "server_tool_use": {
+    "web_search_requests": 0,
+    "web_fetch_requests": 0
+   },
+   "service_tier": "standard",
+   "cache_creation": {
+    "ephemeral_1h_input_tokens": 0,
+    "ephemeral_5m_input_tokens": 0
+   },
+   "inference_geo": "",
+   "iterations": [],
+   "speed": "standard"
+  },
+  "total_cost_usd": 0.009359600000000001,
+  "seconds": 20,
+  "model": [
+   "glm-5.3-flash"
+  ]
+ },
+ "t20": {
+  "structured_output": {
+   "feasible": "yes",
+   "issues": [
+    {
+     "detail": "'ls .operator/pending shows no new entry' is only checkable against a snapshot taken before the failing invocation. The cycle should state the baseline step explicitly: `ls .operator/pending > /tmp/before`, run the command, then `ls .operator/pending > /tmp/after && diff /tmp/before /tmp/after` expecting no difference.",
+     "kind": "gap"
+    }
+   ],
+   "testable": "yes"
+  },
+  "usage": {
+   "input_tokens": 8648,
+   "cache_creation_input_tokens": 0,
+   "cache_read_input_tokens": 0,
+   "output_tokens": 482,
+   "output_tokens_details": {
+    "thinking_tokens": 0
+   },
+   "server_tool_use": {
+    "web_search_requests": 0,
+    "web_fetch_requests": 0
+   },
+   "service_tier": "standard",
+   "cache_creation": {
+    "ephemeral_1h_input_tokens": 0,
+    "ephemeral_5m_input_tokens": 0
+   },
+   "inference_geo": "",
+   "iterations": [],
+   "speed": "standard"
+  },
+  "total_cost_usd": 0.022115999999999997,
+  "seconds": 14,
+  "model": [
+   "glm-5.3-flash"
+  ]
+ },
+ "t21": {
+  "structured_output": {
+   "feasible": "yes",
+   "issues": [
+    {
+     "detail": "testCycle says \"should print suggestions\" but defines neither what a suggestion looks like nor a pass/fail condition. The command (`ops-tiers.sh --suggest`) is named, but the expected output is not \u2014 any stdout (or none, if the script silently succeeds) could be argued to pass. Making the script testable requires a concrete acceptance check, e.g.: `out=$(./scripts/ops-tiers.sh --suggest); test $? -eq 0 && echo \"$out\" | grep -q '<specific known suggestion or tier name from the script>'` \u2014 or at minimum assert exit code 0 and non-empty stdout with one line per known tier. Pin the expected content (specific tier name(s) or a fixed line format) so a broken/empty implementation fails the check.",
+     "kind": "untestable"
+    }
+   ],
+   "testable": "no"
+  },
+  "usage": {
+   "input_tokens": 8626,
+   "cache_creation_input_tokens": 0,
+   "cache_read_input_tokens": 0,
+   "output_tokens": 682,
+   "output_tokens_details": {
+    "thinking_tokens": 0
+   },
+   "server_tool_use": {
+    "web_search_requests": 0,
+    "web_fetch_requests": 0
+   },
+   "service_tier": "standard",
+   "cache_creation": {
+    "ephemeral_1h_input_tokens": 0,
+    "ephemeral_5m_input_tokens": 0
+   },
+   "inference_geo": "",
+   "iterations": [],
+   "speed": "standard"
+  },
+  "total_cost_usd": 0.024072,
+  "seconds": 53,
+  "model": [
+   "glm-5.3-flash"
+  ]
+ },
+ "t22": {
+  "structured_output": {
+   "feasible": "yes",
+   "issues": [
+    {
+     "detail": "testCycle specifies the fixture only as 'a 4096-row ledger: big.md' but gives no command to generate it \u2014 the 50ms/<identity comparison is unreproducible unless the generator (e.g., a loop emitting 4096 rows) is pinned in the task or a fixture file is committed.",
+     "kind": "gap"
+    },
+    {
+     "detail": "A hard 50ms real-time ceiling is machine-dependent (disk speed, cache temperature, load); it is observable but flaky as an acceptance gate. Prefer a relative assertion (second run \u2264 e.g. 20% of first run's cold time) or pin the reference hardware in the task.",
+     "kind": "risk"
+    },
+    {
+     "detail": "'second run' implicitly requires the cache to persist across separate `bash -c` processes (file-backed, not in-process). That's a reasonable reading of 'caps cache' but should be stated, otherwise a same-process timing loop could be argued to satisfy it.",
+     "kind": "gap"
+    }
+   ],
+   "testable": "yes"
+  },
+  "usage": {
+   "input_tokens": 844,
+   "cache_creation_input_tokens": 0,
+   "cache_read_input_tokens": 7808,
+   "output_tokens": 1292,
+   "output_tokens_details": {
+    "thinking_tokens": 0
+   },
+   "server_tool_use": {
+    "web_search_requests": 0,
+    "web_fetch_requests": 0
+   },
+   "service_tier": "standard",
+   "cache_creation": {
+    "ephemeral_1h_input_tokens": 0,
+    "ephemeral_5m_input_tokens": 0
+   },
+   "inference_geo": "",
+   "iterations": [],
+   "speed": "standard"
+  },
+  "total_cost_usd": 0.0161696,
+  "seconds": 29,
+  "model": [
+   "glm-5.3-flash"
+  ]
+ },
+ "t23": {
+  "structured_output": {
+   "feasible": "yes",
+   "issues": [
+    {
+     "detail": "testCycle asserts behavior vaguely: \"works\" twice with no observable command and no expected output. To be testable it must pin the normalization contract, e.g.: `node -e 'const {normalizeArgs}=require(\"./workflows/brainstorm\"); console.log(JSON.stringify(normalizeArgs(\"ship it\"))); console.log(JSON.stringify(normalizeArgs({topic:\"ship it\"})))'` both print `{\"topic\":\"ship it\"}` (or whatever the target shape is) with exit code 0.",
+     "kind": "untestable"
+    },
+    {
+     "detail": "The task never defines what \"normalize\" produces \u2014 the target shape for string input and the fields preserved/ignored for object input are unspecified, so even a rewritten test cycle has nothing concrete to assert against.",
+     "kind": "gap"
+    }
+   ],
+   "testable": "no"
+  },
+  "usage": {
+   "input_tokens": 818,
+   "cache_creation_input_tokens": 0,
+   "cache_read_input_tokens": 7808,
+   "output_tokens": 773,
+   "output_tokens_details": {
+    "thinking_tokens": 0
+   },
+   "server_tool_use": {
+    "web_search_requests": 0,
+    "web_fetch_requests": 0
+   },
+   "service_tier": "standard",
+   "cache_creation": {
+    "ephemeral_1h_input_tokens": 0,
+    "ephemeral_5m_input_tokens": 0
+   },
+   "inference_geo": "",
+   "iterations": [],
+   "speed": "standard"
+  },
+  "total_cost_usd": 0.0109276,
+  "seconds": 25,
+  "model": [
+   "glm-5.3-flash"
+  ]
+ },
+ "t24": {
+  "structured_output": {
+   "feasible": "yes",
+   "issues": [
+    {
+     "detail": "testCycle is fully observable: command `python3 scripts/release_gate.py`, fixture setup (plugin.json version 9.9.9, CHANGELOG.md missing the '## [9.9.9]' heading), and exact expected outputs (exit code 1, stderr containing '9.9.9'). No vague 'works correctly' language.",
+     "kind": "untestable",
+     "kind_": "note",
+     "note": "positive-control observation only, not a defect"
+    },
+    {
+     "detail": "testCycle doesn't state where plugin.json and CHANGELOG.md are read from (repo cwd vs. a path argument). If the script hardcodes cwd-relative paths, the test needs a fixture dir or a --root flag; and to rule out exit-1-for-the-wrong-reason, pair it with a positive control: heading present \u2192 exit 0.",
+     "kind": "gap"
+    }
+   ],
+   "testable": "yes"
+  },
+  "usage": {
+   "input_tokens": 1143,
+   "cache_creation_input_tokens": 0,
+   "cache_read_input_tokens": 16448,
+   "output_tokens": 949,
+   "output_tokens_details": {
+    "thinking_tokens": 0
+   },
+   "server_tool_use": {
+    "web_search_requests": 0,
+    "web_fetch_requests": 0
+   },
+   "service_tier": "standard",
+   "cache_creation": {
+    "ephemeral_1h_input_tokens": 0,
+    "ephemeral_5m_input_tokens": 0
+   },
+   "inference_geo": "",
+   "iterations": [],
+   "speed": "standard"
+  },
+  "total_cost_usd": 0.0150656,
+  "seconds": 30,
+  "model": [
+   "glm-5.3-flash"
+  ]
+ }
+}

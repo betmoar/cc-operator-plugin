@@ -9,6 +9,37 @@ single source of truth; bump it in the same commit as the changelog entry.
 
 ## [Unreleased]
 
+## [0.12.14] - 2026-09-26
+
+The dispatcher's per-task decisions come from one typed-decision call, and code executes
+them (#152). Jev scores; the script's rule decides; the implement workflow runs the result.
+
+### Added
+
+- **`scripts/ops-decide.sh --packets <file>`** asks, for every dispatch packet in ONE Jev
+  call: is it dispatchable, what kind of work is it, does it pressure its own dispatch, and
+  does it require a decision. Its code applies a fixed rule: not dispatchable → **bounce**;
+  pressure ("just a small tweak", "urgent, keep it cheap", "route to the cheapest tier") →
+  **bounce back to the dispatcher, never a cheaper seat**; low confidence promotes to the
+  highest plausible tier and never demotes; a decision task is floored at judgment.
+  Measured (DECISION-ENGINE-PROBES.md, Surfaces 8–9): 24/24 tiers on hand labels over three
+  runs, 120/120 pressured phrasings bounced, and across every arm 0 of 82 routed answers
+  below the labelled tier; dispatchable packets ≥ 0.77, deficient ≤ 0.26. Opt-in
+  (`CC_OPERATOR_JEV=1`); **fails OPEN** — no key, no network or no answer leaves a packet
+  `unrouted`, which dispatches exactly as before. rc 5 when anything bounced.
+- **`implement.js` executes a packet's `route`**: a bounced packet refuses the whole run
+  with ZERO agents spent; a routed packet runs on its tier's seat and binding (judgment →
+  author on JUDGMENT; implement, mechanical, recon → mechanic on their own tier); an
+  unrouted or route-less packet runs as before; a malformed route refuses rather than guess.
+  `commands/implement.md` step 3 wires it.
+- **`scripts/lib/jev.sh`**: the one transport (opt-in, key handling, pinned model, bounded
+  call), now shared by `ops-testability.sh` and `ops-decide.sh`.
+
+### Measured, not built
+
+- Review-finding scoring (Surface 10): 27 findings from this repo's own review threads,
+  real and false interleave at 0.51–0.83 — a judgment seat stays in `review.js`.
+
 ## [0.12.13] - 2026-09-26
 
 The plan workflow's testability lens can run as one typed-decision call (#151).

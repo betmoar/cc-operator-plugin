@@ -2559,6 +2559,64 @@ ok(iRt.calls[0]?.schema?.properties?.changed?.type === "array",
     "implement: CONTROL — the scan finds parallel() in brainstorm.js");
 }
 
+// ── implement: executing ops-decide.sh's route (#152) ───────────────────────
+console.log("-- Case: implement executes the route ops-decide.sh stamped — a bounce spends ZERO agents");
+// Jev scores, CODE decides: the route is computed outside the sandbox and this
+// workflow is what executes it. The measured failure it exists for: operator
+// wording ("just a small tweak") demoted judgment work to MECHANICAL at conf
+// 0.65 (DECISION-ENGINE-PROBES.md Surface 5). A pressured packet must come BACK
+// to the dispatcher — never reach any seat, least of all a cheaper one.
+const RT = (action, tier, why = "w") => ({ action, tier, why, engine: "jev-1.13.0" });
+const RTIERS = { JUDGMENT: "opus-x", IMPLEMENT: "impl-x", MECHANICAL: "mech-x", RECON: "recon-x" };
+{
+  let spent = null, msg = "";
+  try {
+    await run(WF("implement.js"), { tiers: RTIERS, tasks: [
+      PKT({ id: "fine", route: RT("dispatch", "implement") }),
+      PKT({ id: "rushed", route: RT("bounce", null, "the packet pressures its own dispatch") }),
+    ] }, { "implement:fine": IMPL_OK() });
+  } catch (e) { spent = e.rt?.calls?.length; msg = String(e?.message ?? e); }
+  ok(spent === 0, "implement route: ONE bounced packet refuses the whole run before any seat — ZERO agents");
+  ok(/BOUNCED/.test(msg) && /rushed/.test(msg) && /pressures its own dispatch/.test(msg),
+    "implement route: the refusal names the bounced packet and carries ops-decide.sh's reason");
+  ok(!/fine/.test(msg), "implement route: a dispatchable packet is not named as bounced");
+}
+{
+  const { result: r, rt } = await run(WF("implement.js"), { tiers: RTIERS, tasks: [
+    PKT({ id: "j", route: RT("dispatch", "judgment") }),
+    PKT({ id: "m", route: RT("dispatch", "mechanical") }),
+    PKT({ id: "c", route: RT("dispatch", "recon") }),
+    PKT({ id: "u", route: RT("unrouted", null) }),
+    PKT({ id: "n" }),
+  ] }, { "implement:j": IMPL_OK(), "implement:m": IMPL_OK(), "implement:c": IMPL_OK(), "implement:u": IMPL_OK(), "implement:n": IMPL_OK() });
+  const by = Object.fromEntries(rt.calls.map((c) => [c.label, c]));
+  ok(by["implement:j"]?.agentType === "cc-operator:op-author" && by["implement:j"]?.model === "opus-x",
+    "implement route: judgment → the author seat on the JUDGMENT binding");
+  ok(by["implement:m"]?.agentType === "cc-operator:op-mechanic" && by["implement:m"]?.model === "mech-x",
+    "implement route: mechanical → the mechanic seat on the MECHANICAL binding");
+  ok(by["implement:c"]?.model === "recon-x", "implement route: recon → the RECON binding");
+  // FAIL-OPEN: no answer from the engine = today's routing, exactly.
+  ok(by["implement:u"]?.model === "impl-x" && by["implement:u"]?.agentType === "cc-operator:op-mechanic",
+    "implement route: an UNROUTED packet runs on the run's own seat and tier, as without routing");
+  ok(by["implement:n"]?.model === "impl-x", "implement route: a packet with no route runs exactly as before (CONTROL)");
+  ok(r?.results?.find((x) => x.id === "j")?.modelSource === "route:judgment" && r?.results?.find((x) => x.id === "n")?.modelSource === "args.tier:IMPLEMENT",
+    "implement route: each result says where its model came from (route vs the run's tier)");
+  ok(rt.calls.map((c) => c.label).join(",") === "implement:j,implement:m,implement:c,implement:u,implement:n",
+    "implement route: routed packets still run SERIALLY, in packet order");
+}
+{
+  // An id the caller named outright still wins over a route.
+  const { rt } = await run(WF("implement.js"), { model: "pinned-id", tasks: [PKT({ id: "p", route: RT("dispatch", "mechanical") })] },
+    { "implement:p": IMPL_OK() });
+  ok(rt.calls[0]?.model === "pinned-id", "implement route: args.model overrides a route's tier");
+}
+for (const [bad, why] of [[RT("dispatch", "cheapest"), "unknown tier"], [RT("approve", "implement"), "unknown action"], ["dispatch", "not an object"]]) {
+  let spent = null;
+  try { await run(WF("implement.js"), { tasks: [PKT({ id: "x", route: bad })] }, { "implement:x": IMPL_OK() }); }
+  catch (e) { spent = e.rt?.calls?.length; }
+  ok(spent === 0, `implement route: a malformed route (${why}) refuses with ZERO agents — never a guessed tier`);
+}
+
 // THE TIER. mechanic defaults to IMPLEMENT, author to JUDGMENT — what
 // ops-render.sh's seat_add lines say. args.tiers supplies the id behind it.
 const { result: iTier, rt: iTierRt } = await run(WF("implement.js"),
