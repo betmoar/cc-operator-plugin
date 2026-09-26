@@ -18,17 +18,23 @@
 # ~/.env (parsed, never sourced). It reaches curl through a 0600 header file,
 # never argv, and is never printed.
 #
-# FAIL TOWARD UNVETTED. A task Jev did not score is never "testable": no key, no
-# network, a non-200, a malformed answer — every unscored task is appended to
-# `vettingIncomplete`, the result still prints, and the exit is 3. A score below
-# THRESHOLD blocks the task exactly as the seat's `testable: "no"` did. This is
-# a lens, not a gate: nothing here touches a sentinel, a ledger row or Stop.
+# FAIL TOWARD UNVETTED. plan.js under "external" puts EVERY task in
+# `vettingIncomplete`; this script lifts a task out only when Jev scored it at or
+# above THRESHOLD and its feasibility seat returned. No key, no network, a
+# non-200, an oversized or malformed answer, more than MAX_TASKS tasks — every
+# unscored task stays in `vettingIncomplete`, the plan still prints, exit 3. A
+# score below THRESHOLD blocks the task as the seat's `testable: "no"` did. A
+# lens, not a gate: nothing here touches a sentinel, a ledger row or Stop.
 set -eu
 
 MODEL="jev-1.13.0"   # pinned: `jev-latest` moves when a release ships
 URL="${CC_OPERATOR_JEV_URL:-https://api.typesafe.ai/v1/systemone}"
-# Measured separation on the fixture: every "no" <= 0.41, every "yes" >= 0.87.
+# Measured separation on the Surface 7 fixture: every "no" <= 0.41 (probe
+# request) / <= 0.42 (this script's id-less request), every "yes" >= 0.87.
 THRESHOLD="0.6"
+MAX_TASKS=60          # one call: 64k tokens/request, 32k of them state
+MAX_RESP_BYTES=1048576 # an answer for 60 Nouls is ~5 KB. Two bounds: curl --max-filesize (only
+                       # when Content-Length is sent) and the merge step's size check (always).
 KEYFILE="${CC_OPERATOR_JEV_KEYFILE:-$HOME/.env}"
 
 die() { echo "ops-testability: $*" >&2; exit 2; }
@@ -52,7 +58,7 @@ read_key() {
     _n=$((_n + 1)); [ "$_n" -gt 500 ] && break
     case "$_line" in
       TYPESAFE_API_KEY=*|"export TYPESAFE_API_KEY="*)
-        KEY="${_line#*TYPESAFE_API_KEY=}"; KEY="${KEY%\"}"; KEY="${KEY#\"}"
+        KEY="${_line#*TYPESAFE_API_KEY=}"; KEY="${KEY%$'\r'}"; KEY="${KEY%\"}"; KEY="${KEY#\"}"
         KEY="${KEY%\'}"; KEY="${KEY#\'}" ;;
     esac
   done < "$KEYFILE"
@@ -87,7 +93,8 @@ fi
 { [ -f "$PLAN" ] && [ ! -L "$PLAN" ]; } || die "--plan '$PLAN' is not a regular file"
 command -v python3 >/dev/null 2>&1 || die "python3 not found — cannot read the plan; re-run the workflow without testability=\"external\""
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/ops-testability.XXXXXX")"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/ops-testability.XXXXXX" 2>/dev/null)" \
+  || die "cannot create a temp dir under ${TMPDIR:-/tmp}"
 trap 'rm -rf "$WORK"' EXIT
 chmod 700 "$WORK"
 
@@ -96,12 +103,16 @@ chmod 700 "$WORK"
 # repeat (F110). The task's OWN id is left out of the state on purpose — with it
 # in, a question about `T8` was answered for the task whose id was `t08`
 # (measured: 10/24 on the Surface 7 fixture, 24/24 without). One name per task.
-python3 - "$PLAN" "$WORK/req.json" "$MODEL" <<'PY' || die "--plan '$PLAN' is not a plan result (needs a tasks array, at most 60)"
+# rc 4 = more tasks than one call carries: no call, every task stays unvetted.
+_BUILD=0
+python3 - "$PLAN" "$WORK/req.json" "$MODEL" "$MAX_TASKS" <<'PY' || _BUILD=$?
 import json, sys
 plan = json.load(open(sys.argv[1], encoding="utf-8"))
 tasks = plan.get("tasks") if isinstance(plan, dict) else None
-if not isinstance(tasks, list) or not 1 <= len(tasks) <= 60:
+if not isinstance(tasks, list) or not tasks:
     sys.exit(1)
+if len(tasks) > int(sys.argv[4]):
+    sys.exit(4)
 def cut(v, n):
     return v[:n] if isinstance(v, str) else v
 state, questions = [], {}
@@ -120,13 +131,19 @@ json.dump({"model": sys.argv[3], "state": "\n\n".join(state), "questions": quest
           open(sys.argv[2], "w", encoding="utf-8"))
 PY
 
+[ "$_BUILD" -eq 0 ] || [ "$_BUILD" -eq 4 ] \
+  || die "--plan '$PLAN' is not a plan result (needs a non-empty tasks array)"
+
 RC=0; ENGINE_NOTE=""
 # why_unavailable runs in a subshell under $( ), so KEY does not survive it —
 # read it again here, in this shell, where the header file needs it.
-if ENGINE_NOTE="$(why_unavailable)" && read_key; then
+if [ "$_BUILD" -eq 4 ]; then
+  ENGINE_NOTE="more than $MAX_TASKS tasks — one call carries at most $MAX_TASKS, nothing was sent"
+  : > "$WORK/resp.json"
+elif ENGINE_NOTE="$(why_unavailable)" && read_key; then
   ( umask 077; printf 'Authorization: Bearer %s\n' "$KEY" > "$WORK/hdr" )
   unset KEY
-  _code="$(curl -sS --max-time 20 -X POST "$URL" -H @"$WORK/hdr" -H 'Content-Type: application/json' \
+  _code="$(curl -sS --max-time 20 --max-filesize "$MAX_RESP_BYTES" -X POST "$URL" -H @"$WORK/hdr" -H 'Content-Type: application/json' \
     --data-binary @"$WORK/req.json" -o "$WORK/resp.json" -w '%{http_code}' 2>"$WORK/curl.err")" || _code="curl-failed"
   rm -f "$WORK/hdr"
   if [ "$_code" = 200 ]; then ENGINE_NOTE=""; else ENGINE_NOTE="the engine answered '$_code'"; : > "$WORK/resp.json"; fi
@@ -136,23 +153,31 @@ fi
 
 # Merge. Every task gets testable yes|no|unvetted in `vetting`; no → `blocked`
 # (issue kind "untestable", as the seat reported it); unvetted → `vettingIncomplete`.
-python3 - "$PLAN" "$WORK/resp.json" "$THRESHOLD" "$MODEL" "$ENGINE_NOTE" <<'PY' || RC=$?
-import json, math, sys
-plan_path, resp_path, thr, model, note = sys.argv[1:6]
+python3 - "$PLAN" "$WORK/resp.json" "$THRESHOLD" "$MODEL" "$ENGINE_NOTE" "$MAX_RESP_BYTES" <<'PY' || RC=$?
+import json, math, os, sys
+plan_path, resp_path, thr, model, note, cap = sys.argv[1:7]
 thr = float(thr)
 plan = json.load(open(plan_path, encoding="utf-8"))
 tasks = plan["tasks"]
-try:
-    answers = json.load(open(resp_path, encoding="utf-8")).get("answers") or {}
-except Exception:
-    answers = {}
-    note = note or "the engine's answer was not JSON"
+answers = {}
+if not note:
+    try:
+        # curl's --max-filesize cannot stop a body sent without Content-Length;
+        # this bound is the one that holds (PR #190 review).
+        if os.path.getsize(resp_path) > int(cap):
+            raise ValueError("oversized")
+        a = json.load(open(resp_path, encoding="utf-8")).get("answers")
+        answers = a if isinstance(a, dict) else {}
+    except Exception:
+        note = "the engine's answer was not a bounded JSON object"
 vetting = plan.get("vetting") if isinstance(plan.get("vetting"), list) else []
 by_index = {v.get("taskIndex"): v for v in vetting if isinstance(v, dict)}
 blocked = plan.get("blocked") if isinstance(plan.get("blocked"), list) else []
 incomplete = plan.get("vettingIncomplete") if isinstance(plan.get("vettingIncomplete"), list) else []
 blocked_idx = {b.get("taskIndex") for b in blocked if isinstance(b, dict)}
 incomplete_idx = {b.get("taskIndex") for b in incomplete if isinstance(b, dict)}
+# plan.js keeps blocked / needsInfo / vettingIncomplete exclusive; so does this.
+needs_idx = {b.get("taskIndex") for b in plan.get("needsInfo") or [] if isinstance(b, dict)}
 unvetted = 0
 for i, t in enumerate(tasks):
     tid = str((t or {}).get("id", "?")) if isinstance(t, dict) else "?"
@@ -179,10 +204,19 @@ for i, t in enumerate(tasks):
         if i in incomplete_idx:
             incomplete[:] = [b for b in incomplete if not (isinstance(b, dict) and b.get("taskIndex") == i)]
             incomplete_idx.discard(i)
-    elif verdict == "unvetted":
+    elif verdict == "yes" and isinstance(row.get("feasible"), str):
+        # Scored testable AND the feasibility seat answered: the one path out of
+        # the fail-closed vettingIncomplete plan.js put every task in.
+        if i in incomplete_idx:
+            incomplete[:] = [b for b in incomplete if not (isinstance(b, dict) and b.get("taskIndex") == i)]
+            incomplete_idx.discard(i)
+    if verdict == "unvetted":
         unvetted += 1
-        if i not in blocked_idx and i not in incomplete_idx:
+        if i not in blocked_idx and i not in incomplete_idx and i not in needs_idx:
             incomplete.append({"taskId": tid, "taskIndex": i}); incomplete_idx.add(i)
+for i, row in by_index.items():
+    if isinstance(row, dict) and isinstance(i, int) and 0 <= i < len(tasks):
+        row["vettingIncomplete"] = i in incomplete_idx
 plan["vetting"], plan["blocked"], plan["vettingIncomplete"] = vetting, blocked, incomplete
 plan["testability"] = {"engine": model, "threshold": thr, "unvetted": unvetted,
                        "note": note or None}

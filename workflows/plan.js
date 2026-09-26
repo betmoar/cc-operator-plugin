@@ -220,8 +220,8 @@ const globalConstraints = (typeof A === "object" ? A.globalConstraints : undefin
 // "external" skips it because commands/plan.md vets every testCycle in ONE
 // typed-decision call after this returns (scripts/ops-testability.sh — this
 // sandbox has no network). Under "external" a task's `testable` stays
-// undefined HERE and is not a dead lens: the script fills it, and sends any
-// task it cannot score to vettingIncomplete, never to clear. Any other value
+// undefined HERE and every task is vetting-incomplete until the script scores
+// it — nothing reads as clear if that step is skipped. Any other value
 // refuses — a typo silently dropping the lens would read as a clean plan.
 const testability = (typeof A === "object" ? A.testability : undefined) ?? "seat";
 if (testability !== "seat" && testability !== "external") {
@@ -518,9 +518,12 @@ const vetted = await pipeline(
       // bucket. A task whose vetting never ran would then report as having
       // PASSED vetting and proceed toward implementation unflagged, defeating
       // the point of the phase. Make the gap explicit instead of inferred.
-      // Under "external" the testability slot was never dispatched, so its
-      // absence is not a dead lens — ops-testability.sh owns that half.
-      vettingIncomplete: f == null || (!externalTestability && t == null),
+      // Under "external" the testability slot is never dispatched, so every
+      // task is vetting-incomplete HERE, fail-closed: ops-testability.sh --plan
+      // lifts a task out only when it scored it AND its feasibility seat
+      // returned. Skipping that step leaves nothing reading as clear (PR #190
+      // review: the first cut suppressed this and 24/24 tasks read clear).
+      vettingIncomplete: f == null || t == null,
       issues: [...(f?.issues ?? []), ...(t?.issues ?? [])],
     })),
   // stage 2: nothing further per task — flatten
@@ -544,7 +547,7 @@ log(
     `${needsInfo.length} needs-info, ${incomplete.length} vetting-incomplete, ` +
     `${flat.length - blocked.length - needsInfo.length - incomplete.length} clear` +
     (lost ? ` (${lost} task(s) LOST to dispatch failure)` : "") +
-    (externalTestability ? " — testability PENDING: run ops-testability.sh --plan before reading 'clear'" : ""),
+    (externalTestability ? " — testability PENDING: every task stays vetting-incomplete until ops-testability.sh --plan scores it" : ""),
 );
 
 // --- The plan graph: edges, concurrency, and the ceiling (#66) --------------
@@ -813,7 +816,8 @@ return {
   // commands/plan.md makes the operator say so when reporting).
   specStatus,
   // "seat" or "external" (#151). Under "external" every `testable` below is
-  // unset until scripts/ops-testability.sh --plan merges the typed answers.
+  // unset and every task is in vettingIncomplete until
+  // scripts/ops-testability.sh --plan merges the typed answers.
   testability,
   fileStructure: decomp?.fileStructure ?? "",
   globalConstraints: globalConstraints || null,

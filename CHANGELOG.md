@@ -21,14 +21,17 @@ The plan workflow's testability lens can run as one typed-decision call (#151).
   and under half a second against $0.46 and 102 s (DECISION-ENGINE-PROBES.md,
   Surface 7). **Opt-in** (`CC_OPERATOR_JEV=1`, the user's to set: task titles,
   files and testCycles leave the machine). **Fails toward unvetted**: no key, no
-  network, a non-200 or a malformed score puts the task in `vettingIncomplete`,
-  never clear, at rc 3. The key reaches curl through a 0600 header file, never
-  argv. Tasks are named by position only: with the task id in the state, a
-  question about `T8` was answered for the task named `t08` (10/24 live).
+  network, a non-200, a transport failure, an oversized or malformed answer, or
+  more than 60 tasks leaves the task in `vettingIncomplete`, never clear; the
+  plan still prints, rc 3. The key reaches curl through a 0600 header file,
+  never argv; a CRLF `~/.env` line is stripped. Tasks are named by position
+  only: with the task id in the state, a question about `T8` was answered for
+  the task named `t08` (10/24 live).
 - **`plan.js` `args.testability`**: `"seat"` (default, unchanged) or
-  `"external"`, which dispatches no testability seat and leaves `testable` for
-  the script to fill. Any other value refuses. `commands/plan.md` checks
-  `--available` and wires both.
+  `"external"`, which dispatches no testability seat and returns EVERY task in
+  `vettingIncomplete` — fail-closed: only the script's `--plan` step, scoring a
+  task testable with its feasibility seat returned, moves one out. Any other
+  value refuses. `commands/plan.md` checks `--available` and wires both.
 
 ## [0.12.12] - 2026-09-26
 

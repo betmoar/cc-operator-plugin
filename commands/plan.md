@@ -62,9 +62,10 @@ arguments, before any dispatch — so assemble them first.
    scratch file and run
    `bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-testability.sh --plan <that file>`.
    Its stdout is the plan with `testable`, `blocked` and `vettingIncomplete`
-   filled in, and it is the result you review. rc 3 means some tasks went
-   UNVETTED (engine down, bad answer); they sit in `vettingIncomplete`, never
-   clear. Until this step runs, no task's testability is known.
+   filled in, and it is the result you review. The workflow returns EVERY task
+   in `vettingIncomplete`; this step is the only thing that moves one out, so a
+   skipped step 6 leaves nothing clear. rc 3 means some tasks stayed UNVETTED
+   (engine down, bad answer, more than 60 tasks) — the plan still prints.
 
 **Read the graph for what it is.** `consumesNoTaskProduces` is not a defect
 list — the commonest entry is a task consuming something the project already

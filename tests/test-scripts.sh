@@ -8763,9 +8763,13 @@ cat > "$TSB/plan.json" <<'PLAN'
  {"id":"str","title":"d","files":[],"testCycle":"z"},
  {"id":"range","title":"e","files":[],"testCycle":"w"},
  {"id":"feasno","title":"f","files":[],"testCycle":"vague"}],
- "vetting":[{"taskId":"feasno","taskIndex":5,"feasible":"no","issues":[{"kind":"gap","detail":"g"}]}],
+ "vetting":[{"taskId":"dup","taskIndex":0,"feasible":"yes","issues":[]},{"taskId":"dup","taskIndex":1,"feasible":"yes","issues":[]},
+  {"taskId":"gone","taskIndex":2,"feasible":"yes","issues":[]},{"taskId":"str","taskIndex":3,"feasible":"yes","issues":[]},
+  {"taskId":"range","taskIndex":4,"feasible":"yes","issues":[]},
+  {"taskId":"feasno","taskIndex":5,"feasible":"no","issues":[{"kind":"gap","detail":"g"}]}],
  "blocked":[{"taskId":"feasno","taskIndex":5,"issues":[{"kind":"gap","detail":"g"}]}],
- "vettingIncomplete":[]}
+ "vettingIncomplete":[{"taskId":"dup","taskIndex":0},{"taskId":"dup","taskIndex":1},{"taskId":"gone","taskIndex":2},
+  {"taskId":"str","taskIndex":3},{"taskId":"range","taskIndex":4}]}
 PLAN
 printf '%s' '{"model":"jev-1.13.0","answers":{"T0":{"type":"noul","noul":0.91},"T1":{"type":"noul","noul":0.12},"T3":{"type":"noul","noul":"0.9"},"T4":{"type":"noul","noul":1.5},"T5":{"type":"noul","noul":0.05}}}' > "$TSB/resp.json"
 # TST <opt-in 0|1> <args…> — the caller's TYPESAFE_API_KEY never leaks in: the key comes from the fixture file only.
@@ -8783,6 +8787,9 @@ rm -f "$TSB/argv" "$TSB/body" "$TSB/hdr"
 TST 1 --plan "$TSB/plan.json" > "$TSB/out.json" 2>"$TSB/err"; _rc=$?
 check "#151 --plan merges: >= threshold is testable, < threshold is blocked 'untestable' (index-keyed, dup ids apart)" \
   "$(TSQ "$TSB/out.json" '[v["testable"] for v in sorted(o["vetting"],key=lambda v:v["taskIndex"])][:2]==["yes","no"] and any(b["taskIndex"]==1 and b["issues"][0]["kind"]=="untestable" for b in o["blocked"]) and not any(b["taskIndex"]==0 for b in o["blocked"])' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
+# The ONE way out of plan.js's fail-closed vettingIncomplete: scored testable AND feasibility answered.
+check "#151 a task scored testable leaves vettingIncomplete (and its row's flag clears); one scored untestable moves to blocked" \
+  "$(TSQ "$TSB/out.json" 'not any(b["taskIndex"] in (0,1) for b in o["vettingIncomplete"]) and [v["vettingIncomplete"] for v in sorted(o["vetting"],key=lambda v:v["taskIndex"])][:3]==[False,False,True]' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
 check "#151 a missing, non-numeric or out-of-range answer is UNVETTED -> vettingIncomplete, rc 3 — never testable" \
   "$([ "$_rc" -eq 3 ] && TSQ "$TSB/out.json" 'sorted(b["taskIndex"] for b in o["vettingIncomplete"])==[2,3,4] and all(v["testable"]=="unvetted" for v in o["vetting"] if v["taskIndex"] in (2,3,4))' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
 check "#151 a task already blocked on feasibility gains the untestable issue, no second blocked row" \
@@ -8801,6 +8808,69 @@ rm -f "$TSB/argv"
 TST "" --plan "$TSB/plan.json" > "$TSB/off.json" 2>/dev/null; _rc=$?
 check "#151 not opted in: --plan sends NOTHING and reports every task unvetted" \
   "$([ "$_rc" -eq 3 ] && [ ! -e "$TSB/argv" ] && TSQ "$TSB/off.json" 'len(o["vettingIncomplete"])==5' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
+# PR #190 review: the cases below close the gaps the test and silent-failure lenses measured.
+# Transport failure (curl itself exits non-zero) is a different branch from a non-200 answer.
+printf '#!/usr/bin/env bash\nexit 7\n' > "$TSB/bin/curl.fail"
+cp "$TSB/bin/curl" "$TSB/bin/curl.ok"; cp "$TSB/bin/curl.fail" "$TSB/bin/curl"
+TST 1 --plan "$TSB/plan.json" > "$TSB/tx.json" 2>/dev/null; _rc=$?
+cp "$TSB/bin/curl.ok" "$TSB/bin/curl"
+check "#151 curl exiting non-zero (transport failure) leaves every scorable task unvetted, rc 3" \
+  "$([ "$_rc" -eq 3 ] && TSQ "$TSB/tx.json" 'len(o["vettingIncomplete"])==5 and "curl-failed" in o["testability"]["note"]' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
+# A 200 whose body is not bounded JSON is not an answer.
+head -c 1048600 /dev/zero | tr '\0' ' ' > "$TSB/big.json"; printf '%s' '{"answers":{"T0":{"noul":0.99}}}' >> "$TSB/big.json"
+TSB_RESP_SAVE="$TSB/resp.json"; cp "$TSB/big.json" "$TSB/resp.json"
+TST 1 --plan "$TSB/plan.json" > "$TSB/big.out" 2>/dev/null; _rc=$?
+printf '%s' '{"model":"jev-1.13.0","answers":{"T0":{"type":"noul","noul":0.91},"T1":{"type":"noul","noul":0.12},"T3":{"type":"noul","noul":"0.9"},"T4":{"type":"noul","noul":1.5},"T5":{"type":"noul","noul":0.05}}}' > "$TSB_RESP_SAVE"
+check "#151 a 200 body over MAX_RESP_BYTES is not read as an answer (every task unvetted, rc 3)" \
+  "$([ "$_rc" -eq 3 ] && TSQ "$TSB/big.out" 'o["vetting"][0]["testable"]=="unvetted" and "bounded" in o["testability"]["note"]' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
+# More tasks than one call carries: nothing is sent, the plan still prints, every task unvetted (was: die rc 2, no stdout).
+python3 -c 'import json; json.dump({"tasks":[{"id":f"k{i}","testCycle":"x"} for i in range(61)],"vetting":[],"blocked":[],"vettingIncomplete":[]},open("'"$TSB"'/p61.json","w"))'
+rm -f "$TSB/argv"; TST 1 --plan "$TSB/p61.json" > "$TSB/p61.out" 2>/dev/null; _rc=$?
+check "#151 61 tasks: no call, the plan still prints with all 61 unvetted, rc 3" \
+  "$([ "$_rc" -eq 3 ] && [ ! -e "$TSB/argv" ] && TSQ "$TSB/p61.out" 'len(o["vettingIncomplete"])==61' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
+python3 -c 'import json; json.dump({"tasks":[{"id":f"k{i}","testCycle":"x"} for i in range(60)]},open("'"$TSB"'/p60.json","w"))'
+rm -f "$TSB/argv"; TST 1 --plan "$TSB/p60.json" > /dev/null 2>&1
+check "#151 60 tasks: the call IS made (the cap is 60, not 59)" "$([ -e "$TSB/argv" ] && echo 0 || echo 1)"
+# The threshold boundary: exactly 0.6 is testable (>=), 0.5999 is not.
+printf '%s' '{"answers":{"T0":{"noul":0.6},"T1":{"noul":0.5999}}}' > "$TSB/resp.json"
+printf '%s' '{"tasks":[{"id":"a","testCycle":"x"},{"id":"b","testCycle":"y"}]}' > "$TSB/p2.json"
+TST 1 --plan "$TSB/p2.json" > "$TSB/p2.out" 2>/dev/null
+check "#151 exactly 0.6 is testable, 0.5999 is not (the threshold is >=)" \
+  "$(TSQ "$TSB/p2.out" '[v["testable"] for v in sorted(o["vetting"],key=lambda v:v["taskIndex"])]==["yes","no"]' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
+# A DEAD feasibility seat (row carries no `feasible`) keeps the task incomplete even when Jev scores it testable:
+# the lift out of vettingIncomplete needs BOTH halves (plan.js's f == null rule, preserved).
+printf '%s' '{"answers":{"T0":{"noul":0.95}}}' > "$TSB/resp.json"
+printf '%s' '{"tasks":[{"id":"d","testCycle":"x"}],"vetting":[{"taskId":"d","taskIndex":0,"issues":[]}],"vettingIncomplete":[{"taskId":"d","taskIndex":0}]}' > "$TSB/pd.json"
+TST 1 --plan "$TSB/pd.json" > "$TSB/pd.out" 2>/dev/null
+check "#151 a task whose feasibility seat died stays vettingIncomplete even when scored testable" \
+  "$(TSQ "$TSB/pd.out" 'o["vetting"][0]["testable"]=="yes" and [b["taskIndex"] for b in o["vettingIncomplete"]]==[0]' 2>/dev/null | grep -qx True && echo 0 || echo 1)"
+# Key-file forms: bare, single-quoted, CRLF — the header carries the key and nothing else (no \r).
+for _form in "TYPESAFE_API_KEY=tsk-B" "TYPESAFE_API_KEY='tsk-B'" "export TYPESAFE_API_KEY=\"tsk-B\"$(printf '\r')"; do
+  printf '%s\n' "$_form" > "$TSB/env2"; rm -f "$TSB/hdr"
+  TSB_KEYFILE="$TSB/env2" TST 1 --plan "$TSB/p2.json" > /dev/null 2>&1
+  check "#151 key-file form [$(printf '%s' "$_form" | tr -d '\r' | cut -c1-24)…] yields exactly 'Bearer tsk-B' (no quote, no CR)" \
+    "$([ -f "$TSB/hdr" ] && [ "$(od -An -c "$TSB/hdr" | tr -d ' \n')" = 'Authorization:Bearertsk-B\n' ] && echo 0 || echo 1)"
+done
+# Symlinked inputs are refused: a symlinked key file reads as no key, a symlinked plan is not a plan.
+ln -s "$TSB/env" "$TSB/env.lnk"
+_o="$( TSB_KEYFILE="$TSB/env.lnk" TST 1 --available 2>&1 )"; _rc=$?
+check "#151 a SYMLINKED key file is not read (rc 3, no key)" \
+  "$([ "$_rc" -eq 3 ] && printf '%s' "$_o" | grep -q 'no TYPESAFE_API_KEY' && echo 0 || echo 1)"
+ln -s "$TSB/plan.json" "$TSB/plan.lnk"
+TST 1 --plan "$TSB/plan.lnk" > /dev/null 2>&1; _rc=$?
+check "#151 a SYMLINKED --plan is refused (rc 2)" "$([ "$_rc" -eq 2 ] && echo 0 || echo 1)"
+# The happy path, and an unknown argument.
+_o="$( TST 1 --available 2>&1 )"; _rc=$?
+check "#151 --available is rc 0 opted in with a key, naming the pinned engine" \
+  "$([ "$_rc" -eq 0 ] && printf '%s' "$_o" | grep -q 'available: jev-1.13.0 at threshold 0.6' && echo 0 || echo 1)"
+_o="$( TST 1 --bogus 2>&1 )"; _rc=$?
+check "#151 an unknown argument is rc 2, named" \
+  "$([ "$_rc" -eq 2 ] && printf '%s' "$_o" | grep -q "unknown argument '--bogus'" && echo 0 || echo 1)"
+# commands/plan.md prescribes the script at steps 4 and 6: its allowed-tools must GRANT it (#104's shape).
+# shellcheck disable=SC2016  # ${CLAUDE_PLUGIN_ROOT} is the LITERAL text in the command file, never expanded here.
+check "#151 commands/plan.md's allowed-tools grants the ops-testability.sh it prescribes" \
+  "$(sed -n 's/^allowed-tools: //p' "$REPO/commands/plan.md" | grep -qF 'Bash(bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-testability.sh:*)' \
+     && [ "$(grep -c 'bash "${CLAUDE_PLUGIN_ROOT}"/scripts/ops-testability.sh --' "$REPO/commands/plan.md")" -ge 2 ] && echo 0 || echo 1)"
 rm -rf "$TSB"
 
 if [ "$FAIL" -ne 0 ]; then

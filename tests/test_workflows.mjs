@@ -326,15 +326,22 @@ ok(planCalls.find((c) => c.label === "decompose").prompt.includes(BIG_SPEC),
   "plan: decompose (once) is the only full-spec consumer");
 
 // ── plan: testability "external" spends no testability seat (#151) ──────────
-console.log("-- Case: plan.js testability external — no test: seat, no false incomplete (#151)");
+console.log("-- Case: plan.js testability external — no test: seat, fail-closed until scored (#151)");
 const { result: extPlan, rt: extRt } = await run(WF("plan.js"),
   { spec: "s", northStar: NORTH_STAR, testability: "external" }, planFixtures);
 ok(extRt.calls.filter((c) => c.label.startsWith("test:")).length === 0 &&
    extRt.calls.filter((c) => c.label.startsWith("feas:")).length === planFixtures.decompose.tasks.length,
   "plan: testability=external dispatches ZERO test: seats and every feas: seat");
-ok(extPlan.testability === "external" && (extPlan.vettingIncomplete ?? []).length === 0 &&
+// PR #190 review: the first cut suppressed incomplete here, so skipping commands/plan.md step 6 left
+// every task CLEAR with its testability never vetted. Fail-closed: every task not already blocked or
+// needs-info is incomplete until ops-testability.sh --plan scores it.
+const extNotBlocked = (extPlan.vetting ?? []).filter((v) =>
+  !(extPlan.blocked ?? []).some((b) => b.taskIndex === v.taskIndex) &&
+  !(extPlan.needsInfo ?? []).some((b) => b.taskIndex === v.taskIndex));
+ok(extPlan.testability === "external" && extNotBlocked.length > 0 &&
+   extNotBlocked.every((v) => (extPlan.vettingIncomplete ?? []).some((b) => b.taskIndex === v.taskIndex)) &&
    (extPlan.vetting ?? []).every((v) => v.testable === undefined),
-  "plan: testability=external leaves testable unset and is NOT vetting-incomplete (ops-testability.sh owns it)");
+  "plan: testability=external — every task not blocked/needs-info is vettingIncomplete until scored; none reads clear");
 // A DEAD feasibility seat is still incomplete under external — only the testability half moved out.
 const { result: extDead } = await run(WF("plan.js"),
   { spec: "s", northStar: NORTH_STAR, testability: "external" }, nullFixtures);
